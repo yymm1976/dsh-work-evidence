@@ -1,0 +1,872 @@
+{
+  "runtime": "0.2.1-rc.2",
+  "checkedAt": "2026-10-21T15:56:25.156Z",
+  "rows": [
+    {
+      "name": "dsh-better-sidebar",
+      "installed": "0.24.2",
+      "source": "bundled",
+      "local": false,
+      "latest": "0.28.2",
+      "newer": true,
+      "compatibility": "declared-compatible",
+      "requirements": [
+        [
+          "@deepseek-ai/dsh-llm",
+          "^0.2.1-rc.1"
+        ],
+        [
+          "@deepseek-ai/dsh-agent",
+          "^0.2.1-rc.1"
+        ],
+        [
+          "@deepseek-ai/dsh-tools",
+          "^0.2.1-rc.1"
+        ],
+        [
+          "@deepseek-ai/dsh-session",
+          "^0.2.1-rc.1"
+        ],
+        [
+          "@deepseek-ai/dsh-settings",
+          "^0.2.1-rc.1"
+        ],
+        [
+          "@deepseek-ai/dsh-subagent",
+          "^0.2.1-rc.1"
+        ],
+        [
+          "@deepseek-ai/dsh-client-locale",
+          "^0.2.1-rc.1"
+        ],
+        [
+          "@deepseek-ai/dsh-host-webserver",
+          "^0.2.1-rc.1"
+        ],
+        [
+          "@deepseek-ai/dsh-client-ui-slots",
+          "^0.2.1-rc.1"
+        ],
+        [
+          "@deepseek-ai/dsh-client-ui-settings",
+          "^0.2.1-rc.1"
+        ],
+        [
+          "@deepseek-ai/dsh-client-ui-primitives",
+          "^0.2.1-rc.1"
+        ],
+        [
+          "@deepseek-ai/dsh-client-ui-conversation",
+          "^0.2.1-rc.1"
+        ],
+        [
+          "@deepseek-ai/dsh-client-ui-sidebar-right",
+          "^0.2.1-rc.1"
+        ]
+      ],
+      "engines": {
+        "node": ">=20"
+      },
+      "repository": {
+        "url": "https://github.com/omdsh-dev/DSH-better-sidebar",
+        "type": "git"
+      },
+      "bundle": {
+        "patch": "./cordis.patch.yml"
+      },
+      "scripts": {
+        "lint": "eslint .",
+        "test": "vitest run",
+        "build": "node -e \"require('node:fs').rmSync('lib',{recursive:true,force:true})\" && tsc -p tsconfig.build.json && tsdown",
+        "clean": "node -e \"require('node:fs').rmSync('lib',{recursive:true,force:true})\"",
+        "watch": "tsdown --watch",
+        "bundle": "tsdown",
+        "typecheck": "tsc --noEmit",
+        "test:mount": "bash scripts/e2e-mount.sh",
+        "test:windows": "vitest run --maxWorkers=1",
+        "check:engines": "node --experimental-strip-types scripts/win-engine-check.mjs --assert",
+        "check:consumer-types": "bash scripts/check-consumer-types.sh",
+        "test:mount:aggregate": "bash scripts/e2e-aggregate-mount.sh"
+      }
+    },
+    {
+      "name": "dsh-session-manager",
+      "installed": "0.1.0",
+      "source": "bundled",
+      "local": false,
+      "latest": "0.7.4",
+      "newer": true,
+      "compatibility": "not-declared",
+      "requirements": [],
+      "engines": {
+        "node": "^22.15.0 || >=24.0.0"
+      },
+      "repository": {
+        "url": "git+https://github.com/hkkz9522/dsh-session-manager.git",
+        "type": "git"
+      },
+      "bundle": {
+        "patch": "./cordis.patch.yml"
+      },
+      "scripts": {
+        "test": "node scripts/run-tests.mjs",
+        "check": "node --check lib/index.js && node --check lib/client.js && node --check lib/session-files.js && node --check lib/annotation-store.js && node --check lib/workspace-archive-store.js && node --check lib/clipboard-parser.js && node -e \"import('./lib/index.js')\"",
+        "check:package": "node scripts/check-package.mjs"
+      }
+    },
+    {
+      "name": "@dsh-external/dsh-super-injector",
+      "installed": "0.3.1",
+      "source": "bundled",
+      "local": false,
+      "registryStatus": 404
+    },
+    {
+      "name": "@dsh-external/dsh-side-session",
+      "installed": "0.3.1",
+      "source": "bundled",
+      "local": false,
+      "registryStatus": 404
+    },
+    {
+      "name": "dsh-pocket",
+      "installed": "2.10.7",
+      "source": "bundled",
+      "local": false,
+      "latest": "2.12.0",
+      "newer": true,
+      "compatibility": "not-declared",
+      "requirements": [],
+      "engines": {
+        "node": ">=22"
+      },
+      "repository": {
+        "url": "git+https://github.com/shaobeichen/dsh-pocket.git",
+        "type": "git"
+      },
+      "bundle": {
+        "patch": "./cordis.patch.yml"
+      },
+      "scripts": {
+        "test": "node --test --test-timeout=30000 \"test/*.test.js\"",
+        "release": "semantic-release",
+        "test:local": "node --test --test-timeout=300000 \"test/local/*.test.js\"",
+        "build:client": "node client/build.mjs"
+      }
+    },
+    {
+      "name": "dsh-input-history",
+      "installed": "0.1.1",
+      "source": "bundled",
+      "local": false,
+      "latest": "0.3.2",
+      "newer": true,
+      "compatibility": "not-declared",
+      "requirements": [],
+      "engines": {
+        "node": ">=20"
+      },
+      "repository": {
+        "url": "git+https://github.com/sunshaobei/dsh-input-history.git",
+        "type": "git"
+      },
+      "bundle": {
+        "patch": "./cordis.patch.yml"
+      }
+    },
+    {
+      "name": "dsh-easyrewrite",
+      "installed": "2.6.0",
+      "source": "bundled",
+      "local": false,
+      "latest": "2.6.0",
+      "newer": false,
+      "compatibility": "not-declared",
+      "requirements": [],
+      "engines": {},
+      "repository": {
+        "url": "git+https://github.com/Renzic-Stone/DSH-EasyRewrite.git",
+        "type": "git"
+      },
+      "bundle": {
+        "patch": "./cordis.patch.yml"
+      },
+      "scripts": {
+        "test": "node tests/smoke-host.mjs && node tests/test-log-memory.mjs && node tests/test-issue9-anti-double-submit.mjs && node tests/test-issue11-bubble-compatibility.mjs && node tests/test-dsh-0.1.7-pager.mjs",
+        "build": "node build.mjs",
+        "prepack": "node build.mjs",
+        "prepare": "node build.mjs"
+      }
+    },
+    {
+      "name": "dsh-change-review",
+      "installed": "0.1.2",
+      "source": "bundled",
+      "local": false,
+      "registryStatus": 404
+    },
+    {
+      "name": "dsh-auto-compact",
+      "installed": "0.1.2",
+      "source": "bundled",
+      "local": false,
+      "registryStatus": 404
+    },
+    {
+      "name": "dsh-offpeak",
+      "installed": "1.0.1",
+      "source": "bundled",
+      "local": false,
+      "latest": "3.3.6",
+      "newer": true,
+      "compatibility": "declared-compatible",
+      "requirements": [
+        [
+          "engines.dsh",
+          ">=0.1.5-rc.2 <0.1.6-0 || >=0.1.7-rc.1 <0.1.8-0 || >=0.2.0-rc.1 <0.2.1-0 || >=0.2.1-rc.1 <0.2.2-0"
+        ]
+      ],
+      "engines": {
+        "dsh": ">=0.1.5-rc.2 <0.1.6-0 || >=0.1.7-rc.1 <0.1.8-0 || >=0.2.0-rc.1 <0.2.1-0 || >=0.2.1-rc.1 <0.2.2-0",
+        "node": ">=20"
+      },
+      "repository": {
+        "url": "git+https://github.com/lizilong1993/dsh-offpeak.git",
+        "type": "git"
+      },
+      "bundle": {
+        "patch": "./cordis.patch.yml"
+      },
+      "scripts": {
+        "lint": "eslint src tests",
+        "test": "node --test \"tests/*.test.mjs\"",
+        "build": "tsdown",
+        "prepare": "npm run build",
+        "prepublishOnly": "npm run build"
+      }
+    },
+    {
+      "name": "dsh-settings-nav-custom",
+      "installed": "0.1.1",
+      "source": "bundled",
+      "local": false,
+      "registryStatus": 404
+    },
+    {
+      "name": "dsh-settings-groups",
+      "installed": "0.1.1",
+      "source": "bundled",
+      "local": false,
+      "registryStatus": 404
+    },
+    {
+      "name": "dsh-synapse",
+      "installed": "0.3.0",
+      "source": "bundled",
+      "local": false,
+      "latest": "0.4.3",
+      "newer": true,
+      "compatibility": "not-declared",
+      "requirements": [],
+      "engines": {
+        "node": ">=22.19.0"
+      },
+      "bundle": {
+        "patch": "./cordis.patch.yml"
+      },
+      "scripts": {
+        "test": "node --test test/*.test.js",
+        "build": "node --check index.js && node --check client.js && node --check app.js"
+      }
+    },
+    {
+      "name": "@dsh-external/dsh-subagent-lens",
+      "installed": "0.1.1",
+      "source": "bundled",
+      "local": false,
+      "registryStatus": 404
+    },
+    {
+      "name": "dsh-basics-panel",
+      "installed": "0.4.2",
+      "source": "bundled",
+      "local": false,
+      "registryStatus": 404
+    },
+    {
+      "name": "dsh-input-fold",
+      "installed": "0.1.1",
+      "source": "bundled",
+      "local": false,
+      "registryStatus": 404
+    },
+    {
+      "name": "dsh-prompt-optimizer",
+      "installed": "2.4.0",
+      "source": "bundled",
+      "local": false,
+      "latest": "2.0.3",
+      "newer": false,
+      "compatibility": "not-declared",
+      "requirements": [],
+      "engines": {
+        "node": "^22.19.0 || >=24.0.0"
+      },
+      "repository": {
+        "url": "git+https://github.com/winditer/dsh-prompt-optimizer.git",
+        "type": "git"
+      },
+      "bundle": {
+        "patch": "./cordis.patch.yml"
+      },
+      "scripts": {
+        "test": "node scripts/test.mjs",
+        "build": "node scripts/build.mjs"
+      }
+    },
+    {
+      "name": "dsh-zcode-migrate",
+      "installed": "0.1.2",
+      "source": "bundled",
+      "local": false,
+      "registryStatus": 404
+    },
+    {
+      "name": "@liustack/modsearch",
+      "installed": "5.10.10",
+      "source": "5.10.10",
+      "local": false,
+      "latest": "5.10.10",
+      "newer": false,
+      "compatibility": "not-declared",
+      "requirements": [],
+      "engines": {
+        "node": ">=22.13"
+      },
+      "repository": {
+        "url": "git+https://github.com/liustack/modsearch.git",
+        "type": "git"
+      },
+      "bundle": {
+        "patch": "./cordis.patch.yml"
+      },
+      "scripts": {
+        "dev": "vite build --watch",
+        "eval": "node evals/run.mjs",
+        "lint": "biome lint",
+        "test": "vitest run",
+        "build": "vite build",
+        "format": "biome format --write",
+        "release": "node scripts/release.mjs",
+        "docs:list": "node scripts/docs-list.js",
+        "typecheck": "tsc --noEmit",
+        "test:coverage": "vitest run --coverage",
+        "prepublishOnly": "pnpm build"
+      }
+    },
+    {
+      "name": "dsh-context",
+      "installed": "0.74.0",
+      "source": "0.74.0",
+      "local": false,
+      "latest": "0.74.0",
+      "newer": false,
+      "compatibility": "declared-compatible",
+      "requirements": [
+        [
+          "engines.dsh",
+          ">=0.1.7-rc.2 || >=0.2.0-rc.2"
+        ]
+      ],
+      "engines": {
+        "dsh": ">=0.1.7-rc.2 || >=0.2.0-rc.2",
+        "node": "^22.19.0 || >=24.0.0"
+      },
+      "repository": {
+        "url": "git+https://github.com/bowenliang123/dsh-context.git",
+        "type": "git"
+      },
+      "bundle": {
+        "patch": "./cordis.patch.yml"
+      },
+      "scripts": {
+        "web": "bash scripts/web.sh",
+        "lint": "oxlint",
+        "test": "vitest run --coverage",
+        "build": "tsdown",
+        "check": "bash scripts/check.sh",
+        "watch": "bash scripts/watch.sh",
+        "prepare": "husky && tsdown",
+        "release": "bash scripts/publish.sh",
+        "coverage": "vitest run --coverage",
+        "lint:fix": "oxlint --fix",
+        "register": "bash scripts/register.sh",
+        "typecheck": "tsc --noEmit -p tsconfig.tests.json --incremental",
+        "social-preview": "node scripts/social-preview/generate.ts"
+      }
+    },
+    {
+      "name": "dsh-ops",
+      "installed": "0.4.1",
+      "source": "0.4.1",
+      "local": false,
+      "latest": "0.4.1",
+      "newer": false,
+      "compatibility": "declared-compatible",
+      "requirements": [
+        [
+          "@deepseek-ai/dsh",
+          "^0.2.0-rc.2"
+        ]
+      ],
+      "engines": {
+        "node": "^22.19 || >=24"
+      },
+      "repository": {
+        "url": "git+https://github.com/T-Auto/dsh-ops.git",
+        "type": "git"
+      },
+      "bundle": {
+        "patch": "./cordis.patch.yml"
+      },
+      "scripts": {
+        "test": "node test/run.mjs",
+        "build": "node scripts/build.mjs",
+        "verify": "node scripts/build.mjs && node scripts/validate-manifest.mjs && node test/run.mjs",
+        "prepack": "node scripts/build.mjs",
+        "pretest": "node scripts/build.mjs",
+        "bench:ab": "node -e \"const fs=require('node:fs');if(!fs.existsSync('bench/cli.mjs')){console.error('bench/ is repository-only and never shipped in the npm package (bench 只存在于仓库,不随包发布); run npm run bench:* from a dsh-ops checkout');process.exit(2)};process.exit(require('node:child_process').spawnSync(process.execPath,['bench/cli.mjs','ab',...process.argv.slice(1)],{stdio:'inherit'}).status??1)\" --",
+        "test:ptc": "node test/run.mjs ptc",
+        "bench:cli": "node -e \"const fs=require('node:fs');if(!fs.existsSync('bench/cli.mjs')){console.error('bench/ is repository-only and never shipped in the npm package (bench 只存在于仓库,不随包发布); run npm run bench:* from a dsh-ops checkout');process.exit(2)};process.exit(require('node:child_process').spawnSync(process.execPath,['bench/cli.mjs',...process.argv.slice(1)],{stdio:'inherit'}).status??1)\" --",
+        "build:ptc": "node bin/dsh-ops.mjs build-ptc",
+        "stage:ptc": "node bin/native-runtime.mjs stage",
+        "typecheck": "tsc -p . --noEmit",
+        "check:size": "node scripts/check-file-size.mjs",
+        "bench:panel": "node -e \"const fs=require('node:fs');if(!fs.existsSync('bench/cli.mjs')){console.error('bench/ is repository-only and never shipped in the npm package (bench 只存在于仓库,不随包发布); run npm run bench:* from a dsh-ops checkout');process.exit(2)};process.exit(require('node:child_process').spawnSync(process.execPath,['bench/cli.mjs','panel',...process.argv.slice(1)],{stdio:'inherit'}).status??1)\" --",
+        "bench:setup": "node -e \"const fs=require('node:fs');if(!fs.existsSync('bench/cli.mjs')){console.error('bench/ is repository-only and never shipped in the npm package (bench 只存在于仓库,不随包发布); run npm run bench:* from a dsh-ops checkout');process.exit(2)};process.exit(require('node:child_process').spawnSync(process.execPath,['bench/cli.mjs','setup',...process.argv.slice(1)],{stdio:'inherit'}).status??1)\" --",
+        "bench:tools": "node -e \"const fs=require('node:fs');if(!fs.existsSync('bench/cli.mjs')){console.error('bench/ is repository-only and never shipped in the npm package (bench 只存在于仓库,不随包发布); run npm run bench:* from a dsh-ops checkout');process.exit(2)};process.exit(require('node:child_process').spawnSync(process.execPath,['bench/cli.mjs','tools',...process.argv.slice(1)],{stdio:'inherit'}).status??1)\" --",
+        "pretest:ptc": "node scripts/build.mjs",
+        "bench:report": "node -e \"const fs=require('node:fs');if(!fs.existsSync('bench/cli.mjs')){console.error('bench/ is repository-only and never shipped in the npm package (bench 只存在于仓库,不随包发布); run npm run bench:* from a dsh-ops checkout');process.exit(2)};process.exit(require('node:child_process').spawnSync(process.execPath,['bench/cli.mjs','report',...process.argv.slice(1)],{stdio:'inherit'}).status??1)\" --",
+        "build:bash-ipc": "node bin/build-bash-ipc.mjs",
+        "verify:release": "npm run verify && node bin/check-release.mjs",
+        "check:ptc-runtime": "node bin/native-runtime.mjs check --staged",
+        "validate:manifest": "node scripts/validate-manifest.mjs"
+      }
+    },
+    {
+      "name": "dsh-ptc-plus",
+      "installed": "0.5.1",
+      "source": "0.5.1",
+      "local": false,
+      "latest": "0.5.1",
+      "newer": false,
+      "compatibility": "declared-compatible",
+      "requirements": [
+        [
+          "engines.dsh",
+          "*"
+        ]
+      ],
+      "engines": {
+        "dsh": "*",
+        "node": "^22.19.0 || >=24.0.0"
+      },
+      "repository": {
+        "url": "git+https://github.com/muyuanjin/dsh-ptc-plus.git",
+        "type": "git"
+      },
+      "bundle": {
+        "patch": "./cordis.patch.yml"
+      },
+      "scripts": {
+        "build": "node scripts/client-bundle.mjs build && node scripts/compiler-bundle.mjs build",
+        "check": "node scripts/review-findings.mjs check",
+        "verify": "npm run review:validate && npm run host:baseline:verify && npm run semantic:check && npm run build:check && node --check index.js && node --check internal/kernel-worker.js && node --check scripts/migrate-session-log.mjs && node --check scripts/expensive-headless-acceptance.mjs && node --check scripts/ab-headless-trajectories.mjs && node scripts/deterministic-test-groups.mjs",
+        "prepack": "npm run build:check",
+        "test:ab": "node scripts/ab-headless-trajectories.mjs",
+        "coverage": "node scripts/coverage.mjs",
+        "verify:ci": "npm run review:validate && npm run host:baseline:verify && npm run semantic:check && npm run build:check && node --check index.js && node --check internal/kernel-worker.js && node --check scripts/migrate-session-log.mjs && node scripts/deterministic-test-groups.mjs --ci",
+        "review:new": "node scripts/review-findings.mjs create",
+        "build:check": "node scripts/client-bundle.mjs check && node scripts/compiler-bundle.mjs check",
+        "review:gate": "node scripts/review-findings.mjs gate",
+        "review:lane": "node scripts/review-findings.mjs lane-verdict",
+        "review:plan": "node scripts/review-findings.mjs plan",
+        "test:client": "vitest run --config scripts/client-test.config.mjs",
+        "verify:docs": "node scripts/review-findings.mjs docs",
+        "review:clear": "node scripts/review-findings.mjs review-clear",
+        "test:backend": "node scripts/test-suite-files.mjs",
+        "hooks:install": "node scripts/review-findings.mjs install-hook",
+        "review:status": "node scripts/review-findings.mjs status",
+        "coverage:focus": "node scripts/coverage.mjs --focus",
+        "semantic:check": "node scripts/semantic-obligations.mjs",
+        "test:expensive": "node scripts/expensive-headless-acceptance.mjs",
+        "test:semantics": "node scripts/test-suite-files.mjs --file test/semantic-test262.test.js --file test/semantic-dialect.test.js --file test/semantic-boundaries.test.js --file test/semantic-boundary-storage.test.js --file test/semantic-boundary-promises.test.js --file test/semantic-boundary-reflection.test.js",
+        "review:finalize": "node scripts/review-findings.mjs finalize",
+        "review:plan:new": "node scripts/review-findings.mjs plan-create",
+        "review:validate": "node scripts/review-findings.mjs validate",
+        "session:migrate": "node scripts/migrate-session-log.mjs",
+        "test:ci:runtime": "node --test --test-concurrency=1 test/package-contract.test.js test/compiler-platform.test.js test/direct-surface-policy.test.js test/isolated-entrance.test.js test/plugin-native-call-transport.test.js",
+        "test:client:web": "node scripts/client-web-smoke.mjs",
+        "test:client:focus": "node scripts/client-focused-tests.mjs",
+        "readme:screenshots": "node scripts/readme-screenshots.mjs",
+        "test:backend:focus": "node scripts/test-suite-files.mjs --focus",
+        "test:client:layout": "node scripts/client-binding-layout.mjs",
+        "test:client:visual": "node scripts/client-visual-check.mjs",
+        "test:host-contract": "node scripts/dsh-host-contract-suite.mjs",
+        "host:baseline:update": "node scripts/dsh-dependency-baseline.mjs update",
+        "host:baseline:verify": "node scripts/dsh-dependency-baseline.mjs verify",
+        "test:client:fallback": "node scripts/client-fallback-smoke.mjs",
+        "test:client:fixtures": "vitest run --config scripts/client-test.config.mjs --testNamePattern=\"^(REPL observations and shared workbench remain separate from session execution|saved cards retain exact source across remount and locale changes; catalog conflicts keep drafts actionable)$\"",
+        "test:package:consumer": "node scripts/npm-consumer-smoke.mjs",
+        "test:client:layout:focus": "node scripts/client-binding-layout.mjs --focus",
+        "test:client:fallback:focus": "node scripts/client-fallback-smoke.mjs --focus",
+        "test:client:tool-hover:focus": "node scripts/client-tool-hover.mjs --focus"
+      }
+    },
+    {
+      "name": "@nagi-ovo/dsh-visualize",
+      "installed": "0.1.7",
+      "source": "0.1.7",
+      "local": false,
+      "latest": "0.1.7",
+      "newer": false,
+      "compatibility": "declared-compatible",
+      "requirements": [
+        [
+          "@deepseek-ai/dsh-fs",
+          "^0.1.0-rc.6 || ^0.2.0-rc.1 || ^0.2.1-0"
+        ],
+        [
+          "@deepseek-ai/dsh-llm",
+          "^0.1.0-rc.6 || ^0.2.0-rc.1 || ^0.2.1-0"
+        ],
+        [
+          "@deepseek-ai/dsh-skill",
+          "^0.1.0-rc.6 || ^0.2.0-rc.1 || ^0.2.1-0"
+        ],
+        [
+          "@deepseek-ai/dsh-tools",
+          "^0.1.0-rc.6 || ^0.2.0-rc.1 || ^0.2.1-0"
+        ],
+        [
+          "@deepseek-ai/dsh-session",
+          "^0.1.0-rc.6 || ^0.2.0-rc.1 || ^0.2.1-0"
+        ],
+        [
+          "@deepseek-ai/dsh-sandbox-policy",
+          "^0.1.0-rc.6 || ^0.2.0-rc.1 || ^0.2.1-0"
+        ]
+      ],
+      "engines": {},
+      "repository": {
+        "url": "git+https://github.com/Nagi-ovo/dsh-visualize.git",
+        "type": "git"
+      },
+      "bundle": {
+        "patch": "./cordis.patch.yml"
+      },
+      "scripts": {
+        "test": "vitest run",
+        "build": "tsdown",
+        "check": "pnpm run typecheck && pnpm run test && pnpm run build",
+        "typecheck": "tsc -p tsconfig.json && tsc -p tsconfig.client.json",
+        "prepublishOnly": "pnpm run build"
+      }
+    },
+    {
+      "name": "@noob-stupid/dsh-plugin-console",
+      "installed": "0.5.92",
+      "source": "0.5.92",
+      "local": false,
+      "latest": "0.5.92",
+      "newer": false,
+      "compatibility": "not-declared",
+      "requirements": [],
+      "engines": {},
+      "repository": {
+        "url": "git+https://github.com/Noob-stupid/dsh-plugin-gating-hub.git",
+        "type": "git"
+      },
+      "bundle": {
+        "patch": "./cordis.patch.yml"
+      },
+      "scripts": {
+        "checkBom": "node -e \"const fs=require('fs');const b=fs.readFileSync('package.json');if(b[0]===0xEF){console.error('BOM detected in package.json — strip it before publish');process.exit(1)};console.log('package.json BOM check OK')\"",
+        "prepublishOnly": "npm run checkBom"
+      }
+    },
+    {
+      "name": "dsh-builtin-manager",
+      "installed": "0.2.0",
+      "source": "bundled",
+      "local": false,
+      "registryStatus": 404
+    },
+    {
+      "name": "billion-context-dsh",
+      "installed": "0.2.27",
+      "source": "0.2.27",
+      "local": false,
+      "latest": "0.2.27",
+      "newer": false,
+      "compatibility": "declared-incompatible",
+      "requirements": [
+        [
+          "@deepseek-ai/dsh-llm",
+          ">=0.1.5-alpha.1 <0.2.1-0"
+        ],
+        [
+          "@deepseek-ai/dsh-brand",
+          "0.2.0-rc.2"
+        ],
+        [
+          "@deepseek-ai/dsh-tools",
+          ">=0.1.5-alpha.1 <0.2.1-0"
+        ],
+        [
+          "@deepseek-ai/dsh-session",
+          ">=0.1.5-alpha.1 <0.2.1-0"
+        ],
+        [
+          "@deepseek-ai/dsh-timeout",
+          "0.2.0-rc.2"
+        ],
+        [
+          "@deepseek-ai/dsh-settings",
+          ">=0.1.5-alpha.1 <0.2.1-0"
+        ],
+        [
+          "@deepseek-ai/dsh-compaction",
+          ">=0.1.5-alpha.1 <0.2.1-0"
+        ],
+        [
+          "@deepseek-ai/dsh-util-crypto",
+          "0.2.0-rc.2"
+        ],
+        [
+          "@deepseek-ai/dsh-util-values",
+          "0.2.0-rc.2"
+        ],
+        [
+          "@deepseek-ai/dsh-session-format",
+          "0.2.0-rc.2"
+        ],
+        [
+          "@deepseek-ai/dsh-typert-protocol",
+          "0.2.0-rc.2"
+        ],
+        [
+          "@deepseek-ai/dsh-session-persistence",
+          "0.2.0-rc.2"
+        ],
+        [
+          "@deepseek-ai/dsh-session-format-catalog",
+          "0.2.0-rc.2"
+        ],
+        [
+          "@deepseek-ai/dsh-session-format-v1-to-v2",
+          "0.2.0-rc.2"
+        ],
+        [
+          "@deepseek-ai/dsh-session-format-v2-to-v3",
+          "0.2.0-rc.2"
+        ],
+        [
+          "@deepseek-ai/dsh-session-persistence-jsonl",
+          "0.2.0-rc.2"
+        ]
+      ],
+      "engines": {
+        "node": ">=20"
+      },
+      "bundle": {
+        "patch": "./cordis.patch.yml"
+      },
+      "scripts": {
+        "test": "node --import tsx --test tests/*.test.ts tests/kernel-upstream/*.test.ts",
+        "build": "tsup && tsc --emitDeclarationOnly",
+        "test:e2e": "node scripts/e2e/run-e2e.mjs",
+        "typecheck": "tsc --noEmit"
+      }
+    },
+    {
+      "name": "dsh-repeat-guard",
+      "installed": "0.2.2",
+      "source": "0.2.2",
+      "local": false,
+      "latest": "0.2.2",
+      "newer": false,
+      "compatibility": "declared-compatible",
+      "requirements": [
+        [
+          "@deepseek-ai/dsh-llm",
+          ">=0.1.7-0 || >=0.2.0-0"
+        ],
+        [
+          "@deepseek-ai/dsh-agent",
+          ">=0.1.7-0 || >=0.2.0-0"
+        ],
+        [
+          "@deepseek-ai/dsh-settings",
+          ">=0.1.7-0 || >=0.2.0-0"
+        ],
+        [
+          "@deepseek-ai/dsh-client-ui-renderer",
+          ">=0.1.7-0 || >=0.2.0-0"
+        ],
+        [
+          "@deepseek-ai/dsh-client-ui-settings",
+          ">=0.1.7-0 || >=0.2.0-0"
+        ]
+      ],
+      "engines": {},
+      "bundle": {
+        "patch": "./cordis.patch.yml"
+      },
+      "scripts": {
+        "build": "tsc && node scripts/build-client.mjs",
+        "prepack": "npm run build"
+      }
+    },
+    {
+      "name": "dsh-ob-agent",
+      "installed": "0.2.0",
+      "source": "file:../../tools/agent-environment/packages/dsh-ob-agent",
+      "local": true,
+      "registryStatus": 404
+    },
+    {
+      "name": "dsh-flash-presets",
+      "installed": "0.2.1",
+      "source": "file:../../tools/agent-environment/packages/dsh-flash-presets",
+      "local": true,
+      "latest": "0.2.2",
+      "newer": true,
+      "compatibility": "not-declared",
+      "requirements": [],
+      "engines": {},
+      "repository": {
+        "url": "git+https://github.com/LarryE135/dsh-flash-presets.git",
+        "type": "git"
+      },
+      "bundle": {
+        "patch": "cordis.patch.yml"
+      },
+      "scripts": {
+        "build": "node scripts/compose-bundle-patch.mjs",
+        "check": "node scripts/compose-bundle-patch.mjs --check",
+        "verify": "node scripts/verify-yaml.mjs && node scripts/verify-presets.mjs --repo-only",
+        "prepublishOnly": "node scripts/compose-bundle-patch.mjs --check && node scripts/verify-yaml.mjs && node scripts/verify-presets.mjs --repo-only"
+      }
+    },
+    {
+      "name": "@anionex/dsh-vision-toolkit",
+      "installed": "0.1.47",
+      "source": "0.1.47",
+      "local": false,
+      "latest": "0.1.47",
+      "newer": false,
+      "compatibility": "declared-compatible",
+      "requirements": [
+        [
+          "@deepseek-ai/dsh-llm",
+          ">=0.1.0-rc.8 <0.2.0 || ^0.1.1-rc.1 || ^0.1.2-alpha.1 || ^0.1.5-rc.1 || 0.2.0-rc.2 || 0.2.1-rc.2"
+        ],
+        [
+          "@deepseek-ai/dsh-agent",
+          ">=0.1.0-rc.8 <0.2.0 || ^0.1.1-rc.1 || ^0.1.2-alpha.1 || ^0.1.5-rc.1 || 0.2.0-rc.2 || 0.2.1-rc.2"
+        ],
+        [
+          "@deepseek-ai/dsh-skill",
+          ">=0.1.0-rc.8 <0.2.0 || ^0.1.1-rc.1 || ^0.1.2-alpha.1 || ^0.1.5-rc.1 || 0.2.0-rc.2 || 0.2.1-rc.2"
+        ],
+        [
+          "@deepseek-ai/dsh-tools",
+          ">=0.1.0-rc.8 <0.2.0 || ^0.1.1-rc.1 || ^0.1.2-alpha.1 || ^0.1.5-rc.1 || 0.2.0-rc.2 || 0.2.1-rc.2"
+        ],
+        [
+          "@deepseek-ai/dsh-session",
+          ">=0.1.0-rc.8 <0.2.0 || ^0.1.1-rc.1 || ^0.1.2-alpha.1 || ^0.1.5-rc.1 || 0.2.0-rc.2 || 0.2.1-rc.2"
+        ],
+        [
+          "@deepseek-ai/dsh-settings",
+          ">=0.1.0-rc.8 <0.2.0 || ^0.1.1-rc.1 || ^0.1.2-alpha.1 || ^0.1.5-rc.1 || 0.2.0-rc.2 || 0.2.1-rc.2"
+        ],
+        [
+          "@deepseek-ai/dsh-attachment",
+          ">=0.1.0-rc.8 <0.2.0 || ^0.1.1-rc.1 || ^0.1.2-alpha.1 || ^0.1.5-rc.1 || 0.2.0-rc.2 || 0.2.1-rc.2"
+        ],
+        [
+          "@deepseek-ai/dsh-subprocess",
+          ">=0.1.0-rc.8 <0.2.0 || ^0.1.1-rc.1 || ^0.1.2-alpha.1 || ^0.1.5-rc.1 || 0.2.0-rc.2 || 0.2.1-rc.2"
+        ],
+        [
+          "@deepseek-ai/dsh-api-remotes",
+          ">=0.1.0-rc.8 <0.2.0 || ^0.1.1-rc.1 || ^0.1.2-alpha.1 || ^0.1.5-rc.1 || 0.2.0-rc.2 || 0.2.1-rc.2"
+        ],
+        [
+          "@deepseek-ai/dsh-credentials",
+          ">=0.1.0-rc.8 <0.2.0 || ^0.1.1-rc.1 || ^0.1.2-alpha.1 || ^0.1.5-rc.1 || 0.2.0-rc.2 || 0.2.1-rc.2"
+        ],
+        [
+          "@deepseek-ai/dsh-client-locale",
+          ">=0.1.0-rc.8 <0.2.0 || ^0.1.1-rc.1 || ^0.1.2-alpha.1 || ^0.1.5-rc.1 || 0.2.0-rc.2 || 0.2.1-rc.2"
+        ],
+        [
+          "@deepseek-ai/dsh-client-ui-tool",
+          ">=0.1.0-rc.8 <0.2.0 || ^0.1.1-rc.1 || ^0.1.2-alpha.1 || ^0.1.5-rc.1 || 0.2.0-rc.2 || 0.2.1-rc.2"
+        ],
+        [
+          "@deepseek-ai/dsh-host-webserver",
+          ">=0.1.0-rc.8 <0.2.0 || ^0.1.1-rc.1 || ^0.1.2-alpha.1 || ^0.1.5-rc.1 || 0.2.0-rc.2 || 0.2.1-rc.2"
+        ],
+        [
+          "@deepseek-ai/dsh-storage-domain",
+          ">=0.1.0-rc.8 <0.2.0 || ^0.1.1-rc.1 || ^0.1.2-alpha.1 || ^0.1.5-rc.1 || 0.2.0-rc.2 || 0.2.1-rc.2"
+        ],
+        [
+          "@deepseek-ai/dsh-client-ui-slots",
+          ">=0.1.0-rc.8 <0.2.0 || ^0.1.1-rc.1 || ^0.1.2-alpha.1 || ^0.1.5-rc.1 || 0.2.0-rc.2 || 0.2.1-rc.2"
+        ],
+        [
+          "@deepseek-ai/dsh-client-ui-settings",
+          ">=0.1.0-rc.8 <0.2.0 || ^0.1.1-rc.1 || ^0.1.2-alpha.1 || ^0.1.5-rc.1 || 0.2.0-rc.2 || 0.2.1-rc.2"
+        ],
+        [
+          "@deepseek-ai/dsh-client-ui-primitives",
+          ">=0.1.0-rc.8 <0.2.0 || ^0.1.1-rc.1 || ^0.1.2-alpha.1 || ^0.1.5-rc.1 || 0.2.0-rc.2 || 0.2.1-rc.2"
+        ],
+        [
+          "@deepseek-ai/dsh-client-ui-conversation",
+          ">=0.1.0-rc.8 <0.2.0 || ^0.1.1-rc.1 || ^0.1.2-alpha.1 || ^0.1.5-rc.1 || 0.2.0-rc.2 || 0.2.1-rc.2"
+        ],
+        [
+          "@deepseek-ai/dsh-client-ui-input-trigger",
+          ">=0.1.0-rc.8 <0.2.0 || ^0.1.1-rc.1 || ^0.1.2-alpha.1 || ^0.1.5-rc.1 || 0.2.0-rc.2 || 0.2.1-rc.2"
+        ]
+      ],
+      "engines": {
+        "node": "^22.19.0 || >=24.0.0"
+      },
+      "repository": {
+        "url": "git+https://github.com/Anionex/dsh-vision-toolkit.git",
+        "type": "git"
+      },
+      "bundle": {
+        "patch": "./cordis.patch.yml"
+      },
+      "scripts": {
+        "test": "vitest run tests",
+        "build": "node scripts/python-bootstrap.mjs && node scripts/upstream-manifest.mjs && node scripts/verify-skill.mjs && node scripts/clean-build.mjs && tsc -p tsconfig.json && tsc -p tsconfig.client.json && tsc -p tsconfig.client.public.json && node scripts/build-client.mjs",
+        "prepack": "npm run build",
+        "upstream:sync": "node scripts/sync-upstream.mjs",
+        "verify:portable": "node scripts/python-bootstrap.mjs && node scripts/upstream-manifest.mjs && node scripts/verify-skill.mjs && node scripts/verify-portable.mjs",
+        "upstream:manifest": "node scripts/upstream-manifest.mjs --write",
+        "upstream:skill:sync": "node scripts/sync-skill.mjs",
+        "upstream:skill:verify": "node scripts/verify-skill.mjs",
+        "example:ui-restoration": "node scripts/run-ui-restoration-example.mjs --check",
+        "example:ui-restoration:write": "node scripts/run-ui-restoration-example.mjs --write"
+      }
+    }
+  ]
+}

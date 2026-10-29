@@ -1,0 +1,5 @@
+node_modules/
+.fastedit-venv/
+.runtime-fastedit-validation/
+__pycache__/
+*.pyc

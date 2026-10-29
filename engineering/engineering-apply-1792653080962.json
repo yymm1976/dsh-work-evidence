@@ -1,0 +1,35 @@
+{
+  "sessionId": "engineering-apply-1792653080962",
+  "at": "2026-10-22T07:11:24.412Z",
+  "modelRequests": 0,
+  "ptcMissingFileRecovered": true,
+  "indexedPaths": [
+    "C:\\Users\\杨铭\\Desktop\\修仙模组\\src\\main\\java\\dev\\qingming\\xiuxian\\exploration\\interest\\InterestPointCommand.java"
+  ],
+  "originalSourceSeq": 6,
+  "recalledChars": 0,
+  "fusedActions": 2,
+  "metrics": {
+    "nativeEvents": 37,
+    "ptcResults": 6,
+    "liveResults": 8,
+    "failuresObserved": 1,
+    "evidenceAttempts": 1,
+    "evidenceDelivered": 1,
+    "evidenceUnavailable": 0,
+    "indexLearned": 0,
+    "indexHits": 1,
+    "archived": 0,
+    "replaced": 0,
+    "removedChars": 0,
+    "restored": 0,
+    "auxiliaryCalls": 0,
+    "auxiliaryFailures": 0,
+    "auxiliaryUsage": {},
+    "candidatePredictions": 0,
+    "candidateRuns": 0,
+    "fusedActions": 2,
+    "deferrals": 0
+  },
+  "scope": "Native tool execution and scripted step boundaries; not a live model completion or efficiency comparison."
+}

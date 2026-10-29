@@ -1,0 +1,87 @@
+{
+  "name": "@local/dsh-work-evidence",
+  "version": "0.28.6",
+  "private": true,
+  "description": "DSH-native evidence, stable request working sets, history recovery and optional OPS CAS/Java adapters",
+  "type": "module",
+  "exports": {
+    ".": "./index.mjs",
+    "./flash1017-preset": "./flash1017-preset.mjs",
+    "./locale/*.json": "./locale/*.json",
+    "./icon": "./icon.svg"
+  },
+  "engines": {
+    "node": ">=22.19",
+    "dsh": "0.2.1-rc.2 || 0.2.1-rc.3"
+  },
+  "files": [
+    "index.mjs",
+    "native-files.mjs",
+    "evidence.mjs",
+    "runtime.mjs",
+    "observation-ledger.mjs",
+    "context-window.mjs",
+    "context-pruning.mjs",
+    "history-hygiene.mjs",
+    "reasoning-history.mjs",
+    "inline-exec.mjs",
+    "retained-compute.mjs",
+    "visible-results.mjs",
+    "read-presentation.mjs",
+    "request-observation.mjs",
+    "request-working-set.mjs",
+    "context-economics.mjs",
+    "effect-observer.mjs",
+    "history-coordinator.mjs",
+    "compression-control.mjs",
+    "compaction-handoff.mjs",
+    "compaction-timing.mjs",
+    "stage-checkpoints.mjs",
+    "task-flow.mjs",
+    "final-json.mjs",
+    "quality-review.mjs",
+    "execution-evidence.mjs",
+    "evidence-view.mjs",
+    "source-members.mjs",
+    "source-members-bridge.py",
+    "flash1017-preset.mjs",
+    "prepare-flash-preset.mjs",
+    "model.mjs",
+    "archive-source.mjs",
+    "archive-store.mjs",
+    "dependency-source.mjs",
+    "source-project.mjs",
+    "maven-source.mjs",
+    "npm-source.mjs",
+    "read-routing.mjs",
+    "recovery.mjs",
+    "self-index.mjs",
+    "candidates.mjs",
+    "ptc-patterns.mjs",
+    "ptc-fastpath.mjs",
+    "verified-exec.mjs",
+    "fastedit-java.mjs",
+    "fastedit-bridge.py",
+    "requirements-fastedit.txt",
+    "experiment-store.mjs",
+    "experiment-native.mjs",
+    "experiment-attempts.mjs",
+    "experiment-cli.mjs",
+    "README.md",
+    "cordis.patch.yml",
+    "locale/*.json",
+    "icon.svg"
+  ],
+  "dependencies": {
+    "fflate": "^0.8.3"
+  },
+  "bin": {
+    "dsh-work-evidence": "./experiment-cli.mjs"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  },
+  "license": "UNLICENSED"
+}
