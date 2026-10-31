@@ -39,7 +39,7 @@ function budgetOperation(s,operation){
   const next=(s.auxiliaryBudgetQueue??Promise.resolve()).then(operation);
   s.auxiliaryBudgetQueue=next.catch(()=>{});return next;
 }
-async function reserveBudget(runtime,agent,estimate){
+async function reserveBudget(runtime,agent,estimate,tokenLimit=32000){
   const s=runtime.get(agent);
   return budgetOperation(s,async()=>{
     if(!s.telemetryDir)throw new Error('Auxiliary budget requires persistent session storage');
@@ -52,19 +52,19 @@ async function reserveBudget(runtime,agent,estimate){
     if(!Number.isSafeInteger(budget.calls)||!Number.isSafeInteger(budget.tokens)||budget.calls<0||budget.tokens<0||typeof budget.failed!=='boolean')throw new Error('Invalid auxiliary budget record');
     budget.calls=Math.max(budget.calls,runtime.effects?.snapshot(agent)?.requests?.auxiliary??0,s.metrics.auxiliaryCalls);
     if(budget.failed||s.metrics.auxiliaryFailures>0)throw new Error('Auxiliary calls stopped after a prior failure');
-    if(budget.calls>=2||budget.tokens+estimate>32000)throw new Error('Auxiliary session budget exhausted (2 calls / 32000 tokens)');
+    if(budget.calls>=2||budget.tokens+estimate>tokenLimit)throw new Error('Auxiliary session budget exhausted (2 calls / '+tokenLimit+' tokens)');
     budget.calls++;budget.tokens+=estimate;
     await fs.mkdir(s.telemetryDir,{recursive:true});await fs.writeFile(file,JSON.stringify(budget),'utf8');
     return {file,estimate};
   });
 }
 
-export async function modelJson(ctx,runtime,agent,signal,system,payload,{maxTokens,timeoutMs,reasoningEffort,strictJson=false,route:explicitRoute,inheritConfiguredEffort=true}={}){
+export async function modelJson(ctx,runtime,agent,signal,system,payload,{maxTokens,timeoutMs,reasoningEffort,strictJson=false,route:explicitRoute,inheritConfiguredEffort=true,tokenLimit=32000}={}){
   const s=runtime.get(agent),route=explicitRoute??(s.config.modelRoute||agent.session.requestHeader()?.config);
   if(!route?.provider||!route?.model||!ctx.llm?.stream)throw new Error('No native model route is available');
   signal.throwIfAborted();
   const input=JSON.stringify(payload),outputLimit=maxTokens||s.config.modelMaxTokens;
-  const reservation=await reserveBudget(runtime,agent,textTokens(system)+textTokens(input)+outputLimit+64);
+  const reservation=await reserveBudget(runtime,agent,textTokens(system)+textTokens(input)+outputLimit+64,tokenLimit);
   const joined=AbortSignal.any([signal,AbortSignal.timeout(timeoutMs||s.config.modelTimeoutMs)]);
   let text='',usage=null,finish=null,failed=false;
   const began=performance.now();

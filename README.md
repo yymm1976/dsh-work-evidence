@@ -1,6 +1,31 @@
 # DSH 工程证据插件
 
-当前开发源码为 **0.28.6**。模式提示为 **PB001-v17**，压缩接续为 **kimi-codex-handoff-v9**，压缩时机策略为 **adaptive-break-even-v7**。历史 Cline Pass 实验的主请求和摘要固定 `max`。支持内核 0.2.1-rc.2 / rc.3。核心使用 DSH 原生文件服务、PTC 和历史事件。动态进展见[当前交接](C:/Users/杨铭/Desktop/DSH/Codex-2026-10-23/outputs/Work-Evidence-当前交接-2026-10-26.md)。
+> **当前状态：0.28.10 已冻结（2026-10-31）**。冻结范围、完整性哈希与解冻规则见 [FREEZE.md](FREEZE.md)。冻结后不再修改，新实验必须钉住版本并先写预注册设计稿。
+
+## 0.28.10（2026-10-31，质量档提示词清理 + 冻结）
+
+cp031 判定「v22 条款无效」后，按用户要求把质量档提示词收敛为用户提供的英文护栏原文，删除三处过拟合内容（均为 cp031 实测无可测收益）：
+
+1. `Streaming and Incremental Delivery`、`Ambiguity Discipline` 两条英文条款（针对 t4/t5 考点，base 模型已满足，天花板效应）。
+2. 中文交付段的定向要求（"块粒度、返回形状、错误类型"等，正对 t5 考点）。
+3. `QUALITY_DISCRIMINATOR` 中"包装/委托/重新解释旧能力"的比较规则（针对 t1 型任务）。
+
+模式策略版本升级为 **pb001-v23**（`pb001-v22` 及更早记录保持兼容）。默认与激进说明未动。
+
+## 0.28.9（2026-10-31，输出侧压缩落地）
+
+LP014 三臂实验（native / stub / stub+dedup，各 15 阶段）后并入生产。预注册费用判据 −20% 未达（stub −11.5%、stub+dedup −5.0%），按判负归档该实验方向；但 token −27.9%、质量 179/180 与 180/180 的实测成绩支持以插件功能形式落地。三项机制均有独立开关、默认全关：
+
+1. `stubSummary`（默认关，环境变量 `DSH_EXPERIMENT_STUB_SUMMARY=1` 开启）：压缩摘要不走摘要模型，改用本地确定性事件桩（策略 `kimi-codex-handoff-v10-stub`）。LP014 实测：token −27.9%、费用 −11.5%、四组件质量 179/180。
+2. `context-pruning` 块内去重 `dedupLongSegments`（默认开，`DSH_EXPERIMENT_STUB_DEDUP=0` 关闭；仅在结果 >8K 字符门槛后参与）：同一结果内 ≥2048 字符的重复段第二次出现起替换为 work_recall 定位符。**本版修复锚窗盲区**：原实现要求 4096 字符窗口完整二次出现，短于 4096 的重复段永不触发；改为 2048 锚窗 + 双向扩展（8.4KB 双份 4.2KB 重复场景实测新增约 900 字符节省）。注意 LP014 中 stub+dedup 组合费用劣于单 stub，是否默认开启待真实会话观察。
+3. `cacheOrderedStub` / `archiveEntries`（默认关，环境变量 `DSH_EXPERIMENT_CACHE_ORDERED_STUB=1` / `DSH_EXPERIMENT_ARCHIVE_ENTRIES=1`）：stub 桩的缓存友好前缀声明与归档指针语义（Blueprint 启示）。**未经真实 API 批次验证**，仅供下一轮实验。
+
+同批并入质量模式提示词迭代（cp030 教训）：新增 Streaming and Incremental Delivery（分块/流式/可取消接口必须逐段排队产出，禁止预缓冲全量后切块）与 Ambiguity Discipline（题面两可的接口细节按项目惯例与测试口径拍板并在交付说明中声明）两条原则，中文交付段同步；模式策略版本升级为 **pb001-v22**（pb001-v21 及更早记录保持兼容）。判分器侧同批修复 t3 双粒度防御（real-projects/work/assess-t3-aiosqlite-iterdump.py，8 格回归通过）。
+
+版本对照：0.28.8 冻结版（LP014 native 臂参照）→ 0.28.8-experiment.2/3（实验变体）→ 0.28.9（本次落地）。备份：`dsh-work-evidence-backup-0.28.8-20261031`。
+
+
+当前开发源码为 **0.28.10（冻结版，2026-10-31）**。模式提示为 **pb001-v23**（质量档为用户提供的英文护栏原文，cp031 判定无效的 v22 条款与中文定向段已删除；默认与激进说明未动），压缩接续为 **kimi-codex-handoff-v9**，压缩时机策略为 **adaptive-break-even-v7**，质量审核为 **quality-review-v5**（审核输出 65,536、等待 300 秒、该次辅助预算 196,608，并按接收规则校验返回）。策略允许列表兼容 `pb001-v1` 至 `pb001-v22` 旧记录。支持内核 0.2.1-rc.2 / rc.3 / rc.4 / rc.5（rc.5 已通过本机受控路径 10 项检查、外部请求 0）。核心使用 DSH 原生文件服务、PTC 和历史事件。动态进展见[当前交接](C:/Users/杨铭/Desktop/DSH/Codex-2026-10-23/outputs/Work-Evidence-当前交接-2026-10-31.md)。
 
 当前行为边界以[项目现状](C:/Users/杨铭/Desktop/DSH/Codex-2026-10-23/outputs/项目现状-2026-10-25.md)、[当前交接](C:/Users/杨铭/Desktop/DSH/Codex-2026-10-23/outputs/Work-Evidence-当前交接-2026-10-26.md)和[0.20 真实 API 实验](C:/Users/杨铭/Desktop/DSH/Codex-2026-10-23/outputs/Work-Evidence-020-真实API实验-2026-10-26.md)为准。源码状态、宿主加载和实际效果分别记录。
 
@@ -709,9 +734,11 @@ Java 成员优先复用现有 FastEdit Python / tree-sitter 环境定位声明�
 
 独立预设 `work-evidence-flash1017` 保留原生 PTC 工具组合，可按宿主已有配置选择叠加 PTC Plus。核心读取和历史取回不要求 ACP。
 
-预设增加短执行规则和准确的 ClinePass 入口；effort 和输出上限仍由会话选择。选择其他显式模型与该预设冲突时返回明确错误，不静默换成相似模型。
+预设增加短执行规则和路由约束；effort 和输出上限仍由会话选择。规则来自 DeepSeek V4.1 Flash 轨迹，因此只接受 magpie 下的 V4.1 Flash 入口（例如 `workbuddy-ai/deepseek-v4.1-flash`）；选择其他显式模型与该预设冲突时返回明确错误，不静默换成相似模型。
 
-原生 PTC 保留。本轮模型按用户要求使用 ClinePass。宿主选择模型 API 也会异步保存默认值；档位比较结束后，默认入口明确设为该入口和 `max`。历史摘要不叠加 `compaction-basic`。
+原生 PTC 保留。本轮模型按用户要求使用 WorkBuddy AI 的 `workbuddy-ai/deepseek-v4.1-flash` 并固定 `max`；宿主选择模型 API 也会异步保存默认值。历史摘要不叠加 `compaction-basic`。
+
+规则第 8 条来自实测：向写入或执行工具传递源码时保留目标语言转义，JavaScript 模板字面量与 `String.raw` 仍会展开 `${...}`。取回入口按现行 `work_recall` 书写。
 
 预设配置来自本机原生组合。需要更新时可运行 `prepare-flash-preset.mjs` 重新生成；修改实际 profile 必须显式传 `--activate`。
 

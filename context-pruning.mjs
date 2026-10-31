@@ -39,6 +39,55 @@ function repeatedLines(text,{seq,offset}){
   return after;
 }
 
+const DEDUP_MIN_CHARS=2048;
+const DEDUP_WINDOW_CHARS=4096;
+/**
+ * Long-common-segment dedup within one result body. A segment that appears a
+ * second time (a re-read of the same file region, a repeated command block) is
+ * replaced after its first occurrence with a recall locator; the first
+ * occurrence stays verbatim as the authoritative source. Works on the raw
+ * string so it composes with repeatedLines and excerpt budgets.
+ */
+function dedupLongSegments(text,{seq,offset=0}){
+  if(text.length<DEDUP_MIN_CHARS*2)return null;
+  // Anchor windows of DEDUP_MIN_CHARS at DEDUP_WINDOW_CHARS/2 stride. A window lying fully
+  // inside the first occurrence re-occurs inside the second, so repeats shorter than a full
+  // DEDUP_WINDOW_CHARS window are found as well. Offsets stay exact (no CRLF normalization).
+  const stride=DEDUP_WINDOW_CHARS/2;
+  const anchors=new Map();
+  for(let start=0;start+DEDUP_MIN_CHARS<=text.length;start+=stride){
+    const window=text.slice(start,start+DEDUP_MIN_CHARS);
+    const later=text.indexOf(window,start+DEDUP_MIN_CHARS);
+    if(later<0)continue;
+    // Extend both ends while the two occurrences agree, bounded by the anchor separation.
+    const gap=later-start;
+    let from=later,to=later+DEDUP_MIN_CHARS;
+    while(from-gap>=0&&text[from-1]===text[from-1-gap])from--;
+    while(to<text.length&&text[to]===text[to-gap])to++;
+    const chars=to-from;
+    if(chars<DEDUP_MIN_CHARS)continue;
+    const prev=anchors.get(later);
+    if(!prev||chars>prev.chars)anchors.set(later,{chars});
+  }
+  const merged=[];
+  const ordered=[...anchors.entries()].sort((x,y)=>x[0]-y[0]);
+  for(const [later,{chars}] of ordered){
+    const last=merged.at(-1);
+    if(last&&later<last.later+last.chars)continue;
+    merged.push({later,chars});
+  }
+  let after='',cursor=0,saved=0;
+  for(const {later,chars} of merged){
+    after+=text.slice(cursor,later);
+    const marker=`[work-evidence history ${JSON.stringify({seq,offset:offset+later})}]\n[${chars} characters identical to earlier content in this result. Historical original: work_recall({seq:${seq},offset:${offset+later}}).]\n`;
+    after+=marker;
+    saved+=chars-marker.length;
+    cursor=later+chars;
+  }
+  after+=text.slice(cursor);
+  return saved>512?{text:after,segments:merged.length,charsSaved:saved}:null;
+}
+
 /** Old output only. A native read window is the smallest independently pruned unit. */
 export function planContextPrune(message,reads,options){
   if(!prunableMessage(message))return null;
@@ -70,7 +119,12 @@ export function planContextPrune(message,reads,options){
   }else{
     let offset=0;
     content=message.content.map(block=>{
-      const text=block.text??'',cleaned=repeatedLines(text,{seq:options.seq,offset});
+      const text=block.text??'';
+      let cleaned=repeatedLines(text,{seq:options.seq,offset});
+      if(options.dedupSegments!==false&&process.env.DSH_EXPERIMENT_STUB_DEDUP!=='0'){
+        const deduped=dedupLongSegments(cleaned,{seq:options.seq,offset});
+        if(deduped){cleaned=deduped.text;(options.dedupStats??[]).push({seq:options.seq,offset,segments:deduped.segments,charsSaved:deduped.charsSaved});}
+      }
       const after=count(cleaned)<=options.thresholdChars?cleaned:excerpt(text,{...options,offset})??text;
       if(after!==text)ranges.push({offset,end:offset+text.length});
       offset+=text.length+1;

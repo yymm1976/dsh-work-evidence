@@ -5,9 +5,9 @@ import {randomUUID} from 'node:crypto';
 import {within,references,assertExistingFileWithin,readUtf8File} from './evidence.mjs';
 import {recoveryFor,recoveryOf} from './recovery.mjs';
 
-export const VERSION='0.28.6';
+export const VERSION='0.28.10';
 export const MODES=Object.freeze(['default','aggressive','quality']);
-export const MODE_POLICY_VERSION='pb001-v17';
+export const MODE_POLICY_VERSION='pb001-v23';
 export function checkedMode(mode){if(!MODES.includes(mode))throw new Error('mode must be default, aggressive or quality');return mode;}
 export const SESSION_POLICY_SCHEMA='work-evidence.session-policy.v1';
 export const textOf=value=>(value?.content||[]).filter(b=>b.type==='text').map(b=>b.text).join('\n');
@@ -27,7 +27,7 @@ function checkedSessionPolicy(value){
   const mode=value.mode??null;if(mode!==null)checkedMode(mode);
   const task=value.taskMode??null;
   if(task!==null&&(!task||typeof task!=='object'||Array.isArray(task)||Object.keys(task).some(key=>!['requestId','mode','source','policyVersion'].includes(key))||
-    typeof task.requestId!=='string'||!task.requestId||task.requestId.length>300||!MODES.includes(task.mode)||!['session-setting','workspace-setting'].includes(task.source)||!['pb001-v1','pb001-v2','pb001-v3','pb001-v4','pb001-v5','pb001-v6','pb001-v7','pb001-v8','pb001-v9','pb001-v10','pb001-v11','pb001-v12','pb001-v13','pb001-v14','pb001-v15','pb001-v16',MODE_POLICY_VERSION].includes(task.policyVersion)))throw new Error('Invalid taskMode');
+    typeof task.requestId!=='string'||!task.requestId||task.requestId.length>300||!MODES.includes(task.mode)||!['session-setting','workspace-setting'].includes(task.source)||!['pb001-v1','pb001-v2','pb001-v3','pb001-v4','pb001-v5','pb001-v6','pb001-v7','pb001-v8','pb001-v9','pb001-v10','pb001-v11','pb001-v12','pb001-v13','pb001-v14','pb001-v15','pb001-v16','pb001-v17','pb001-v20','pb001-v21','pb001-v22',MODE_POLICY_VERSION].includes(task.policyVersion)))throw new Error('Invalid taskMode');
   return {enabled:value.enabled,updatedAt:typeof value.updatedAt==='string'?value.updatedAt:null,sessionDefaultResponseView:view??null,mode,taskMode:task};
 }
 export function defaults(raw={}){
@@ -38,6 +38,9 @@ export function defaults(raw={}){
     ledgerReceipt:true,ledgerUnresolved:true,ledgerFoldPlan:false,ledgerFoldWrite:false,
     swLedger:false,swEviction:false,swEvictionSteps:3,
     requestProjection:false,projectionRestore:false,compressionControl:true,compactionTiming:'native',
+    stubSummary:process.env.DSH_EXPERIMENT_STUB_SUMMARY==='1'||process.env.DSH_EXPERIMENT_STUB_SUMMARY==='true',
+    cacheOrderedStub:process.env.DSH_EXPERIMENT_CACHE_ORDERED_STUB==='1'||process.env.DSH_EXPERIMENT_CACHE_ORDERED_STUB==='true',
+    archiveEntries:process.env.DSH_EXPERIMENT_ARCHIVE_ENTRIES==='1'||process.env.DSH_EXPERIMENT_ARCHIVE_ENTRIES==='true',
     executionTriage:true,executionAdvice:false,stageWorkingSet:true,finishAdvice:false,stepPacing:true,retainedCompute:true,taskEffort:false,finalJsonGuard:true,qualityReview:true,nativeReadView:false,nativeExecutionEvidence:false,
     projectionMinChars:64000,projectionRecentSteps:6,projectionStableSteps:8,projectionHorizonSteps:16,projectionPricing:[],
     toolSurface:'compact',
@@ -45,13 +48,13 @@ export function defaults(raw={}){
   const known=new Set(['enabled','mode','selfIndex','modelTimeoutMs','modelMaxTokens','modelRoute','fastEditEnabled','fastEditPython','stateLedger','stateInform','archiveReadRouting','readArgumentRecovery','requestAccounting','evidenceViews','memberParsing','mavenSourceBinding',
     'contextProtocol','contextPruningPolicy','historyHygiene','programHistory','reasoningHistory','retainedCompute','contextPruneMinChars','contextPruneHeadChars','contextPruneTailChars',
     'ledgerReceipt','ledgerUnresolved','ledgerFoldPlan','ledgerFoldWrite','defaultResponseView','swLedger','swEviction','swEvictionSteps',
-    'requestProjection','projectionRestore','compressionControl','compactionTiming','executionTriage','executionAdvice','stageWorkingSet','finishAdvice','stepPacing','taskEffort','finalJsonGuard','qualityReview','nativeReadView','nativeExecutionEvidence','projectionMinChars','projectionRecentSteps','projectionStableSteps','projectionHorizonSteps','projectionPricing','toolSurface']);
+    'requestProjection','projectionRestore','compressionControl','compactionTiming','stubSummary','cacheOrderedStub','archiveEntries','executionTriage','executionAdvice','stageWorkingSet','finishAdvice','stepPacing','taskEffort','finalJsonGuard','qualityReview','nativeReadView','nativeExecutionEvidence','projectionMinChars','projectionRecentSteps','projectionStableSteps','projectionHorizonSteps','projectionPricing','toolSurface']);
   if(!raw||typeof raw!=='object'||Array.isArray(raw)||Object.keys(raw).some(k=>!known.has(k)))throw new Error('Unknown work-evidence setting');
   checkedMode(config.mode);
   if(!['forecast','online-batch'].includes(config.contextPruningPolicy))throw new Error('Invalid contextPruningPolicy');
   if(!['native','adaptive'].includes(config.compactionTiming))throw new Error('Invalid compactionTiming');
   for(const key of ['enabled','selfIndex','fastEditEnabled','stateLedger','stateInform','archiveReadRouting','readArgumentRecovery','requestAccounting','evidenceViews','memberParsing','mavenSourceBinding','contextProtocol','historyHygiene','programHistory','reasoningHistory',
-    'ledgerReceipt','ledgerUnresolved','ledgerFoldPlan','ledgerFoldWrite','swLedger','swEviction','requestProjection','projectionRestore','compressionControl','executionTriage','executionAdvice','stageWorkingSet','finishAdvice','stepPacing','retainedCompute','taskEffort','finalJsonGuard','qualityReview','nativeReadView','nativeExecutionEvidence'])if(typeof config[key]!=='boolean')throw new Error('Invalid '+key);
+    'ledgerReceipt','ledgerUnresolved','ledgerFoldPlan','ledgerFoldWrite','swLedger','swEviction','requestProjection','projectionRestore','compressionControl','stubSummary','cacheOrderedStub','archiveEntries','executionTriage','executionAdvice','stageWorkingSet','finishAdvice','stepPacing','retainedCompute','taskEffort','finalJsonGuard','qualityReview','nativeReadView','nativeExecutionEvidence'])if(typeof config[key]!=='boolean')throw new Error('Invalid '+key);
   if(!Number.isInteger(config.swEvictionSteps)||config.swEvictionSteps<3||config.swEvictionSteps>50)throw new Error('Invalid swEvictionSteps');
   for(const [key,min,max] of [['projectionMinChars',16000,2000000],['projectionRecentSteps',3,50],['projectionStableSteps',4,100],['projectionHorizonSteps',1,64]])
     if(!Number.isInteger(config[key])||config[key]<min||config[key]>max)throw new Error('Invalid '+key);
@@ -504,10 +507,10 @@ export function createRuntime(ctx,call,initial={}){
       stateLedger:s.config.stateLedger,stateInform:s.config.stateInform,archiveReadRouting:s.config.archiveReadRouting,readArgumentRecovery:s.config.readArgumentRecovery,requestAccounting:s.config.requestAccounting,evidenceViews:s.config.evidenceViews,memberParsing:s.config.memberParsing,mavenSourceBinding:s.config.mavenSourceBinding,
       ledgerReceipt:s.config.ledgerReceipt,ledgerUnresolved:s.config.ledgerUnresolved,ledgerFoldPlan:s.config.ledgerFoldPlan,ledgerFoldWrite:s.config.ledgerFoldWrite,
       swLedger:s.config.swLedger,swEviction:s.config.swEviction,swEvictionSteps:s.config.swEvictionSteps,defaultResponseView:s.sessionDefaultResponseView??s.config.defaultResponseView,
-      requestProjection:s.config.requestProjection,projectionRestore:s.config.projectionRestore,compressionControl:s.config.compressionControl,compactionTiming:s.config.compactionTiming,
+      requestProjection:s.config.requestProjection,projectionRestore:s.config.projectionRestore,compressionControl:s.config.compressionControl,compactionTiming:s.config.compactionTiming,stubSummary:s.config.stubSummary,
       executionTriage:s.config.executionTriage,executionAdvice:s.config.executionAdvice,stageWorkingSet:s.config.stageWorkingSet,finishAdvice:s.config.finishAdvice,stepPacing:s.config.stepPacing,retainedCompute:s.config.retainedCompute,
       taskEffort:s.config.taskEffort,qualityReview:s.config.qualityReview,nativeReadView:s.config.nativeReadView,nativeExecutionEvidence:s.config.nativeExecutionEvidence},
-    contextSettings:{requestProjection:s.config.requestProjection,projectionRestore:s.config.projectionRestore,compressionControl:s.config.compressionControl,compactionTiming:s.config.compactionTiming,
+    contextSettings:{requestProjection:s.config.requestProjection,projectionRestore:s.config.projectionRestore,compressionControl:s.config.compressionControl,compactionTiming:s.config.compactionTiming,stubSummary:s.config.stubSummary,
       projectionMinChars:s.config.projectionMinChars,projectionRecentSteps:s.config.projectionRecentSteps,projectionStableSteps:s.config.projectionStableSteps,
       projectionHorizonSteps:s.config.projectionHorizonSteps,projectionPricing:s.config.projectionPricing,toolSurface:s.config.toolSurface,
       contextProtocol:s.config.contextProtocol,contextPruningPolicy:s.config.contextPruningPolicy,contextPruneMinChars:s.config.contextPruneMinChars,

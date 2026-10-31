@@ -179,13 +179,37 @@ export function createCompactionTiming(ctx,runtime,contextEconomics,{taskFlow=nu
       mainPrice.currency!==summaryPrice.currency)return {available:false,reason:'forecast-pricing-unavailable'};
     if(usage.cacheWriteTokens>0&&mainPrice.cacheWrite===undefined)
       return {available:false,reason:'main-cache-write-price-unavailable'};
-    if(!overhead||!positiveInteger(overhead.inputTokens)||!positiveInteger(overhead.framedOverheadTokens))
+    if(!overhead||!positiveInteger(overhead.framedOverheadTokens))
+      return {available:false,reason:'summary-overhead-unavailable'};
+    if(!overhead.stub&&overhead.inputTokens!==undefined&&!positiveInteger(overhead.inputTokens))
       return {available:false,reason:'summary-overhead-unavailable'};
     const nodeTokens=measurement.nodes.reduce((sum,item)=>sum+item.tokens,0);
     const envelopeTokens=Math.max(0,prompt-nodeTokens);
     const observed=summaryHistory?.localReuseHistoryOnly?null:summaryHistory;
     if(observed&&observed.usageComplete!==true)
       return {available:false,reason:'summary-usage-unavailable'};
+    if(overhead.stub){
+      // A deterministic stub makes no model request and produces no drift, so the
+      // summary cost is zero and its framed size is the stub block itself.
+      const framedSummaryTokens=Math.max(overhead.framedOverheadTokens,observed?.framedTokens??0);
+      const freedTokens=Math.max(0,range.regionTokens-framedSummaryTokens);
+      const carryPerRequest=(usage.inputTokens*mainPrice.input+usage.cacheReadTokens*mainPrice.cacheRead+
+        usage.cacheWriteTokens*(mainPrice.cacheWrite??0))/prompt;
+      const savedPerRequest=freedTokens*carryPerRequest/1e6;
+      const refillTokens=range.retainedTokens+framedSummaryTokens;
+      const refillUnitRate=Math.max(0,Math.max(mainPrice.input,mainPrice.cacheWrite??0)-mainPrice.cacheRead);
+      const refillTax=refillTokens*refillUnitRate/1e6;
+      const breakEvenRequests=savedPerRequest>0?Math.ceil(refillTax/savedPerRequest):null;
+      return {
+        available:true,stub:true,summaryPromptTokens:0,summaryOutputTokens:0,framedSummaryTokens,
+        summaryMaxTokens,summaryCost:0,currentSummaryCost:0,observedSummaryCost:0,scaledObservedCost:0,
+        summaryPromptTokensObserved:null,
+        carryPerRequest,refillTokens,refillTax,savedPerRequest,
+        mainPromptTokens:prompt,mainInputTokens:usage.inputTokens,
+        mainCacheReadTokens:usage.cacheReadTokens,mainCacheWriteTokens:usage.cacheWriteTokens,
+        breakEvenRequests,
+      };
+    }
     const summaryPromptTokens=Math.max(range.regionTokens,
       range.prefixTokens+envelopeTokens+overhead.inputTokens);
     const summaryOutputTokens=observed?.outputTokens??summaryMaxTokens;
@@ -378,16 +402,18 @@ export function createCompactionTiming(ctx,runtime,contextEconomics,{taskFlow=nu
       let framedTokens=null;
       try{framedTokens=tokenMeter?.estimateMessage?.(message)??null;}catch{}
       const localReuse=data.provider==='work-evidence'&&data.model==='stage-checkpoint-reuse';
+      const stubSummary=data.provider==='work-evidence'&&data.model==='deterministic-stub';
+      const zeroCall=localReuse||stubSummary;
       const observation={
         at:event.at??new Date().toISOString(),compactionId:data.compactionId??null,
-        provider:data.provider??null,model:data.model??null,localReuse,
-        usageComplete:localReuse||(canonical.complete&&promptTokens!==null&&finite(usage?.outputTokens)),
-        promptTokens:localReuse?0:promptTokens,
+        provider:data.provider??null,model:data.model??null,localReuse,stubSummary,
+        usageComplete:zeroCall||(canonical.complete&&promptTokens!==null&&finite(usage?.outputTokens)),
+        promptTokens:zeroCall?0:promptTokens,
         inputTokens:usage?.inputTokens??null,cacheReadTokens:usage?.cacheReadTokens??null,cacheWriteTokens:usage?.cacheWriteTokens??null,
-        outputTokens:localReuse?0:usage?.outputTokens,framedTokens,
+        outputTokens:zeroCall?0:usage?.outputTokens,framedTokens,
         shadowedTokens:finite(data.shadowedTokenCount)?data.shadowedTokenCount:null,
         maxTokens:positiveInteger(data.maxTokens)?data.maxTokens:null,
-        costUSD:localReuse?0:usageCost(usage,summaryPrice)
+        costUSD:zeroCall?0:usageCost(usage,summaryPrice)
       };
       const duplicate=observation.compactionId===null?-1:value.summaryObservations.findIndex(item=>
         item.compactionId===observation.compactionId);

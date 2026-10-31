@@ -1,7 +1,8 @@
 import {eventLog,isUserRequestMessage,textOf} from './runtime.mjs';
+import {hasPruneProblem} from './context-pruning.mjs';
 import {stageCheckpoints,stageReuseCandidate} from './stage-checkpoints.mjs';
 
-const POLICY='kimi-codex-handoff-v9';
+const POLICY='kimi-codex-handoff-v10-stub';
 const INSTRUCTION='Produce one consolidated continuation checkpoint with these sections: Goal and user decisions; Work and artifacts; Evidence and failed approaches; Open work and next action. Preserve current requirements and corrections, separating user decisions from assistant assumptions. Keep exact paths, symbols, configuration values, input conditions, error strings, job IDs and source event seqs needed to continue. Describe what actually changed in each relevant artifact and what remains unfinished. Preserve unresolved failures, excluded approaches and their reasons; distinguish process success from correctness.\n'+
   'Update the previous checkpoint using newer events. Carry forward still-valid earlier facts, decisions and open questions; explicitly replace corrected claims and remove resolved work from the next action. Do not nest old checkpoints, reproduce old continuation-source wrappers or append a per-edit changelog. Reuse public stage conclusions and evidence without treating their headings as proof of coverage. Do not invent completion or turn assistant judgments into user decisions.\n'+
   'Bounded human excerpts, public checkpoints and current TODOs are appended independently. Preserve relevant decisions and facts absent from those sources, especially omitted middle history. Identify any exact detail that still requires historical recovery. Use historical recovery when available; if it is unavailable, preserve the exact evidence needed for continuation instead of relying on a future lookup. Never rerun an action only to recreate its text. Continue from the next unmet dependency without asking answered questions. Output only the complete text checkpoint, no tools or other actions.';
@@ -53,6 +54,67 @@ const HOST_SUMMARY_INSTRUCTION=[
   '- If the conversation already contains a <compacted-summary> block, it is a PRIOR checkpoint. Do not copy it forward verbatim: preserve still-true facts, drop stale ones, and merge newer information into a single consolidated summary under the same structure.'
 ].join('\n');
 const CHECKPOINT_PREAMBLE='This is an automatically generated checkpoint condensing an earlier span of the conversation to free up context. Treat the captured context as established background and build on it without restating it. Continue the task directly from the messages that follow, without acknowledging this checkpoint.';
+const STUB_ROW_MAX_CHARS=240;
+const STUB_RECENT_MAX_ROWS=96;
+const STUB_PROBLEM_MAX_ROWS=8;
+const STUB_MAX_CHARS=20000;
+// Deterministic stub checkpoint: no summarizer model call. Row selection and serialization are
+// byte-stable for a given event log, so later requests replay the block from provider cache
+// instead of re-paying it; prose summaries drift in wording and keep missing the cache.
+// cacheOrderedStub (v12): older rows are serialized first and the newest rows land at the tail,
+// so a provider prefix cache keeps matching the unchanged head across successive compactions and
+// each new checkpoint only re-pays its incremental tail. Also adds checked/unchecked markers on
+// problem rows (archiveEntries): a problem row whose same-seq result later appears with a
+// matching success follow-up is marked checked and skipped on re-read unless recalled.
+export function stubCheckpoint(agent,cacheOrdered,archiveEntries){
+  const log=eventLog(agent.session),events=[],problems=[];
+  for(const event of log){
+    const message=messageOf(event),data=event.data??{};
+    const isTool=['tool/call','tool/result','tool/ptc-dispatch','tool/code-dispatch'].includes(event.type);
+    if(!isTool&&!['assistant/message','todo/write','compaction/summary'].includes(event.type))continue;
+    const name=data.name??null,callId=message?.source?.callId??message?.toolCallId??data.subCallId??data.callId??null;
+    const text=message?textOf(message):event.type==='todo/write'?JSON.stringify(data.todos??[]):
+      event.type==='tool/call'?(typeof data.arguments==='string'?data.arguments:JSON.stringify(data.arguments??{})):
+      isTool?textOf({content:message?.content??(Array.isArray(data.content)?data.content:[{type:'text',text:String(data.content??'')}])}):
+      textOf({content:data.content??data.summary});
+    if(!text.trim())continue;
+    const row={seq:event.seq,kind:event.type==='tool/call'||event.type==='tool/ptc-dispatch'||event.type==='tool/code-dispatch'?'call':
+      event.type==='tool/result'?'result':event.type==='assistant/message'?'assistant':event.type==='todo/write'?'todos':'prior-compaction',
+      ...(isTool||event.type==='assistant/message'?{tool:name}:{}),...(callId?{callId}:{}),head:text.slice(0,STUB_ROW_MAX_CHARS).replace(/\s+/g,' ').trim()};
+    events.push(row);
+    if(event.type==='tool/result'&&hasPruneProblem([{type:'text',text}]))problems.push(row);
+  }
+  const line=row=>'- '+JSON.stringify(row)+'\n  recall: work_recall({kind:"event",seq:'+row.seq+',offset:0})',
+    serialize=rows=>rows.map(line).join('\n');
+  let body;
+  if(cacheOrdered){
+    // Problem rows carry a verification marker; checked ones were later answered by a
+    // successful result and only need re-reading after explicit recall.
+    const successSeqs=new Set(events.filter(r=>r.kind==='result'&&!/error|failed|exception|cannot|undefined|null pointer|traceback/i.test(r.head)).map(r=>r.seq));
+    const marked=problems.slice(-STUB_PROBLEM_MAX_ROWS).map(row=>{
+      // A problem row counts as checked when a later successful result exists for the same
+      // tool within the following few events (a retry that landed), not just seq+1.
+      const sameTool=r=>r.tool&&row.tool&&r.tool===row.tool;
+      const checked=events.some(r=>r.kind==='result'&&successSeqs.has(r.seq)&&r.seq>row.seq&&r.seq<=row.seq+6&&(sameTool(r)||r.seq===row.seq+2));
+      return {...row,checked};
+    });
+    body='problem rows (latest '+STUB_PROBLEM_MAX_ROWS+', checked rows need recall before re-reading):\n'+
+      marked.map(row=>'- '+JSON.stringify({seq:row.seq,kind:row.kind,tool:row.tool,head:row.head,checked:row.checked})+
+        '\n  recall: work_recall({kind:"event",seq:'+row.seq+',offset:0})').join('\n')+
+      '\nrecent events (oldest first — stable prefix for provider cache; newest rows at the tail are the only part that changes between compactions):\n';
+  }else{
+    body='problem rows (latest '+STUB_PROBLEM_MAX_ROWS+', full priority):\n'+serialize(problems.slice(-STUB_PROBLEM_MAX_ROWS))+
+      '\nrecent events (newest last, oldest listed first):\n';
+  }
+  const head='[work-evidence stub checkpoint policy='+POLICY+' deterministic=true'+(cacheOrdered?' cacheOrdered=true':'')+(archiveEntries?' archiveEntries=true':'')+']\n'+
+    'One line per historical event; head text is bounded, not full content'+(archiveEntries?' and serves as an archive entry: the full original lives behind the listed work_recall, so treat heads as pointers, not evidence':'')+'. Recover original text with the listed work_recall before relying on a head; never rerun an operation only to recreate its text. Problem results are listed regardless of recency'+(archiveEntries?', and checked ones were already resolved — recall only if the resolution itself matters':'')+'. Continue from the next unmet dependency. Human requests are preserved in the continuation sources; assistant heads are not user decisions.\n\n';
+  const rowLines=events.map(line),budget=STUB_MAX_CHARS-head.length-body.length;
+  let used=0,end=rowLines.length;
+  while(end>0&&used+rowLines[end-1].length+1<=budget){used+=rowLines[end-1].length+1;end--;}
+  const tailRows=end<rowLines.length?rowLines.slice(end):[];
+  if(!tailRows.length&&rowLines.length)body+='[all events exceed the stub budget; recover from the continuation sources]\n';
+  return {text:head+body+tailRows.join('\n'),events:events.length,problemRows:problems.length,rows:rowLines.length-end};
+}
 const clip=(text,max)=>{
   if(text.length<=max)return text;
   const marker='\n[excerpt incomplete; retrieve original event]\n';
@@ -208,10 +270,23 @@ export function createCompactionHandoff(ctx,runtime,taskFlow,{canRecall=()=>fals
       if(inheritEffort)delete options.reasoningEffort;
     }
   },{prepend:true});
-  const get=agent=>{let s=states.get(agent.session.id);if(!s){s={prepared:0,summariesReturned:0,reusedStageSummaries:0,nativeSummaryCalls:0,committed:0,failed:0,last:null};states.set(agent.session.id,s);}return s;};
+  const get=agent=>{let s=states.get(agent.session.id);if(!s){s={prepared:0,summariesReturned:0,reusedStageSummaries:0,stubSummaries:0,nativeSummaryCalls:0,committed:0,failed:0,last:null};states.set(agent.session.id,s);}return s;};
   function summaryOverheadTokens(agent,meter){
     if(typeof meter?.estimateMessage!=='function')return null;
     try{
+      if(runtime.get(agent).config.stubSummary){
+        // Stub mode makes no summarizer request; the checkpoint text is deterministic, so its
+        // price is the framed block itself plus the always-present continuation sources.
+        const messages=(agent.session.surface?.nodes??[]).flatMap(seq=>{
+          const event=agent.session.eventAt(seq),message=event?agent.session.deriveEventMessage(event):null;
+          return message?[message]:[];
+        });
+        const record=handoffRecord(agent,runtime,taskFlow,{messages},canRecall(agent));
+        const estimate=text=>meter.estimateMessage({role:'user',content:[{type:'text',text}]});
+        return {stub:true,inputTokens:0,
+          framedOverheadTokens:estimate(CHECKPOINT_PREAMBLE+'\n\n<compacted-summary>\n[Work Evidence continuation sources]\n'+JSON.stringify(record)+'\n\n'+stubCheckpoint(agent,runtime.get(agent).config.cacheOrderedStub===true,runtime.get(agent).config.archiveEntries===true).text+'\n</compacted-summary>'),
+          method:'stub-summary: no model call; framed deterministic checkpoint priced via injected meter'};
+      }
       const messages=(agent.session.surface?.nodes??[]).flatMap(seq=>{
         const event=agent.session.eventAt(seq),message=event?agent.session.deriveEventMessage(event):null;
         return message?[message]:[];
@@ -219,7 +294,7 @@ export function createCompactionHandoff(ctx,runtime,taskFlow,{canRecall=()=>fals
       const record=handoffRecord(agent,runtime,taskFlow,{messages},canRecall(agent));
       const estimate=text=>meter.estimateMessage({role:'user',content:[{type:'text',text}]});
       const pluginTokens=Math.max(estimate(summaryPrompt(record,true,true)),estimate(summaryPrompt(record,false,true)),estimate(summaryPrompt(record,false,false)));
-      return {inputTokens:estimate(HOST_SUMMARY_INSTRUCTION)+pluginTokens,
+      return {stub:false,inputTokens:estimate(HOST_SUMMARY_INSTRUCTION)+pluginTokens,
         framedOverheadTokens:estimate(CHECKPOINT_PREAMBLE+'\n\n<compacted-summary>\n</compacted-summary>'),
         method:'injected-token-meter over the supported host directive, handoff record and checkpoint frame'};
     }catch{return null;}
@@ -244,6 +319,16 @@ export function createCompactionHandoff(ctx,runtime,taskFlow,{canRecall=()=>fals
         runtime.get(agent).dirty=true;
         runtime.effects?.decide(agent,'compactionHandoff','applied','existing-stage-checkpoint-reused',{policy:POLICY,checkpointSeq:reuse.checkpointSeq,newModelCall:false});
         return {summary:stageSummary,provider:'work-evidence',model:'stage-checkpoint-reuse',llmStreamCall:false};
+      }
+      const stubPolicy=runtime.get(agent).config.stubSummary;
+      if(stubPolicy){
+        signal?.throwIfAborted();
+        const stub=stubCheckpoint(agent,runtime.get(agent).config.cacheOrderedStub===true,runtime.get(agent).config.archiveEntries===true),text='[Work Evidence continuation sources]\n'+JSON.stringify(record)+'\n\n'+stub.text;
+        state.stubSummaries++;state.summariesReturned++;state.last.status='prepared-awaiting-native-commit';
+        state.last.method='deterministic-stub-summary';state.last.stub={events:stub.events,problemRows:stub.problemRows,rows:stub.rows,chars:text.length};
+        runtime.get(agent).dirty=true;
+        runtime.effects?.decide(agent,'compactionHandoff','applied','deterministic-stub-summary',{policy:POLICY,newModelCall:false,stubChars:stub.text.length,events:stub.events,problemRows:stub.problemRows});
+        return {summary:[{type:'text',text}],provider:'work-evidence',model:'deterministic-stub',llmStreamCall:false};
       }
       state.last.method='native-summary-with-stage-sources';
       const previous=active.get(agent.session.id);active.set(agent.session.id,record);
