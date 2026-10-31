@@ -10,6 +10,10 @@
     "./locale/*.json": "./locale/*.json",
     "./icon": "./icon.svg"
   },
+  "scripts": {
+    "verify": "node verify-freeze.mjs",
+    "check": "node --check runtime.mjs && node --check task-flow.mjs"
+  },
   "engines": {
     "node": ">=22.19",
     "dsh": "0.2.1-rc.2 || 0.2.1-rc.3 || 0.2.1-rc.4 || 0.2.1-rc.5"
