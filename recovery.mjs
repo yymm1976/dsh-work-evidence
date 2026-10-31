@@ -25,14 +25,17 @@ export function correctedReadArguments(name,args){
   if(name==='ops_grep'){
     if(next.outputMode==='files'){next.outputMode='files_with_matches';changed=true;}
     const modes=['files_with_matches','content','count','summary'];
+    if(Object.hasOwn(next,'outputMode')&&!modes.includes(next.outputMode))return null;
     for(const alias of ['mode','output_mode']){
       if(!Object.hasOwn(next,alias))continue;
       const value=next[alias]==='files'?'files_with_matches':next[alias];
-      if(!modes.includes(value))continue;
+      if(!modes.includes(value))return null;
       if(Object.hasOwn(next,'outputMode')&&next.outputMode!==value)return null;
       next.outputMode=value;delete next[alias];changed=true;
     }
-    if(typeof next.case_insensitive==='boolean'){
+    if(Object.hasOwn(next,'caseInsensitive')&&typeof next.caseInsensitive!=='boolean')return null;
+    if(Object.hasOwn(next,'case_insensitive')){
+      if(typeof next.case_insensitive!=='boolean')return null;
       if(Object.hasOwn(next,'caseInsensitive')&&next.caseInsensitive!==next.case_insensitive)return null;
       next.caseInsensitive=next.case_insensitive;delete next.case_insensitive;changed=true;
     }
@@ -40,12 +43,13 @@ export function correctedReadArguments(name,args){
     if(Array.isArray(next.pattern)&&next.pattern.length>=1&&next.pattern.every(value=>typeof value==='string'&&value.length>0)){
       next.pattern=next.pattern.length===1?next.pattern[0]:next.pattern.map(value=>'(?:'+value+')').join('|');changed=true;
     }
-    if(next.files_only===true){
+    if(Object.hasOwn(next,'files_only')){
+      if(next.files_only!==true)return null;
       if(Object.hasOwn(next,'outputMode')&&next.outputMode!=='files_with_matches')return null;
       next.outputMode='files_with_matches';delete next.files_only;changed=true;
     }
     // maxMatches is the common ripgrep-style synonym for grep's limit; seen in edit-019.
-    if(next.maxMatches!==undefined){
+    if(Object.hasOwn(next,'maxMatches')){
       if(!Number.isInteger(next.maxMatches)||next.maxMatches<1||Object.hasOwn(next,'limit'))return null;
       next.limit=next.maxMatches;delete next.maxMatches;changed=true;
     }

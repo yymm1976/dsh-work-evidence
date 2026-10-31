@@ -207,7 +207,9 @@ export function createRuntime(ctx,call,initial={}){
   function effortSelection(agent){
     let projection;
     try{projection=ctx.sessionProjections?.stateOf?.(agent.session,'modelSelection');}catch{}
-    const fallback=agent.session.requestHeader?.()?.config??ctx.agentDefaultModel?.currentSelection?.()??agent.options;
+    // agentDefaultModel is an optional host service; direct property access throws without inject.
+    let hostDefault;try{hostDefault=ctx.get?.('agentDefaultModel')?.currentSelection?.();}catch{}
+    const fallback=agent.session.requestHeader?.()?.config??hostDefault??agent.options;
     if(projection&&Object.hasOwn(projection,'pending'))return projection.pending??projection.lastUsed??fallback;
     const s=get(agent),events=eventLog(agent.session);
     if(!s.effortCache||s.effortCache.cursor>events.length)s.effortCache={cursor:0,selection:null,header:null};

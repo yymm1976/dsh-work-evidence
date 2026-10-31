@@ -238,7 +238,8 @@ export function createPtcFastpath(ctx,runtime,call){
       const status=resultStatus(result,step.tool),error=resultError(result);
       const complete=!result.isError&&status==='completed'&&!error;
       record.steps.push({id:step.id,tool:step.tool,status:status||(result.isError?'error':'unknown'),complete,
-        summary:summarizeStep(step.tool,result.value),error:complete?null:error||{message:'Fast-path step returned no completed observation'}});
+        // A failed native step has no structured value to summarize; keep its error instead.
+        summary:complete?summarizeStep(step.tool,result.value):null,error:complete?null:error||{message:'Fast-path step returned no completed observation'}});
       if(!complete){
         record.status='deopt';record.deopt={reason:'step-not-completed',step:step.id,tool:step.tool,status:status||'unknown'};
         await runtime.save(agent,runPath,record,signal);s.metrics.ptcFastpathDeopts++;return {status:'deopt',reason:record.deopt.reason,step:step.id,runPath};

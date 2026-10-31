@@ -3,17 +3,50 @@ import {eventLog,isUserRequestMessage,textOf} from './runtime.mjs';
 
 const SOURCE='work-evidence-final-json';
 const messageOf=event=>event?.data?.message??event?.data;
+const STRICT_JSON_OUTPUT=/(?:只|仅)(?:能|需)?(?:返回|输出)|\b(?:return|output)\s+only\b/iu;
 function expectsFinalJson(text){
   if(/(?:故意|无效|非法|不合法|malformed|invalid)\s*JSON[^。；;\n]{0,16}(?:示例|例子|example|sample)/iu.test(text))return false;
   return /(?:最终|最后)[^。；;\n]{0,80}JSON|(?:只|仅)(?:能|需)?(?:返回|输出)[^。；;\n]{0,24}JSON|(?:返回|输出)(?:一[个份段])?(?:合法|有效|完整的?)?\s*JSON(?:对象|数组|代码块)|\b(?:final\s+(?:answer|response|result)|return\s+only|output\s+only)\b[^\n.]{0,80}\bJSON\b/iu.test(text);
 }
+// Unlabeled fences are ambiguous with shell/JS, so require a JSON-shaped leading token.
+function looksLikeJsonBlock(raw){
+  const value=raw.trim();
+  if(value.startsWith('{')){
+    const rest=value.slice(1).trimStart();
+    if(rest===''||rest.startsWith('}'))return true;
+    if(!rest.startsWith('"'))return false;
+    const key=/^"(?:[^"\\]|\\.)*"/u.exec(rest);
+    return !key||rest.slice(key[0].length).trimStart().startsWith(':');
+  }
+  if(!value.startsWith('['))return false;
+  const rest=value.slice(1).trimStart();
+  if(rest==='')return true;
+  if(rest[0]===']'||rest[0]==='{'||rest[0]==='[')return true;
+  if(rest[0]==='"'){
+    const string=/^"(?:[^"\\]|\\.)*"/u.exec(rest);
+    if(!string)return true;
+    const tail=rest.slice(string[0].length).trimStart();
+    return tail===''||tail.startsWith(',')||tail.startsWith(']');
+  }
+  if(/^(?:true|false|null)(?=\s*[,\]}]|\s*$)/u.test(rest))return true;
+  return /^-?(?:0|[1-9]\d*)(?:\.\d+)?(?:[eE][+-]?\d+)?(?=\s*[,\]]|\s*$)/u.test(rest);
+}
+function fencedCandidates(text){
+  const candidates=[];
+  for(const match of text.matchAll(/```([^\r\n`]*)\r?\n([\s\S]*?)```/gu)){
+    const language=match[1].trim().split(/\s+/u)[0].toLowerCase();
+    if(language==='json'||(!language&&looksLikeJsonBlock(match[2])))candidates.push(match[2]);
+  }
+  return candidates;
+}
 
 /** Inspect declared final JSON without repairing or replacing the model's text. */
 export function finalJsonSyntaxIssue(text,request){
-  if(!expectsFinalJson(String(request??'')))return null;
-  const fenced=[...String(text??'').matchAll(/```json\b[ \t]*\r?\n?([\s\S]*?)```/giu)].map(match=>match[1]);
-  const trimmed=String(text??'').trim(),plain=trimmed.startsWith('{')||trimmed.startsWith('[');
-  const candidates=fenced.length?fenced:plain&&/(?:只|仅)(?:能|需)?(?:返回|输出)|\b(?:return|output)\s+only\b/iu.test(request)?[trimmed]:[];
+  const requestText=String(request??''),source=String(text??'');
+  if(!expectsFinalJson(requestText))return null;
+  const trimmed=source.trim(),plain=trimmed.startsWith('{')||trimmed.startsWith('[');
+  const candidates=fencedCandidates(source);
+  if(!candidates.length&&plain&&STRICT_JSON_OUTPUT.test(requestText))candidates.push(trimmed);
   for(const raw of candidates){
     try{JSON.parse(raw);}catch(error){return {raw,error:String(error.message).slice(0,300)};}
   }

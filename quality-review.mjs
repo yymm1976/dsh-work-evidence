@@ -113,7 +113,9 @@ export function createQualityReview(ctx,runtime,taskFlow,finalJson){
       const effort=route.reasoningEffort??agent.options?.reasoningEffort;
       record(agent,'started','auxiliary-request',current.assistant.seq);
       const result=await modelJson(ctx,runtime,agent,signal,QUALITY_REVIEW_PROMPT+'\n'+REVIEW_ACCEPTANCE_RULES,payload,
-        {strictJson:true,route,inheritConfiguredEffort:false,reasoningEffort:effort,maxTokens:65536,timeoutMs:300000,tokenLimit:196608});
+        {strictJson:true,route,inheritConfiguredEffort:false,reasoningEffort:effort,maxTokens:65536,timeoutMs:300000,tokenLimit:196608,
+          // One original answer and one revised answer per user request.
+          budgetScope:'quality-review:'+current.request.seq,budgetCalls:2});
       if(!canonicalUsage(result.usage).complete){record(agent,'unavailable','usage-incomplete',current.assistant.seq);return;}
       const issues=validIssues(result.value,payload);
       if(issues===null){record(agent,'unavailable','invalid-review-result',current.assistant.seq);return;}

@@ -57,63 +57,97 @@ const CHECKPOINT_PREAMBLE='This is an automatically generated checkpoint condens
 const STUB_ROW_MAX_CHARS=240;
 const STUB_RECENT_MAX_ROWS=96;
 const STUB_PROBLEM_MAX_ROWS=8;
+const STUB_HUMAN_MAX_ROWS=32;
 const STUB_MAX_CHARS=20000;
+function targetFromArguments(value){
+  let args=value;
+  if(typeof args==='string'){try{args=JSON.parse(args);}catch{return null;}}
+  if(!args||typeof args!=='object'||Array.isArray(args))return null;
+  const paths=[];
+  for(const key of ['file_path','path','file'])if(typeof args[key]==='string'&&args[key].trim())paths.push(args[key]);
+  if(Array.isArray(args.files))for(const item of args.files){
+    const path=typeof item==='string'?item:item?.path;
+    if(typeof path==='string'&&path.trim())paths.push(path);
+  }
+  const normalized=[...new Set(paths.map(path=>path.replaceAll('\\','/')))].sort();
+  const command=typeof args.command==='string'?args.command:typeof args.cmd==='string'?args.cmd:null;
+  const cwd=typeof args.cwd==='string'?args.cwd:typeof args.workdir==='string'?args.workdir:null;
+  if(!normalized.length&&command===null&&cwd===null)return null;
+  return JSON.stringify([normalized,command,cwd]);
+}
 // Deterministic stub checkpoint: no summarizer model call. Row selection and serialization are
 // byte-stable for a given event log, so later requests replay the block from provider cache
 // instead of re-paying it; prose summaries drift in wording and keep missing the cache.
 // cacheOrderedStub (v12): older rows are serialized first and the newest rows land at the tail,
 // so a provider prefix cache keeps matching the unchanged head across successive compactions and
-// each new checkpoint only re-pays its incremental tail. Also adds checked/unchecked markers on
-// problem rows (archiveEntries): a problem row whose same-seq result later appears with a
-// matching success follow-up is marked checked and skipped on re-read unless recalled.
+// each new checkpoint only re-pays its incremental tail. Problem rows get checked markers only
+// when a later successful result has the same tool and path/command target.
 export function stubCheckpoint(agent,cacheOrdered,archiveEntries){
-  const log=eventLog(agent.session),events=[],problems=[];
+  const log=eventLog(agent.session),events=[],problems=[],humans=[],problemSeqs=new Set(),targetBySeq=new Map(),callTargets=new Map();
   for(const event of log){
     const message=messageOf(event),data=event.data??{};
     const isTool=['tool/call','tool/result','tool/ptc-dispatch','tool/code-dispatch'].includes(event.type);
-    if(!isTool&&!['assistant/message','todo/write','compaction/summary'].includes(event.type))continue;
+    const human=isUserRequestMessage(message);
+    if(!isTool&&!human&&!['assistant/message','todo/write','compaction/summary'].includes(event.type))continue;
     const name=data.name??null,callId=message?.source?.callId??message?.toolCallId??data.subCallId??data.callId??null;
     const text=message?textOf(message):event.type==='todo/write'?JSON.stringify(data.todos??[]):
       event.type==='tool/call'?(typeof data.arguments==='string'?data.arguments:JSON.stringify(data.arguments??{})):
       isTool?textOf({content:message?.content??(Array.isArray(data.content)?data.content:[{type:'text',text:String(data.content??'')}])}):
       textOf({content:data.content??data.summary});
     if(!text.trim())continue;
+    if(human){
+      const row={seq:event.seq,kind:'user',chars:text.length};
+      humans.push(row);events.push(row);
+      continue;
+    }
     const row={seq:event.seq,kind:event.type==='tool/call'||event.type==='tool/ptc-dispatch'||event.type==='tool/code-dispatch'?'call':
       event.type==='tool/result'?'result':event.type==='assistant/message'?'assistant':event.type==='todo/write'?'todos':'prior-compaction',
       ...(isTool||event.type==='assistant/message'?{tool:name}:{}),...(callId?{callId}:{}),head:text.slice(0,STUB_ROW_MAX_CHARS).replace(/\s+/g,' ').trim()};
     events.push(row);
-    if(event.type==='tool/result'&&hasPruneProblem([{type:'text',text}]))problems.push(row);
+    const target=targetFromArguments(data.arguments);
+    if(callId&&target&&row.kind==='call')callTargets.set(callId,target);
+    const resolvedTarget=target??(row.kind==='result'&&callId?callTargets.get(callId):null);
+    if(resolvedTarget)targetBySeq.set(event.seq,resolvedTarget);
+    const isProblem=event.type==='tool/result'&&(message?.isError===true||hasPruneProblem([{type:'text',text}]));
+    if(isProblem){problems.push(row);problemSeqs.add(event.seq);}
   }
   const line=row=>'- '+JSON.stringify(row)+'\n  recall: work_recall({kind:"event",seq:'+row.seq+',offset:0})',
     serialize=rows=>rows.map(line).join('\n');
-  let body;
+  const selectedHumans=humans.slice(-STUB_HUMAN_MAX_ROWS);
+  let body=selectedHumans.length?
+    'human requests (continuation sources may carry text or bounded excerpts; these entries locate the full originals):\n'+
+    selectedHumans.map(row=>'- '+JSON.stringify(row)+
+      '\n  continuation: record.humanRequests.requests\n  recall: work_recall({kind:"event",seq:'+row.seq+',offset:0})').join('\n')+'\n'
+    :'';
   if(cacheOrdered){
     // Problem rows carry a verification marker; checked ones were later answered by a
     // successful result and only need re-reading after explicit recall.
-    const successSeqs=new Set(events.filter(r=>r.kind==='result'&&!/error|failed|exception|cannot|undefined|null pointer|traceback/i.test(r.head)).map(r=>r.seq));
+    const successSeqs=new Set(events.filter(r=>r.kind==='result'&&!problemSeqs.has(r.seq)&&!/error|failed|exception|cannot|undefined|null pointer|traceback/i.test(r.head)).map(r=>r.seq));
     const marked=problems.slice(-STUB_PROBLEM_MAX_ROWS).map(row=>{
-      // A problem row counts as checked when a later successful result exists for the same
-      // tool within the following few events (a retry that landed), not just seq+1.
+      // A retry counts only when tool and target both match.
       const sameTool=r=>r.tool&&row.tool&&r.tool===row.tool;
-      const checked=events.some(r=>r.kind==='result'&&successSeqs.has(r.seq)&&r.seq>row.seq&&r.seq<=row.seq+6&&(sameTool(r)||r.seq===row.seq+2));
+      const target=targetBySeq.get(row.seq);
+      const checked=!!target&&events.some(r=>r.kind==='result'&&successSeqs.has(r.seq)&&r.seq>row.seq&&r.seq<=row.seq+6&&
+        sameTool(r)&&targetBySeq.get(r.seq)===target);
       return {...row,checked};
     });
-    body='problem rows (latest '+STUB_PROBLEM_MAX_ROWS+', checked rows need recall before re-reading):\n'+
+    body+='problem rows (latest '+STUB_PROBLEM_MAX_ROWS+', checked rows need recall before re-reading):\n'+
       marked.map(row=>'- '+JSON.stringify({seq:row.seq,kind:row.kind,tool:row.tool,head:row.head,checked:row.checked})+
         '\n  recall: work_recall({kind:"event",seq:'+row.seq+',offset:0})').join('\n')+
       '\nrecent events (oldest first — stable prefix for provider cache; newest rows at the tail are the only part that changes between compactions):\n';
   }else{
-    body='problem rows (latest '+STUB_PROBLEM_MAX_ROWS+', full priority):\n'+serialize(problems.slice(-STUB_PROBLEM_MAX_ROWS))+
+    body+='problem rows (latest '+STUB_PROBLEM_MAX_ROWS+', full priority):\n'+serialize(problems.slice(-STUB_PROBLEM_MAX_ROWS))+
       '\nrecent events (newest last, oldest listed first):\n';
   }
   const head='[work-evidence stub checkpoint policy='+POLICY+' deterministic=true'+(cacheOrdered?' cacheOrdered=true':'')+(archiveEntries?' archiveEntries=true':'')+']\n'+
-    'One line per historical event; head text is bounded, not full content'+(archiveEntries?' and serves as an archive entry: the full original lives behind the listed work_recall, so treat heads as pointers, not evidence':'')+'. Recover original text with the listed work_recall before relying on a head; never rerun an operation only to recreate its text. Problem results are listed regardless of recency'+(archiveEntries?', and checked ones were already resolved — recall only if the resolution itself matters':'')+'. Continue from the next unmet dependency. Human requests are preserved in the continuation sources; assistant heads are not user decisions.\n\n';
-  const rowLines=events.map(line),budget=STUB_MAX_CHARS-head.length-body.length;
+    'Event rows are bounded; the continuation sources retain human requests where budget permits, and the entries below locate their original events'+(archiveEntries?' and serve as archive entries: the full original lives behind the listed work_recall, so treat heads as pointers, not evidence':'')+'. Recover original text with the listed work_recall before relying on a head; never rerun an operation only to recreate its text. Problem results are listed regardless of recency'+(archiveEntries?', and checked ones were already resolved — recall only if the resolution itself matters':'')+'. Continue from the next unmet dependency. Assistant heads are not user decisions.\n\n';
+  const rowLines=events.filter(row=>row.kind!=='user').map(line),budget=STUB_MAX_CHARS-head.length-body.length;
   let used=0,end=rowLines.length;
   while(end>0&&used+rowLines[end-1].length+1<=budget){used+=rowLines[end-1].length+1;end--;}
   const tailRows=end<rowLines.length?rowLines.slice(end):[];
   if(!tailRows.length&&rowLines.length)body+='[all events exceed the stub budget; recover from the continuation sources]\n';
-  return {text:head+body+tailRows.join('\n'),events:events.length,problemRows:problems.length,rows:rowLines.length-end};
+  return {text:head+body+tailRows.join('\n'),events:events.length,problemRows:problems.length,
+    rows:selectedHumans.length+rowLines.length-end};
 }
 const clip=(text,max)=>{
   if(text.length<=max)return text;
@@ -181,6 +215,8 @@ export function recallHistory(agent,{seq,kind='event',offset=0,maxChars=16000,fi
     type=event.type;const message=messageOf(event);
     if(['user/message','assistant/message','tool/result'].includes(type)&&message){
       text=textOf(message);nonTextBlocks=(message.content??[]).filter(block=>block.type!=='text').map(block=>block.type);
+    }else if(type==='tool/call'){
+      text=typeof event.data.arguments==='string'?event.data.arguments:JSON.stringify(event.data.arguments??{});
     }else if(['tool/ptc-dispatch','tool/code-dispatch'].includes(type))text=textOf({content:event.data.content});
     else if(type==='todo/write')text=JSON.stringify(event.data.todos);
     else if(type==='compaction/summary')text=textOf({content:event.data.summary});
@@ -302,6 +338,16 @@ export function createCompactionHandoff(ctx,runtime,taskFlow,{canRecall=()=>fals
   function attach(service){
     if(!service||typeof service.summarize!=='function'||typeof service.regionDependencies!=='function')return ()=>{};
     const original=service.summarize,descriptor=Object.getOwnPropertyDescriptor(service,'summarize');
+    // The host rejects a checkpoint that is not smaller than the span it replaces.
+    // Size the appended sources against the span so a doomed summary call is not paid for.
+    const sizing=input=>{
+      const meter=service.regionDependencies()?.meter;
+      if(typeof meter?.estimateMessage!=='function')return null;
+      const region=(input.messages??[]).filter((message,index)=>!(index===0&&message.role==='system'))
+        .reduce((sum,message)=>sum+meter.estimateMessage(message),0);
+      const framed=summary=>meter.estimateMessage({role:'user',content:[{type:'text',text:CHECKPOINT_PREAMBLE+'\n\n<compacted-summary>'},...summary,{type:'text',text:'</compacted-summary>'}]});
+      return {region,framed};
+    };
     const wrapped=async function(input,agent,signal){
       await runtime.init(agent,signal);
       if(!runtime.isEnabled(agent)||!runtime.get(agent).config.compressionControl)return original.call(this,input,agent,signal);
@@ -331,6 +377,19 @@ export function createCompactionHandoff(ctx,runtime,taskFlow,{canRecall=()=>fals
         return {summary:[{type:'text',text}],provider:'work-evidence',model:'deterministic-stub',llmStreamCall:false};
       }
       state.last.method='native-summary-with-stage-sources';
+      let size=null;try{size=sizing(input);}catch{}
+      // The native part is not known before the call; use this session's last native
+      // summary size, or a third of the span before any summary exists.
+      const sourceTokens=size?size.framed([{type:'text',text}]):null;
+      const nativeEstimate=size?(state.lastNativeSummaryTokens??Math.ceil(size.region/3)):null;
+      if(size&&sourceTokens+nativeEstimate>=size.region){
+        state.failed++;state.last.status='failed';state.last.method='span-smaller-than-sources';
+        state.last.sizing={regionTokensEstimate:size.region,sourceTokensEstimate:sourceTokens,nativeSummaryTokensEstimate:nativeEstimate};
+        state.skippedSmallSpans=(state.skippedSmallSpans??0)+1;
+        runtime.effects?.decide(agent,'compactionHandoff','not-applicable','span-smaller-than-continuation-sources',state.last.sizing);
+        runtime.get(agent).dirty=true;
+        throw new Error('work-evidence: the selected span is smaller than its continuation sources; no summary call was made');
+      }
       const previous=active.get(agent.session.id);active.set(agent.session.id,record);
       try{
         state.nativeSummaryCalls++;
@@ -338,6 +397,7 @@ export function createCompactionHandoff(ctx,runtime,taskFlow,{canRecall=()=>fals
         signal?.throwIfAborted();
         if(!Array.isArray(result?.summary)||!result.summary.length||result.summary.some(block=>block.type!=='text'||typeof block.text!=='string')||!result.summary.some(block=>block.text.trim()))throw new Error('Native compaction returned an empty or non-text summary');
         state.summariesReturned++;state.last.status='prepared-awaiting-native-commit';
+        if(size)try{state.lastNativeSummaryTokens=size.framed(result.summary);}catch{}
         return {...result,summary:[...result.summary,{type:'text',text}]};
       }catch(error){state.failed++;state.last.status='failed';throw error;}
       finally{if(previous)active.set(agent.session.id,previous);else active.delete(agent.session.id);runtime.get(agent).dirty=true;}
