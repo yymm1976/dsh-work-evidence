@@ -393,7 +393,15 @@ export function createCompactionHandoff(ctx,runtime,taskFlow,{canRecall=()=>fals
         runtime.get(agent).dirty=true;
         throw new Error('work-evidence: the selected span is smaller than its continuation sources; no summary call was made');
       }
-      if(!sourcesFit){state.last.sourcesOmitted=true;state.sourcesOmitted=(state.sourcesOmitted??0)+1;}
+      // When the full sources do not fit, keep the human requests: they are the part a
+      // host summary is most likely to paraphrase away.
+      let appended=text;
+      if(!sourcesFit){
+        const requestsOnly='[Work Evidence continuation sources]\n'+JSON.stringify({policy:record.policy,sourceAuthority:record.sourceAuthority,
+          humanRequests:record.humanRequests,recovery:record.recovery,continuation:record.continuation});
+        appended=size.framed([{type:'text',text:requestsOnly}])+nativeEstimate<size.region?requestsOnly:null;
+        state.last.sourcesOmitted=appended?'state':'all';state.sourcesOmitted=(state.sourcesOmitted??0)+1;
+      }
       // Without appended sources the host's own directive (verbatim user goals) applies unchanged.
       const previous=active.get(agent.session.id);if(sourcesFit)active.set(agent.session.id,record);
       try{
@@ -403,9 +411,9 @@ export function createCompactionHandoff(ctx,runtime,taskFlow,{canRecall=()=>fals
         if(!Array.isArray(result?.summary)||!result.summary.length||result.summary.some(block=>block.type!=='text'||typeof block.text!=='string')||!result.summary.some(block=>block.text.trim()))throw new Error('Native compaction returned an empty or non-text summary');
         state.summariesReturned++;state.last.status='prepared-awaiting-native-commit';
         if(size)try{state.lastNativeSummaryTokens=size.framed(result.summary);}catch{}
-        const combined=[...result.summary,{type:'text',text}];
-        if(size&&(!sourcesFit||size.framed(combined)>=size.region)&&state.lastNativeSummaryTokens<size.region){
-          state.last.sourcesOmitted=true;
+        const combined=appended?[...result.summary,{type:'text',text:appended}]:result.summary;
+        if(size&&appended&&size.framed(combined)>=size.region&&state.lastNativeSummaryTokens<size.region){
+          state.last.sourcesOmitted='all';
           runtime.effects?.decide(agent,'compactionHandoff','applied','continuation-sources-omitted-to-fit-span',{regionTokensEstimate:size.region});
           return result;
         }
