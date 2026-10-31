@@ -221,7 +221,7 @@ test('ledger receipts replace repeated read bodies and cut prompt size', async()
   assert.ok(on.promptTokens<off.promptTokens*0.7,`prompt tokens ${on.promptTokens} vs ${off.promptTokens}`);
 });
 
-test('compaction skips the summary call when the span cannot shrink below its continuation sources', async()=>{
+test('compaction omits continuation sources that cannot fit and still commits the host summary', async()=>{
   const summaries=[];
   const longRequest='请依次读取 f0.txt 到 f13.txt 并总结。约束：'+'保留每个文件的原始行号与内容摘要，不要修改任何文件。'.repeat(60);
   const host=await startHost({
@@ -237,8 +237,11 @@ test('compaction skips the summary call when the span cannot shrink below its co
     const agent=await host.createAgent('max');
     await host.send(agent,longRequest);
     const handoff=(await host.command(agent,'detail')).detail.compression.nativeHandoff;
-    assert.ok((handoff.skippedSmallSpans??0)>=1,'an unshrinkable span is detected before the model call');
-    assert.equal(summaries.length,handoff.nativeSummaryCalls,'every skipped span made no summary request');
+    assert.ok((handoff.sourcesOmitted??0)>=1,'oversized sources are left out instead of failing the commit');
+    assert.equal(summaries.length,handoff.nativeSummaryCalls);
+    const ends=host.events.filter(event=>event.type==='compaction/end');
+    assert.ok(ends.length>=1);
+    assert.ok(ends.filter(event=>!event.data.error).length>=ends.length-(handoff.skippedSmallSpans??0),'every summary call that was paid for commits');
     assert.equal(host.events.findLast(event=>event.type==='turn/end')?.data?.reason?.kind,'completed');
   }finally{await host.close();}
 });

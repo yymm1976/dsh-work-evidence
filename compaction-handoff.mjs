@@ -382,7 +382,10 @@ export function createCompactionHandoff(ctx,runtime,taskFlow,{canRecall=()=>fals
       // summary size, or a third of the span before any summary exists.
       const sourceTokens=size?size.framed([{type:'text',text}]):null;
       const nativeEstimate=size?(state.lastNativeSummaryTokens??Math.ceil(size.region/3)):null;
-      if(size&&sourceTokens+nativeEstimate>=size.region){
+      // Sources that cannot fit are left out so the host summary can still shrink the span;
+      // only a span too small for the summary itself skips the paid call.
+      const sourcesFit=!size||sourceTokens+nativeEstimate<size.region;
+      if(size&&!sourcesFit&&nativeEstimate*1.25>=size.region){
         state.failed++;state.last.status='failed';state.last.method='span-smaller-than-sources';
         state.last.sizing={regionTokensEstimate:size.region,sourceTokensEstimate:sourceTokens,nativeSummaryTokensEstimate:nativeEstimate};
         state.skippedSmallSpans=(state.skippedSmallSpans??0)+1;
@@ -390,7 +393,9 @@ export function createCompactionHandoff(ctx,runtime,taskFlow,{canRecall=()=>fals
         runtime.get(agent).dirty=true;
         throw new Error('work-evidence: the selected span is smaller than its continuation sources; no summary call was made');
       }
-      const previous=active.get(agent.session.id);active.set(agent.session.id,record);
+      if(!sourcesFit){state.last.sourcesOmitted=true;state.sourcesOmitted=(state.sourcesOmitted??0)+1;}
+      // Without appended sources the host's own directive (verbatim user goals) applies unchanged.
+      const previous=active.get(agent.session.id);if(sourcesFit)active.set(agent.session.id,record);
       try{
         state.nativeSummaryCalls++;
         const result=await original.call(this,input,agent,signal);
@@ -398,7 +403,13 @@ export function createCompactionHandoff(ctx,runtime,taskFlow,{canRecall=()=>fals
         if(!Array.isArray(result?.summary)||!result.summary.length||result.summary.some(block=>block.type!=='text'||typeof block.text!=='string')||!result.summary.some(block=>block.text.trim()))throw new Error('Native compaction returned an empty or non-text summary');
         state.summariesReturned++;state.last.status='prepared-awaiting-native-commit';
         if(size)try{state.lastNativeSummaryTokens=size.framed(result.summary);}catch{}
-        return {...result,summary:[...result.summary,{type:'text',text}]};
+        const combined=[...result.summary,{type:'text',text}];
+        if(size&&(!sourcesFit||size.framed(combined)>=size.region)&&state.lastNativeSummaryTokens<size.region){
+          state.last.sourcesOmitted=true;
+          runtime.effects?.decide(agent,'compactionHandoff','applied','continuation-sources-omitted-to-fit-span',{regionTokensEstimate:size.region});
+          return result;
+        }
+        return {...result,summary:combined};
       }catch(error){state.failed++;state.last.status='failed';throw error;}
       finally{if(previous)active.set(agent.session.id,previous);else active.delete(agent.session.id);runtime.get(agent).dirty=true;}
     };
@@ -409,7 +420,7 @@ export function createCompactionHandoff(ctx,runtime,taskFlow,{canRecall=()=>fals
   const fiber=ctx.inject(['compaction'],scope=>{scope.effect(()=>attach(scope.compaction));});
   ctx.on('session/event',(session,event)=>{
     const state=states.get(session.id);if(!state?.last)return;
-    if(event.type==='compaction/summary'&&textOf({content:event.data?.summary}).includes('[Work Evidence continuation sources]')){
+    if(event.type==='compaction/summary'&&(state.last.status==='prepared-awaiting-native-commit'||textOf({content:event.data?.summary}).includes('[Work Evidence continuation sources]'))){
       state.last.compactionId=event.data.compactionId;state.last.summarySeq=event.seq;state.last.status='summary-recorded';
     }
     if(event.type==='compaction/end'&&event.data?.compactionId===state.last.compactionId){
