@@ -3,3 +3,8 @@ node_modules/
 .runtime-fastedit-validation/
 __pycache__/
 *.pyc
+
+# Local captures and generated run records
+desktop-*.png
+engineering/*.json
+engineering/*.csv

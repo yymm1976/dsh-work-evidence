@@ -5,9 +5,9 @@ import {randomUUID} from 'node:crypto';
 import {within,references,assertExistingFileWithin,readUtf8File} from './evidence.mjs';
 import {recoveryFor,recoveryOf} from './recovery.mjs';
 
-export const VERSION='0.28.10';
+export const VERSION='0.28.11';
 export const MODES=Object.freeze(['default','aggressive','quality']);
-export const MODE_POLICY_VERSION='pb001-v23';
+export const MODE_POLICY_VERSION='pb001-v24';
 export function checkedMode(mode){if(!MODES.includes(mode))throw new Error('mode must be default, aggressive or quality');return mode;}
 export const SESSION_POLICY_SCHEMA='work-evidence.session-policy.v1';
 export const textOf=value=>(value?.content||[]).filter(b=>b.type==='text').map(b=>b.text).join('\n');
@@ -27,13 +27,13 @@ function checkedSessionPolicy(value){
   const mode=value.mode??null;if(mode!==null)checkedMode(mode);
   const task=value.taskMode??null;
   if(task!==null&&(!task||typeof task!=='object'||Array.isArray(task)||Object.keys(task).some(key=>!['requestId','mode','source','policyVersion'].includes(key))||
-    typeof task.requestId!=='string'||!task.requestId||task.requestId.length>300||!MODES.includes(task.mode)||!['session-setting','workspace-setting'].includes(task.source)||!['pb001-v1','pb001-v2','pb001-v3','pb001-v4','pb001-v5','pb001-v6','pb001-v7','pb001-v8','pb001-v9','pb001-v10','pb001-v11','pb001-v12','pb001-v13','pb001-v14','pb001-v15','pb001-v16','pb001-v17','pb001-v20','pb001-v21','pb001-v22',MODE_POLICY_VERSION].includes(task.policyVersion)))throw new Error('Invalid taskMode');
+    typeof task.requestId!=='string'||!task.requestId||task.requestId.length>300||!MODES.includes(task.mode)||!['session-setting','workspace-setting','effort-selection'].includes(task.source)||!/^pb001-v\d+$/.test(task.policyVersion)))throw new Error('Invalid taskMode');
   return {enabled:value.enabled,updatedAt:typeof value.updatedAt==='string'?value.updatedAt:null,sessionDefaultResponseView:view??null,mode,taskMode:task};
 }
 export function defaults(raw={}){
-  const config={enabled:true,mode:'default',selfIndex:true,modelTimeoutMs:20000,modelMaxTokens:1200,modelRoute:null,
+  const config={enabled:true,aggressiveMode:true,mode:'aggressive',selfIndex:true,modelTimeoutMs:20000,modelMaxTokens:1200,modelRoute:null,
     fastEditEnabled:true,fastEditPython:path.join(import.meta.dirname,'.fastedit-venv','Scripts','python.exe'),
-    stateLedger:true,stateInform:true,archiveReadRouting:true,readArgumentRecovery:true,requestAccounting:true,evidenceViews:true,memberParsing:true,mavenSourceBinding:true,
+    stateLedger:true,stateInform:true,completionNotice:true,archiveReadRouting:true,readArgumentRecovery:true,requestAccounting:true,evidenceViews:true,memberParsing:true,mavenSourceBinding:true,
     contextProtocol:true,contextPruningPolicy:'forecast',historyHygiene:true,programHistory:false,reasoningHistory:false,contextPruneMinChars:8000,contextPruneHeadChars:4096,contextPruneTailChars:1024,
     ledgerReceipt:true,ledgerUnresolved:true,ledgerFoldPlan:false,ledgerFoldWrite:false,
     swLedger:false,swEviction:false,swEvictionSteps:3,
@@ -45,16 +45,21 @@ export function defaults(raw={}){
     projectionMinChars:64000,projectionRecentSteps:6,projectionStableSteps:8,projectionHorizonSteps:16,projectionPricing:[],
     toolSurface:'compact',
     defaultResponseView:'reference-if-visible',...raw};
-  const known=new Set(['enabled','mode','selfIndex','modelTimeoutMs','modelMaxTokens','modelRoute','fastEditEnabled','fastEditPython','stateLedger','stateInform','archiveReadRouting','readArgumentRecovery','requestAccounting','evidenceViews','memberParsing','mavenSourceBinding',
-    'contextProtocol','contextPruningPolicy','historyHygiene','programHistory','reasoningHistory','retainedCompute','contextPruneMinChars','contextPruneHeadChars','contextPruneTailChars',
+  // Settings that chose default mode before aggressiveMode existed keep handing
+  // that decision to the host instead of silently enabling aggressive.
+  if(config.mode==='default'&&raw.aggressiveMode===undefined)config.aggressiveMode=false;
+  const known=new Set(['enabled','aggressiveMode','mode','selfIndex','modelTimeoutMs','modelMaxTokens','modelRoute','fastEditEnabled','fastEditPython','stateLedger','stateInform','archiveReadRouting','readArgumentRecovery','requestAccounting','evidenceViews','memberParsing','mavenSourceBinding',
+    'contextProtocol','contextPruningPolicy','historyHygiene','programHistory','reasoningHistory','retainedCompute','contextPruneMinChars','contextPruneHeadChars','contextPruneTailChars','completionNotice',
     'ledgerReceipt','ledgerUnresolved','ledgerFoldPlan','ledgerFoldWrite','defaultResponseView','swLedger','swEviction','swEvictionSteps',
     'requestProjection','projectionRestore','compressionControl','compactionTiming','stubSummary','cacheOrderedStub','archiveEntries','executionTriage','executionAdvice','stageWorkingSet','finishAdvice','stepPacing','taskEffort','finalJsonGuard','qualityReview','nativeReadView','nativeExecutionEvidence','projectionMinChars','projectionRecentSteps','projectionStableSteps','projectionHorizonSteps','projectionPricing','toolSurface']);
   if(!raw||typeof raw!=='object'||Array.isArray(raw)||Object.keys(raw).some(k=>!known.has(k)))throw new Error('Unknown work-evidence setting');
   checkedMode(config.mode);
   if(!['forecast','online-batch'].includes(config.contextPruningPolicy))throw new Error('Invalid contextPruningPolicy');
+  config.contextPruningPolicy='forecast';
   if(!['native','adaptive'].includes(config.compactionTiming))throw new Error('Invalid compactionTiming');
-  for(const key of ['enabled','selfIndex','fastEditEnabled','stateLedger','stateInform','archiveReadRouting','readArgumentRecovery','requestAccounting','evidenceViews','memberParsing','mavenSourceBinding','contextProtocol','historyHygiene','programHistory','reasoningHistory',
-    'ledgerReceipt','ledgerUnresolved','ledgerFoldPlan','ledgerFoldWrite','swLedger','swEviction','requestProjection','projectionRestore','compressionControl','stubSummary','cacheOrderedStub','archiveEntries','executionTriage','executionAdvice','stageWorkingSet','finishAdvice','stepPacing','retainedCompute','taskEffort','finalJsonGuard','qualityReview','nativeReadView','nativeExecutionEvidence'])if(typeof config[key]!=='boolean')throw new Error('Invalid '+key);
+  config.compactionTiming='native';
+  for(const key of ['enabled','aggressiveMode','selfIndex','fastEditEnabled','stateLedger','stateInform','archiveReadRouting','readArgumentRecovery','requestAccounting','evidenceViews','memberParsing','mavenSourceBinding','contextProtocol','historyHygiene','programHistory','reasoningHistory',
+    'ledgerReceipt','ledgerUnresolved','ledgerFoldPlan','ledgerFoldWrite','swLedger','swEviction','requestProjection','projectionRestore','compressionControl','stubSummary','cacheOrderedStub','archiveEntries','executionTriage','executionAdvice','stageWorkingSet','finishAdvice','stepPacing','retainedCompute','taskEffort','finalJsonGuard','qualityReview','nativeReadView','nativeExecutionEvidence','completionNotice'])if(typeof config[key]!=='boolean')throw new Error('Invalid '+key);
   if(!Number.isInteger(config.swEvictionSteps)||config.swEvictionSteps<3||config.swEvictionSteps>50)throw new Error('Invalid swEvictionSteps');
   for(const [key,min,max] of [['projectionMinChars',16000,2000000],['projectionRecentSteps',3,50],['projectionStableSteps',4,100],['projectionHorizonSteps',1,64]])
     if(!Number.isInteger(config[key])||config[key]<min||config[key]>max)throw new Error('Invalid '+key);
@@ -86,7 +91,9 @@ export function createRuntime(ctx,call,initial={}){
   const states=new Map();
   function workspaceConfig(value){
     if(!value||typeof value!=='object'||Array.isArray(value))throw new Error('Workspace settings must be an object');
-    return defaults({...defaults(initial),...value});
+    const merged={...defaults(initial),...value};
+    if(merged.mode==='default'&&value.aggressiveMode===undefined)merged.aggressiveMode=undefined;
+    return defaults(merged);
   }
   async function loadLocalJson(root,file,signal){
     signal?.throwIfAborted();
@@ -107,7 +114,7 @@ export function createRuntime(ctx,call,initial={}){
       reads:[],searches:[],index:[],indexLoaded:false,indexDirty:false,
       ledger:{observations:[],searches:[],mutations:[]},
       sessionEnabledOverride:null,sessionPolicyPath:null,sessionPolicyLoaded:false,sessionDefaultResponseView:null,sessionModeOverride:null,taskMode:null,taskModePersisted:true,claimedRequest:null,policyQueue:Promise.resolve(),
-      lastReceipt:0,dirty:true,metrics:{nativeEvents:0,ptcResults:0,liveResults:0,failuresObserved:0,evidenceAttempts:0,evidenceDelivered:0,
+      lastReceipt:0,dirty:true,effortCache:null,metrics:{nativeEvents:0,ptcResults:0,liveResults:0,failuresObserved:0,evidenceAttempts:0,evidenceDelivered:0,
         evidenceLocated:0,evidenceIncomplete:0,evidenceUnavailable:0,evidenceNoSource:0,indexLearned:0,indexRejected:0,indexHits:0,auxiliaryCalls:0,auxiliaryFailures:0,auxiliaryUnknownCalls:0,auxiliaryJsonRecoveries:0,
         auxiliaryUsage:{},auxiliaryMs:0,candidatePredictions:0,candidateRuns:0,verifiedExecPreviews:0,contextProtocolPrunedResults:0,contextProtocolPrunedChars:0,
         verifiedExecApplies:0,verifiedExecPartial:0,verifiedExecDeopts:0,verifiedExecValidationFailures:0,
@@ -117,6 +124,7 @@ export function createRuntime(ctx,call,initial={}){
         ledgerObservations:0,ledgerReceipts:0,ledgerReceiptCharsSaved:0,ledgerStale:0,ledgerUnresolvedInjected:0,ledgerFoldCandidates:0,ledgerFoldWrites:0,ledgerFoldCharsSaved:0,
         archiveReadRoutes:0,readArgumentCorrections:0,readArgumentNormalizations:0,contextRequests:0,contextRequestChars:0,contextModelTextChars:0,
         evidenceVisibleViews:0,evidenceFullViews:0,evidenceReferenceViews:0,evidenceReferenceMisses:0,evidenceViewOutputChars:0},problems:[]};states.set(id,s);}
+    if(agent.ctx||agent.options||!s.agentRef)s.agentRef=agent;
     return s;
   }
   const execFor=(agent,signal)=>{const execution=get(agent).execution;return {agent,signal,rootCallId:execution?.rootCallId,token:execution?.token};};
@@ -127,7 +135,7 @@ export function createRuntime(ctx,call,initial={}){
     // experiment harness (or a user) after the agent/created prepare pass already cached a
     // missing result. The file is tiny, so re-reading is cheaper than the staleness.
     if(s.configured&&s.sessionPolicyLoaded&&s.sessionPolicyPath){
-      const before=isEnabled(agent);
+      const before=s.workspaceConfigValid&&(s.sessionEnabledOverride??s.config.enabled);
       try{
         const workspace=await loadLocalJson(s.root,path.join(s.dir,'config.json'),signal);
         signal?.throwIfAborted();
@@ -143,7 +151,7 @@ export function createRuntime(ctx,call,initial={}){
         }else if(policy.missing){s.sessionEnabledOverride=null;s.sessionDefaultResponseView=null;s.sessionModeOverride=null;}
         else{s.sessionEnabledOverride=false;problem(s,'session-policy-read',policy.error?.message||'Session settings unavailable');}
       }catch(error){signal?.throwIfAborted();s.sessionEnabledOverride=false;problem(s,'configuration-refresh',error.message);}
-      if(before!==isEnabled(agent))clearSessionState(agent);
+      if(before!==(s.workspaceConfigValid&&(s.sessionEnabledOverride??s.config.enabled)))clearSessionState(agent);
     }
     if(s.configured)return s;
     if(s.initPromise)return s.initPromise;
@@ -186,7 +194,8 @@ export function createRuntime(ctx,call,initial={}){
   function isEnabled(agent){
     const s=get(agent);
     if(!s.sessionPolicyLoaded||!s.workspaceConfigValid)return false;
-    return s.sessionEnabledOverride===null?s.config.enabled:s.sessionEnabledOverride;
+    const enabled=s.sessionEnabledOverride===null?s.config.enabled:s.sessionEnabledOverride;
+    return enabled&&(s.config.aggressiveMode||effortSelection(agent)?.reasoningEffort==='ultra');
   }
   function clearSessionState(agent){
     const s=get(agent);
@@ -195,11 +204,29 @@ export function createRuntime(ctx,call,initial={}){
     s.active=false;s.pendingFailure=null;s.pendingLookupFact=null;s.pendingStateNotice=null;s.pendingOpsAdvice=[];s.readPages=new Map();s.queuedMessages=[];s.dirty=true;
     s.opsAdviceSeen=new Set();
   }
+  function effortSelection(agent){
+    let projection;
+    try{projection=ctx.sessionProjections?.stateOf?.(agent.session,'modelSelection');}catch{}
+    const fallback=agent.session.requestHeader?.()?.config??ctx.agentDefaultModel?.currentSelection?.()??agent.options;
+    if(projection&&Object.hasOwn(projection,'pending'))return projection.pending??projection.lastUsed??fallback;
+    const s=get(agent),events=eventLog(agent.session);
+    if(!s.effortCache||s.effortCache.cursor>events.length)s.effortCache={cursor:0,selection:null,header:null};
+    const cache=s.effortCache;
+    while(cache.cursor<events.length){
+      const event=events[cache.cursor++];
+      if(event.type==='model/selection')cache.selection=event;
+      if(event.type==='request/header')cache.header=event;
+    }
+    // preStep runs before the request header is written, so a pending host
+    // selection is always the freshest one and must win over the old header.
+    return cache.selection&&(!cache.header||cache.selection.seq>cache.header.seq)?cache.selection.data:fallback;
+  }
   function modeStatus(agentOrState){
-    const s=agentOrState.session?get(agentOrState):agentOrState,selected=s.sessionModeOverride??s.config.mode;
-    return {selected,source:s.sessionModeOverride===null?'workspace-setting':'session-setting',workspace:s.config.mode,sessionOverride:s.sessionModeOverride,
+    const agent=agentOrState.session?agentOrState:null,s=agent?get(agent):agentOrState;
+    const selected=agent?(effortSelection(agent)?.reasoningEffort==='ultra'?'quality':s.config.aggressiveMode?'aggressive':'default'):(s.selectedMode??s.taskMode?.mode??(s.config.aggressiveMode?'aggressive':'default'));
+    return {selected,source:'effort-selection',workspace:s.config.mode,sessionOverride:s.sessionModeOverride,legacySettingsIgnored:true,
       task:s.taskMode?{...s.taskMode}:null,taskModePersisted:s.taskMode? s.taskModePersisted:null,pendingChange:!!s.taskMode&&s.taskMode.mode!==selected,policyVersion:MODE_POLICY_VERSION,
-      guidanceEnabled:s.sessionPolicyLoaded&&s.workspaceConfigValid&&(s.sessionEnabledOverride??s.config.enabled)&&s.config.stepPacing&&!(s.taskSurfaceMode==='minimal'&&(s.taskMode?.mode??selected)==='default'),effectiveFrom:'next-human-request'};
+      aggressiveMode:s.config.aggressiveMode,guidanceEnabled:selected!=='default'&&s.sessionPolicyLoaded&&s.workspaceConfigValid&&(s.sessionEnabledOverride??s.config.enabled)&&s.config.stepPacing,effectiveFrom:'next-model-request'};
   }
   function activeMode(agent){const s=get(agent);return s.taskMode?.mode??modeStatus(s).selected;}
   function updateSessionPolicy(agent,patch,signal){
@@ -216,14 +243,17 @@ export function createRuntime(ctx,call,initial={}){
     s.policyQueue=operation;return operation;
   }
   async function setSessionMode(agent,mode,signal){
-    if(mode!==null)checkedMode(mode);
-    await updateSessionPolicy(agent,{mode},signal);return modeStatus(agent);
+    throw new Error('Mode follows the selected reasoning effort: Ultra uses quality; other efforts use aggressive.');
   }
   async function setWorkspaceMode(agent,mode,signal){
-    checkedMode(mode);const s=await init(agent,signal);
+    throw new Error('Mode follows the selected reasoning effort: Ultra uses quality; other efforts use aggressive.');
+  }
+  async function setAggressiveMode(agent,enabled,signal){
+    const s=await init(agent,signal);
     if(!s.workspaceConfigValid)throw new Error('Workspace configuration is unavailable or invalid');
-    const next=defaults({...s.config,mode});
-    await save(agent,path.join(s.dir,'config.json'),next,signal);s.config=next;s.dirty=true;return modeStatus(s);
+    const next=defaults({...s.config,aggressiveMode:enabled});
+    await save(agent,path.join(s.dir,'config.json'),next,signal);s.config=next;s.dirty=true;
+    return modeStatus(agent);
   }
   async function beginRequest(agent,signal){
     const s=get(agent);
@@ -231,8 +261,11 @@ export function createRuntime(ctx,call,initial={}){
     if(!incoming){
       for(const event of eventLog(agent.session)){const message=event.data?.message??event.data;if(event.type==='user/message'&&isUserRequestMessage(message))incoming=message;}
     }
-    if(!incoming?.id||s.taskMode?.requestId===incoming.id){s.claimedRequest=null;return modeStatus(s);}
-    const selected=modeStatus(s),taskMode={requestId:incoming.id,mode:selected.selected,source:selected.source,policyVersion:MODE_POLICY_VERSION};
+    if(!incoming?.id){s.claimedRequest=null;return modeStatus(s);}
+    const selected=modeStatus(agent);
+    s.selectedMode=selected.selected;
+    const taskMode={requestId:incoming.id,mode:selected.selected,source:'effort-selection',policyVersion:MODE_POLICY_VERSION};
+    if(s.taskMode?.requestId===incoming.id&&s.taskMode.mode===taskMode.mode&&s.taskMode.source===taskMode.source){s.claimedRequest=null;return modeStatus(s);}
     try{await updateSessionPolicy(agent,{taskMode},signal);}
     catch(error){
       signal?.throwIfAborted();
@@ -440,7 +473,6 @@ export function createRuntime(ctx,call,initial={}){
       const failure={tool:exec.name,callId:exec.callId||null,code:missingFile?'FS_NOT_FOUND':code,detail:detail.slice(0,2000),...(typeof filePath==='string'?{filePath}:{}),...(lookupPattern?{lookupPattern}:{}),
         sourceSeq:seq??null,observedAt:new Date().toISOString()};
       s.active=true;s.failures.push(failure);if(s.failures.length>6)s.failures.shift();s.metrics.failuresObserved++;
-      if(s.config.nativeExecutionEvidence&&!/DENIED|APPROVAL|SANDBOX|ARGS|ARGUMENT|ABORT|CANCEL/.test(code)&&(references(detail).length||(missingFile&&typeof filePath==='string')))s.pendingFailure=failure;
       s.dirty=true;
       // Retain real, successful items in a partial result without promoting
       // its missing items or incomplete search to a complete observation.
@@ -497,13 +529,16 @@ export function createRuntime(ctx,call,initial={}){
     }
   }
   function sync(agent){const s=get(agent),log=eventLog(agent.session);while(s.cursor<log.length){const event=log[s.cursor++];record(agent,event);}return s;}
-  function snapshot(s){const effective=s.sessionPolicyLoaded&&s.workspaceConfigValid&&(s.sessionEnabledOverride===null?s.config.enabled:s.sessionEnabledOverride);
+  function snapshot(agentOrState){
+    const agent=agentOrState.session?agentOrState:agentOrState.agentRef;
+    const s=agent?get(agent):agentOrState;
+    const effective=agent?isEnabled(agent):(s.sessionPolicyLoaded&&s.workspaceConfigValid&&(s.sessionEnabledOverride===null?s.config.enabled:s.sessionEnabledOverride)&&(s.config.aggressiveMode||s.selectedMode==='quality'));
     return {version:VERSION,sessionId:s.id,at:new Date().toISOString(),turn:s.turn,steps:s.step,
-    mode:modeStatus(s),
+    mode:modeStatus(agent??s),
     enabled:effective,workspaceDefaultEnabled:s.config.enabled,session:{enabled:effective,override:s.sessionEnabledOverride,source:s.sessionEnabledOverride===null?'workspace-setting':'session-setting',defaultResponseView:s.sessionDefaultResponseView??s.config.defaultResponseView,
       policyPath:s.sessionPolicyPath,loaded:s.sessionPolicyLoaded},
     telemetry:{directory:s.telemetryDir,scope:s.telemetryScope,workspaceConfiguration:s.dir},workspaceConfigValid:s.workspaceConfigValid,
-    features:{selfIndex:s.config.selfIndex,ptcPatterns:true,ptcFastpath:true,verifiedExec:true,fastEdit:s.config.fastEditEnabled,contextProtocol:s.config.contextProtocol,historyHygiene:s.config.historyHygiene,programHistory:s.config.programHistory,reasoningHistory:s.config.reasoningHistory,
+      features:{aggressiveMode:s.config.aggressiveMode,selfIndex:s.config.selfIndex,completionNotice:s.config.completionNotice,ptcPatterns:true,ptcFastpath:true,verifiedExec:true,fastEdit:s.config.fastEditEnabled,contextProtocol:s.config.contextProtocol,historyHygiene:s.config.historyHygiene,programHistory:s.config.programHistory,reasoningHistory:s.config.reasoningHistory,
       stateLedger:s.config.stateLedger,stateInform:s.config.stateInform,archiveReadRouting:s.config.archiveReadRouting,readArgumentRecovery:s.config.readArgumentRecovery,requestAccounting:s.config.requestAccounting,evidenceViews:s.config.evidenceViews,memberParsing:s.config.memberParsing,mavenSourceBinding:s.config.mavenSourceBinding,
       ledgerReceipt:s.config.ledgerReceipt,ledgerUnresolved:s.config.ledgerUnresolved,ledgerFoldPlan:s.config.ledgerFoldPlan,ledgerFoldWrite:s.config.ledgerFoldWrite,
       swLedger:s.config.swLedger,swEviction:s.config.swEviction,swEvictionSteps:s.config.swEvictionSteps,defaultResponseView:s.sessionDefaultResponseView??s.config.defaultResponseView,
@@ -524,7 +559,7 @@ export function createRuntime(ctx,call,initial={}){
   async function receipt(agent,signal,force=false){const s=get(agent);if(!s.root||!s.telemetryDir||(!force&&s.step-s.lastReceipt<20))return;
     // This plugin-owned snapshot also has background writers. Do not mix native
     // edit observations with filesystem writes and invalidate the next native CAS.
-    const step=s.step,text=JSON.stringify(snapshot(s),null,2)+'\n';
+    const step=s.step,text=JSON.stringify(snapshot(agent),null,2)+'\n';
     const pending=(s.receiptQueue??Promise.resolve()).then(async()=>{
       signal?.throwIfAborted();
       await fs.mkdir(s.telemetryDir,{recursive:true});
@@ -538,7 +573,7 @@ export function createRuntime(ctx,call,initial={}){
       problem(s,'receipt-write',message);ctx.logger.warn('work-evidence: activity record unavailable: '+message);
     }}
   let runtimeContextSnapshot=null;
-  return {get,init,isEnabled,clearSessionState,setSessionEnabled,setSessionMode,setWorkspaceMode,modeStatus,activeMode,beginRequest,sync,observe,save,loadJson,problem,snapshot,stateSnapshot,consumeStateNotice,recordMutation,recordReadObservation,
+  return {get,init,isEnabled,clearSessionState,setSessionEnabled,setSessionMode,setWorkspaceMode,setAggressiveMode,modeStatus,activeMode,beginRequest,sync,observe,save,loadJson,problem,snapshot,stateSnapshot,consumeStateNotice,recordMutation,recordReadObservation,
     setContextSnapshot:reader=>{runtimeContextSnapshot=reader;},
     receipt,execFor,withExecution,dispose:id=>states.delete(id)};
 }

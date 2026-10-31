@@ -26,17 +26,21 @@ function excerpt(text,{seq,offset=0,sourcePath,thresholdChars,headChars,tailChar
   return count(after)<points.length?after:null;
 }
 
-function repeatedLines(text,{seq,offset}){
+function repeatedLineOperations(text,{seq,offset}){
   const lines=text.match(/[^\n]*\n|[^\n]+$/g)??[];
-  let after='',cursor=0;
+  const starts=[];let cursor=0;
+  for(const line of lines){starts.push(cursor);cursor+=line.length;}
+  const operations=[];
   for(let index=0;index<lines.length;){
     const line=lines[index];let end=index+1;
     while(end<lines.length&&lines[end]===line)end++;
-    const marker=`[work-evidence history ${JSON.stringify({seq,offset:offset+cursor+line.length})}]\n[Previous line repeated ${end-index-1} more times. Historical original: work_recall({seq:${seq},offset:${offset+cursor+line.length}}).]\n`;
-    after+=end-index>=3&&line.length*(end-index-1)>marker.length+256?line+marker:lines.slice(index,end).join('');
-    cursor+=line.length*(end-index);index=end;
+    const start=starts[index],runEnd=starts[end]??text.length;
+    const marker=`[work-evidence history ${JSON.stringify({seq,offset:offset+start+line.length})}]\n[Previous line repeated ${end-index-1} more times. Historical original: work_recall({seq:${seq},offset:${offset+start+line.length}}).]\n`;
+    if(end-index>=3&&line.length*(end-index-1)>marker.length+256)
+      operations.push({start,end:runEnd,text:line+marker});
+    index=end;
   }
-  return after;
+  return operations;
 }
 
 const DEDUP_MIN_CHARS=2048;
@@ -48,7 +52,7 @@ const DEDUP_WINDOW_CHARS=4096;
  * occurrence stays verbatim as the authoritative source. Works on the raw
  * string so it composes with repeatedLines and excerpt budgets.
  */
-function dedupLongSegments(text,{seq,offset=0}){
+function dedupOperations(text,{seq,offset=0}){
   if(text.length<DEDUP_MIN_CHARS*2)return null;
   // Anchor windows of DEDUP_MIN_CHARS at DEDUP_WINDOW_CHARS/2 stride. A window lying fully
   // inside the first occurrence re-occurs inside the second, so repeats shorter than a full
@@ -66,26 +70,35 @@ function dedupLongSegments(text,{seq,offset=0}){
     while(to<text.length&&text[to]===text[to-gap])to++;
     const chars=to-from;
     if(chars<DEDUP_MIN_CHARS)continue;
-    const prev=anchors.get(later);
-    if(!prev||chars>prev.chars)anchors.set(later,{chars});
+    const prev=anchors.get(from);
+    if(!prev||chars>prev.chars)anchors.set(from,{chars,gap});
   }
   const merged=[];
   const ordered=[...anchors.entries()].sort((x,y)=>x[0]-y[0]);
-  for(const [later,{chars}] of ordered){
+  for(const [later,{chars,gap}] of ordered){
     const last=merged.at(-1);
     if(last&&later<last.later+last.chars)continue;
-    merged.push({later,chars});
+    merged.push({later,chars,gap});
   }
-  let after='',cursor=0,saved=0;
-  for(const {later,chars} of merged){
-    after+=text.slice(cursor,later);
-    const marker=`[work-evidence history ${JSON.stringify({seq,offset:offset+later})}]\n[${chars} characters identical to earlier content in this result. Historical original: work_recall({seq:${seq},offset:${offset+later}}).]\n`;
-    after+=marker;
+  const operations=[];let saved=0;
+  for(const {later,chars,gap} of merged){
+    const marker=`[work-evidence history ${JSON.stringify({seq,offset:offset+later})}]\n[${chars} characters identical to earlier content in this result; the earlier occurrence above is the authoritative body. Recall only if the earlier occurrence itself is pruned: work_recall({seq:${seq},offset:${offset+later}}).]\n`;
+    operations.push({start:later,end:later+chars,sourceStart:later-gap,text:marker});
     saved+=chars-marker.length;
-    cursor=later+chars;
   }
-  after+=text.slice(cursor);
-  return saved>512?{text:after,segments:merged.length,charsSaved:saved}:null;
+  return saved>512?{operations,segments:merged.length,charsSaved:saved}:null;
+}
+
+function applyOperations(text,operations){
+  if(!operations.length)return text;
+  const ordered=[...operations].sort((left,right)=>left.start-right.start||right.end-left.end);
+  let after='',cursor=0;
+  for(const operation of ordered){
+    if(operation.start<cursor)continue;
+    after+=text.slice(cursor,operation.start)+operation.text;
+    cursor=operation.end;
+  }
+  return after+text.slice(cursor);
 }
 
 /** Old output only. A native read window is the smallest independently pruned unit. */
@@ -94,7 +107,7 @@ export function planContextPrune(message,reads,options){
   const original=resultText(message.content);
   if(contentReferences(original).hasReferences)return null;
   if(count(original)<=options.thresholdChars)return null;
-  let content,ranges=[];
+  let content,ranges=[],dedupStats=[];
   if(reads.length){
     // Never cut an unidentified compound output across file boundaries.
     if(message.content.length!==1)return null;
@@ -120,12 +133,20 @@ export function planContextPrune(message,reads,options){
     let offset=0;
     content=message.content.map(block=>{
       const text=block.text??'';
-      let cleaned=repeatedLines(text,{seq:options.seq,offset});
+      const repeated=repeatedLineOperations(text,{seq:options.seq,offset});
+      let cleaned=applyOperations(text,repeated),stat=null;
       if(options.dedupSegments!==false&&process.env.DSH_EXPERIMENT_STUB_DEDUP!=='0'){
-        const deduped=dedupLongSegments(cleaned,{seq:options.seq,offset});
-        if(deduped){cleaned=deduped.text;(options.dedupStats??[]).push({seq:options.seq,offset,segments:deduped.segments,charsSaved:deduped.charsSaved});}
+        const deduped=dedupOperations(text,{seq:options.seq,offset});
+        if(deduped){
+          const outside=repeated.filter(operation=>!deduped.operations.some(range=>
+            operation.start<range.end&&range.start<operation.end||
+            operation.start<range.sourceStart+range.end-range.start&&range.sourceStart<operation.end));
+          cleaned=applyOperations(text,[...deduped.operations,...outside]);
+          stat={seq:options.seq,offset,segments:deduped.segments,charsSaved:deduped.charsSaved};
+        }
       }
       const after=count(cleaned)<=options.thresholdChars?cleaned:excerpt(text,{...options,offset})??text;
+      if(stat&&after===cleaned)dedupStats.push(stat);
       if(after!==text)ranges.push({offset,end:offset+text.length});
       offset+=text.length+1;
       return {...block,text:after};
@@ -134,7 +155,8 @@ export function planContextPrune(message,reads,options){
   }
   const charsBefore=count(original),charsAfter=count(resultText(content));
   if(charsBefore-charsAfter<512)return null;
-  return {content,charsBefore,charsAfter,ranges};
+  if(dedupStats.length&&Array.isArray(options.dedupStats))options.dedupStats.push(...dedupStats);
+  return {content,charsBefore,charsAfter,ranges,...(dedupStats.length?{dedupStats}:{})};
 }
 
 export function readDispatch(data){

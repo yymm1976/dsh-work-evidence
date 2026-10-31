@@ -51,96 +51,28 @@ export function messageTokens(message){
   return total;
 }
 const modelKey=message=>JSON.stringify({role:message.role,content:message.content,toolCallId:message.toolCallId,isError:message.isError});
-export const contextMessageFingerprint=message=>modelKey(message);
 const textProjection=messages=>messages.every(message=>(message.content??[]).every(block=>['text','reasoning','tool-call'].includes(block.type)));
 const envelopeKey=value=>JSON.stringify({tools:value.tools??[],system:value.system??null});
 const sameRoute=(a,b)=>a?.provider===b?.provider&&a?.model===b?.model;
 const effortKey=value=>value===undefined||value===null?null:value;
 const sameObservedRoute=(a,b)=>Boolean(a&&b)&&sameRoute(a,b)&&
   effortKey(a.reasoningEffort)===effortKey(b.reasoningEffort);
-const routeKey=route=>JSON.stringify([route?.provider??null,route?.model??null,effortKey(route?.reasoningEffort)]);
-const priceKey=price=>price?JSON.stringify([price.currency,price.input,price.cacheRead,price.cacheWrite??null]):null;
-const readWeight=price=>price&&price.input>0&&finite(price.cacheRead)&&price.cacheRead<=price.input?price.cacheRead/price.input:null;
 const successfulFinish=new Set(['stop','tool-calls','max-tokens','length']);
 
 export function createContextEconomics(ctx,runtime){
   const states=new Map();
   const get=agent=>{
     let state=states.get(agent.session.id);
-    if(!state){state={last:null,lastSuccessfulMain:null,mainHistory:[],mainAttempts:[],decisions:[],skips:{},requests:0,reportedPromptTokens:0,reportedOutputTokens:0,
+    if(!state){state={last:null,lastSuccessfulMain:null,mainHistory:[],mainAttempts:[],decisions:[],skips:{},requests:0,reportedPromptTokens:0,reportedMainPromptTokens:0,mainPromptRequests:0,reportedOutputTokens:0,
       missingUsage:0,missingCacheUsage:0,pricedRequests:0,costByCurrency:Object.create(null),auxiliaryRequests:0,mainFinished:0,
       surfaceChanges:0,cacheResetCount:0,uncachedInputAtReset:0,resetTaxUSD:0,
       effortChanges:0,cacheResetAfterEffortChange:0,effortResetExposureUSD:0,
-      lastBatchCarrier:null,batchRoute:null,batchRouteKey:null,batchPriceKey:null,batchItems:new Map(),batchLastDecision:null,
-      batchCommittedItems:0};states.set(agent.session.id,state);}
+      pendingReviews:[],reviewedOutcomes:[],
+      };states.set(agent.session.id,state);}
     return state;
   };
   function pricing(agent,route){
     return runtime.get(agent).config.projectionPricing.find(row=>sameRoute(row,route))??null;
-  }
-  function candidateFingerprint(candidate){
-    if(typeof candidate.fingerprint==='string'&&candidate.fingerprint)return candidate.fingerprint;
-    return candidate.beforeMessage?contextMessageFingerprint(candidate.beforeMessage):null;
-  }
-  function candidateIdentity(route,candidate){
-    const messageId=candidate.messageId??candidate.beforeMessage?.id??null;
-    const fingerprint=candidateFingerprint(candidate);
-    if(typeof messageId!=='string'||!messageId||typeof fingerprint!=='string'||!fingerprint)return null;
-    return JSON.stringify([routeKey(route),Number.isSafeInteger(candidate.seq)?candidate.seq:null,messageId,fingerprint,
-      candidate.afterMessage?modelKey(candidate.afterMessage):null]);
-  }
-  function normalizeBatch(agent,{candidates=[],route=null}={}){
-    route??=agent.session.requestHeader()?.config??{};
-    const routeSignature=routeKey(route),items=[];let invalid=null;
-    for(const candidate of Array.isArray(candidates)?candidates:[]){
-      const key=candidateIdentity(route,candidate);
-      const messageId=candidate.messageId??candidate.beforeMessage?.id??null;
-      const fingerprint=candidateFingerprint(candidate);
-      const before=candidate.beforeMessage,after=candidate.afterMessage;
-      if(!key){invalid=messageId?'candidate-fingerprint-unavailable':'candidate-message-id-unavailable';break;}
-      if(!before||!after){invalid='candidate-projection-unavailable';break;}
-      const savedChars=finite(candidate.savedChars)?candidate.savedChars:null;
-      const savedTokensEstimate=Math.max(0,messageTokens(before)-messageTokens(after));
-      items.push({key,seq:Number.isSafeInteger(candidate.seq)?candidate.seq:null,messageId,fingerprint,
-        savedChars,savedTokensEstimate,afterTokensEstimate:messageTokens(after),reason:candidate.reason??null});
-    }
-    return {route,routeKey:routeSignature,items,invalid};
-  }
-  function syncBatch(agent,{candidates=[],route=null}={}){
-    const state=get(agent),batch=normalizeBatch(agent,{candidates,route});
-    const currentPriceKey=priceKey(pricing(agent,batch.route));
-    if(state.batchRouteKey&&state.batchRouteKey!==batch.routeKey||state.batchPriceKey!==currentPriceKey){
-      state.batchItems.clear();state.batchLastDecision=null;
-    }
-    state.batchPriceKey=currentPriceKey;
-    state.batchRoute=batch.route;state.batchRouteKey=batch.routeKey;
-    const keys=new Set(batch.items.map(item=>item.key));
-    for(const key of state.batchItems.keys())if(!keys.has(key))state.batchItems.delete(key);
-    const items=batch.items.map(candidate=>{
-      let item=state.batchItems.get(candidate.key);
-      if(!item){
-        item={...candidate,waitingLossTokens:0,waitingMainRequests:0,estimatedCandidateCarryUSD:0,
-          lastWaitIncrementTokens:0,lastWaitCarryUSD:0,lastCarriedAt:null};
-        state.batchItems.set(candidate.key,item);
-      }else Object.assign(item,candidate);
-      return item;
-    });
-    return {...batch,items,waitingLossTokens:items.reduce((sum,item)=>sum+item.waitingLossTokens,0)};
-  }
-  function batchSnapshot(state,route=state.batchRoute){
-    const items=[...state.batchItems.values()],counts=items.map(item=>item.waitingMainRequests);
-    return {batchSize:items.length,waitingLossTokens:items.reduce((sum,item)=>sum+item.waitingLossTokens,0),
-      waitingMainRequestsMin:counts.length?Math.min(...counts):0,waitingMainRequestsMax:counts.length?Math.max(...counts):0,
-      estimatedCandidateCarryUSD:items.reduce((sum,item)=>sum+item.estimatedCandidateCarryUSD,0),
-      savedChars:items.reduce((sum,item)=>sum+(item.savedChars??0),0),
-      savedTokensEstimate:items.reduce((sum,item)=>sum+item.savedTokensEstimate,0),
-      route:route?{provider:route.provider,model:route.model,reasoningEffort:route.reasoningEffort??null}:null};
-  }
-  function batchCandidateSeen(agent,candidate,route=null){
-    const state=get(agent),carrier=state.lastBatchCarrier;
-    route??=agent.session.requestHeader()?.config??{};
-    return !!carrier&&promptTokens(carrier.usage)>0&&sameObservedRoute(carrier,route)&&
-      carrier.ids.some((id,index)=>id===candidate.messageId&&carrier.keys[index]===candidate.fingerprint);
   }
   function assess(agent,{messages,proposedMessages,savedChars=0,changedSeq=null,changedMessageId=null,route=null,tools,system,emergency=false,horizon,
     auxiliaryUsage=null,auxiliaryMargin=1.5}={}){
@@ -238,78 +170,42 @@ export function createContextEconomics(ctx,runtime){
     if(!decision.allowed)state.skips[decision.reason]=(state.skips[decision.reason]??0)+1;
     return decision;
   }
-  function assessBatch(agent,{candidates=[],route=null,emergency=false}={}){
-    const state=get(agent),synced=syncBatch(agent,{candidates,route}),currentRoute=synced.route,price=pricing(agent,currentRoute);
-    const G=synced.items.reduce((sum,item)=>sum+item.savedTokensEstimate,0);
-    const savedChars=synced.items.reduce((sum,item)=>sum+(item.savedChars??0),0);
-    const W=synced.waitingLossTokens,batchSize=synced.items.length;
-    const carrier=state.lastBatchCarrier,warm=carrier&&promptTokens(carrier.usage)>0&&carrier.mainOrdinal===state.mainFinished&&
-      sameObservedRoute(carrier,currentRoute)?carrier:null;
-    let Hshared=null,newestMessageId=null,newestCarrierIndex=null,earliestCarrierIndex=null;
-    if(warm&&synced.items.length){
-      const positions=synced.items.map(item=>{
-        const matches=[];
-        for(let index=0;index<warm.ids.length;index++)if(warm.ids[index]===item.messageId&&warm.keys[index]===item.fingerprint)matches.push(index);
-        return {item,index:matches.length===1?matches[0]:-1};
-      });
-      if(positions.every(value=>value.index>=0)&&new Set(positions.map(value=>value.index)).size===positions.length){
-        const newest=positions.reduce((best,value)=>value.index>best.index?value:best);
-        newestMessageId=newest.item.messageId;newestCarrierIndex=newest.index;
-        earliestCarrierIndex=Math.min(...positions.map(value=>value.index));
-        const replacements=new Map(positions.map(value=>[value.index,value.item.afterTokensEstimate]));
-        // A prefix change can expose all retained content after the earliest
-        // replacement, including the replacements themselves and gaps between them.
-        Hshared=warm.weights.slice(earliestCarrierIndex).reduce((sum,value,offset)=>
-          sum+(replacements.get(earliestCarrierIndex+offset)??value),0);
-      }
-    }
-    const wr=readWeight(price);
-    const rebuildWeight=wr===null?null:(Math.max(price.input,price.cacheWrite??price.input)-price.cacheRead)/price.input;
-    const F0=0,comparisonLeft=wr===null?null:W+wr*G;
-    const reconstructionQ=rebuildWeight===null||Hshared===null?null:F0+rebuildWeight*Hshared;
-    let allowed=false,reason='batch-candidates-unavailable';
-    if(!batchSize)reason='no-batch-candidates';
-    else if(G<=0)reason='no-request-token-reduction';
-    else if(emergency){allowed=true;reason='context-capacity';}
-    else if(synced.invalid)reason=synced.invalid;
-    else if(!price)reason='route-pricing-unavailable';
-    else if(wr===null)reason='cache-price-ratio-unavailable';
-    else if(!warm)reason='successful-carrier-usage-unavailable';
-    else if(warm.usage.cacheWriteTokens>0&&!finite(price.cacheWrite))reason='cache-write-price-unavailable';
-    else if(Hshared===null)reason='shared-warm-suffix-unavailable';
-    else if(comparisonLeft>=reconstructionQ){allowed=true;reason='online-batch-economic-crossing';}
-    else reason='online-batch-waiting';
-    const scale=price?price.input/1e6:null;
-    const decision={allowed,reason,batchSize,mode:'online-batch',forecast:false,emergency,
-      W,waitingLossTokensEstimate:W,G,savedTokensEstimate:G,savedChars,wr,rebuildWeight,F0,Hshared,
-      comparisonLeftEstimate:comparisonLeft,reconstructionQEstimate:reconstructionQ,
-      sharedReconstructionTokensEstimate:Hshared,earliestCarrierIndex,newestMessageId,newestCarrierIndex,
-      waitingMainRequestsMin:synced.items.length?Math.min(...synced.items.map(item=>item.waitingMainRequests)):0,
-      waitingMainRequestsMax:synced.items.length?Math.max(...synced.items.map(item=>item.waitingMainRequests)):0,
-      estimatedCandidateCarryUSD:synced.items.reduce((sum,item)=>sum+item.estimatedCandidateCarryUSD,0),
-      estimatedWaitingLossUSD:scale===null?null:W*scale,
-      estimatedShorteningBenefitUSD:scale===null||wr===null?null:wr*G*scale,
-      estimatedSharedReconstructionUSD:scale===null||reconstructionQ===null?null:reconstructionQ*scale,
-      commitRule:'W + wr*G >= F0 + rebuildWeight*Hshared',
-      cacheWeight:wr,cachedSuffixTokensEstimate:Hshared,
-      cacheWeightMethod:'wr = cacheRead / input; rebuildWeight = (max(input, cacheWrite) - cacheRead) / input; independent of observed cache hit rate',
-      observedCacheHitRate:warm?warm.usage.cacheReadTokens/promptTokens(warm.usage):null,
-      waitingLossMethod:'W advances only after a successful main request whose assembled messages still contain each candidate by message id and body fingerprint',
-      sharedSuffixMethod:'Hshared estimates the retained suffix from the earliest pending candidate, including replacement messages and unchanged gaps; it infers potential warmth and does not measure cache position',
-      usageSource:warm?'latest successful main request adapter usage':'unavailable',
-      pricingSource:price?'explicit-exact-route-setting':'unavailable',
-      currency:price?.currency??null,
-      tokenMethod:'G is the sum of planContextPrune before/after message-token estimates; savedChars is the actual net character reduction',
-      economicsScope:'candidate scheduling decision under changing history; not a proof of global cost optimum',
-      route:currentRoute?{provider:currentRoute.provider,model:currentRoute.model,reasoningEffort:currentRoute.reasoningEffort??null}:null};
-    state.batchLastDecision=decision;
-    return decision;
+  function reviewAdoption(agent,{kind,appliedAtStep,expectedSavedChars=0,expectedRefillTokens=0}){
+    const state=get(agent);
+    state.pendingReviews.push({kind,appliedAtStep,expectedSavedChars,expectedRefillTokens,
+      baselineMainPromptRequests:state.mainPromptRequests,baselineMainPromptTokens:state.reportedMainPromptTokens,
+      referencePromptTokens:promptTokens(state.last?.usage)??promptTokens(state.lastSuccessfulMain?.usage),
+      baselineAt:new Date().toISOString()});
+    if(state.pendingReviews.length>8)state.pendingReviews.shift();
   }
-  function consumeBatchItem(agent,candidate,route=null){
-    const state=get(agent);route??=candidate.route??state.batchRoute??agent.session.requestHeader()?.config??{};
-    const key=candidate.key??candidateIdentity(route,candidate),removed=key?state.batchItems.delete(key):false;
-    if(removed)state.batchCommittedItems++;
-    return removed;
+  function reviewOutcomes(agent,currentStep=null){
+    const state=get(agent),results=[];
+    for(const review of state.pendingReviews){
+      const observedRequests=state.mainPromptRequests-review.baselineMainPromptRequests;
+      if(observedRequests<3)continue;
+      const expectedRemovedTokensPerRequest=Math.max(0,review.expectedSavedChars/3.5);
+      const expectedPromptTokensPerRequest=review.referencePromptTokens===null?null:
+        Math.max(0,review.referencePromptTokens-expectedRemovedTokensPerRequest);
+      const observedPromptTokens=state.reportedMainPromptTokens-review.baselineMainPromptTokens;
+      const observedPerRequest=observedPromptTokens/observedRequests;
+      const drift=expectedPromptTokensPerRequest>0?observedPerRequest/expectedPromptTokensPerRequest:null;
+      const plausible=expectedPromptTokensPerRequest===null?null:
+        observedPerRequest<=Math.max(1,review.referencePromptTokens)*2.5;
+      results.push({kind:review.kind,appliedAtStep:review.appliedAtStep,observedRequests,expectedRemovedCharsPerRequest:review.expectedSavedChars,
+        expectedRemovedTokensPerRequest,referencePromptTokens:review.referencePromptTokens,
+        expectedPromptTokensPerRequest,observedPromptTokens,observedPromptTokensPerRequest:Math.round(observedPerRequest*100)/100,
+        expectedRefillTokens:review.expectedRefillTokens,plausible,
+        drift:drift===null?null:Math.round(drift*100)/100,
+        reason:plausible===null?'reference-prompt-usage-unavailable':plausible?
+          'observed-prompt-within-baseline-window':'observed-prompt-above-baseline-window',
+        settledAtStep:currentStep,method:'main requests with complete prompt usage only; auxiliary and missing-usage requests excluded'});
+    }
+    if(results.length)state.pendingReviews=state.pendingReviews.filter(review=>state.mainPromptRequests-review.baselineMainPromptRequests<3);
+    if(results.length){
+      state.reviewedOutcomes.push(...results);
+      if(state.reviewedOutcomes.length>16)state.reviewedOutcomes.splice(0,state.reviewedOutcomes.length-16);
+    }
+    return results;
   }
   function requestFinished(agent,options,record){
     const state=get(agent),canonical=canonicalUsage(record.usage),usage=canonical.usage,total=promptTokens(usage),price=pricing(agent,options);
@@ -328,15 +224,13 @@ export function createContextEconomics(ctx,runtime){
     }else if(price){const reason=!billingComplete?'incomplete-request-billing':!cacheWritePriced?'cache-write-price-unavailable':'missing-usage-fields';state.skips[reason]=(state.skips[reason]??0)+1;}
     if(record.auxiliary)return;
     state.mainFinished++;
+    if(total!==null){state.reportedMainPromptTokens+=total;state.mainPromptRequests++;}
     const successfulMain=record.settled&&!record.aborted&&!record.failureCode&&successfulFinish.has(record.finishReason),
       completeSuccess=successfulMain&&canonical.complete&&total>0;
     state.mainAttempts.push({at:record.at??new Date().toISOString(),provider:options.provider,model:options.model,
       reasoningEffort:options.reasoningEffort??null,completeSuccess,promptTokens:total,
       finishReason:record.finishReason,usageComplete:canonical.complete});
     if(state.mainAttempts.length>16)state.mainAttempts.shift();
-    const routeChanged=state.batchRouteKey&&state.batchRouteKey!==routeKey(options),currentPriceKey=priceKey(price);
-    if(routeChanged||state.batchPriceKey!==currentPriceKey){state.batchItems.clear();state.batchLastDecision=null;state.batchRoute=options;state.batchRouteKey=routeKey(options);}
-    state.batchPriceKey=currentPriceKey;
     if(completeSuccess){
       state.lastSuccessfulMain={provider:options.provider,model:options.model,reasoningEffort:options.reasoningEffort??null,
         usage:{...usage},finishReason:record.finishReason,at:record.at??new Date().toISOString()};
@@ -345,17 +239,6 @@ export function createContextEconomics(ctx,runtime){
         inputTokens:usage.inputTokens,cacheReadTokens:usage.cacheReadTokens,cacheWriteTokens:usage.cacheWriteTokens,
         outputTokens:usage.outputTokens,finishReason:record.finishReason});
       if(state.mainHistory.length>16)state.mainHistory.shift();
-    }
-    if(successfulMain&&canonical.complete&&total>0&&readWeight(price)!==null&&Array.isArray(options.messages)){
-      const wr=readWeight(price);
-      for(const item of state.batchItems.values()){
-        const carried=options.messages.findLast(message=>message?.id===item.messageId&&modelKey(message)===item.fingerprint);
-        if(!carried)continue;
-        const increment=wr*item.savedTokensEstimate,carryUSD=price.cacheRead*item.savedTokensEstimate/1e6;
-        item.waitingLossTokens+=increment;item.waitingMainRequests++;item.lastWaitIncrementTokens=increment;
-        item.lastWaitCarryUSD=carryUSD;if(carryUSD!==null)item.estimatedCandidateCarryUSD+=carryUSD;
-        item.lastCarriedAt=record.at??new Date().toISOString();
-      }
     }
     const previous=state.last,envelope=envelopeKey(options),same=previous&&sameRoute(previous,options),changed=same&&previous.envelope!==envelope;
     const effortChanged=same&&previous.reasoningEffort!==options.reasoningEffort;
@@ -378,12 +261,9 @@ export function createContextEconomics(ctx,runtime){
       envelopeTokens,
       factor:total===null?1:Math.max(0.25,Math.min(8,total/Math.max(1,weights.reduce((sum,value)=>sum+value,0)+envelopeTokens))),
       finishReason:record.finishReason,at:record.at};
-    if(successfulMain&&canonical.complete&&total>0){
-      state.lastBatchCarrier={provider:options.provider,model:options.model,reasoningEffort:options.reasoningEffort??null,usage,mainOrdinal:state.mainFinished,
-        generation:record.generation,envelope,keys:options.messages.map(modelKey),ids:options.messages.map(message=>message.id),weights,
-        factor:Math.max(0.25,Math.min(8,total/Math.max(1,weights.reduce((sum,value)=>sum+value,0)+envelopeTokens))),
-        finishReason:record.finishReason,at:record.at};
-    }
+    const reviews=reviewOutcomes(agent);
+    for(const review of reviews)runtime.effects?.decide(agent,'projection',
+      review.plausible===false?'review-implausible':review.plausible===null?'review-unavailable':'reviewed','projection-outcome',review);
   }
   function pressure(agent,routeContext=null,maxTokens=null){
     const context=routeContext??agent.session.requestContext(),limit=context?.contextWindow;
@@ -406,7 +286,7 @@ export function createContextEconomics(ctx,runtime){
       tokens:tokens||null,limit:limit??null,reserveTokens:reserve,method};
   }
   function summary(agent){
-    const state=get(agent),route=agent.session.requestHeader()?.config,currencies=Object.keys(state.costByCurrency),batch=batchSnapshot(state,route);
+    const state=get(agent),route=agent.session.requestHeader()?.config,currencies=Object.keys(state.costByCurrency);
     return {route:route?{provider:route.provider,model:route.model}:null,pricing:route?pricing(agent,route):null,
       mainHistory:state.mainHistory.slice(-8),
       usageMeaning:'DSH adapter input/cacheRead/cacheWrite are disjoint; reasoning is included in output',
@@ -415,17 +295,14 @@ export function createContextEconomics(ctx,runtime){
       effortChanges:state.effortChanges,cacheResetAfterEffortChange:state.cacheResetAfterEffortChange,effortResetExposureUSD:state.effortResetExposureUSD,
       effortResetScope:'Observed cache drops immediately after effort changes; exposure uses configured prices and does not establish causation or add to the billed total.',
       reportedPromptTokens:state.reportedPromptTokens,reportedOutputTokens:state.reportedOutputTokens,
+      mainPromptRequests:state.mainPromptRequests,
       missingUsageRequests:state.missingUsage,missingCacheUsageRequests:state.missingCacheUsage,pricedRequests:state.pricedRequests,
       reportedCost:currencies.length===1&&state.pricedRequests===state.requests?state.costByCurrency[currencies[0]]:null,knownReportedCost:currencies.length===1?state.costByCurrency[currencies[0]]:null,costComplete:state.pricedRequests===state.requests,costByCurrency:{...state.costByCurrency},
       currency:currencies.length===1?currencies[0]:null,skips:{...state.skips},recentDecisions:state.decisions.slice(-6),
-      onlineBatch:{...batch,currentBatchKey:state.batchRouteKey,committedItems:state.batchCommittedItems,lastDecision:state.batchLastDecision,
-        WMeaning:'CADOC normalized cache-read waiting loss; advances only on observed successful main requests carrying the candidate',
-        wrMeaning:'configured cache-read price / uncached-input price; cache hit rate is a separate observation',
-        HsharedMeaning:'estimated retained suffix from the earliest pending candidate in the latest successful main prompt; not a measured cache position',
-        scope:'online candidate scheduling metric; no global-optimum claim'},
-      note:'Observed usage and configured-price cost are totals, not causal savings; forecast decisions predict reuse, while online-batch decisions estimate a candidate schedule and do not prove a global cost optimum.'};
+      projectionReviews:state.reviewedOutcomes.slice(-6),pendingProjectionReviews:state.pendingReviews.length,
+      note:'Observed usage and configured-price cost are totals, not causal savings; forecast decisions predict reuse and do not prove a global cost optimum.'};
   }
-  return {assess,assessBatch,syncBatch,batchCandidateSeen,consumeBatchItem,remember,pressure,summary,requestFinished,
+  return {assess,remember,reviewAdoption,reviewOutcomes,pressure,summary,requestFinished,
     mainHistory:(agent,route=null)=>get(agent).mainHistory
       .filter(item=>!route||sameObservedRoute(item,route))
       .map(item=>({...item})),

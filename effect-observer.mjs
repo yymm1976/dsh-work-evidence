@@ -6,7 +6,7 @@ import {canonicalUsage,messageTokens,textTokens} from './context-economics.mjs';
 const contentKey=message=>JSON.stringify({role:message.role,content:message.content,toolCallId:message.toolCallId,isError:message.isError});
 const chars=messages=>messages.reduce((sum,message)=>sum+(message.content??[]).reduce((n,block)=>n+String(block.text??(block.type==='tool-call'?JSON.stringify(block.arguments??{}):'')).length,0),0);
 const tokens=messages=>messages.reduce((sum,message)=>sum+messageTokens(message),0);
-const FEATURES={programHistory:'historyHygiene',historyOutput:'historyHygiene',receipt:'ledgerReceipt',evidenceView:'evidenceViews',contextPrune:'contextProtocol',ledgerFold:'ledgerFoldWrite',swFold:'swEviction',projection:'requestProjection',restoration:'projectionRestore',state:'stateLedger',unresolved:'ledgerUnresolved',executionAdvice:'executionAdvice',reuseAdvice:'executionTriage',cleanupAdvice:'executionTriage',finishAdvice:'finishAdvice',presentationAdvice:'finishAdvice',stepPacing:'stepPacing',contextRecall:'contextProtocol',argumentRecovery:'readArgumentRecovery',archive:'archiveReadRouting',stage:'stageWorkingSet',automaticIndex:'selfIndex',index:null,candidate:null,patterns:null,fastpath:null,verifiedEdit:null,probe:'executionTriage',report:null,fastEdit:'fastEditEnabled',nativeReadView:'nativeReadView',nativeExecutionEvidence:'nativeExecutionEvidence'};
+const FEATURES={programHistory:'historyHygiene',historyOutput:'historyHygiene',receipt:'ledgerReceipt',evidenceView:'evidenceViews',contextPrune:'contextProtocol',ledgerFold:'ledgerFoldWrite',swFold:'swEviction',projection:'requestProjection',restoration:'projectionRestore',state:'stateLedger',unresolved:'ledgerUnresolved',executionAdvice:'executionAdvice',reuseAdvice:'executionTriage',cleanupAdvice:'executionTriage',finishAdvice:'finishAdvice',presentationAdvice:'finishAdvice',stepPacing:'stepPacing',contextRecall:'contextProtocol',argumentRecovery:'readArgumentRecovery',archive:'archiveReadRouting',stage:'stageWorkingSet',automaticIndex:'selfIndex',index:null,candidate:null,patterns:null,fastpath:null,verifiedEdit:null,probe:'executionTriage',report:null,fastEdit:'fastEditEnabled'};
 FEATURES.reasoningHistory='reasoningHistory';
 FEATURES.programHistory='programHistory';
 FEATURES.inlineExec=null;
@@ -17,11 +17,9 @@ FEATURES.inlineScriptReuse=null;
 FEATURES.inlineArgumentRecovery=null;
 FEATURES.retainedCompute='retainedCompute';
 FEATURES.retainedComputeAdvice='retainedCompute';
-FEATURES.taskEffort='taskEffort';
 FEATURES.finalJson='finalJsonGuard';
 FEATURES.qualityReview='qualityReview';
 FEATURES.compactionHandoff='compressionControl';
-FEATURES.compactionTiming='compactionTiming';
 FEATURES.stageJudgment='stepPacing';
 const PLUGIN_TOOLS=new Set(['project_evidence','work_report','work_status','work_state','work_recall','work_exec','work_compute','work_probe','evidence_index','candidate_select','ptc_patterns','ptc_fastpath','verified_exec','fastedit_java']);
 
@@ -141,7 +139,7 @@ export function createEffectObserver(ctx,runtime){
       state.writeErrors=state.writeErrors.slice(-8);state.loaded=true;
     })();try{await state.loading;}finally{state.loading=null;}
   }
-  function snapshot(agent){const state=get(agent),config=runtime.get(agent).config,features={};for(const name of new Set([...Object.keys(FEATURES),...Object.keys(state.features)])){const item=state.features[name];const setting=FEATURES[name];features[name]={enabled:runtime.isEnabled(agent)&&(name==='compactionTiming'?config.compactionTiming==='adaptive':setting?!!config[setting]:true),...(item??{decisions:0,applied:0,lastStatus:'not-observed',lastReason:'no-opportunity-observed'} )};}
+  function snapshot(agent){const state=get(agent),config=runtime.get(agent).config,features={};for(const name of new Set([...Object.keys(FEATURES),...Object.keys(state.features)])){const item=state.features[name];const setting=FEATURES[name];features[name]={enabled:runtime.isEnabled(agent)&&(setting?!!config[setting]:true),...(item??{decisions:0,applied:0,lastStatus:'not-observed',lastReason:'no-opportunity-observed'} )};}
     return {version:1,schema:'work-evidence.observability.v1',requests:{count:state.requests,main:state.mainRequests,auxiliary:state.auxiliaryRequests,missingUsage:state.missingUsage,unknownConsumption:state.unknownConsumption,providerReported:{...state.reported}},
       totals:{...state.totals},features,recentRequests:state.recentRequests.slice(),decisions:state.decisions.slice(-24),
       persistence:{file:storageFor(agent)?path.join(storageFor(agent),agent.session.id+'.observability.jsonl'):null,writeErrors:state.writeErrors.slice(),scope:'session-local automatic records outside workspace discovery; one settled row per dispatched stream; no prompt bodies; survives rolling status window'},

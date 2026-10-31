@@ -107,7 +107,7 @@ function anchoredPrefix(region,checkpointIndex,log,record,maxChars,pins){
     if(message.role==='tool')recentExchanges.add(exchange);
   }
   const recent=new Set([...recentExchanges].slice(-3));
-  const anchors=[],masked=[];let chars=2;exchange=null;
+  const anchors=[],masked=[],dedupStats=[];let chars=2;exchange=null;
   for(const item of region.slice(0,checkpointIndex)){
     let message=historyMessage(item.message);const {event}=item;
     if((recalled.has(event.seq)||protectedResults.has(event.seq))&&historyReferences(message).some(ref=>ref.seq===event.seq)){
@@ -129,14 +129,14 @@ function anchoredPrefix(region,checkpointIndex,log,record,maxChars,pins){
       if(plan){
         const anchor={...message,content:plan.content,seq:event.seq};chars+=JSON.stringify(anchor).length+1;
         if(chars>maxChars)return {reason:'exact-prefix-anchors-too-large'};
-        anchors.push(anchor);masked.push(event.seq);continue;
+        anchors.push(anchor);masked.push(event.seq);dedupStats.push(...(plan.dedupStats??[]));continue;
       }
     }
     const anchor={...message,seq:event.seq};chars+=JSON.stringify(anchor).length+1;
     if(chars>maxChars)return {reason:'exact-prefix-anchors-too-large'};
     anchors.push(anchor);
   }
-  return {anchors,masked};
+  return {anchors,masked,dedupStats};
 }
 
 /** A public checkpoint helps navigation; its headings alone never justify dropping prior facts. */
@@ -236,7 +236,7 @@ export function stageReuseCandidate(agent,input,record,meter){
     estimatedSourceTokens:sourceTokens,estimatedReplacementTokens:replacementTokens,maxReplacementRatio:.35};
   return {applicable:true,reason:'stage-with-exact-anchors-and-tail',checkpointSeq:checkpoint.seq,
     selectedStartSeq:region[0].event.seq,selectedEndSeq:region.at(-1).event.seq,tailMessages:tail.length,
-    anchoredMessages:anchors.length,anchorBudgetChars,maskedReadResults:masked,expandedPriorCheckpoints:expanded.expanded,reasoningMessagesOmitted:expanded.omittedReasoning.size,
+    anchoredMessages:anchors.length,anchorBudgetChars,maskedReadResults:masked,dedupStats:prefix.dedupStats,expandedPriorCheckpoints:expanded.expanded,reasoningMessagesOmitted:expanded.omittedReasoning.size,
     replayStatesOmitted:saved.messages.filter(message=>message.sourceReplayStateOmitted).length,
     estimatedSourceTokens:sourceTokens,estimatedReplacementTokens:replacementTokens,summary};
 }

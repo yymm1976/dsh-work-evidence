@@ -1,0 +1,185 @@
+import path from 'node:path';
+import {VERSION,defaults} from "./runtime.mjs";
+import {recallHistory} from "./compaction-handoff.mjs";
+import {recallCall} from "./history-hygiene.mjs";
+import {inlineCommand,resolveInlineScript,declaredInlineExecutable,inlineFailureLocation} from './inline-exec.mjs';
+
+export function registerManagementTools({ctx,runtime,state,effects,available,capabilityDiagnostic,contextEconomics,taskFlow,retainedCompute,finalJson,qualityReview,executionEvidence,workingSet,compressionControl,compactionHandoff,contextWindow,observationLedger,historyCoordinator,clearPluginState,index,candidates,ptcPatterns,ptcFastpath,verifiedExec,fastEditJava,preserveContextResult,retainRecalledSources,hasHistoricalReferences,applyToolSurface,call,disabledResult,output,COMPACT_HIDDEN_TOOLS,assertParameterBounds,parameters}){
+  const register=(name,description,properties,required,execute,{gate=true,resultSchema=output.schema}={})=>ctx.tools.register({name,description,
+    parameters:{...parameters(properties),required},output:{...output,schema:resultSchema},isConcurrencySafe:()=>false,execute:async(args,exec)=>runtime.withExecution(exec,async()=>{
+      if(!exec.agent)throw new Error('Agent required');await runtime.init(exec.agent,exec.signal);await effects.load(exec.agent);runtime.sync(exec.agent);
+      try{
+        if(gate&&!runtime.isEnabled(exec.agent))return disabledResult(exec.agent,name);
+        assertParameterBounds({type:'object',properties},args);
+        const result=await execute(args,exec);
+        const feature=name==='work_exec'&&args?.mode==='retained'?'retainedCompute':{work_exec:'inlineExec',work_compute:'retainedCompute',work_probe:'probe',evidence_index:'index',candidate_select:'candidate',ptc_patterns:'patterns',ptc_fastpath:'fastpath',verified_exec:'verifiedEdit',fastedit_java:'fastEdit'}[name];
+        if(feature){const status=result?.status;effects.decide(exec.agent,feature,['deopt','unavailable','disabled'].includes(status)?'unavailable':['failed','partial','unknown','different'].includes(status)?'failed':'applied',result?.reason??status??'explicit-tool-executed');}
+        return result;
+      }finally{await runtime.receipt(exec.agent,exec.signal,true);}
+    })});
+  register('work_compute','Retained read-only Node REPL. Data, functions and imports persist between calls. Do not redeclare an existing const/let name in a later cell; reuse the binding, choose a new name, or pass reset:true only for a self-contained cell. Top-level await is allowed, return is not; print values or end with JSON. tools has only read/glob/grep/work_recall and OPS reads. State resets after DSH write/edit tools, tool-surface/session changes or interruption; shell/work_exec writes are not detected, so pass reset:true after them. Use normal tools for project edits and work_exec scriptRef for whole-program revisions.',
+    {code:{type:'string',description:'REPL statements up to 64000 characters. Reuse retained data/functions and submit only new input or local changes.'},
+      reset:{type:'boolean',description:'Explicitly clear this agent\'s retained environment before running code.'},
+      timeoutMs:{type:'integer',minimum:1,maximum:600000}},['code'],async(args,exec)=>{
+        preserveContextResult(exec.agent.session.id,exec.rootCallId??exec.callId);
+        return retainedCompute.execute(args,exec);
+      },{resultSchema:{type:'object',additionalProperties:true,properties:{status:{type:'string'},logs:{type:'array',items:{type:'string'}},
+        resetCount:{type:'integer'},resetReason:{type:'string'},error:{type:'object',additionalProperties:true},sandbox:{type:'object',additionalProperties:true}}}});
+  register('work_exec','Run project Python/Node, an external interpreter program, or a retained read-only Node session. Node defaults to ESM: use import, or format:"commonjs" for require. Supply code+runtime, or scriptRef with unique literal edits. The returned scriptRef identifies that complete version; write-file/create/edit handles project source. Returns native stdout/stderr/exit/job state.',
+    {runtime:{type:'string',enum:['python','node'],description:'Required with new code; scriptRef may inherit its explicit runtime.'},code:{type:'string',description:'Complete script up to 64000 characters, or use scriptRef. Relative paths use the project directory.'},
+      scriptRef:{type:'string',description:'Exact prior work_exec version in this session. Inherits that version and interpreter only; later edits to other refs are not included. For incremental changes use the latest returned ref.'},
+      edits:{type:'array',maxItems:16,items:{type:'object',additionalProperties:false,properties:{before:{type:'string',minLength:1},after:{type:'string'}},required:['before','after']},description:'With scriptRef: sequential literal replacements, each matching exactly once. Omit to rerun unchanged.'},
+      executable:{type:'string',description:'Use the exact existing interpreter path from the task when not on PATH.'},format:{type:'string',enum:['module','commonjs'],description:'Node only; default module.'},
+      mode:{type:'string',enum:['once','retained'],description:'once (default) is a fresh process. retained is a read-only Node REPL whose state persists for this Agent; use it only when later cells must reuse the same data or functions.'},
+      reset:{type:'boolean',description:"Retained mode only: clear this Agent's retained Node environment before running code."},
+      timeoutMs:{type:'integer',minimum:1,maximum:600000,description:'Native foreground wait before background promotion, milliseconds; default 10000.'}},[],async(args,exec)=>{
+      args=args??{};
+      if(args.mode==='retained'){
+        if(args.runtime!=='node')throw new Error('retained mode requires runtime: node');
+        if(args.scriptRef!==undefined||args.edits!==undefined||args.executable!==undefined||args.format!==undefined)
+          throw new Error('retained mode accepts code, reset and timeoutMs only');
+        preserveContextResult(exec.agent.session.id,exec.rootCallId??exec.callId);
+        const result=await retainedCompute.execute({code:args.code,reset:args.reset,timeoutMs:args.timeoutMs},exec);
+        return {...result,mode:'retained'};
+      }
+      if(args.reset!==undefined)throw new Error('reset requires mode: retained');
+      if(process.platform!=='win32'||!available(exec.agent,'pwsh'))return {status:'unavailable',reason:'native-pwsh-unavailable',executionOccurred:false};
+      let script;
+      try{script=resolveInlineScript(args,exec.agent.session,exec.signal);}catch(error){
+        if(error.message==='runtime must be python or node'&&args.runtime===undefined&&args.language===undefined&&typeof args.code==='string'&&args.code.trim()&&args.code.length<=64000&&exec.callId)
+          return {status:'failed',isError:true,executionOccurred:false,error:{message:error.message},scriptRef:exec.callId,scriptChars:args.code.length,
+            retry:'The complete original code is retained. Call work_exec with runtime: python or node and this scriptRef; supply the task\'s existing executable path when needed. No program was executed.'};
+        throw error;
+      }
+      const declaredExecutable=script.executable===undefined?declaredInlineExecutable(exec.agent.session,script.runtime):null;
+      if(declaredExecutable)script={...script,executable:declaredExecutable.executable};
+      const root=await ctx.workingDirectory.ensure(exec.agent,exec.signal),command=inlineCommand(script,root);
+      // Inline scripts may print source files. Their output has no native read
+      // windows, so it must not be treated as disposable generic shell output.
+      preserveContextResult(exec.agent.session.id,exec.rootCallId??exec.callId);
+      const result=await call('pwsh',{command,description:'Run '+script.runtime+' script via stdin',timeoutMs:script.timeoutMs??10000},exec);
+      if(args.scriptRef)effects.decide(exec.agent,'inlineScriptReuse','applied','explicit-same-session-script-reference',{scriptChars:script.code.length,sourceCallId:args.scriptRef});
+      const aliases=['language','interpreter','cwd','workdir'].filter(key=>Object.hasOwn(args,key));
+      if(aliases.length)effects.decide(exec.agent,'inlineArgumentRecovery','applied','unambiguous-explicit-script-arguments',{aliases});
+      const metadata={scriptRef:exec.callId??null,scriptChars:script.code.length,scriptRuntime:script.runtime,scriptExecutable:script.executable??script.runtime,
+        scriptExecutableSource:declaredExecutable?.source??null,scriptSourceRefs:script.sourceCallIds??[],scriptReused:!!args.scriptRef,
+        failureLocation:inlineFailureLocation(script,result.value??result)};
+      return result.value!==undefined?{...result.value,...metadata,isError:!!result.isError}:{...metadata,isError:!!result.isError,error:result.error,content:result.content};
+    },{resultSchema:{type:'object',additionalProperties:true,properties:{
+      status:{type:'string'},mode:{type:'string'},logs:{type:'array',items:{type:'string'}},
+      scriptRef:{oneOf:[{type:'string'},{type:'null'}]},scriptChars:{type:'number'},scriptRuntime:{type:'string'},scriptReused:{type:'boolean'},
+      exitCode:{oneOf:[{type:'number'},{type:'null'}]},kind:{type:'string'},jobId:{type:'string'},timedOut:{type:'boolean'},aborted:{type:'boolean'},
+      stdout:{type:'object',additionalProperties:true,properties:{text:{type:'string'},truncated:{type:'boolean'}}},
+      stderr:{type:'object',additionalProperties:true,properties:{text:{type:'string'},truncated:{type:'boolean'}}},
+      executionOccurred:{type:'boolean'},isError:{type:'boolean'},error:{type:'object',additionalProperties:true}
+    }}});
+  register('work_status','Inspect plugin status; optionally change workspace config or this session switch.',
+    {config:{type:'object',description:'Workspace settings. compact keeps work_exec and work_recall visible from the first request; full restores management/research tools. History rewrites use the forecast cost policy. stepPacing adds bounded guidance without blocking unfinished work. projectionPricing: exact provider/model rates per million tokens.'},
+      session_enabled:{anyOf:[{type:'boolean'},{type:'null'}],description:'This session: true on, false off, null inherit workspace.'}},[],async(args,exec)=>{
+      args=args||{};
+      if(!args||typeof args!=='object'||Array.isArray(args)||Object.keys(args).some(key=>!['config','session_enabled'].includes(key)))throw new Error('Unrecognized work_status field');
+      await runtime.init(exec.agent,exec.signal??AbortSignal.timeout(10000)).catch(()=>{});
+      const s=state(exec.agent);
+      await effects.flush(exec.agent);
+      if(args.config!==undefined){
+        if(!args.config||typeof args.config!=='object'||Array.isArray(args.config))throw new Error('config must be an object');
+        if(Object.hasOwn(args.config,'mode'))throw new Error('Mode follows the selected reasoning effort.');
+        if(!s.workspaceConfigValid)throw new Error('Workspace configuration is unavailable or invalid');
+        const before=runtime.isEnabled(exec.agent),next=defaults({...s.config,...args.config});
+        await runtime.save(exec.agent,path.join(s.dir,'config.json'),next,exec.signal);s.config=next;
+        applyToolSurface(exec.agent);
+        if(before!==runtime.isEnabled(exec.agent)){runtime.clearSessionState(exec.agent);clearPluginState(exec.agent);}
+      }
+      let sessionChange=null;
+      if(Object.hasOwn(args,'session_enabled')){
+        const before=runtime.isEnabled(exec.agent);sessionChange=await runtime.setSessionEnabled(exec.agent,args.session_enabled,exec.signal);
+        if(before!==runtime.isEnabled(exec.agent))clearPluginState(exec.agent);
+      }
+      const toolNames=['read','write','edit','glob','grep','ops_glob','ops_grep','ops_inspect_local_file','ops_read_files','ops_stat','ops_edit_file','ops_write_file','ops_bash','bash','pwsh'];
+      const pluginTools=COMPACT_HIDDEN_TOOLS;
+      let mode=null;try{mode=ctx.tools.modeFor(exec.agent);}catch{}
+      const snapshot=runtime.snapshot(s),effective=runtime.isEnabled(exec.agent);
+      const activeCounters=['evidenceAttempts','evidenceDelivered','evidenceLocated','evidenceIncomplete','evidenceUnavailable','evidenceNoSource','indexLearned','indexHits','candidatePredictions','candidateRuns','ptcFastpathRuns',
+        'verifiedExecPreviews','verifiedExecApplies','fastEditEntityFinds','fastEditEntityReads','fastEditPreviews','fastEditApplies',
+        'stateObservations','stateSearches','stateNotices','ledgerObservations','ledgerReceipts','ledgerStale','ledgerUnresolvedInjected','ledgerFoldCandidates','ledgerFoldWrites','nativeReadViews'];
+      return {...snapshot,mode:runtime.modeStatus(exec.agent),loaded:true,version:VERSION,effective,ledger:observationLedger.metrics(exec.agent),sw:contextWindow.metrics(exec.agent),diagnostic:{
+        loaded:true,version:VERSION,effective,sessionId:s.id,ptcMode:mode,sessionPolicyLoaded:s.sessionPolicyLoaded,
+        pluginTools:Object.fromEntries(pluginTools.map(name=>[name,available(exec.agent,name)])),
+        toolSurface:{mode:s.config.toolSurface,hidden:pluginTools.filter(name=>!available(exec.agent,name)),
+          exposed:pluginTools.filter(name=>available(exec.agent,name))},
+        toolAvailability:Object.fromEntries(toolNames.map(name=>[name,available(exec.agent,name)])),
+        ...capabilityDiagnostic(exec.agent),
+        activityObserved:activeCounters.reduce((sum,key)=>sum+(Number(s.metrics[key])||0),0)>0||(snapshot.nativeExecution?.observed??0)>0,
+        sessionChange,
+        note:'loaded=true 表示当前进程已执行本插件代码；effective=true 表示当前会话开关允许插件工作。actual activity 只在相应工具真正运行后增加，工具存在不等于任务正确。'},
+      };
+    },{gate:false});
+  register('work_state','Inspect session evidence; recall retrieves historical tool text by seq, not current disk. stage records focus; clear preserves projection plans.',
+    {mode:{type:'string',enum:['summary','detail','clear','recall','stage']},phase:{type:'string',enum:['investigate','modify','execute','deliver','mixed']},focus:{type:'array',maxItems:24,items:{type:'string'}},seq:{type:'integer',minimum:0,description:'recall: original tool result event in this session.'},
+      offset:{type:'integer',minimum:0,description:'recall: character offset, initially zero.'},maxChars:{type:'integer',minimum:256,maximum:64000}},[],async(args,exec)=>{
+      const s=state(exec.agent),mode=args.mode||'summary';
+      if(mode==='stage')return s.config.stageWorkingSet?taskFlow.declaration(args):{status:'disabled',feature:'stageWorkingSet'};
+      if(mode==='recall'){
+        const result=contextWindow.recall(exec.agent,args);
+        if(result.status==='observed'){preserveContextResult(exec.agent.session.id,exec.callId);preserveContextResult(exec.agent.session.id,exec.rootCallId);retainRecalledSources(exec.agent,args.seq);}
+        return result;
+      }
+      if(mode==='clear'){s.ledger={observations:[],searches:[],mutations:[]};s.pendingStateNotice=null;s.dirty=true;observationLedger.clear(exec.agent);contextWindow.clear(exec.agent);return {status:'cleared'};}
+      return {status:'observed',...(runtime.stateSnapshot(s,mode==='detail')),
+        ledger:mode==='detail'?observationLedger.detail(exec.agent):observationLedger.metrics(exec.agent),
+        observability:effects.snapshot(exec.agent),coordination:historyCoordinator.summary(exec.agent),workingSet:mode==='detail'?workingSet.detail(exec.agent):workingSet.metrics(exec.agent),
+        contextEconomics:contextEconomics.summary(exec.agent),compression:{...compressionControl.metrics(exec.agent),nativeHandoff:compactionHandoff.metrics(exec.agent)},taskFlow:taskFlow.summary(exec.agent),finalJson:finalJson.summary(exec.agent),qualityReview:qualityReview.summary(exec.agent),nativeExecution:executionEvidence.summary(exec.agent),
+        sw:mode==='detail'?{...contextWindow.metrics(exec.agent),...contextWindow.detail(exec.agent)}:contextWindow.metrics(exec.agent)};
+    });
+  register('work_recall','Retrieve original session records without rerunning work. For older work_state recall references, use the same seq and offset here. kind: output (default), call arguments, event (human/assistant text, TODOs or summary), history (whole index entries). For history, continue with nextSeq as seq and keep throughSeq/filter/query; for original text, offset/nextOffset are JavaScript string positions. Assistant text is a historical claim, not a user decision.',
+    {seq:{type:'integer',minimum:0},kind:{type:'string',enum:['output','call','event','history']},filter:{type:'string',enum:['all','human','assistant','tool'],description:'history only: restrict index rows; human lists original user requests and corrections.'},query:{type:'string',maxLength:3000,description:'history only: literal case-insensitive text search in historical bodies, TODOs or tool call arguments.'},throughSeq:{type:'integer',minimum:0,description:'history only: keep the returned upper event bound on subsequent pages.'},offset:{type:'integer',minimum:0},maxChars:{type:'integer',minimum:256,maximum:64000}},['seq'],async(args,exec)=>{
+      if(!runtime.isEnabled(exec.agent)&&!hasHistoricalReferences(exec.agent))return disabledResult(exec.agent,'work_recall');
+      const result=args.kind==='call'?recallCall(exec.agent,args):['event','history'].includes(args.kind)?recallHistory(exec.agent,args):contextWindow.recall(exec.agent,args);
+      if(result.status==='observed'){
+        preserveContextResult(exec.agent.session.id,exec.callId);preserveContextResult(exec.agent.session.id,exec.rootCallId);retainRecalledSources(exec.agent,args.seq);
+        effects.decide(exec.agent,'contextRecall','applied','explicit-historical-recall',{seq:args.seq,offset:args.offset??0});
+      }
+      return result;
+    },{gate:false});
+  register('work_probe','用已有原生调用回答一个具体问题并返回紧凑的实际证据。只运行当前任务允许且已形成的调用，不生成命令、安装依赖或宣告业务完成。mode=execute 使用 question/tool/arguments；cases 最多8项，JSON pointer 从 stdout JSON 或完整原生 result 选值，可用 expectedJson 比较已明确预期。非零退出、截断及后台任务保持未解决；沿原任务ID继续，不重发命令。mode=recall 按id分页取回同一会话记录；inspect只列可用工具。',
+    {mode:{type:'string',enum:['execute','recall','inspect']},question:{type:'string'},tool:{type:'string',enum:['pwsh','ops_bash','bash','job_output','read','grep','glob','ops_stat','ops_read_files','ops_inspect_local_file']},arguments:{type:'object'},
+      sources:{type:'array',maxItems:16,items:{type:'string'}},cases:{type:'array',maxItems:8,items:{type:'object',additionalProperties:false,properties:{name:{type:'string'},target:{type:'string',enum:['stdout','result']},pointer:{type:'string'},expectedJson:{type:'string'}},required:['name','pointer']}},
+      id:{type:'string'},offset:{type:'integer',minimum:0},maxChars:{type:'integer',minimum:1024,maximum:12000}},[],(args,exec)=>executionEvidence.execute(exec.agent,args,exec.signal));
+  register('evidence_index','查询或维护有真实源码支持的附加检索入口；query读取当前源码核对，learn保留原入口，semantic=true时额外调用模型核对别名。',
+    {mode:{type:'string',enum:['query','learn']},query:{type:'string'},file:{type:'string'},line:{type:'integer',minimum:1},quote:{type:'string'},semantic:{type:'boolean'}},['mode','query'],(args,exec)=>args.mode==='query'?index.query(exec.agent,args.query,exec.signal):index.learn(exec.agent,args,exec.signal));
+  register('candidate_select','FOREAGENT式有证据的候选比较：读取真实候选源码与数据报告，以有界模型调用预测偏好，低置信度弃答。execute=true才经原生shell执行所选已有命令；不生成候选、不宣告业务成功。',
+    {task:{type:'string'},data_report:{type:'string'},evidence_paths:{type:'array',items:{type:'string'},minItems:1,maxItems:3},estimated_run_ms:{type:'number',minimum:0},execute:{type:'boolean'},
+      candidates:{type:'array',minItems:2,maxItems:4,items:{type:'object',additionalProperties:false,properties:{id:{type:'string'},file_path:{type:'string'},offset:{type:'integer',minimum:1},tool:{type:'string',enum:['pwsh','bash']},command:{type:'string'}},required:['id','file_path','command']}}},['task','data_report','evidence_paths','candidates'],(args,exec)=>candidates.select(exec.agent,args,exec.signal));
+  register('ptc_patterns','只读扫描当前工作区最近的DSH会话，从真实run_code源码与PTC嵌套派发事件提取跨多个模型请求的重复调用链、参数结构、数据依赖和阻塞原因，并保存到.dsh/work-evidence/ptc-patterns.json。不会执行候选、修改文件或声称减少Token；跨请求输入绑定和净收益仍未证明。',
+    {scope:{type:'string',enum:['workspace','session']},sessionId:{type:'string'},maxSessions:{type:'integer',minimum:1,maximum:32},maxEventsPerSession:{type:'integer',minimum:2000,maximum:50000},minSupport:{type:'integer',minimum:1,maximum:20},minToolCalls:{type:'integer',minimum:2,maximum:32},maxCandidates:{type:'integer',minimum:1,maximum:30}},
+    [],(args,exec)=>ptcPatterns.scan(exec.agent,args,exec.signal));
+  register('ptc_fastpath','保存并运行当前任务内已明确的一至八个只读步骤，支持DSH原生read/grep/glob与可选OPS。mode=define提供具体工具、输入与步骤，可引用$input.*和$steps.<id>.*，用$map绑定数组；mode=run运行已保存定义，工具缺失、参数不完整、失败或不完整则deopt。只读，无shell或源码写入。候选结构本身不扩大授权。',
+    {mode:{type:'string',enum:['define','list','run','remove']},name:{type:'string'},candidate_id:{type:'string'},definition:{type:'object'},inputs:{type:'object'}},
+    ['mode'],async(args,exec)=>{
+      if(args.mode==='list')return ptcFastpath.list(exec.agent,exec.signal);
+      if(args.mode==='remove')return ptcFastpath.remove(exec.agent,args.name,exec.signal);
+      if(args.mode==='define'){
+        const definition={...(args.definition||{})};
+        if(args.candidate_id)definition.candidate_id=args.candidate_id;
+        return ptcFastpath.define(exec.agent,{...args,definition},exec.signal);
+      }
+      return ptcFastpath.run(exec.agent,args,exec.signal);
+    });
+  register('verified_exec','对已明确的文件修改做精确替换或创建，通过OPS当前revision应用；冲突时deopt，跨文件写入逐文件生效。apply=false只生成修改预览。validations可省略，只在当前任务要求外部命令时显式提供；没有命令时返回applied，有命令且成功才返回validated，均不代表全部需求完成。',
+    {summary:{type:'string'},apply:{type:'boolean'},
+      edits:{type:'array',minItems:1,maxItems:50,items:{type:'object',additionalProperties:false,properties:{
+        file:{type:'string'},mode:{type:'string',enum:['replace_exact','create']},old_text:{type:'string'},new_text:{type:'string'},content:{type:'string'}
+      },required:['file','mode']}},
+      validations:{type:'array',minItems:0,maxItems:10,items:{type:'object',additionalProperties:false,properties:{
+        command:{type:'string'},description:{type:'string'},timeout_ms:{type:'integer',minimum:1000,maximum:600000},
+        tool:{type:'string',enum:['ops_bash','bash','pwsh']}
+      },required:['command','description']}}},
+    ['summary','edits'],(args,exec)=>verifiedExec.execute(exec.agent,args,exec.signal));
+  register('fastedit_java','按Java符号定位、读取或修改一个方法或类。find_entity取得候选及行范围；read_entity读取唯一实体；replace_symbol、replace_symbol_full、after_symbol用snippet生成修改，apply=true通过OPS当前revision应用。仅在当前任务要求外部命令时提供validations。歧义、实体过大、匹配或语法解析失败时deopt；预览不修改源文件。',
+    {file:{type:'string'},operation:{type:'string',enum:['find_entity','read_entity','replace_symbol','replace_symbol_full','after_symbol']},symbol:{type:'string'},snippet:{type:'string'},
+      apply:{type:'boolean'},validations:{type:'array',minItems:0,maxItems:10,items:{type:'object',additionalProperties:false,properties:{
+        command:{type:'string'},description:{type:'string'},timeout_ms:{type:'integer',minimum:1000,maximum:600000},
+        tool:{type:'string',enum:['ops_bash','bash','pwsh']}
+      },required:['command','description']}}},
+    ['file','operation','symbol'],(args,exec)=>fastEditJava.execute(exec.agent,args,exec.signal));
+}

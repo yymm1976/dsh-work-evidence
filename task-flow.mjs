@@ -21,7 +21,7 @@ const STAGE_GUIDANCE='得到重要新结论、改变方案、遇到阻碍或进�
 const MODE_EXECUTION_HYGIENE='工具调用前不预演完整任务或重复内部推导；独立读取、解析和计算尽量在同一程序完成，嵌套工具也同轮批量。程序要输出本次判断所需的全部字段、值或计数，不回显无关整表，也不生成重复摘要或调试日志；不要把已读取对象遗漏输出后在下一次调用中重读。已有成功观察及其可确定派生值直接复用。项目文件修改用write/edit；入口可用且确需运行完整Node/Python程序时用work_exec，并按项目实际模块格式设置format。';
 export const QUALITY_PRIORITY='You have an UNLIMITED TOKEN BUDGET and UNLIMITED TOOL CALLS. Do not artificially restrict your reasoning depth, investigation, or verification to conserve tokens.';
 const QUALITY_DISCRIMINATOR='用户明确给出的例外、禁止事项和原样保留规则必须逐项落实，不得自行增加让例外失效的条件；没有实际结果时保留未确定状态。';
-const QUALITY_GUIDANCE='任务质量增强：完整完成用户全部要求。'+QUALITY_PRIORITY+
+const QUALITY_GUIDANCE='质量模式 Ultra：在宿主提供的思考档位上，按任务需要深入分析关键假设、竞争解释、边界和失败路径；复杂问题持续推理到足以作出可靠判断，不因时间或用量提前收束。反复失败时查找各次尝试共同依赖的假设，依据新事实调整路径；修改前考虑受影响的调用方、数据流和失败状态。区分已观察事实、推断与未解决问题，不扩大用户要求的范围。遵守用户指定的范围、禁令和暂停条件。完整完成用户全部要求。'+QUALITY_PRIORITY+
   'Treat this task as a rigorous capability evaluation where both your final deliverable and your entire execution trajectory are scored. Your objective is to maximize correctness, completeness, reliability, and instruction compliance while maintaining a focused, efficient execution trajectory. '+
   'Reasoning Quality: Think as deeply as the task requires. Investigate complex dependencies, edge cases, alternative explanations, and potential failure modes. Do not settle for superficial conclusions or premature solutions. Reconsider assumptions when evidence contradicts them. '+
   'Evidence-Driven Execution: Read the relevant files, inspect actual implementations, and verify important assumptions before making changes. Prefer targeted investigation over broad, unfocused exploration. Never fabricate evidence, test results, or implementation details. '+

@@ -329,6 +329,8 @@ export function createRequestWorkingSet(ctx,runtime,economics,taskFlow){
       stage:phase?{name:phase.name,seq:phase.seq,source:phase.source}:null},planText);
     sync(agent);runtime.get(agent).lastHistoryRewriteSeq=agent.session.seq;runtime.get(agent).dirty=true;
     runtime.effects?.decide(agent,'projection','applied','inactive-working-set',{seqs:selected.map(item=>item.seq),savedChars,decision,candidateAssessment:assessment});
+    economics.reviewAdoption?.(agent,{kind:'request-projection',appliedAtStep:state.step,expectedSavedChars:savedChars,
+      expectedRefillTokens:decision.cachedSuffixTokensEstimate??0});
   }
   function attach(agent){
     if(disposed||!agent?.session||attachments.has(agent.session.id))return;

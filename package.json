@@ -1,6 +1,6 @@
 {
   "name": "@local/dsh-work-evidence",
-  "version": "0.28.10",
+  "version": "0.28.11",
   "private": true,
   "description": "DSH-native evidence, stable request working sets, history recovery and optional OPS CAS/Java adapters",
   "type": "module",
@@ -11,7 +11,6 @@
     "./icon": "./icon.svg"
   },
   "scripts": {
-    "verify": "node verify-freeze.mjs",
     "check": "node --check runtime.mjs && node --check task-flow.mjs"
   },
   "engines": {
@@ -20,6 +19,7 @@
   },
   "files": [
     "index.mjs",
+    "ultra-effort.mjs",
     "native-files.mjs",
     "evidence.mjs",
     "runtime.mjs",
@@ -31,7 +31,6 @@
     "inline-exec.mjs",
     "retained-compute.mjs",
     "visible-results.mjs",
-    "read-presentation.mjs",
     "request-observation.mjs",
     "request-working-set.mjs",
     "context-economics.mjs",
@@ -39,7 +38,6 @@
     "history-coordinator.mjs",
     "compression-control.mjs",
     "compaction-handoff.mjs",
-    "compaction-timing.mjs",
     "stage-checkpoints.mjs",
     "task-flow.mjs",
     "final-json.mjs",
@@ -75,7 +73,12 @@
     "README.md",
     "cordis.patch.yml",
     "locale/*.json",
-    "icon.svg"
+    "icon.svg",
+    "plugin-command.mjs",
+    "source-tools.mjs",
+    "management-tools.mjs",
+    "completion-notice.mjs",
+    "HISTORY.md"
   ],
   "dependencies": {
     "fflate": "^0.8.3"

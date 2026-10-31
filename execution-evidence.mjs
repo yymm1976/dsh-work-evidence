@@ -7,35 +7,13 @@ import {resultText,parseResult} from './visible-results.mjs';
 
 const TOOLS=['pwsh','ops_bash','bash','job_output','read','grep','glob','ops_stat','ops_read_files','ops_inspect_local_file'];
 const SHELL=new Set(['pwsh','ops_bash','bash']);
-const OBSERVED=new Set(['pwsh','ops_bash','bash','job_output']);
 const MAX_RECORD_BYTES=1500000;
-const MAX_PENDING=32;
 const MAX_RECORDS=32;
-const MAX_SEEN=4096;
 const MAX_SUMMARY_RECORDS=8;
 const clip=(value,size)=>{const text=typeof value==='string'?value:JSON.stringify(value??null);return text.length<=size?text:text.slice(0,Math.floor(size/2))+'\n…\n'+text.slice(-Math.floor(size/2));};
 const stream=value=>typeof value==='string'?{text:value,truncated:false}:value&&typeof value==='object'?{text:typeof value.text==='string'?value.text:'',truncated:value.truncated===true,spillPath:value.spillPath??null}:{text:'',truncated:false};
 const payloadOf=value=>value?.data&&typeof value.data==='object'?value.data:value;
 const statusOf=value=>value===undefined||value===null?'':String(value).toLowerCase();
-
-function nativeElapsed(payload,value){
-  for(const [source,candidate] of [
-    ['payload.elapsedMs',payload?.elapsedMs],['payload.elapsed_ms',payload?.elapsed_ms],
-    ['payload.durationMs',payload?.durationMs],['payload.duration_ms',payload?.duration_ms],
-    ['value.elapsedMs',value?.elapsedMs],['value.elapsed_ms',value?.elapsed_ms],
-    ['value.durationMs',value?.durationMs],['value.duration_ms',value?.duration_ms],
-  ])if(typeof candidate==='number'&&Number.isFinite(candidate)&&candidate>=0)return {elapsedMs:candidate,elapsedSource:source};
-  return {elapsedMs:null,elapsedSource:null};
-}
-
-function nativeQuestion(tool,args){
-  const description=typeof args?.description==='string'&&args.description.trim()?args.description:null;
-  const command=typeof args?.command==='string'&&args.command.trim()?args.command:null;
-  const jobId=args?.job_id??args?.jobId??args?.id;
-  const text=description??command??(tool==='job_output'&&jobId!=null?`job_output ${String(jobId)}`:`${tool} native call`);
-  return {question:clip(text,400),questionComplete:text.length<=400,
-    questionSource:description?'native-description':command?'native-command':'native-tool'};
-}
 
 function atPointer(value,pointer){
   if(pointer==='')return {found:true,value};
@@ -83,7 +61,7 @@ function checked(input){
 }
 
 export function createExecutionEvidence(ctx,runtime,call){
-  const evidenceStates=new Map(),explicitExecutions=new Map();
+  const evidenceStates=new Map();
   const available=agent=>TOOLS.filter(name=>{try{return !!ctx.tools.get(name,agent);}catch{return false;}});
   const retrieveOriginal=id=>({tool:'work_probe',arguments:{mode:'recall',id,offset:0}});
 
@@ -91,39 +69,10 @@ export function createExecutionEvidence(ctx,runtime,call){
     const id=agent.session.id;
     let state=evidenceStates.get(id);
     if(!state){
-      state={records:[],pending:[],seen:new Set(),observed:0,nativeObserved:0,explicitObserved:0,saved:0,nativeSaved:0,explicitSaved:0,saveFailures:0,
-        skips:{sessionDisabled:0,featureDisabled:0,duplicateCallId:0,explicitWorkProbe:0,pendingFull:0,missingCallId:0,observeError:0},
-        flushPromise:null,lastFlush:null};
+      state={records:[],observed:0,explicitObserved:0,saved:0,explicitSaved:0,saveFailures:0};
       evidenceStates.set(id,state);
     }
     return state;
-  }
-
-  function skip(state,reason){state.skips[reason]=(state.skips[reason]||0)+1;}
-
-  function beginExplicit(agent){
-    const execution=runtime.get(agent).execution;
-    if(!execution)return ()=>{};
-    const marker={execution,callId:execution.callId||null,rootCallId:execution.rootCallId||null,token:execution.token||null};
-    const markers=explicitExecutions.get(agent.session.id)||[];
-    markers.push(marker);explicitExecutions.set(agent.session.id,markers);
-    return ()=>{
-      const current=explicitExecutions.get(agent.session.id)||[];
-      const index=current.indexOf(marker);
-      if(index>=0)current.splice(index,1);
-      if(current.length)explicitExecutions.set(agent.session.id,current);else explicitExecutions.delete(agent.session.id);
-    };
-  }
-
-  function isExplicitInternal(agent,exec){
-    const markers=explicitExecutions.get(agent.session.id)||[];
-    if(!markers.length)return false;
-    if(exec.parent&&markers.some(marker=>marker.token))return markers.some(marker=>marker.token&&exec.parent===marker.token);
-    if(markers.some(marker=>marker.rootCallId&&exec.rootCallId===marker.rootCallId))return true;
-    if(markers.some(marker=>marker.callId&&exec.rootCallId===marker.callId))return true;
-    if(markers.some(marker=>marker.token&&exec.parent===marker.token))return true;
-    const active=runtime.get(agent).execution;
-    return markers.some(marker=>marker.execution===active&&active?.name==='work_probe'&&!exec.rootCallId&&!exec.parent);
   }
 
   async function recall(agent,input,signal){
@@ -226,7 +175,7 @@ export function createExecutionEvidence(ctx,runtime,call){
     if(observation.evidenceSaved){
       observation.retrieveOriginal=retrieveOriginal(record.id);
       state.saved++;
-      if(record.recordOrigin==='native-observation')state.nativeSaved++;else state.explicitSaved++;
+      state.explicitSaved++;
     }else{
       delete observation.retrieveOriginal;
       observation.evidenceError=String(outcome.error??'Evidence record was not saved').slice(0,500);
@@ -241,55 +190,10 @@ export function createExecutionEvidence(ctx,runtime,call){
     if(state.records.length>MAX_RECORDS)state.records.splice(0,state.records.length-MAX_RECORDS);
   }
 
-  function observe(exec,result){
-    let state=null;
-    try{
-      if(!exec?.agent||!OBSERVED.has(exec.name))return {status:'ignored',reason:'unsupported-tool'};
-      const agent=exec.agent,s=runtime.get(agent);state=evidenceState(agent);
-      if(!runtime.isEnabled(agent)){skip(state,'sessionDisabled');return {status:'skipped',reason:'session-disabled'};}
-      if(s.config.nativeExecutionEvidence!==true){skip(state,'featureDisabled');return {status:'skipped',reason:'native-execution-evidence-disabled'};}
-      const callId=typeof exec.callId==='string'&&exec.callId?exec.callId:null;
-      if(!callId){skip(state,'missingCallId');return {status:'skipped',reason:'missing-call-id'};}
-      if(state.seen.has(callId)){skip(state,'duplicateCallId');return {status:'skipped',reason:'duplicate-call-id',callId};}
-      if(isExplicitInternal(agent,exec)){
-        state.seen.add(callId);
-        if(state.seen.size>MAX_SEEN)state.seen.delete(state.seen.values().next().value);
-        skip(state,'explicitWorkProbe');
-        return {status:'skipped',reason:'explicit-work-probe-internal',callId};
-      }
-      if(state.pending.length>=MAX_PENDING){
-        state.seen.add(callId);
-        if(state.seen.size>MAX_SEEN)state.seen.delete(state.seen.values().next().value);
-        skip(state,'pendingFull');return {status:'skipped',reason:'pending-full',callId};
-      }
-      state.seen.add(callId);
-      if(state.seen.size>MAX_SEEN)state.seen.delete(state.seen.values().next().value);
-      const args=exec.arguments&&typeof exec.arguments==='object'&&!Array.isArray(exec.arguments)?exec.arguments:{};
-      const value=result?.value??parseResult(resultText(result?.content));
-      const {elapsedMs,elapsedSource}=nativeElapsed(payloadOf(value),value);
-      const asked=nativeQuestion(exec.name,args);
-      const id='probe-'+randomUUID(),observedAt=new Date().toISOString();
-      const observation=normalizeObservation({
-        id,recordOrigin:'native-observation',question:asked.question,questionSource:asked.questionSource,
-        questionScope:'native-observation; no inferred user expectation',tool:exec.name,args,result:result??{},sources:[],requestedCases:[],
-        maxChars:6000,observedAt,elapsedMs,elapsedSource,s,
-        sourceScope:'Native call result only; source freshness, task correctness and issue resolution are not asserted.',
-        scope:'Passive observation of an already-completed native call. Exit zero only records that execution state; it does not mean the user problem is resolved.'
-      });
-      const record=makeRecord({s,id,recordOrigin:'native-observation',callId,rootCallId:exec.rootCallId??null,observedAt,
-        question:asked.question,tool:exec.name,args:exec.arguments??null,sources:[],requestedCases:[],observation,result:result??{}});
-      state.observed++;state.nativeObserved++;state.pending.push(record);s.dirty=true;
-      return {status:'pending',id,callId};
-    }catch(error){
-      if(state)skip(state,'observeError');
-      return {status:'skipped',reason:'observe-error',error:String(error?.message??error).slice(0,500)};
-    }
-  }
-
   async function execute(agent,input,signal){
     const plan=checked(input),s=await runtime.init(agent,signal);
-    if(plan.mode==='recall')return s.config.executionTriage||s.config.nativeExecutionEvidence?recall(agent,plan,signal):
-      {status:'disabled',feature:'executionTriage/nativeExecutionEvidence'};
+    if(plan.mode==='recall')return s.config.executionTriage?recall(agent,plan,signal):
+      {status:'disabled',feature:'executionTriage'};
     if(!s.config.executionTriage)return {status:'disabled',feature:'executionTriage'};
     if(plan.mode==='inspect')return {status:'available',tools:available(agent),
       note:'Use a concrete question and an already formed native call within the current task. No command or case is generated automatically.'};
@@ -298,10 +202,9 @@ export function createExecutionEvidence(ctx,runtime,call){
     const args={...plan.arguments};
     if(SHELL.has(plan.tool)){args.description??=plan.question.slice(0,180);args.timeoutMs??=10000;}
     let result;
-    const explicitExecution=runtime.get(agent).execution,finishExplicit=beginExplicit(agent);
+    const explicitExecution=runtime.get(agent).execution;
     try{result=await call(plan.tool,args,runtime.execFor(agent,signal));}
     catch(error){signal.throwIfAborted();result={isError:true,error:{message:String(error.message),code:error.code??null},content:[]};}
-    finally{finishExplicit();}
     const elapsedMs=Math.round(performance.now()-started);
     const observation=normalizeObservation({id,recordOrigin:'work_probe',question:plan.question,questionSource:'work-probe-input',
       questionScope:'caller-declared-unresolved-question',tool:plan.tool,args,result,sources:plan.sources,requestedCases:plan.cases,maxChars:plan.maxChars,
@@ -317,64 +220,23 @@ export function createExecutionEvidence(ctx,runtime,call){
     return observation;
   }
 
-  async function flush(agent,signal){
-    if(!agent)return {status:'disabled',reason:'agent-required',saved:0,saveFailures:0,pending:0};
-    const s=runtime.get(agent),state=evidenceState(agent);
-    if(!runtime.isEnabled(agent)||s.config.nativeExecutionEvidence!==true){
-      const result={status:'skipped',reason:!runtime.isEnabled(agent)?'session-disabled':'native-execution-evidence-disabled',
-        saved:0,saveFailures:0,pending:state.pending.length};
-      state.lastFlush={...result,at:new Date().toISOString()};return result;
-    }
-    if(state.flushPromise)return state.flushPromise;
-    const promise=(async()=>{
-      let saved=0,saveFailures=0;
-      while(state.pending.length){
-        const record=state.pending[0];
-        let outcome;
-        try{
-          signal?.throwIfAborted();
-          outcome=await saveRecord(agent,s,record,signal);
-        }catch(error){
-          if(signal?.aborted){
-            const result={status:'aborted',saved,saveFailures,pending:state.pending.length};
-            state.lastFlush={...result,at:new Date().toISOString()};return result;
-          }
-          outcome={saved:false,error:String(error?.message??error)};
-        }
-        state.pending.shift();
-        finishRecord(state,record,outcome);
-        if(outcome.saved)saved++;else saveFailures++;
-        s.dirty=true;
-      }
-      const result={status:'flushed',saved,saveFailures,pending:0};
-      state.lastFlush={...result,at:new Date().toISOString()};
-      return result;
-    })();
-    state.flushPromise=promise;
-    try{return await promise;}
-    finally{if(state.flushPromise===promise)state.flushPromise=null;}
-  }
-
   function summary(agent){
     if(!agent)return null;
-    const s=runtime.get(agent),state=evidenceState(agent),skips={...state.skips};
-    const skipped=Object.values(skips).reduce((total,value)=>total+(Number.isFinite(value)?value:0),0);
-    return {sessionId:s.id,sessionEnabled:runtime.isEnabled(agent),featureEnabled:s.config.nativeExecutionEvidence===true,
-      active:runtime.isEnabled(agent)&&s.config.nativeExecutionEvidence===true,pending:state.pending.length,observed:state.observed,
-      nativeObserved:state.nativeObserved,explicitObserved:state.explicitObserved,nativeSaved:state.nativeSaved,explicitSaved:state.explicitSaved,
-      saved:state.saved,saveFailures:state.saveFailures,skipped,skips,recordCount:state.records.length,
+    const s=runtime.get(agent),state=evidenceState(agent);
+    return {sessionId:s.id,sessionEnabled:runtime.isEnabled(agent),observed:state.observed,
+      explicitObserved:state.explicitObserved,explicitSaved:state.explicitSaved,
+      saved:state.saved,saveFailures:state.saveFailures,recordCount:state.records.length,
       recent:state.records.slice(-MAX_SUMMARY_RECORDS).map(record=>({...record,
         ...(record.evidenceSaved===true?{retrieveOriginal:record.retrieveOriginal}:{})})),
-      lastFlush:state.lastFlush?{...state.lastFlush}:null,
-      scope:'Native and explicit observations are counted separately. Saved retrieval is historical; execution success is not task completion.'};
+      scope:'Explicit observations only. Saved retrieval is historical; execution success is not task completion.'};
   }
 
   function disposeAgent(agent){
     const id=agent?.session?.id;
-    if(id){evidenceStates.delete(id);explicitExecutions.delete(id);}
+    if(id)evidenceStates.delete(id);
   }
 
-  function dispose(){evidenceStates.clear();explicitExecutions.clear();}
+  function dispose(){evidenceStates.clear();}
 
-  return {execute,available,observe,flush,summary,disposeAgent,dispose};
+  return {execute,available,summary,disposeAgent,dispose};
 }
