@@ -212,7 +212,8 @@ export function recallHistory(agent,{seq,kind='event',offset=0,maxChars=16000,fi
     }else if(['tool/ptc-dispatch','tool/code-dispatch'].includes(type))text=textOf({content:event.data.content});
     else if(type==='todo/write')text=JSON.stringify(event.data.todos);
     else if(type==='compaction/summary')text=textOf({content:event.data.summary});
-    else return {status:'unavailable',seq,reason:'Use kind=call for original tool arguments; event recovery supports messages, TODOs and summaries'};
+    else if(['job/registered','job/settled','turn/start','turn/end'].includes(type))text=JSON.stringify(event.data??{});
+    else return {status:'unavailable',seq,reason:'Use kind=call for original tool arguments; event recovery supports messages, TODOs, summaries and job/turn lifecycle records'};
   }
   const end=Math.min(text.length,offset+maxChars);
   return {status:'observed',seq,kind,type,historical:true,offset,totalChars:text.length,text:text.slice(offset,end),nextOffset:end<text.length?end:null,
@@ -220,7 +221,7 @@ export function recallHistory(agent,{seq,kind='event',offset=0,maxChars=16000,fi
     note:'Original session record, not current disk state. Assistant text is a historical claim, not a user decision. Non-text contents are listed, not reproduced.'};
 }
 
-function handoffRecord(agent,runtime,taskFlow,input,recallAvailable){
+export function handoffRecord(agent,runtime,taskFlow,input,recallAvailable,{requestBudgetChars}={}){
   const log=eventLog(agent.session),humans=[],judgments=[];let todoSeq=null,todos=null;
   for(const event of log){
     const message=messageOf(event);
@@ -230,7 +231,7 @@ function handoffRecord(agent,runtime,taskFlow,input,recallAvailable){
   }
   // Preserve all original requirements when they fit; only large histories use opening + recent excerpts.
   const regionChars=(input.messages??[]).reduce((sum,message)=>sum+textOf(message).length,0);
-  const budget=Math.min(24000,Math.max(4000,Math.floor(regionChars/4)));
+  const budget=requestBudgetChars??Math.min(24000,Math.max(4000,Math.floor(regionChars/4)));
   const total=humans.reduce((sum,item)=>sum+item.text.length,0),selected=new Map();
   if(total<=budget)for(const item of humans)selected.set(item.seq,{...item,textComplete:true});
   else if(humans.length===1){const item=humans[0];selected.set(item.seq,{...item,text:clip(item.text,budget),textComplete:false});}
@@ -263,7 +264,7 @@ function handoffRecord(agent,runtime,taskFlow,input,recallAvailable){
     route:{provider:route?.provider??null,model:route?.model??null,reasoningEffort:typeof effort==='string'&&effort?effort:null},
     sourceAuthority:'User excerpts are source requirements in chronological order, not a merged specification. Apply newer corrections. Assistant judgments and TODO completion flags remain claims; tool success proves only that observation, not task completion.',
     humanRequests:{total:humans.length,omitted:humans.length-requests.length,budgetChars:budget,requirementsComplete:requests.length===humans.length&&requests.every(item=>item.textComplete&&!item.nonTextBlocks.length),requests},
-    currentState:{todoSeq,todos:retainedTodos,todosComplete:retainedTodos.length===currentTodos.length&&retainedTodos.every(item=>item.textComplete),
+    currentState:{todoSeq,todos:retainedTodos,todosTotal:currentTodos.length,todosComplete:retainedTodos.length===currentTodos.length&&retainedTodos.every(item=>item.textComplete),
       phase:state.phase,unresolvedErrors:state.unresolvedErrors.slice(-8),unresolvedErrorsOmitted:Math.max(0,state.unresolvedErrors.length-8),
       pendingJobs:state.pendingJobs.slice(-16),pendingJobsOmitted:Math.max(0,state.pendingJobs.length-16),
       artifacts,artifactsOmitted:(state.artifacts?.length??0)-artifacts.length,artifactEntriesEvicted:state.artifactsEvicted??0,

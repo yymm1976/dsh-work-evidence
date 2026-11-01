@@ -1,6 +1,6 @@
 # DSH 工程证据插件
 
-当前源码版本为 0.28.14，模式策略为 pb001-v24。
+当前源码版本为 0.28.15，模式策略为 pb001-v24。
 桌面加载目录独立维护。运行中的会话采用哪个版本，取决于宿主加载时间。
 插件提供任务指引、观察账本、历史取回和按需工程工具。
 历史说明见 [HISTORY.md](HISTORY.md)。历史结果不代表当前版本的实际效果。
@@ -17,6 +17,7 @@ Ultra 档位使用质量模式。模型原生提供 Ultra 时直接发送原生�
 ```text
 /work-evidence status
 /work-evidence detail
+/work-evidence handoff
 /work-evidence mode
 /work-evidence on
 /work-evidence off
@@ -28,6 +29,30 @@ Ultra 档位使用质量模式。模型原生提供 Ultra 时直接发送原生�
 mode 只查询状态。旧的 mode <名称> 和 workspace-mode 命令不再设置模式。
 总开关同时控制质量模式和激进模式。关闭激进开关后，非 Ultra 档位停用插件自动处理。
 work_status 始终保留；历史中仍有取回引用时保留 work_recall。
+
+## 任务摘要导出
+
+`/work-evidence handoff` 返回可保存的结构化 JSON。工具面为 full 时，也可调用 `work_state({mode:"handoff"})`。
+导出沿用已有记录，不调用模型或重新执行原动作，不向项目写入报告文件。
+
+摘要包含以下内容：
+
+- 用户输入按时间排列，保留最新输入与更早要求的区别。后续更正优先；较早消息可能属于其他任务。
+- 文件工具观察到的修改及影响状态。脚本和外部修改可能没有记录，工作区现状不由摘要推断。
+- 最近一轮保留的执行结果、原始事件和当时的修改事件。执行完成不代表需求完成，证据有效性暂记 unknown。
+- 计划事项、未解决工具错误、待结束作业与尚无结果的工具调用。
+- 助手阶段摘要、近期说明和已保存报告的声明。声明与工具观察分开，完成标记不作为事实证明。
+
+每项来源包含 `sessionId`、`seq`、`kind` 和 `offset`。`recoverable` 表示当前会话是否能读取该类原始记录。
+在来源会话中，可调用 `work_recall({sourceSessionId:source.sessionId,kind:source.kind,seq:source.seq,offset:source.offset})`。
+携带的会话标识不匹配时，调用返回 `source-session-mismatch`。原文按返回的 `nextOffset` 续读。
+历史索引按 `nextSeq` 续读，并保留同一 `throughSeq`。跨会话读取尚未接入，不得把旧会话的 seq 用于新会话。
+
+摘要默认最多 32000 个 UTF-16 单元，按紧凑 JSON 的实际长度计算。
+`work_state({mode:"handoff",maxChars:16000})` 可调整上限，范围为 8000 至 64000。
+超出上限时先省略整条旧记录，再缩短最新要求。各组的 `omitted` 与 `textComplete` 标明省略或截断。
+`coverage.exportComplete` 只说明所列记录是否完整导出。任务完成状态始终为 `not-determined`。
+正文中的图片等非文本内容只列类型，不复述私有推理。来源缺失或无法读取时保留未知状态。
 
 ## 质量复核与完成提醒
 

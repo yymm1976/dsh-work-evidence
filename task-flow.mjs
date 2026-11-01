@@ -138,7 +138,7 @@ export function createTaskFlow(ctx,runtime,{nativeFiles,call}={}){
   function get(agent){
     let state=states.get(agent.session.id);
     if(!state){state={cursor:0,turn:null,step:0,calls:new Map(),nested:new Map(),nestedFailures:new Map(),completedNested:new Set(),live:new Map(),errors:new Map(),reads:new Map(),jobs:new Set(),pacing:newPacing(),programFailure:null,legacyInterpreterShell:null,
-      todos:null,todoSeq:null,artifacts:new Map(),artifactsEvicted:0,qualityArtifacts:new Map(),qualityExecutions:[],lastQualityReviewedMutation:null,phase:{name:null,seq:null,focus:[],source:null},lastCompaction:null,report:null,lastMutation:-1,mutationVersion:0,
+      todos:null,todoSeq:null,artifacts:new Map(),artifactsEvicted:0,executionsEvicted:0,turnStartSeq:null,qualityArtifacts:new Map(),qualityExecutions:[],lastQualityReviewedMutation:null,phase:{name:null,seq:null,focus:[],source:null},lastCompaction:null,report:null,lastMutation:-1,mutationVersion:0,
       lastUser:null,stageReporting:{lastTextSeq:null,lastTextSteps:0,lastNoticeSteps:0,notices:0},lastInlineExec:-1,inlineExecAdvised:new Set(),scriptReuseAdvised:new Set(),diagnosticAdvised:new Set(),reuseAdvised:new Set(),cleanupAdvised:new Set(),
       probes:[],executions:[],repeatedExecution:null,cleanup:null,transitions:[],reuseNotices:0,cleanupNotices:0};states.set(agent.session.id,state);}
     return state;
@@ -216,7 +216,7 @@ export function createTaskFlow(ctx,runtime,{nativeFiles,call}={}){
       const prior=state.executions.findLast(item=>item.key===key&&item.cwd===entry.cwd&&item.userSeq===entry.userSeq&&item.mutationSeq===entry.mutationSeq);
       if(complete&&entry.comparisonText!==null&&prior?.executionCompleted&&prior.comparisonText===entry.comparisonText)
         state.repeatedExecution={...entry,reuseKey:JSON.stringify([entry.userSeq,entry.mutationSeq,entry.cwd,key,entry.comparisonText]),priorSeq:prior.seq};
-      state.executions.push(entry);state.executions=state.executions.slice(-24);
+      state.executions.push(entry);if(state.executions.length>24)state.executionsEvicted++;state.executions=state.executions.slice(-24);
       if(runtime.activeMode(agent)==='quality'&&runtimeConfig.qualityReview){
         const {key:operationIdentity,comparisonText,...reviewEntry}=entry;
         state.qualityExecutions.push(reviewEntry);
@@ -259,7 +259,7 @@ export function createTaskFlow(ctx,runtime,{nativeFiles,call}={}){
       transition(state,call.args.phase,seq,call.args.focus??[],'explicit-stage');
     }
     if(call.name==='work_report'&&payload?.saved===true){
-      state.report={seq,args:call.args,path:payload.path};
+      state.report={seq,args:call.args,path:payload.path,argumentsSeq:['tool/ptc-dispatch','tool/code-dispatch'].includes(event.type)?seq:call.seq??null};
       if(call.args.status==='complete'&&!call.args.remaining?.length)transition(state,'deliver',seq,[],'reported-conclusion');
     }
     return false;
@@ -269,7 +269,7 @@ export function createTaskFlow(ctx,runtime,{nativeFiles,call}={}){
     while(state.cursor<log.length){
       const event=log[state.cursor++],data=event.data??{},message=messageOf(event);
       if(event.type==='turn/start'){
-        state.turn=data.turn;state.todos=null;state.todoSeq=null;state.report=null;state.lastMutation=-1;state.errors.clear();state.calls.clear();state.nested.clear();state.nestedFailures.clear();state.reads.clear();
+        state.turn=data.turn;state.turnStartSeq=event.seq;state.executionsEvicted=0;state.todos=null;state.todoSeq=null;state.report=null;state.lastMutation=-1;state.errors.clear();state.calls.clear();state.nested.clear();state.nestedFailures.clear();state.reads.clear();
         state.phase={name:null,seq:null,focus:[],source:null};state.executions=[];state.repeatedExecution=null;state.cleanup=null;
         state.pacing=newPacing();state.completedNested.clear();state.programFailure=null;state.legacyInterpreterShell=null;
         state.qualityArtifacts.clear();state.qualityExecutions=[];state.lastQualityReviewedMutation=null;
@@ -305,15 +305,15 @@ export function createTaskFlow(ctx,runtime,{nativeFiles,call}={}){
         if(data.todos.filter(item=>item.status==='completed').length>(state.todos??[]).filter(item=>item.status==='completed').length)progress(state);
         state.todos=data.todos;state.todoSeq=event.seq;const phase=todoPhase(data.todos);transition(state,phase.name,event.seq,phase.focus,'todo-progress');
       }
-      if(event.type==='tool/call'&&data.callId)bounded(state.calls,data.callId,{name:data.name,args:argsOf(data.arguments)},256);
+      if(event.type==='tool/call'&&data.callId)bounded(state.calls,data.callId,{name:data.name,args:argsOf(data.arguments),seq:event.seq},256);
       if(event.type==='assistant/message'){
         if(resultText(message?.content).trim()){state.stageReporting.lastTextSeq=event.seq;state.stageReporting.lastTextSteps=state.pacing.steps.size;}
         const outputTokens=data.usage?.outputTokens;
         if(Number.isSafeInteger(outputTokens)&&outputTokens>=0){state.pacing.outputTokens+=outputTokens;state.pacing.lastOutputTokens=outputTokens;}
         else state.pacing.missingOutputUsage++;
-        for(const block of message?.content??[])if(block.type==='tool-call')bounded(state.calls,block.id,{name:block.name,args:argsOf(block.arguments)},256);
+        for(const block of message?.content??[])if(block.type==='tool-call')bounded(state.calls,block.id,{name:block.name,args:argsOf(block.arguments),seq:event.seq},256);
       }
-      if(['tool/ptc-dispatch-start','tool/code-dispatch-start'].includes(event.type))bounded(state.nested,data.subCallId??data.callId??data.rootCallId,{name:data.name},256);
+      if(['tool/ptc-dispatch-start','tool/code-dispatch-start'].includes(event.type))bounded(state.nested,data.subCallId??data.callId??data.rootCallId,{name:data.name,seq:event.seq},256);
       if(['tool/ptc-dispatch','tool/code-dispatch'].includes(event.type)){
         if(data.rootCallId)state.completedNested.add(data.rootCallId);
         state.nested.delete(data.subCallId??data.callId??data.rootCallId);
@@ -626,7 +626,12 @@ export function createTaskFlow(ctx,runtime,{nativeFiles,call}={}){
         evidenceHighWater:{seq:agent.session.seq,mutationVersion:state.mutationVersion}};
     },
     handoff(agent){const state=sync(agent);return {phase:{...state.phase},todos:state.todos,todoSeq:state.todoSeq,userSeq:state.lastUser?.seq??null,userId:state.lastUser?.id??null,unresolvedErrors:[...state.errors.values()],pendingJobs:[...state.jobs],
-      artifacts:[...state.artifacts.values()],artifactsEvicted:state.artifactsEvicted,executions:state.executions.slice(-6).map(({key,comparisonText,...item})=>item),lastMutationSeq:state.lastMutation,completion:'not-determined'};},
+      artifacts:[...state.artifacts.values()],artifactsEvicted:state.artifactsEvicted,executions:state.executions.slice(-6).map(({key,comparisonText,...item})=>item),
+      executionsOmitted:state.executionsEvicted+Math.max(0,state.executions.length-6),turn:state.turn,turnStartSeq:state.turnStartSeq,
+      pendingCalls:[...new Map([...state.calls,...state.nested]).entries()].map(([callId,{name,seq}])=>({callId,tool:name,seq})),
+      report:state.report?{seq:state.report.seq,argumentsSeq:state.report.argumentsSeq,path:state.report.path,claimedStatus:state.report.args.status,summary:state.report.args.summary,
+        remaining:state.report.args.remaining??[],unverified:state.report.args.unverified??[]}:null,
+      lastMutationSeq:state.lastMutation,completion:'not-determined'};},
     observe(exec,result){
       if(!exec.agent||!runtime.isEnabled(exec.agent))return;
       const raw=result.value??parseResult(resultText(result.content)),value=raw?.data??raw;

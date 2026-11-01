@@ -1,16 +1,17 @@
 import path from 'node:path';
 import {VERSION} from "./runtime.mjs";
 
-export function registerPluginCommand({ctx,runtime,state,effects,available,capabilityDiagnostic,contextEconomics,taskFlow,finalJson,qualityReview,executionEvidence,workingSet,compressionControl,compactionHandoff,contextWindow,observationLedger,historyCoordinator,clearPluginState,applyToolSurface}){
+export function registerPluginCommand({ctx,runtime,state,effects,available,capabilityDiagnostic,contextEconomics,taskFlow,taskHandoff,finalJson,qualityReview,executionEvidence,workingSet,compressionControl,compactionHandoff,contextWindow,observationLedger,historyCoordinator,clearPluginState,applyToolSurface}){
   ctx.commands.register({name:'work-evidence',
-    description:'Inspect plugin status and control the session switch. Mode follows the selected reasoning effort.',
-    input:{hint:'status | detail | on | off | inherit | mode | aggressive on|off'},
+    description:'Inspect plugin status, export task handoff JSON and control the session switch. Mode follows the selected reasoning effort.',
+    input:{hint:'status | detail | handoff | on | off | inherit | mode | aggressive on|off'},
     handler:async({agent,rawInput,signal})=>{
       if(!agent)return {kind:'error',text:'No active session is available.'};
       try{
         await runtime.init(agent,signal);
-        const contextWindowMetrics=contextWindow.metrics(agent);
         const action=String(rawInput||'').trim().toLowerCase()||'status';
+        if(action==='handoff')return {kind:'success',text:JSON.stringify(taskHandoff(agent))};
+        const contextWindowMetrics=contextWindow.metrics(agent);
         const before=runtime.isEnabled(agent);
         let sessionChange=null;
         if(action==='on')sessionChange=await runtime.setSessionEnabled(agent,true,signal);
@@ -25,7 +26,7 @@ export function registerPluginCommand({ctx,runtime,state,effects,available,capab
         else if(action==='mode'){}
         else if(/^mode\s+\S+$/u.test(action)){const mode=action.split(/\s+/u)[1];sessionChange=await runtime.setSessionMode(agent,mode==='inherit'?null:mode,signal);}
         else if(/^workspace-mode\s+\S+$/u.test(action))sessionChange=await runtime.setWorkspaceMode(agent,action.split(/\s+/u)[1],signal);
-        else if(!['status','detail'].includes(action))return {kind:'error',text:'Usage: /work-evidence status | detail | on | off | inherit | mode | aggressive on|off'};
+        else if(!['status','detail'].includes(action))return {kind:'error',text:'Usage: /work-evidence status | detail | handoff | on | off | inherit | mode | aggressive on|off'};
         if(before!==runtime.isEnabled(agent))clearPluginState(agent);
         if(action==='mode'||action.startsWith('mode ')||action.startsWith('workspace-mode '))return {kind:'success',text:JSON.stringify({
           loaded:true,version:VERSION,sessionId:agent.session.id,effective:runtime.isEnabled(agent),mode:runtime.modeStatus(agent),
