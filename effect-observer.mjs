@@ -6,8 +6,7 @@ import {canonicalUsage,messageTokens,textTokens} from './context-economics.mjs';
 const contentKey=message=>JSON.stringify({role:message.role,content:message.content,toolCallId:message.toolCallId,isError:message.isError});
 const chars=messages=>messages.reduce((sum,message)=>sum+(message.content??[]).reduce((n,block)=>n+String(block.text??(block.type==='tool-call'?JSON.stringify(block.arguments??{}):'')).length,0),0);
 const tokens=messages=>messages.reduce((sum,message)=>sum+messageTokens(message),0);
-const FEATURES={programHistory:'historyHygiene',historyOutput:'historyHygiene',receipt:'ledgerReceipt',evidenceView:'evidenceViews',contextPrune:'contextProtocol',ledgerFold:'ledgerFoldWrite',swFold:'swEviction',projection:'requestProjection',restoration:'projectionRestore',state:'stateLedger',unresolved:'ledgerUnresolved',reuseAdvice:'executionTriage',cleanupAdvice:'executionTriage',stepPacing:'stepPacing',contextRecall:'contextProtocol',argumentRecovery:'readArgumentRecovery',archive:'archiveReadRouting',stage:'stageWorkingSet',automaticIndex:'selfIndex',index:null,candidate:null,patterns:null,fastpath:null,verifiedEdit:null,probe:'executionTriage',report:null,fastEdit:'fastEditEnabled'};
-FEATURES.programHistory='programHistory';
+const FEATURES={historyOutput:'historyHygiene',receipt:'ledgerReceipt',evidenceView:'evidenceViews',contextPrune:'contextProtocol',swFold:'swEviction',projection:'requestProjection',restoration:'projectionRestore',state:'stateLedger',unresolved:'ledgerUnresolved',reuseAdvice:'executionTriage',cleanupAdvice:'executionTriage',stepPacing:'stepPacing',contextRecall:'contextProtocol',argumentRecovery:'readArgumentRecovery',archive:'archiveReadRouting',stage:'stageWorkingSet',automaticIndex:'selfIndex',index:null,candidate:null,patterns:null,fastpath:null,verifiedEdit:null,probe:'executionTriage',report:null,fastEdit:'fastEditEnabled'};
 FEATURES.inlineExec=null;
 FEATURES.inlineExecAdvice='executionTriage';
 FEATURES.failureAdvice='executionTriage';
@@ -21,7 +20,7 @@ FEATURES.qualityReview='qualityReview';
 FEATURES.compactionHandoff='compressionControl';
 FEATURES.stageJudgment='stepPacing';
 const PLUGIN_TOOLS=new Set(['project_evidence','work_report','work_status','work_state','work_recall','work_exec','work_compute','work_probe','evidence_index','candidate_select','ptc_patterns','ptc_fastpath','verified_exec','fastedit_java']);
-const RETIRED_FEATURES=new Set(['reasoningHistory','executionAdvice','finishAdvice','presentationAdvice']);
+const RETIRED_FEATURES=new Set(['programHistory','ledgerFold','foldPlan','reasoningHistory','executionAdvice','finishAdvice','presentationAdvice']);
 
 /** Measures changes on the same task trajectory. Provider usage is never attributed by subtraction. */
 export function createEffectObserver(ctx,runtime){

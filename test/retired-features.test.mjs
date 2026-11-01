@@ -5,7 +5,7 @@ import path from 'node:path';
 import {defaults} from '../runtime.mjs';
 import {createEffectObserver} from '../effect-observer.mjs';
 import {startHost,text,tool,reasoning} from './helpers/host.mjs';
-const retired=['reasoningHistory','cacheOrderedStub','archiveEntries','ledgerFoldPlan','executionAdvice','finishAdvice','taskEffort','nativeReadView','nativeExecutionEvidence'];
+const retired=['programHistory','ledgerFoldWrite','reasoningHistory','cacheOrderedStub','archiveEntries','ledgerFoldPlan','executionAdvice','finishAdvice','taskEffort','nativeReadView','nativeExecutionEvidence'];
 test('retired settings accept old boolean values without re-enabling code',()=>{
   const config=defaults(Object.fromEntries(retired.map(key=>[key,true])));
   for(const key of retired){assert.equal(config[key],false);assert.throws(()=>defaults({[key]:'true'}),new RegExp('Invalid '+key));}
@@ -20,9 +20,11 @@ test('retired environment flags cannot restore removed stub modes',()=>{
 test('historical feature counts remain visible without advertising removed features as enabled',()=>{
   const state={id:'legacy-metrics',config:defaults()},agent={session:{id:'legacy-metrics'}};
   const effects=createEffectObserver({on:()=>()=>{}},{get:()=>state,isEnabled:()=>true});
-  effects.decide(agent,'reasoningHistory','applied','historical-record');
-  const value=effects.snapshot(agent).features.reasoningHistory;
-  assert.equal(value.applied,1);assert.equal(value.retired,true);assert.equal(value.enabled,false);
+  for(const name of ['reasoningHistory','programHistory','ledgerFold','foldPlan']){
+    effects.decide(agent,name,'applied','historical-record');
+    const value=effects.snapshot(agent).features[name];
+    assert.equal(value.applied,1);assert.equal(value.retired,true);assert.equal(value.enabled,false);
+  }
 });
 test('old workspace settings preserve raw reasoning and do not make auxiliary calls',async()=>{
   const original='Original reasoning remains in the native message. '.repeat(400);

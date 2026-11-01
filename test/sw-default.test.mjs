@@ -91,7 +91,7 @@ test('history coordination also avoids history reads when default SW has no dupl
   const {agent,state,sw,record}=ledgerFixture();record('one unique output');let reads=0;
   agent.session.eventAt=()=>{reads++;throw Error('idle coordination must not read the log');};
   const runtime={get:()=>state,isEnabled:()=>true},unreachable=()=>{throw Error('idle coordination must not assess plans');};
-  const coordinator=createHistoryCoordinator(runtime,{planFolds:unreachable},sw,{pressure:unreachable});
+  const coordinator=createHistoryCoordinator(runtime,sw,{pressure:unreachable});
   const decision={kind:'enter',messages:[]};
   for(let i=0;i<100;i++)assert.equal(coordinator.beforeStep({agent},decision,agent.session.surface.contentGeneration),decision);
   assert.equal(reads,0);

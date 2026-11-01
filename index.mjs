@@ -149,7 +149,7 @@ export function apply(ctx,config={}){
   const evidenceViews=createEvidenceViews(ctx,runtime);
   const contextWindow=createContextWindow(ctx,runtime);contextWindow.observe();
   const observationLedger=createObservationLedger(ctx,runtime,nativeFiles);observationLedger.observe();
-  const historyCoordinator=createHistoryCoordinator(runtime,observationLedger,contextWindow,contextEconomics);runtime.historyCoordinator=historyCoordinator;
+  const historyCoordinator=createHistoryCoordinator(runtime,contextWindow,contextEconomics);runtime.historyCoordinator=historyCoordinator;
   const clearPluginState=agent=>{observationLedger.clear(agent);contextWindow.clear(agent);};
   const routeRead=createReadRouting(ctx,runtime,call,nativeFiles);
   const index=createSelfIndex(ctx,runtime,call),candidates=createCandidates(ctx,runtime,call),

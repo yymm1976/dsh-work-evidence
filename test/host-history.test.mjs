@@ -38,12 +38,3 @@ test('SW evicts exact duplicate outputs under context pressure and respects its 
   console.log('measurement',JSON.stringify({feature:'swEviction',onChars:on.total,offChars:off.total,evictions:on.status.sw.evicted,charsSaved:on.status.sw.charsSaved}));
 });
 
-test('ledgerFoldWrite commits a recoverable fold only when enabled',async()=>{
-  const planned=await commandHistory({ledgerFoldWrite:false});
-  const written=await commandHistory({ledgerFoldWrite:true});
-  assert.equal(planned.status.metrics.ledgerFoldWrites,0);
-  assert.ok(written.status.metrics.ledgerFoldWrites>0);
-  assert.ok(written.total<planned.total,`${written.total} / ${planned.total}`);
-  assert.ok(written.body.includes('work_recall'));
-  console.log('measurement',JSON.stringify({feature:'ledgerFoldWrite',onChars:written.total,offChars:planned.total,folds:written.status.metrics.ledgerFoldWrites}));
-});

@@ -1,6 +1,6 @@
 # DSH 工程证据插件
 
-本页描述核查分支 0.28.12，模式策略为 pb001-v24。
+本页描述核查分支 0.28.13，模式策略为 pb001-v24。
 main 和桌面仍使用 0.28.11。
 插件提供任务指引、观察账本、历史取回和按需工程工具。
 历史说明见 [HISTORY.md](HISTORY.md)。历史结果不代表当前版本的实际效果。
@@ -34,7 +34,8 @@ work_status 始终保留；历史中仍有取回引用时保留 work_recall。
 qualityReview 控制质量模式的最终答复复核。
 复核使用当前会话路由和有界历史；结果没有充分依据时保留原答复。
 复核优先携带已修改文件在修改后读到的正文，并限制证据长度。
-当前 auto/max 的单次复核曾耗尽输出预算，尚未形成可用判断；诊断记录见现行功能核查页。
+当前 auto/max 的 v5、v6、v7 诊断均未形成可用判断。
+v7 的较短提示词仍耗尽 8192 输出 Token，尚未采用；诊断记录见现行功能核查页。
 
 completionNotice 独立控制阶段摘要后的继续提醒，默认开启。
 插件启用的档位均可使用。提醒要求模型继续已授权且能执行的工作。
@@ -77,9 +78,9 @@ await tools.work_status({session_enabled: null});
 swLedger 和 swEviction 默认开启。
 SW 只替换旧的完整成功输出，要求后续仍有相同正文可见。
 替换后的地址能取回原始事件。
-没有相同正文且未开启账本折叠时，SW 与外层协调器不遍历历史或评估缓存费用。
+没有相同正文时，SW 与外层协调器不遍历历史或评估缓存费用。
 
-ledgerFoldWrite、programHistory、requestProjection、projectionRestore、stubSummary 默认关闭。
+requestProjection、projectionRestore、stubSummary 默认关闭，尚无稳定费用收益结论。
 deferPressureCompaction 也保持默认关闭。
 开启后，仅在宿主压力阈值早于消息预算的 60% 时延后压缩。
 消息预算是上下文容量减去主请求输出预留量。
@@ -90,7 +91,8 @@ deferPressureCompaction 也保持默认关闭。
 以下可选路径已移除：
 
 - reasoningHistory：不再编辑私有推理，原生消息保持原文。
-- ledgerFoldPlan：不再单独扫描折叠候选；写入功能自行取得候选。
+- programHistory：不再缩短历史工具程序；原始调用仍可取回。
+- ledgerFoldPlan、ledgerFoldWrite：不再扫描或写入账本折叠；读取回执、失效和问题标记保留。
 - cacheOrderedStub、archiveEntries：不再提供独立模式。
 - executionAdvice、finishAdvice：不再增加执行或收尾建议。
 
@@ -118,6 +120,9 @@ plugin-command.mjs 负责命令；source-tools.mjs 负责源码和报告入口�
 用户已恢复激进模式、压缩和提示词实验。
 功能核查单独使用 auto/deepseek-v4.1-flash / max。
 当前目标是将保留候选补齐后默认开启，收益不足或不稳定的路径移除。
+40% 延后方案正在独立研究树比较；按有效请求视图衔接原生压缩的方案等待其结束。
+请求预算方案和 v7 复核均未进入核查分支，不能按研究树的行为解释本页配置。
+stub 比较虽已结束，但没有实际触发 stub，不能将费用差作为采用依据。
 尚未完成的候选比较和质量反例统一记录在现行功能核查页。
 核查改动保留在 verify/function-audit，不并入 main 或同步桌面。
 现行交接位于 DSH 工作区的 Codex-2026-10-23/outputs/Work-Evidence-当前交接-2026-10-31.md。
