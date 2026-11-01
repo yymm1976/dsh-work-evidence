@@ -49,12 +49,16 @@ export function hostReferenceIndex(log,ownerId,recallAvailable=false){
     use:'The source address belongs to this receiving session. referenceSessionId selects one captured conversation. Foreign raw tool events and later source changes are outside this capture.'};
 }
 
-function capturedText(event,ref){
+function captureEnvelope(event){
   const content=messageOf(event)?.content;
   const text=Array.isArray(content)?content.filter(block=>block.type==='text'&&typeof block.text==='string').map(block=>block.text).join('\n'):'';
   const open='<referenced-sessions>',close='</referenced-sessions>',start=text.indexOf(open),end=text.indexOf(close,start+open.length);
   if(start<0||end<0)throw new Error('Host reference envelope is unavailable');
-  const data=JSON.parse(text.slice(start+open.length,end));
+  return {data:JSON.parse(text.slice(start+open.length,end)),prefix:text.slice(0,start+open.length),suffix:text.slice(end),tail:text.slice(end+close.length)};
+}
+
+function capturedText(event,ref,envelope=captureEnvelope(event)){
+  const {data}=envelope;
   const selected=Array.isArray(data)?data[ref.inputIndex]:null;
   if(!selected||selected.sessionId!==ref.sessionId||selected.capturedThroughSeq!==ref.capturedThroughSeq||selected.label!==ref.label||
     !Array.isArray(selected.conversation)||selected.conversation.length!==ref.retainedMessages||
@@ -63,7 +67,7 @@ function capturedText(event,ref){
   let fullSnapshot={status:'not-needed'};
   if(ref.truncated){
     fullSnapshot={status:'unavailable',reason:'host-omission-notice-unavailable'};
-    const tail=text.slice(end+close.length),jsonStart=tail.indexOf('\n[');
+    const tail=envelope.tail,jsonStart=tail.indexOf('\n[');
     if(jsonStart>=0)try{
       const notices=JSON.parse(tail.slice(jsonStart+1));
       const notice=Array.isArray(notices)?notices.find(item=>item.sessionId===ref.sessionId&&item.capturedThroughSeq===ref.capturedThroughSeq&&
@@ -127,5 +131,26 @@ export function createHostReferences(ctx){
       nextOffset:end<projection.text.length?end:null,executionOccurred:false};
   }
 
-  return {capabilities,transfer,recall};
+  function captureForRequest(event,referenceSessionId){
+    const capture=referencesOf(event),ref=capture?.references?.find(item=>item.sessionId===referenceSessionId);
+    const message=messageOf(event);
+    if(!ref||message?.content?.length!==1||message.content[0]?.type!=='text')return null;
+    return {reference:ref,...capturedText(event,ref)};
+  }
+
+  function viewForRequest(event,replacements){
+    const capture=referencesOf(event),message=messageOf(event);
+    if(!capture?.references||message?.content?.length!==1||message.content[0]?.type!=='text')return null;
+    const envelope=captureEnvelope(event);
+    if(!Array.isArray(envelope.data)||envelope.data.length!==capture.references.length)return null;
+    const data=envelope.data.map((item,index)=>{
+      const ref=capture.references[index],replacement=replacements.find(entry=>entry.referenceSessionId===ref.sessionId);
+      if(!replacement)return item;
+      if(item.sessionId!==ref.sessionId||item.capturedThroughSeq!==ref.capturedThroughSeq)return item;
+      return {...item,conversation:[],workEvidenceReference:replacement.pointer};
+    });
+    return {...message,content:[{type:'text',text:envelope.prefix+JSON.stringify(data).replaceAll('<','\\u003c')+envelope.suffix}]};
+  }
+
+  return {capabilities,transfer,recall,captureForRequest,viewForRequest};
 }

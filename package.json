@@ -1,6 +1,6 @@
 {
   "name": "@local/dsh-work-evidence",
-  "version": "0.28.17",
+  "version": "0.28.18",
   "private": true,
   "description": "DSH-native evidence, stable request working sets, history recovery and optional OPS CAS/Java adapters",
   "type": "module",
@@ -41,6 +41,7 @@
     "task-flow.mjs",
     "task-handoff.mjs",
     "host-references.mjs",
+    "reference-context.mjs",
     "final-json.mjs",
     "quality-review.mjs",
     "execution-evidence.mjs",

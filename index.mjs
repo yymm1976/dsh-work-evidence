@@ -34,6 +34,7 @@ import {createEffectObserver} from './effect-observer.mjs';
 import {createHistoryCoordinator} from './history-coordinator.mjs';
 import {planContextPrune,prunableMessage,hasPruneProblem,readDispatch,historyReferences} from './context-pruning.mjs';
 import {createHistoryHygiene} from "./history-hygiene.mjs";
+import {createReferenceContext} from './reference-context.mjs';
 
 import {createRetainedCompute} from './retained-compute.mjs';
 import {createFinalJsonGuard} from './final-json.mjs';
@@ -208,10 +209,12 @@ export function apply(ctx,config={}){
     if(!reads.has(read.callId)&&reads.size<33)reads.set(read.callId,read);
     contextReadCalls.set(key,reads);
   }
+  const referenceContext=createReferenceContext(runtime,hostReferences,{canRecall});
   const historyHygiene=createHistoryHygiene(runtime,taskFlow,{
     isProtected:(agent,id)=>preserveContextResults.has(agent.session.id+':'+id),
     retainedSource:(agent,file)=>retainedSources(agent).has(sourceKey(agent,file)),
     canRecall,
+    referenceContext,
   });
   runtime.rewriteRequestHistory=(agent,messages,options)=>historyHygiene.project(agent,messages,options);
   ctx.on('session/event',(session,event)=>{

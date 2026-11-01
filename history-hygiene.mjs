@@ -22,7 +22,7 @@ export function recallCall(agent,{seq,offset=0,maxChars=16000}={}){
 }
 
 /** A request view only; canonical events and reasoning remain complete. */
-export function createHistoryHygiene(runtime,taskFlow,{isProtected=()=>false,retainedSource=()=>false,canRecall=()=>false}={}){
+export function createHistoryHygiene(runtime,taskFlow,{isProtected=()=>false,retainedSource=()=>false,canRecall=()=>false,referenceContext=null}={}){
   const states=new Map();
   function get(agent){
     let state=states.get(agent.session.id);
@@ -46,10 +46,11 @@ export function createHistoryHygiene(runtime,taskFlow,{isProtected=()=>false,ret
     const state=get(agent),events=eventLog(agent.session);
     while(state.cursor<events.length){
       const event=events[state.cursor++],data=event.data??{},message=messageOf(event);
+      referenceContext?.consume(agent,event);
       if(event.type==='step/start')state.step++;
       if(['tool/call','tool/ptc-dispatch','tool/code-dispatch'].includes(event.type)){
         const args=argsOf(data.arguments);
-        if(data.name==='work_recall'||data.name==='work_state'&&args.mode==='recall'){
+        if((data.name==='work_recall'&&args.kind!=='reference'&&(args.sourceSessionId===undefined||args.sourceSessionId===agent.session.id))||data.name==='work_state'&&args.mode==='recall'){
           const pins=args.kind==='call'?state.pinnedCalls:state.pinnedResults;
           if(Number.isSafeInteger(args.seq)&&!pins.has(args.seq)){
             pins.add(args.seq);state.restores++;
@@ -93,7 +94,8 @@ export function createHistoryHygiene(runtime,taskFlow,{isProtected=()=>false,ret
     if(!canRecall(agent)){if(record)get(agent).hiddenResults.clear();return messages;}
     const allowed=(feature,before,after,seq)=>{
       const economics=runtime.contextControl?.assess(agent,{messages:[before],proposedMessages:undefined,
-        savedChars:JSON.stringify(before.content).length-JSON.stringify(after.content).length,changedSeq:seq,changedMessageId:before.id});
+        savedChars:JSON.stringify(before.content).length-JSON.stringify(after.content).length,changedSeq:seq,changedMessageId:before.id,
+        ...(feature==='referenceContext'?{route:runtime.currentSelection?.(agent)??null}:{})});
       if(record&&economics){runtime.contextControl.remember(agent,economics,feature);
         runtime.effects?.decide(agent,feature,economics.allowed?'approved':'deferred',economics.reason,{sourceSeq:seq,economics});}
       return economics?.allowed===true;
@@ -128,22 +130,25 @@ export function createHistoryHygiene(runtime,taskFlow,{isProtected=()=>false,ret
       return after;
     });
     if(record){state.hiddenResults=hidden;state.requests++;state.outputs+=outputs;state.chars+=saved;}
-    return outputs?result:messages;
+    const toolView=outputs?result:messages;
+    return referenceContext?.project(agent,toolView,{record,allowed})??toolView;
   }
   return {project(agent,messages,options){
       if(get(agent).suspended)return messages;
       try{return project(agent,messages,options);}catch(error){get(agent).suspended=true;get(agent).hiddenResults.clear();runtime.problem?.(runtime.get(agent),'history-hygiene',String(error.message));return messages;}
-    },observe,hasRequestView(agent){const s=get(agent);return runtime.isEnabled(agent)&&!s.suspended&&s.hiddenResults.size>0;},
+    },observe,hasRequestView(agent){const s=sync(agent);return runtime.isEnabled(agent)&&runtime.get(agent).config.historyHygiene&&!s.suspended&&(s.hiddenResults.size>0||referenceContext?.hasRequestView(agent)===true);},
     needsRecall(agent){
       if(!runtime.isEnabled(agent)||!runtime.get(agent).config.historyHygiene)return false;
       const s=sync(agent);if(s.suspended)return false;
       return [...s.results.values()].some(entry=>!entry.failed&&!entry.reads.length&&s.step-entry.step>=1&&
         resultText(agent.session.eventAt(entry.seq)?.data?.message?.content).length>8000);
     },
-    bodyVisible(agent,seq){return !runtime.isEnabled(agent)||!runtime.get(agent).config.historyHygiene||get(agent).suspended||!get(agent).hiddenResults.has(seq);},
-    manages(agent,seq){return runtime.isEnabled(agent)&&runtime.get(agent).config.historyHygiene&&!get(agent).suspended&&get(agent).hiddenResults.has(seq);},
+    bodyVisible(agent,seq){return !runtime.isEnabled(agent)||!runtime.get(agent).config.historyHygiene||get(agent).suspended||!get(agent).hiddenResults.has(seq)&&referenceContext?.bodyVisible(agent,seq)!==false;},
+    manages(agent,seq){return runtime.isEnabled(agent)&&runtime.get(agent).config.historyHygiene&&!get(agent).suspended&&(get(agent).hiddenResults.has(seq)||referenceContext?.manages(agent,seq)===true);},
     retainsSource(agent,file){return get(agent).retainedSources.has(fileKey(runtime.get(agent).root,file));},
-    summary(agent){const s=sync(agent);return {enabled:runtime.isEnabled(agent)&&runtime.get(agent).config.historyHygiene,requestViews:s.requests,outputViews:s.outputs,
-      charsRemovedAcrossViews:s.chars,explicitRecoveries:s.restores,rereadPromotions:s.rereadPromotions,retainedCalls:s.pinnedCalls.size,retainedResults:s.pinnedResults.size,suspended:!!s.suspended,reasoning:'unchanged',canonicalHistory:'unchanged'};},
-    disposeAgent:agent=>states.delete(agent.session.id),dispose:()=>states.clear()};
+    summary(agent){const s=sync(agent),references=referenceContext?.summary(agent)??null;return {enabled:runtime.isEnabled(agent)&&runtime.get(agent).config.historyHygiene,requestViews:s.requests,outputViews:s.outputs,
+      charsRemovedAcrossViews:s.chars+(references?.charsRemovedAcrossViews??0),toolOutputCharsRemovedAcrossViews:s.chars,
+      explicitRecoveries:s.restores,rereadPromotions:s.rereadPromotions,retainedCalls:s.pinnedCalls.size,retainedResults:s.pinnedResults.size,suspended:!!s.suspended,
+      referenceContext:references,reasoning:'unchanged',canonicalHistory:'unchanged'};},
+    disposeAgent(agent){referenceContext?.disposeAgent(agent);states.delete(agent.session.id);},dispose(){referenceContext?.dispose();states.clear();}};
 }
