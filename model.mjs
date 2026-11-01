@@ -100,7 +100,12 @@ export async function modelJson(ctx,runtime,agent,signal,system,payload,{maxToke
     if(!value||typeof value!=='object'||Array.isArray(value))throw new Error('Expected a JSON object');
     if(recoveries.length)s.metrics.auxiliaryJsonRecoveries=(s.metrics.auxiliaryJsonRecoveries??0)+1;
     return {value,usage,jsonRecovery:recoveries,route:{provider:route.provider,model:route.model},id:randomUUID()};
-  }catch(e){failed=true;s.metrics.auxiliaryFailures++;runtime.problem(s,'auxiliary-model',e.message);e.auxiliaryUsage=usage;throw e;}
+  }catch(cause){
+    const e=cause instanceof Error?cause:new Error(String(cause));
+    failed=true;s.metrics.auxiliaryFailures++;runtime.problem(s,'auxiliary-model',e.message);
+    e.auxiliaryUsage=usage;e.auxiliaryFinish=finish;e.auxiliaryTextChars=text.length;
+    e.auxiliaryElapsedMs=Math.round(performance.now()-began);throw e;
+  }
   finally{
     if(usage)for(const [key,value]of Object.entries(usage))if(Number.isFinite(value))s.metrics.auxiliaryUsage[key]=(s.metrics.auxiliaryUsage[key]||0)+value;
     await budgetOperation(s,async()=>{

@@ -230,7 +230,8 @@ export function createRequestWorkingSet(ctx,runtime,economics,taskFlow){
   }
   const needed=(state,entry)=>needReasons(state,entry).length>0;
   function restore(agent,state,messages){
-    if(state.lastRestoreStep===state.step)return false;
+    // Each hidden entry has its own restore anchor; a new user message can need
+    // another entry before the host emits the next step/start event.
     const visible=new Set(messages.filter(message=>message.role==='tool'&&!state.hidden.has(state.resultIds.get(message.id))&&!message.isError).map(message=>resultText(message.content)));
     const seqs=[...state.hidden.values()].filter(entry=>{
       if(state.restored.has(entry.seq)||!needed(state,entry))return false;
@@ -246,7 +247,7 @@ export function createRequestWorkingSet(ctx,runtime,economics,taskFlow){
     runtime.effects?.decide(agent,'restoration','applied','observable-dependency-returned',{seqs});
     sync(agent);runtime.get(agent).dirty=true;return true;
   }
-  function beforeBuild(agent,context,originalDerive){
+  function beforeBuild(agent,context,originalDerive,{pressureOnly=false,nativePressure=false}={}){
     if(!active(agent))return;
     const state=sync(agent),config=runtime.get(agent).config;
     state.recentSteps=config.projectionRecentSteps;
@@ -258,11 +259,13 @@ export function createRequestWorkingSet(ctx,runtime,economics,taskFlow){
     restore(agent,state,messages);
     if(compactionActive(agent.session)){skip(state,'active-compaction');return;}
     const pressure=economics.pressure(agent,context.preparedCall?.context,context.config?.maxTokens);
+    if(nativePressure){pressure.emergency=true;pressure.nativePressure=true;}
+    if(pressureOnly&&!pressure.emergency)return;
     if(!pressure.emergency&&runtime.historyCoordinator&&!runtime.historyCoordinator.mayProject(agent)){skip(state,'coalesced-history-transition');return;}
     if(!pressure.emergency&&!rewriteSpacingReady(agent.session,runtime.get(agent))){skip(state,'shared-rewrite-spacing');return;}
     if(!pressure.emergency&&state.step-state.lastSwitchStep<config.projectionStableSteps){skip(state,'stable-plan');return;}
     if(!pressure.emergency&&phase?.key&&phase.key===state.boundaryKey){skip(state,'same-stage-plan');return;}
-    if(state.lastAssessmentStep===state.step)return;
+    if(state.lastAssessmentStep===state.step&&!nativePressure)return;
     state.lastAssessmentStep=state.step;
     const base=originalDerive.call(agent.session),current=render(agent,base,state.hidden,{record:false}),chars=requestChars(current);
     state.assessedRequestChars=chars;
@@ -409,6 +412,26 @@ export function createRequestWorkingSet(ctx,runtime,economics,taskFlow){
   }
   function detail(agent){const state=sync(agent);return {...metrics(agent),entries:[...state.hidden.values()].map(entry=>({...entry,restoredAt:state.restored.get(entry.seq)??null}))};}
   return {attach,detach,metrics,detail,
+    hasRequestView(agent){return !!active(agent)&&get(agent).hidden.size>0;},
+    prepareStep(agent,signal){
+      if(signal?.aborted||!active(agent))return;
+      const attachment=attachments.get(agent.session.id),header=agent.session.requestHeader?.(),selection=runtime.currentSelection?.(agent);
+      if(!attachment||!header?.config||!selection||selection.provider!==header.config.provider||selection.model!==header.config.model||
+        selection.reasoningEffort!==header.config.reasoningEffort||selection.maxTokens!==undefined&&selection.maxTokens!==header.config.maxTokens)return;
+      const state=sync(agent);
+      if(!state.hidden.size&&![...state.results.values()].some(item=>item.observable&&!item.problem&&!item.write&&item.seq<(state.lastUser?.seq??0)))return;
+      try{
+        const context=agent.session.requestContext();let nativePressure=false;
+        const service=ctx.get?.('compaction'),policy=service?.config,override=policy?.modelPolicies?.find(p=>p.provider===header.config.provider&&p.model===header.config.model);
+        if(policy&&policy.auto!==false&&context?.contextWindow>0){
+          const threshold=Math.min(context.contextWindow*(override?.thresholdRatio??policy.thresholdRatio),
+            context.contextWindow-(header.config.maxTokens??0)-(override?.headroomTokens??policy.headroomTokens));
+          if(threshold>0)nativePressure=(ctx.get?ctx.get('tokenMeter'):ctx.tokenMeter)?.measure(agent.session)?.totalTokens>=threshold;
+        }
+        beforeBuild(agent,{config:header.config,tools:header.tools,preparedCall:{context}},attachment.derive,{pressureOnly:true,nativePressure});
+      }
+      catch(error){state.suspended=true;state.problems.push(String(error.message).slice(0,250));runtime.problem(runtime.get(agent),'request-projection',error.message);}
+    },
     noteDispatch(agent,_options,record){const state=get(agent);state.requests++;state.charsOmittedAcrossRequests+=Math.max(0,(record?.effects?.byFeature?.projection?.chars??0)+(record?.effects?.byFeature?.restoration?.chars??0));},
     budgetMessages(agent){
       const attachment=attachments.get(agent.session.id);if(!attachment?.enabled)return null;

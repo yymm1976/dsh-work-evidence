@@ -1,15 +1,9 @@
 import {eventLog,isUserRequestMessage,textOf} from './runtime.mjs';
 import {hasPruneProblem} from './context-pruning.mjs';
 import {stageCheckpoints,stageReuseCandidate} from './stage-checkpoints.mjs';
+import {messageTokens} from './context-economics.mjs';
 
 const POLICY='kimi-codex-handoff-v10-stub';
-// Pressure compaction below this share of the routed message budget (context window minus
-// the request's output reservation) is deferred: the request still fits, and a committed
-// checkpoint rewrites the cached prefix, so every later step pays uncached input again.
-const DEFER_BUDGET_RATIO=0.6;
-// A deferred compaction runs on a larger prompt; cap the summary output reservation so the
-// summary request itself still fits the window. Observed summaries use about 1-3K tokens.
-const DEFERRED_SUMMARY_MAX_TOKENS=16384;
 const INSTRUCTION='Produce one consolidated continuation checkpoint with these sections: Goal and user decisions; Work and artifacts; Evidence and failed approaches; Open work and next action. Preserve current requirements and corrections, separating user decisions from assistant assumptions. Keep exact paths, symbols, configuration values, input conditions, error strings, job IDs and source event seqs needed to continue. Describe what actually changed in each relevant artifact and what remains unfinished. Preserve unresolved failures, excluded approaches and their reasons; distinguish process success from correctness.\n'+
   'Update the previous checkpoint using newer events. Carry forward still-valid earlier facts, decisions and open questions; explicitly replace corrected claims and remove resolved work from the next action. Do not nest old checkpoints, reproduce old continuation-source wrappers or append a per-edit changelog. Reuse public stage conclusions and evidence without treating their headings as proof of coverage. Do not invent completion or turn assistant judgments into user decisions.\n'+
   'Bounded human excerpts, public checkpoints and current TODOs are appended independently. Preserve relevant decisions and facts absent from those sources, especially omitted middle history. Identify any exact detail that still requires historical recovery. Use historical recovery when available; if it is unavailable, preserve the exact evidence needed for continuation instead of relying on a future lookup. Never rerun an action only to recreate its text. Continue from the next unmet dependency without asking answered questions. Output only the complete text checkpoint, no tools or other actions.';
@@ -290,15 +284,8 @@ function handoffRecord(agent,runtime,taskFlow,input,recallAvailable){
 
 /** Extend the one native summarizer; leave its pressure/overflow and commit checks in charge. */
 export function createCompactionHandoff(ctx,runtime,taskFlow,{canRecall=()=>false}={}){
-  const states=new Map(),active=new Map(),pressureOwners=new Set();let attachment=null;
+  const states=new Map(),active=new Map();let attachment=null;
   const deferring=agent=>!!agent&&runtime.isEnabled(agent)&&runtime.get(agent).config.compressionControl&&runtime.get(agent).config.deferPressureCompaction;
-  ctx.on('llm/stream',async function*(options,next){
-    const agent=options.purpose==='compaction'?ctx.agents?.get?.(options.sessionId):null;
-    if(!pressureOwners.has(agent)||!deferring(agent)||!(options.maxTokens>DEFERRED_SUMMARY_MAX_TOKENS)){yield* next();return;}
-    const prior=options.maxTokens;options.maxTokens=DEFERRED_SUMMARY_MAX_TOKENS;
-    get(agent).summaryMaxTokensCapped=(get(agent).summaryMaxTokensCapped??0)+1;
-    try{yield* next();}finally{options.maxTokens=prior;}
-  },{prepend:true});
   ctx.on('llm/stream',async function*(options,next){
     const record=options.purpose==='compaction'?active.get(options.sessionId):null;
     if(!record){yield* next();return;}
@@ -313,6 +300,19 @@ export function createCompactionHandoff(ctx,runtime,taskFlow,{canRecall=()=>fals
     }
   },{prepend:true});
   const get=agent=>{let s=states.get(agent.session.id);if(!s){s={prepared:0,summariesReturned:0,reusedStageSummaries:0,stubSummaries:0,nativeSummaryCalls:0,committed:0,failed:0,last:null};states.set(agent.session.id,s);}return s;};
+  function pressureBudget(agent){
+    try{
+      const service=attachment?.service,header=agent.session.requestHeader?.()?.config,context=agent.session.requestContext?.();
+      const policy=service?.config,override=policy?.modelPolicies?.find(p=>p.provider===header?.provider&&p.model===header?.model);
+      const window=context?.contextWindow,reserve=header?.maxTokens??context?.defaultMaxTokens;
+      const ratio=override?.thresholdRatio??policy?.thresholdRatio,headroom=override?.headroomTokens??policy?.headroomTokens;
+      if(![window,reserve,ratio,headroom].every(Number.isFinite))return {status:'unavailable'};
+      return {status:'observed-configuration',contextWindow:window,outputReservation:reserve,headroomTokens:headroom,
+        nativeThresholdTokens:Math.floor(Math.min(window*ratio,window-reserve-headroom)),
+        requestViewAvailable:runtime.hasRequestBudgetView?.(agent)===true,
+        note:'Declared route capacity and native policy; not proof of the upstream model limit.'};
+    }catch{return {status:'unavailable'};}
+  }
   function summaryOverheadTokens(agent,meter){
     if(typeof meter?.estimateMessage!=='function')return null;
     try{
@@ -346,33 +346,40 @@ export function createCompactionHandoff(ctx,runtime,taskFlow,{canRecall=()=>fals
     const original=service.summarize,descriptor=Object.getOwnPropertyDescriptor(service,'summarize');
     const originalCompact=typeof service.compactIfNeeded==='function'?service.compactIfNeeded:null,
       compactDescriptor=Object.getOwnPropertyDescriptor(service,'compactIfNeeded');
-    // Host pressure compaction starts at min(80% window, window - output - headroom); for a
-    // 116K window with 29K output that is about 21K tokens, so short tasks compact every few
-    // steps. Overflow recovery and manual compaction are left untouched.
+    // Canonical events include bodies already omitted from the request. Skip only
+    // when complete observed usage supports a smaller view below the native threshold.
     const compactIfNeeded=async function(agent,trigger,signal){
-      if(trigger!=='pressure'||!deferring(agent))return originalCompact.call(this,agent,trigger,signal);
-      let budget=null,total=null,nativeThreshold=null;
+      if(trigger!=='pressure'||!deferring(agent)||!runtime.hasRequestBudgetView?.(agent))return originalCompact.call(this,agent,trigger,signal);
+      let total=null,effective=null,nativeThreshold=null;
       try{
         const header=agent.session.requestHeader()?.config;
+        const selected=runtime.currentSelection?.(agent);
+        if(!header||!selected||['provider','model','reasoningEffort'].some(key=>selected[key]!==header[key])||
+          selected.maxTokens!==undefined&&selected.maxTokens!==header.maxTokens||
+          !runtime.contextControl?.lastSuccessfulUsage(agent,header))return originalCompact.call(this,agent,trigger,signal);
         const info=header?await ctx.llm.resolveModelInfo(header.provider,header.model,signal):null;
         const window=info?.context?.contextWindow;
-        if(Number.isInteger(window)&&window>0)budget=window-(header.maxTokens??info.defaultMaxTokens??0);
+        const reserve=header.maxTokens??info?.defaultMaxTokens??0,budget=window-reserve;
         const policy=service.config,override=policy?.modelPolicies?.find(p=>p.provider===header?.provider&&p.model===header?.model);
         const ratio=override?.thresholdRatio??policy?.thresholdRatio,headroom=override?.headroomTokens??policy?.headroomTokens;
         if(!(budget>0)||!Number.isFinite(ratio)||!Number.isFinite(headroom))return originalCompact.call(this,agent,trigger,signal);
-        nativeThreshold=Math.min(window*ratio,budget-headroom);
-        if(nativeThreshold<=0||nativeThreshold>=budget*DEFER_BUDGET_RATIO)return originalCompact.call(this,agent,trigger,signal);
+        nativeThreshold=Math.floor(Math.min(window*ratio,budget-headroom));
+        if(nativeThreshold<=0)return originalCompact.call(this,agent,trigger,signal);
         total=service.regionDependencies()?.meter?.measure(agent.session)?.totalTokens??null;
+        if(!Number.isFinite(total)||total<nativeThreshold)return originalCompact.call(this,agent,trigger,signal);
+        const canonical=agent.session.deriveMessages(),view=runtime.projectedMessages?.(agent);
+        if(!view||canonical.reduce((n,m)=>n+messageTokens(m),0)-view.reduce((n,m)=>n+messageTokens(m),0)<512)return originalCompact.call(this,agent,trigger,signal);
+        effective=runtime.contextControl.pressure(agent,info.context,reserve).tokens;
       }catch{}
-      if(!(budget>0)||!Number.isFinite(total))return originalCompact.call(this,agent,trigger,signal);
+      if(!Number.isFinite(total)||!Number.isFinite(effective))return originalCompact.call(this,agent,trigger,signal);
       const state=get(agent);
-      if(total<budget*DEFER_BUDGET_RATIO){
+      if(effective<nativeThreshold*.95){
         state.deferredPressure=(state.deferredPressure??0)+1;
-        state.lastDeferral={promptTokensEstimate:total,messageBudgetTokens:budget,nativeThresholdTokens:nativeThreshold,deferBelowTokens:Math.floor(budget*DEFER_BUDGET_RATIO)};
+        state.lastDeferral={canonicalPromptTokens:total,effectivePromptTokens:effective,nativeThresholdTokens:nativeThreshold,
+          method:'observed request usage plus effective-view growth; native threshold retained with 5% estimation margin'};
         return null;
       }
-      pressureOwners.add(agent);
-      try{return await originalCompact.call(this,agent,trigger,signal);}finally{pressureOwners.delete(agent);}
+      return originalCompact.call(this,agent,trigger,signal);
     };
     // The host rejects a checkpoint that is not smaller than the span it replaces.
     // Size the appended sources against the span so a doomed summary call is not paid for.
@@ -481,6 +488,6 @@ export function createCompactionHandoff(ctx,runtime,taskFlow,{canRecall=()=>fals
   return {summaryOverheadTokens,
     metrics(agent){return {enabled:runtime.isEnabled(agent)&&runtime.get(agent).config.compressionControl,policy:POLICY,
       nativeSummarizerAttached:!!attachment&&Object.getOwnPropertyDescriptor(attachment.service,'summarize')?.value===attachment.wrapped,automaticTrigger:'host-pressure-or-overflow-only; no-additional-schedule',
-      ...get(agent),note:'Prepared summaries remain subject to native shrink, stability and commit checks. No claim that semantic requirements or judgments were verified.'};},
+      ...get(agent),pressureBudget:pressureBudget(agent),note:'Prepared summaries remain subject to native shrink, stability and commit checks. No claim that semantic requirements or judgments were verified.'};},
     async dispose(){await fiber?.dispose?.();states.clear();active.clear();}};
 }

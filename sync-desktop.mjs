@@ -3,6 +3,8 @@ import path from 'node:path';
 import os from 'node:os';
 
 const source=import.meta.dirname;
+const codeOnly=process.argv.includes('--code-only');
+if(process.argv.slice(2).some(arg=>arg!=='--code-only'))throw new Error('Unknown sync option');
 const desktopHome=path.join(os.homedir(),'Documents','DSH Desktop','home');
 const release=path.join(desktopHome,'tools','dsh-work-evidence');
 const profile=path.join(desktopHome,'profiles','web');
@@ -11,6 +13,7 @@ const manifest=JSON.parse(await fs.readFile(path.join(source,'package.json'),'ut
 if(path.resolve(source)===path.resolve(release))throw new Error('Run from the development directory');
 const previous=await fs.lstat(link);
 if(!previous.isSymbolicLink())throw new Error('Expected the desktop plugin path to be a directory junction');
+if(codeOnly&&path.resolve(await fs.realpath(link))!==path.resolve(release))throw new Error('Code-only sync requires the existing independent desktop link');
 await fs.mkdir(release,{recursive:true});
 for(const entry of ['package.json',...manifest.files]){
   if(entry.includes('*')){
@@ -18,6 +21,7 @@ for(const entry of ['package.json',...manifest.files]){
     await fs.cp(path.join(source,'locale'),path.join(release,'locale'),{recursive:true});
   }else await fs.copyFile(path.join(source,entry),path.join(release,entry));
 }
+if(!codeOnly){
 // Keep runtime dependencies on the installed host, never on development files.
 await fs.mkdir(path.join(release,'node_modules'),{recursive:true});
 const hostDependency=await fs.realpath(path.join(source,'node_modules','@deepseek-ai'));
@@ -43,4 +47,5 @@ if(path.resolve(current)!==path.resolve(release)){
   await fs.rmdir(link);
   await fs.symlink(release,link,'junction');
 }
-console.log(JSON.stringify({source,release,desktopLink:await fs.realpath(link),version:manifest.version}));
+}
+console.log(JSON.stringify({source,release,desktopLink:await fs.realpath(link),version:manifest.version,codeOnly}));

@@ -7,9 +7,9 @@ import {defaults} from '../runtime.mjs';
 import {createContextWindow} from '../context-window.mjs';
 import {createHistoryCoordinator} from '../history-coordinator.mjs';
 import {startHost,text,tool,requestText} from './helpers/host.mjs';
-test('default SW exits before history reads or economic assessment when outputs are unique',()=>{
-  const config=defaults(),events=new Map(),nodes=[];let historyReads=0,assessments=0;
-  assert.equal(config.swLedger,true);assert.equal(config.swEviction,true);
+test('enabled SW exits before history reads or economic assessment when outputs are unique',()=>{
+  const config=defaults({swLedger:true,swEviction:true}),events=new Map(),nodes=[];let historyReads=0,assessments=0;
+  assert.equal(defaults().swLedger,false);assert.equal(defaults().swEviction,false);
   const agent={session:{id:'sw-unique',seq:0,surface:{nodes},eventAt:seq=>{historyReads++;return events.get(seq);}}};
   const state={config,viewEpoch:0};
   const runtime={get:()=>state,isEnabled:()=>true,canRecall:()=>true,contextControl:{assess:()=>{assessments++;return {allowed:true};}}};
@@ -33,7 +33,7 @@ async function ordinary(swEviction){
       sw:(await host.command(agent,'detail')).sw};
   }finally{await host.close();}
 }
-test('default SW leaves ordinary unique read requests unchanged and adds no model calls',async()=>{
+test('enabled SW leaves ordinary unique read requests unchanged and adds no model calls',async()=>{
   const on=await ordinary(true),off=await ordinary(false);
   assert.equal(on.bodies.length,off.bodies.length);
   for(let i=0;i<on.bodies.length;i++)if(on.bodies[i]!==off.bodies[i]){
@@ -52,7 +52,7 @@ function ledgerFixture(){
     else session.surface.nodes.push(event.seq);
     session.surface.contentGeneration++;return event;
   };
-  const agent={session},state={config:defaults(),viewEpoch:0};
+  const agent={session},state={config:defaults({swLedger:true,swEviction:true}),viewEpoch:0};
   const runtime={get:()=>state,isEnabled:()=>true,canRecall:()=>true,contextControl:{
     assess:()=>({allowed:true}),remember:(_a,decision)=>decision,pressure:()=>({emergency:true})}};
   const sw=createContextWindow({},runtime);
@@ -87,7 +87,7 @@ test('SW bounds retained characters and keeps duplicate counts separate by tool'
   assert.equal(metrics.retainedChars,sw.get(agent).observations.reduce((n,item)=>n+item.chars,0));
   assert.equal(sw.propose(agent),null);
 });
-test('history coordination also avoids history reads when default SW has no duplicate',()=>{
+test('history coordination also avoids history reads when enabled SW has no duplicate',()=>{
   const {agent,state,sw,record}=ledgerFixture();record('one unique output');let reads=0;
   agent.session.eventAt=()=>{reads++;throw Error('idle coordination must not read the log');};
   const runtime={get:()=>state,isEnabled:()=>true},unreachable=()=>{throw Error('idle coordination must not assess plans');};

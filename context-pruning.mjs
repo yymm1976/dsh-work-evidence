@@ -112,7 +112,14 @@ function dedupOperations(text,{seq,offset=0}){
   for(const [later,{chars,gap}] of ordered){
     const last=merged.at(-1);
     if(last&&later<last.later+last.chars)continue;
-    merged.push({later,chars,gap});
+    // The whole earlier occurrence must remain visible. An overlapping match,
+    // or an earlier occurrence crossing another fold, cannot supply that body.
+    const sourceStart=later-gap;
+    let retainedChars=Math.min(chars,gap);
+    for(const previous of merged)if(sourceStart<previous.later+previous.chars&&previous.later<sourceStart+retainedChars)
+      retainedChars=Math.min(retainedChars,Math.max(0,previous.later-sourceStart));
+    if(retainedChars<DEDUP_MIN_CHARS)continue;
+    merged.push({later,chars:retainedChars,gap});
   }
   const operations=[];let saved=0;
   for(const {later,chars,gap} of merged){

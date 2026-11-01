@@ -75,12 +75,16 @@ export function registerManagementTools({ctx,runtime,state,effects,available,cap
     }}});
   register('work_status','Inspect plugin status; optionally change workspace config or this session switch.',
     {config:{type:'object',description:'Workspace settings. compact keeps work_exec and work_recall visible from the first request; full restores management/research tools. History rewrites use the forecast cost policy. stepPacing adds bounded guidance without blocking unfinished work. projectionPricing: exact provider/model rates per million tokens.'},
-      session_enabled:{anyOf:[{type:'boolean'},{type:'null'}],description:'This session: true on, false off, null inherit workspace.'}},[],async(args,exec)=>{
+      session_enabled:{anyOf:[{type:'boolean'},{type:'null'}],description:'This session: true on, false off, null inherit workspace.'},
+      quality_review_retry:{type:'boolean',description:'Resume this session route after an unavailable review, only when the user explicitly requests another attempt.'}},[],async(args,exec)=>{
       args=args||{};
-      if(!args||typeof args!=='object'||Array.isArray(args)||Object.keys(args).some(key=>!['config','session_enabled'].includes(key)))throw new Error('Unrecognized work_status field');
+      if(!args||typeof args!=='object'||Array.isArray(args)||Object.keys(args).some(key=>!['config','session_enabled','quality_review_retry'].includes(key)))throw new Error('Unrecognized work_status field');
+      if(args.quality_review_retry!==undefined&&typeof args.quality_review_retry!=='boolean')throw new Error('quality_review_retry must be a boolean');
       await runtime.init(exec.agent,exec.signal??AbortSignal.timeout(10000)).catch(()=>{});
       const s=state(exec.agent);
       await effects.flush(exec.agent);
+      await qualityReview.load(exec.agent);
+      if(args.quality_review_retry)await qualityReview.retry(exec.agent);
       if(args.config!==undefined){
         if(!args.config||typeof args.config!=='object'||Array.isArray(args.config))throw new Error('config must be an object');
         if(Object.hasOwn(args.config,'mode'))throw new Error('Mode follows the selected reasoning effort.');

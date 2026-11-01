@@ -5,7 +5,7 @@ import {randomUUID} from 'node:crypto';
 import {within,references,assertExistingFileWithin,readUtf8File} from './evidence.mjs';
 import {recoveryFor,recoveryOf} from './recovery.mjs';
 
-export const VERSION='0.28.13';
+export const VERSION='0.28.14';
 export const MODES=Object.freeze(['default','aggressive','quality']);
 export const MODE_POLICY_VERSION='pb001-v24';
 export function checkedMode(mode){if(!MODES.includes(mode))throw new Error('mode must be default, aggressive or quality');return mode;}
@@ -36,7 +36,7 @@ export function defaults(raw={}){
     stateLedger:true,stateInform:true,completionNotice:true,archiveReadRouting:true,readArgumentRecovery:true,requestAccounting:true,evidenceViews:true,memberParsing:true,mavenSourceBinding:true,
     contextProtocol:true,contextPruningPolicy:'forecast',historyHygiene:true,contextPruneMinChars:8000,contextPruneHeadChars:4096,contextPruneTailChars:1024,
     ledgerReceipt:true,ledgerUnresolved:true,
-    swLedger:true,swEviction:true,swEvictionSteps:3,
+    swLedger:false,swEviction:false,swEvictionSteps:3,
     requestProjection:false,projectionRestore:false,compressionControl:true,compactionTiming:'native',
     deferPressureCompaction:process.env.DSH_EXPERIMENT_DEFER_COMPACTION==='1'||process.env.DSH_EXPERIMENT_DEFER_COMPACTION==='true',
     stubSummary:process.env.DSH_EXPERIMENT_STUB_SUMMARY==='1'||process.env.DSH_EXPERIMENT_STUB_SUMMARY==='true',
@@ -575,7 +575,7 @@ export function createRuntime(ctx,call,initial={}){
       problem(s,'receipt-write',message);ctx.logger.warn('work-evidence: activity record unavailable: '+message);
     }}
   let runtimeContextSnapshot=null;
-  return {get,init,isEnabled,clearSessionState,setSessionEnabled,setSessionMode,setWorkspaceMode,setAggressiveMode,modeStatus,activeMode,beginRequest,sync,observe,save,loadJson,problem,snapshot,stateSnapshot,consumeStateNotice,recordMutation,recordReadObservation,
+  return {get,init,isEnabled,currentSelection:effortSelection,clearSessionState,setSessionEnabled,setSessionMode,setWorkspaceMode,setAggressiveMode,modeStatus,activeMode,beginRequest,sync,observe,save,loadJson,problem,snapshot,stateSnapshot,consumeStateNotice,recordMutation,recordReadObservation,
     setContextSnapshot:reader=>{runtimeContextSnapshot=reader;},
     receipt,execFor,withExecution,dispose:id=>states.delete(id)};
 }

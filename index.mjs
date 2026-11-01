@@ -132,6 +132,7 @@ export function apply(ctx,config={}){
   runtime.isBodyVisible=(agent,seq)=>workingSet.bodyVisible(agent,seq)&&historyHygiene.bodyVisible(agent,seq);
   runtime.isProjectionManaged=(agent,seq)=>workingSet.manages(agent,seq)||historyHygiene.manages(agent,seq);
   runtime.projectedMessages=agent=>workingSet.budgetMessages(agent);
+  runtime.hasRequestBudgetView=agent=>workingSet.hasRequestView(agent)||historyHygiene.hasRequestView(agent);
   const compressionControl=createCompressionControl(ctx,runtime,contextEconomics);
   const compactionHandoff=createCompactionHandoff(ctx,runtime,taskFlow,{canRecall});
   ctx.effect(()=>async()=>{
@@ -555,6 +556,7 @@ export function apply(ctx,config={}){
     applyToolSurface(payload.agent);
     workingSet.attach(payload.agent);
     runtime.sync(payload.agent);
+    workingSet.prepareStep(payload.agent,payload.signal);
     try{await retainedCompute.prepare(payload.agent);}catch(error){runtime.problem(state(payload.agent),'retained-compute-cleanup',error.message);}
     await effects.load(payload.agent);
     if(ctx.tools.modeFor(payload.agent)==='ptc'){
