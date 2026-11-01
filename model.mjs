@@ -72,7 +72,7 @@ async function reserveBudget(runtime,agent,estimate,tokenLimit=32000,scope=null,
   });
 }
 
-export async function modelJson(ctx,runtime,agent,signal,system,payload,{maxTokens,timeoutMs,reasoningEffort,strictJson=false,route:explicitRoute,inheritConfiguredEffort=true,tokenLimit=32000,budgetScope=null,budgetCalls=2}={}){
+export async function modelJson(ctx,runtime,agent,signal,system,payload,{maxTokens,timeoutMs,reasoningEffort,strictJson=false,route:explicitRoute,inheritConfiguredEffort=true,tokenLimit=32000,budgetScope=null,budgetCalls=2,purpose='work-evidence:auxiliary'}={}){
   const s=runtime.get(agent),route=explicitRoute??(s.config.modelRoute||agent.session.requestHeader()?.config);
   if(!route?.provider||!route?.model||!ctx.llm?.stream)throw new Error('No native model route is available');
   signal.throwIfAborted();
@@ -87,7 +87,7 @@ export async function modelJson(ctx,runtime,agent,signal,system,payload,{maxToke
     const effort=reasoningEffort??(inheritConfiguredEffort?s.config.modelRoute?.reasoningEffort:undefined);
     for await(const chunk of ctx.llm.stream({provider:route.provider,model:route.model,...(effort?{reasoningEffort:effort}:{}),
       system,messages:[{role:'user',content:[{type:'text',text:input}]}],tools:[],maxTokens:outputLimit,
-      signal:joined,sessionId:agent.session.id})){
+      signal:joined,sessionId:agent.session.id,purpose})){
       if(chunk.type==='block-end'&&chunk.block.type==='text')text+=chunk.block.text;
       if(chunk.type==='usage'&&chunk.usage&&typeof chunk.usage==='object'){
         usage??={};

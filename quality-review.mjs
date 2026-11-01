@@ -198,7 +198,7 @@ export function createQualityReview(ctx,runtime,taskFlow,finalJson){
       await record(agent,'started','auxiliary-request',current.assistant.seq,{requestSeq:current.request.seq,explicitRetry});
       if(processState.storageError)return;
       const result=await modelJson(ctx,runtime,agent,signal,QUALITY_REVIEW_PROMPT+'\n'+REVIEW_ACCEPTANCE_RULES,payload,
-        {strictJson:true,route,inheritConfiguredEffort:false,reasoningEffort:effort,maxTokens:16384,timeoutMs:120000,tokenLimit:196608,
+        {strictJson:true,route,inheritConfiguredEffort:false,reasoningEffort:effort,maxTokens:16384,timeoutMs:120000,tokenLimit:196608,purpose:'work-evidence:quality-review',
           // Keep failed reservations intact. One explicit retry has its own single-call allowance.
           budgetScope:'quality-review:'+current.request.seq+(explicitRetry?':explicit-retry':''),budgetCalls:explicitRetry?1:2});
       if(!canonicalUsage(result.usage).complete){await record(agent,'unavailable','usage-incomplete',current.assistant.seq,{pause:true,usage:result.usage});return;}

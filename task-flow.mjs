@@ -57,6 +57,30 @@ function rememberPacing(state,key,outputTokens=state.pacing.outputTokens,noticeS
   else pacing.nextConvergence=Math.max(steps+6,steps*2);
 }
 const messageOf=event=>event?.data?.message??(event?.data?.role?event.data:null);
+function localRecallObservation(agent,args,result){
+  const kind=args.kind??'output',sessionId=args.sourceSessionId??agent.session.id;
+  const target={sessionId,seq:args.seq,kind,...(kind==='reference'?{referenceSessionId:args.referenceSessionId}:{}),offset:args.offset??0};
+  const base={tool:'work_recall',target,bodyRetained:false,authority:'historical-data',deliveryVisibility:'not-assessed'};
+  if(sessionId!==agent.session.id)return {...base,status:'denied',reason:'source-session-mismatch'};
+  const raw=result.value??parseResult(resultText(result.content)),value=raw?.data??raw;
+  if(value?.status!=='observed')return {...base,status:['unavailable','disabled','cancelled'].includes(value?.status)?value.status:'unknown',
+    reason:typeof value?.reason==='string'?value.reason.slice(0,200):'recall-result-not-recognized'};
+  const addressed=kind==='reference'?value.source?.sessionId===sessionId&&value.source.seq===args.seq&&value.referenceSessionId===args.referenceSessionId:value.seq===args.seq;
+  if(!addressed||value.historical!==true||typeof value.text!=='string')return {...base,status:'unknown',reason:'recall-address-not-confirmed'};
+  const index=kind==='history',offset=value.offset??0,total=value.totalChars,returnedChars=value.text.length;
+  if(offset!==target.offset||!Number.isSafeInteger(offset)||offset<0||!index&&(!Number.isSafeInteger(total)||total<offset+returnedChars))
+    return {...base,status:'unknown',reason:'recall-page-not-confirmed'};
+  let sourceType=null;try{sourceType=agent.session.eventAt(args.seq)?.type??null;}catch{}
+  const nonTextBlocks=Array.isArray(value.nonTextBlocks)?value.nonTextBlocks.filter(type=>typeof type==='string').slice(0,8):[];
+  return {...base,status:'observed',sourceType,originalResultIsError:value.isError===true,original:value.original??null,
+    page:{offset,returnedChars,totalChars:Number.isSafeInteger(total)?total:null,nextOffset:value.nextOffset??null,
+      nextSeq:value.nextSeq??null,throughSeq:value.throughSeq??null,endReached:value.complete===true,
+      wholeSourceReturned:!index&&offset===0&&returnedChars===total&&value.complete===true&&value.original!==false&&!nonTextBlocks.length&&
+        (kind!=='reference'||value.snapshotComplete===true),
+      ...(index?{indexOnly:true,rowCount:value.rowCount??null}:{}),
+      ...(kind==='reference'?{snapshotComplete:value.snapshotComplete===true,capturedThroughSeq:value.capturedThroughSeq??null}:{}),nonTextBlocks},
+    applicability:'historical-only; current workspace and downstream use not inferred'};
+}
 const executionView=({key,comparisonText,fileDependencies,...entry})=>({...entry,...dependencyView(entry)});
 export const operationKey=(call,cwd)=>{
   if(!isCommand(call.name))return JSON.stringify([call.name,call.args]);
@@ -159,11 +183,13 @@ export function createTaskFlow(ctx,runtime,{nativeFiles,call,executionDependenci
       state.pacing.operations++;state.pacing.steps.add(state.step);
     }
     const value=result.value??parseResult(resultText(result.content)),payload=value?.data??value;
-    if(call.name==='session_event_read'){
-      const observation=payload?.nativeSourceRead??nativeReadObservation(agent.session.id,call.args,result);
+    const localRecall=call.name==='work_recall'||call.name==='work_state'&&call.args.mode==='recall';
+    if(call.name==='session_event_read'||localRecall){
+      const observation=call.name==='session_event_read'?{tool:call.name,...(payload?.nativeSourceRead??nativeReadObservation(agent.session.id,call.args,result))}:
+        payload?.localSourceRead??localRecallObservation(agent,call.name==='work_state'?{...call.args,kind:'output'}:call.args,result);
       state.sourceReads.push({...observation,seq:event.seq,callSeq:call.seq??(['tool/ptc-dispatch','tool/code-dispatch'].includes(event.type)?event.seq:null),userSeq:state.lastUser?.seq??null,turn:state.turn});
       if(state.sourceReads.length>24){state.sourceReads.shift();state.sourceReadsEvicted++;}
-      return result.isError===true;
+      return observation.status!=='observed';
     }
     if((call.name==='work_compute'||call.name==='work_exec'&&payload?.mode==='retained')&&!result.isError&&payload?.status==='completed')state.pacing.computeCalls++;
     const jobState=payload?.job?.status??payload?.status,pending=['background','promoted'].includes(payload?.kind)||['running','pending','queued','stopping'].includes(jobState);
@@ -662,6 +688,8 @@ export function createTaskFlow(ctx,runtime,{nativeFiles,call,executionDependenci
       // Keep status and dependency metadata, never another copy of large bodies.
       const compact={nativeStructured:raw!=null,status:value?.status??raw?.status,kind:value?.kind,mode:value?.mode,
         ...(exec.name==='session_event_read'?{nativeSourceRead:nativeReadObservation(exec.agent.session.id,argsOf(exec.arguments),result)}:{}),
+        ...(exec.name==='work_recall'||exec.name==='work_state'&&argsOf(exec.arguments).mode==='recall'?
+          {localSourceRead:localRecallObservation(exec.agent,exec.name==='work_state'?{...argsOf(exec.arguments),kind:'output'}:argsOf(exec.arguments),result)}:{}),
         exitCode:value?.exitCode,exit_code:value?.exit_code,jobId:value?.jobId??value?.job_id,job:value?.job,
         error:!!(value?.error||raw?.error),timedOut:value?.timedOut,aborted:value?.aborted,cancelled:value?.cancelled,
         signal:value?.signal,stopped:value?.stopped,effectState:value?.effectState,cwd:value?.cwd,outputPartial,comparisonText,

@@ -5,7 +5,7 @@ import {randomUUID} from 'node:crypto';
 import {within,references,assertExistingFileWithin,readUtf8File} from './evidence.mjs';
 import {recoveryFor,recoveryOf} from './recovery.mjs';
 
-export const VERSION='0.28.19';
+export const VERSION='0.28.20';
 export const MODES=Object.freeze(['default','aggressive','quality']);
 export const MODE_POLICY_VERSION='pb001-v24';
 export function checkedMode(mode){if(!MODES.includes(mode))throw new Error('mode must be default, aggressive or quality');return mode;}

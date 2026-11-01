@@ -63,7 +63,7 @@ export function exportTaskHandoff(agent,runtime,taskFlow,{canRecall=()=>false,ca
   const sourceReads=section((state.sourceReads??[]).map(({seq,callSeq,userSeq,...item})=>({...item,
     source:source(seq),argumentsSource:source(callSeq,true),requestSource:source(userSeq),
     predatesLatestRequest:latestSeq!==null&&seq<latestSeq})),(state.sourceReads?.length??0)+(state.sourceReadsOmitted??0),
-    {scope:'Observed native session_event_read outcomes only. Access was decided by the host at each call; an address grants no future access. Source bodies are not copied.'});
+    {scope:'Observed native event reads and local work_recall/work_state recall outcomes. Pages, index completion, complete-source return and captured-snapshot completeness are distinct. Tool return does not prove visibility or correct use by the model. Access is decided per call; source bodies are not copied.'});
   const jobs=section(current.pendingJobs.map(jobId=>({jobId,status:'pending',
     source:source(log.findLast(event=>event.type==='job/registered'&&event.data?.jobId===jobId)?.seq)})),
     current.pendingJobs.length+current.pendingJobsOmitted);
