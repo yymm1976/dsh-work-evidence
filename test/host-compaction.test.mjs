@@ -6,7 +6,7 @@ import {startHost,text,tool} from './helpers/host.mjs';
 
 // Window 40K with no output reservation: host pressure starts at 30% (12K tokens);
 // deferral waits until 60% of the message budget (24K tokens).
-async function run(workspace){
+async function run(workspace,{manual=false}={}){
   const summaries=[];
   const host=await startHost({workspace,contextWindow:40000,
     extraMounts:[['dsh-compaction-basic',{thresholdRatio:0.3,retainTokens:4000,maxTokens:30000,headroomTokens:4000}]],
@@ -18,7 +18,9 @@ async function run(workspace){
     const agent=await host.createAgent('max');
     await host.send(agent,'依次读取 f0.txt 到 f29.txt 并总结');
     const handoff=(await host.command(agent,'detail')).detail.compression.nativeHandoff;
-    return {handoff,summaries,starts:host.events.filter(e=>e.type==='compaction/start').length,
+    const beforeManual=summaries.length;
+    if(manual)await host.ctx.compaction.compactNow(agent,AbortSignal.timeout(30000));
+    return {handoff,summaries,beforeManual,starts:host.events.filter(e=>e.type==='compaction/start').length,
       completed:host.events.findLast(e=>e.type==='turn/end')?.data?.reason?.kind};
   }finally{await host.close();}
 }
@@ -34,4 +36,10 @@ test('deferPressureCompaction waits for 60% of the message budget and caps summa
   assert.ok(on.summaries.every(o=>o.maxTokens<=16384),'deferred summaries reserve at most 16K output');
   assert.ok(off.summaries.some(o=>o.maxTokens===30000),'without deferral the host reservation is unchanged');
   assert.equal(off.handoff.deferredPressure??0,0);
+});
+
+test('pressure deferral does not cap a manual summary after the pressure operation has ended',async()=>{
+  const observed=await run({contextProtocol:false,deferPressureCompaction:true},{manual:true});
+  assert.equal(observed.summaries.length,observed.beforeManual+1);
+  assert.equal(observed.summaries.at(-1).maxTokens,30000);
 });

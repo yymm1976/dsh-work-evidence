@@ -51,27 +51,27 @@ function countOccurrences(text, value) {
   return text.split(value).length - 1;
 }
 
-test('cacheOrderedStub annotates problem resolution; both modes retain chronological event locators',()=>{
+test('stub checkpoints keep problem resolution markers and chronological recovery locators',()=>{
   const agent=eventLogAgent([userMessage(0,'Read a.txt'),
     event(1,'tool/call',{name:'read',callId:'r1',arguments:{file_path:'a.txt'}}),
     toolResult(2,'read','Error: missing a.txt',{isError:true,source:{kind:'tool',callId:'r1'}}),
     event(3,'tool/call',{name:'read',callId:'r2',arguments:{file_path:'a.txt'}}),
     toolResult(4,'read','current source',{source:{kind:'tool',callId:'r2'}})]);
-  const plain=stubCheckpoint(agent,false,false),ordered=stubCheckpoint(agent,true,false),archived=stubCheckpoint(agent,true,true);
-  assert.match(ordered.text,/"checked":true/);assert.ok(!plain.text.includes('"checked":'));
-  for(const checkpoint of [plain,ordered,archived]){
+  const checkpoint=stubCheckpoint(agent);
+  assert.match(checkpoint.text,/"checked":true/);
+  {
     const recent=checkpoint.text.slice(checkpoint.text.indexOf('recent events'));
     const locators=[...recent.matchAll(/kind:"event",seq:(\d+)/g)].map(m=>Number(m[1]));
     assert.deepEqual(locators,[1,2,3,4]);
     assert.ok(checkpoint.text.includes('kind:"event",seq:0'));
     assert.equal(recallHistory(agent,{seq:4,kind:'event'}).status,'observed');
   }
-  assert.match(archived.text,/archiveEntries=true/);assert.match(archived.text,/treat heads as pointers/);
+  assert.match(checkpoint.text,/bounded pointers/);assert.ok(!checkpoint.text.includes('cacheOrdered='));
 });
 
 test('pressure deferral preserves overflow recovery, disabled behavior and native method cleanup',async()=>{
   const calls=[],original=async(_agent,trigger)=>{calls.push(trigger);return {trigger};};
-  const service={compactIfNeeded:original,summarize:async()=>({summary:[]}),regionDependencies:()=>({meter:{measure:()=>({totalTokens:1000})}})};
+  const service={config:{thresholdRatio:.8,headroomTokens:65536},compactIfNeeded:original,summarize:async()=>({summary:[]}),regionDependencies:()=>({meter:{measure:()=>({totalTokens:1000})}})};
   let cleanup;
   const ctx={on(){},llm:{resolveModelInfo:async()=>({context:{contextWindow:116000}})},
     inject(_dependencies,callback){callback({compaction:service,effect:fn=>{cleanup=fn();}});return {dispose:async()=>cleanup()};}};
@@ -86,6 +86,23 @@ test('pressure deferral preserves overflow recovery, disabled behavior and nativ
   await handoff.dispose();assert.equal(service.compactIfNeeded,original);
 });
 
+test('pressure deferral leaves normal thresholds and exact model overrides to the host',async()=>{
+  let window=1000000,hostCalls=0,meterCalls=0,cleanup;
+  const service={config:{thresholdRatio:.8,headroomTokens:65536,modelPolicies:[]},
+    compactIfNeeded:async()=>{hostCalls++;return 'native';},summarize:async()=>({summary:[]}),
+    regionDependencies:()=>({meter:{measure:()=>{meterCalls++;return {totalTokens:1000};}}})};
+  const ctx={on(){},llm:{resolveModelInfo:async()=>({context:{contextWindow:window}})},
+    inject(_d,callback){callback({compaction:service,effect:fn=>{cleanup=fn();}});return {dispose:async()=>cleanup()};}};
+  const runtime={isEnabled:()=>true,get:()=>({config:{compressionControl:true,deferPressureCompaction:true}})};
+  const agent={session:{id:'normal-threshold',requestHeader:()=>({config:{provider:'p',model:'m',maxTokens:29000}})}};
+  const handoff=createCompactionHandoff(ctx,runtime,{});
+  assert.equal(await service.compactIfNeeded(agent,'pressure'),'native');
+  window=116000;service.config.modelPolicies=[{provider:'p',model:'m',headroomTokens:1000}];
+  assert.equal(await service.compactIfNeeded(agent,'pressure'),'native');
+  assert.equal(hostCalls,2);assert.equal(meterCalls,0);
+  await handoff.dispose();
+});
+
 test('stubCheckpoint retains leading exact paths, commands, and error strings', () => {
   const path = 'src/deep/context-pruning.mjs';
   const command = 'node --test test/context-pruning.test.mjs';
@@ -98,7 +115,7 @@ test('stubCheckpoint retains leading exact paths, commands, and error strings', 
     toolResult(2, 'exec', `TypeError: exact failure at ${path}:128`),
     assistantMessage(3, 'Continue from the failing assertion.'),
   ];
-  const stub = stubCheckpoint(eventLogAgent(log), false, false);
+  const stub = stubCheckpoint(eventLogAgent(log));
 
   assert.equal(stub.events, 3);
   assert.equal(stub.problemRows, 1);
@@ -116,7 +133,7 @@ test('stubCheckpoint lists an old textual failure regardless of recent-event bud
   for (let seq = 2; seq <= 121; seq++) {
     log.push(toolResult(seq, 'read', `success replay ${seq} ${'x'.repeat(260)}`));
   }
-  const stub = stubCheckpoint(eventLogAgent(log), false, false);
+  const stub = stubCheckpoint(eventLogAgent(log));
 
   assert.equal(stub.problemRows, 1);
   assert.equal(stub.text.includes('FAILED assertion at src/old-file.mjs:17'), true);
@@ -129,8 +146,8 @@ test('stubCheckpoint bounds its text and keeps the newest event at the tail', ()
     {length: 140},
     (_, index) => toolResult(index + 1, 'read', `observation ${index + 1} ${'z'.repeat(400)}`),
   );
-  const first = stubCheckpoint(eventLogAgent(log), false, false);
-  const second = stubCheckpoint(eventLogAgent(log), false, false);
+  const first = stubCheckpoint(eventLogAgent(log));
+  const second = stubCheckpoint(eventLogAgent(log));
 
   assert.equal(first.text.length <= 20000, true);
   assert.equal(first.rows < first.events, true);
@@ -172,8 +189,6 @@ test('stub continuation path keeps short human text once and links bounded long 
   const config = {
     compressionControl: true,
     stubSummary: true,
-    cacheOrderedStub: false,
-    archiveEntries: false,
   };
   const runtimeState = {config, dirty: false};
   const runtime = {
@@ -230,7 +245,7 @@ test('stubCheckpoint tool-call locators recover arguments through recallHistory'
     event(1, 'tool/call', {name: 'exec', callId: 'call-1', arguments: argumentsText}),
     assistantMessage(2, 'Continue with the recorded command.'),
   ]);
-  const stub = stubCheckpoint(agent, false, false);
+  const stub = stubCheckpoint(agent);
 
   assert.equal(stub.text.includes(path), false);
   assert.match(stub.text, /work_recall\(\{kind:"event",seq:1,offset:0\}\)/);
@@ -247,7 +262,7 @@ test('stubCheckpoint treats an isError result as a problem without an error mark
   for (let seq = 2; seq <= 121; seq++) {
     log.push(toolResult(seq, 'read', `successful observation ${seq} ${'q'.repeat(260)}`));
   }
-  const stub = stubCheckpoint(eventLogAgent(log), true, true);
+  const stub = stubCheckpoint(eventLogAgent(log));
 
   assert.equal(stub.problemRows, 1);
   assert.equal(stub.text.includes(marker), true);
@@ -280,7 +295,7 @@ test('stubCheckpoint checked requires the same tool and target', () => {
     }),
     toolResult(8, 'read', '{"ok":true}', {source: {callId: 'read-a-2'}}),
   ];
-  const stub = stubCheckpoint(eventLogAgent(log), true, true);
+  const stub = stubCheckpoint(eventLogAgent(log));
   assert.equal(stub.problemRows, 3);
   const rows = [...stub.text.matchAll(/^- (\{"seq":\d+,"kind":"result"[^\n]*,"checked":(?:true|false)\})$/gm)]
     .map(match => JSON.parse(match[1]));

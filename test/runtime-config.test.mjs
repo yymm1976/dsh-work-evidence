@@ -3,9 +3,7 @@ import assert from 'node:assert/strict';
 import {MODES, MODE_POLICY_VERSION, defaults} from '../runtime.mjs';
 
 const ENV_FEATURES = [
-  ['stubSummary', 'DSH_EXPERIMENT_STUB_SUMMARY'],
-  ['cacheOrderedStub', 'DSH_EXPERIMENT_CACHE_ORDERED_STUB'],
-  ['archiveEntries', 'DSH_EXPERIMENT_ARCHIVE_ENTRIES']
+  ['stubSummary', 'DSH_EXPERIMENT_STUB_SUMMARY']
 ];
 
 function withEnv(overrides, callback) {

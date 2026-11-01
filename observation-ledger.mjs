@@ -225,7 +225,7 @@ export function createObservationLedger(ctx,runtime,nativeFiles=null){
   const enabled=agent=>runtime.isEnabled(agent);
   const ledgerActive=agent=>{
     const value=config(agent);
-    return value.ledgerReceipt||value.ledgerUnresolved||value.ledgerFoldPlan||value.ledgerFoldWrite;
+    return value.ledgerReceipt||value.ledgerUnresolved||value.ledgerFoldWrite;
   };
   const addProblem=(state,message)=>{
     state.problems.push({at:new Date().toISOString(),message:String(message).slice(0,280)});
@@ -820,8 +820,7 @@ export function createObservationLedger(ctx,runtime,nativeFiles=null){
   function maintenance(agent){
     if(!enabled(agent))return [];
     const state=stateFor(agent),configNow=config(agent);
-    if(!configNow.ledgerUnresolved&&!configNow.ledgerFoldPlan)return [];
-    if(configNow.ledgerFoldPlan)scanCandidates(agent);
+    if(!configNow.ledgerUnresolved)return [];
     for(const observation of state.observations){
       if(observation.visible&&!agent.session.surface.nodes.includes(observation.seq))observation.visible=false;
     }

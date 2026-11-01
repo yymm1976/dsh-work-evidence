@@ -1,6 +1,7 @@
 # DSH 工程证据插件
 
-当前版本为 0.28.11，模式策略为 pb001-v24。
+本页描述核查分支 0.28.12，模式策略为 pb001-v24。
+main 和桌面仍使用 0.28.11。
 插件提供任务指引、观察账本、历史取回和按需工程工具。
 历史说明见 [HISTORY.md](HISTORY.md)。历史结果不代表当前版本的实际效果。
 
@@ -70,22 +71,34 @@ await tools.work_status({session_enabled: null});
 
 历史裁剪采用 forecast；时机交给宿主。
 旧 online-batch 和 adaptive 设置分别归入 forecast 和 native。
-requestProjection、stubSummary、cacheOrderedStub、archiveEntries 默认关闭。
-核查分支新增的 deferPressureCompaction 默认关闭。
-开启后，普通压力压缩等到消息预算的 60% 再执行。
+swLedger 和 swEviction 默认开启。
+SW 只替换旧的完整成功输出，要求后续仍有相同正文可见。
+替换后的地址能取回原始事件。
+没有相同正文时，SW 不遍历历史或评估缓存费用。
+
+ledgerFoldWrite、programHistory、requestProjection、projectionRestore、stubSummary 默认关闭。
+deferPressureCompaction 也保持默认关闭。
+开启后，仅在宿主压力阈值早于消息预算的 60% 时延后压缩。
 消息预算是上下文容量减去主请求输出预留量。
-该选项把摘要输出预留上限设为 16384 Token。
-溢出恢复和手动压缩沿用宿主路径。
+该次压力压缩的摘要输出预留上限为 16384 Token。
+普通阈值、溢出恢复和手动压缩沿用宿主参数。
 裁剪保留原始事件和取回入口；取回不可用时保留正文。
 
-cacheOrderedStub 为问题行增加后续成功标记。
-两种 stub 模式都按时间排列近期事件。
-archiveEntries 为摘要增加历史取回说明，不另建归档服务。
-这两个开关的缓存费用收益尚未证明。
+以下可选路径已移除：
+
+- reasoningHistory：不再编辑私有推理，原生消息保持原文。
+- ledgerFoldPlan：不再单独扫描折叠候选；写入功能自行取得候选。
+- cacheOrderedStub、archiveEntries：不再提供独立模式。
+- executionAdvice、finishAdvice：不再增加执行或收尾建议。
+
+旧配置中的这些布尔字段兼容读取后固定为 false。
+旧的缓存排序和归档环境变量不能重新启用对应模式。
+stubSummary 保留问题处理标记、事件指针和原文取回。
 
 ## 开发与桌面加载
 
 开发目录：C:/Users/杨铭/Documents/Codex/2026-10-19/wo/outputs/dsh-work-evidence。
+核查工作树：C:/Users/杨铭/Documents/Codex/2026-10-19/wo/outputs/dsh-work-evidence-verify。
 桌面加载目录：C:/Users/杨铭/Documents/DSH Desktop/home/tools/dsh-work-evidence。
 桌面 web profile 的包依赖和目录联接指向加载目录。
 加载目录保存独立源码与 Python 环境；宿主依赖来自已安装的桌面运行时。

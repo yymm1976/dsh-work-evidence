@@ -5,7 +5,7 @@ import {randomUUID} from 'node:crypto';
 import {within,references,assertExistingFileWithin,readUtf8File} from './evidence.mjs';
 import {recoveryFor,recoveryOf} from './recovery.mjs';
 
-export const VERSION='0.28.11';
+export const VERSION='0.28.12';
 export const MODES=Object.freeze(['default','aggressive','quality']);
 export const MODE_POLICY_VERSION='pb001-v24';
 export function checkedMode(mode){if(!MODES.includes(mode))throw new Error('mode must be default, aggressive or quality');return mode;}
@@ -34,15 +34,13 @@ export function defaults(raw={}){
   const config={enabled:true,aggressiveMode:true,mode:'aggressive',selfIndex:true,modelTimeoutMs:20000,modelMaxTokens:1200,modelRoute:null,
     fastEditEnabled:true,fastEditPython:path.join(import.meta.dirname,'.fastedit-venv','Scripts','python.exe'),
     stateLedger:true,stateInform:true,completionNotice:true,archiveReadRouting:true,readArgumentRecovery:true,requestAccounting:true,evidenceViews:true,memberParsing:true,mavenSourceBinding:true,
-    contextProtocol:true,contextPruningPolicy:'forecast',historyHygiene:true,programHistory:false,reasoningHistory:false,contextPruneMinChars:8000,contextPruneHeadChars:4096,contextPruneTailChars:1024,
-    ledgerReceipt:true,ledgerUnresolved:true,ledgerFoldPlan:false,ledgerFoldWrite:false,
-    swLedger:false,swEviction:false,swEvictionSteps:3,
+    contextProtocol:true,contextPruningPolicy:'forecast',historyHygiene:true,programHistory:false,contextPruneMinChars:8000,contextPruneHeadChars:4096,contextPruneTailChars:1024,
+    ledgerReceipt:true,ledgerUnresolved:true,ledgerFoldWrite:false,
+    swLedger:true,swEviction:true,swEvictionSteps:3,
     requestProjection:false,projectionRestore:false,compressionControl:true,compactionTiming:'native',
     deferPressureCompaction:process.env.DSH_EXPERIMENT_DEFER_COMPACTION==='1'||process.env.DSH_EXPERIMENT_DEFER_COMPACTION==='true',
     stubSummary:process.env.DSH_EXPERIMENT_STUB_SUMMARY==='1'||process.env.DSH_EXPERIMENT_STUB_SUMMARY==='true',
-    cacheOrderedStub:process.env.DSH_EXPERIMENT_CACHE_ORDERED_STUB==='1'||process.env.DSH_EXPERIMENT_CACHE_ORDERED_STUB==='true',
-    archiveEntries:process.env.DSH_EXPERIMENT_ARCHIVE_ENTRIES==='1'||process.env.DSH_EXPERIMENT_ARCHIVE_ENTRIES==='true',
-    executionTriage:true,executionAdvice:false,stageWorkingSet:true,finishAdvice:false,stepPacing:true,retainedCompute:true,taskEffort:false,finalJsonGuard:true,qualityReview:true,nativeReadView:false,nativeExecutionEvidence:false,
+    executionTriage:true,stageWorkingSet:true,stepPacing:true,retainedCompute:true,finalJsonGuard:true,qualityReview:true,
     projectionMinChars:64000,projectionRecentSteps:6,projectionStableSteps:8,projectionHorizonSteps:16,projectionPricing:[],
     toolSurface:'compact',
     defaultResponseView:'reference-if-visible',...raw};
@@ -54,6 +52,11 @@ export function defaults(raw={}){
     'ledgerReceipt','ledgerUnresolved','ledgerFoldPlan','ledgerFoldWrite','defaultResponseView','swLedger','swEviction','swEvictionSteps',
     'requestProjection','projectionRestore','compressionControl','compactionTiming','deferPressureCompaction','stubSummary','cacheOrderedStub','archiveEntries','executionTriage','executionAdvice','stageWorkingSet','finishAdvice','stepPacing','taskEffort','finalJsonGuard','qualityReview','nativeReadView','nativeExecutionEvidence','projectionMinChars','projectionRecentSteps','projectionStableSteps','projectionHorizonSteps','projectionPricing','toolSurface']);
   if(!raw||typeof raw!=='object'||Array.isArray(raw)||Object.keys(raw).some(k=>!known.has(k)))throw new Error('Unknown work-evidence setting');
+  // Accept old workspaces without loading removed modules or re-enabling their hooks.
+  for(const key of ['taskEffort','nativeReadView','nativeExecutionEvidence','reasoningHistory','cacheOrderedStub','archiveEntries','ledgerFoldPlan','executionAdvice','finishAdvice']){
+    if(raw[key]!==undefined&&typeof raw[key]!=='boolean')throw new Error('Invalid '+key);
+    config[key]=false;
+  }
   checkedMode(config.mode);
   if(!['forecast','online-batch'].includes(config.contextPruningPolicy))throw new Error('Invalid contextPruningPolicy');
   config.contextPruningPolicy='forecast';
@@ -82,10 +85,6 @@ export function defaults(raw={}){
   for(const [key,min,max] of [['modelTimeoutMs',1000,60000],['modelMaxTokens',128,4096]])if(!Number.isInteger(config[key])||config[key]<min||config[key]>max)throw new Error('Invalid '+key);
   if(typeof config.fastEditPython!=='string'||!path.isAbsolute(config.fastEditPython)||config.fastEditPython.length>1000)throw new Error('Invalid fastEditPython');
   if(config.modelRoute!==null&&(!config.modelRoute||typeof config.modelRoute.provider!=='string'||typeof config.modelRoute.model!=='string'||!config.modelRoute.provider.trim()||!config.modelRoute.model.trim()||config.modelRoute.provider.length>200||config.modelRoute.model.length>300||Object.keys(config.modelRoute).some(k=>!['provider','model','reasoningEffort'].includes(k))||(config.modelRoute.reasoningEffort!==undefined&&(typeof config.modelRoute.reasoningEffort!=='string'||config.modelRoute.reasoningEffort.length>64))))throw new Error('Invalid model route');
-  // Retired features remain accepted in older workspace settings without reactivating them.
-  config.taskEffort=false;
-  config.nativeReadView=false;
-  config.nativeExecutionEvidence=false;
   return config;
 }
 export function createRuntime(ctx,call,initial={}){
@@ -541,12 +540,12 @@ export function createRuntime(ctx,call,initial={}){
     enabled:effective,workspaceDefaultEnabled:s.config.enabled,session:{enabled:effective,override:s.sessionEnabledOverride,source:s.sessionEnabledOverride===null?'workspace-setting':'session-setting',defaultResponseView:s.sessionDefaultResponseView??s.config.defaultResponseView,
       policyPath:s.sessionPolicyPath,loaded:s.sessionPolicyLoaded},
     telemetry:{directory:s.telemetryDir,scope:s.telemetryScope,workspaceConfiguration:s.dir},workspaceConfigValid:s.workspaceConfigValid,
-      features:{aggressiveMode:s.config.aggressiveMode,selfIndex:s.config.selfIndex,completionNotice:s.config.completionNotice,ptcPatterns:true,ptcFastpath:true,verifiedExec:true,fastEdit:s.config.fastEditEnabled,contextProtocol:s.config.contextProtocol,historyHygiene:s.config.historyHygiene,programHistory:s.config.programHistory,reasoningHistory:s.config.reasoningHistory,
+      features:{aggressiveMode:s.config.aggressiveMode,selfIndex:s.config.selfIndex,completionNotice:s.config.completionNotice,ptcPatterns:true,ptcFastpath:true,verifiedExec:true,fastEdit:s.config.fastEditEnabled,contextProtocol:s.config.contextProtocol,historyHygiene:s.config.historyHygiene,programHistory:s.config.programHistory,
       stateLedger:s.config.stateLedger,stateInform:s.config.stateInform,archiveReadRouting:s.config.archiveReadRouting,readArgumentRecovery:s.config.readArgumentRecovery,requestAccounting:s.config.requestAccounting,evidenceViews:s.config.evidenceViews,memberParsing:s.config.memberParsing,mavenSourceBinding:s.config.mavenSourceBinding,
-      ledgerReceipt:s.config.ledgerReceipt,ledgerUnresolved:s.config.ledgerUnresolved,ledgerFoldPlan:s.config.ledgerFoldPlan,ledgerFoldWrite:s.config.ledgerFoldWrite,
+      ledgerReceipt:s.config.ledgerReceipt,ledgerUnresolved:s.config.ledgerUnresolved,ledgerFoldWrite:s.config.ledgerFoldWrite,
       swLedger:s.config.swLedger,swEviction:s.config.swEviction,swEvictionSteps:s.config.swEvictionSteps,defaultResponseView:s.sessionDefaultResponseView??s.config.defaultResponseView,
       requestProjection:s.config.requestProjection,projectionRestore:s.config.projectionRestore,compressionControl:s.config.compressionControl,compactionTiming:s.config.compactionTiming,deferPressureCompaction:s.config.deferPressureCompaction,stubSummary:s.config.stubSummary,
-      executionTriage:s.config.executionTriage,executionAdvice:s.config.executionAdvice,stageWorkingSet:s.config.stageWorkingSet,finishAdvice:s.config.finishAdvice,stepPacing:s.config.stepPacing,retainedCompute:s.config.retainedCompute,
+      executionTriage:s.config.executionTriage,stageWorkingSet:s.config.stageWorkingSet,stepPacing:s.config.stepPacing,retainedCompute:s.config.retainedCompute,
       taskEffort:s.config.taskEffort,qualityReview:s.config.qualityReview,nativeReadView:s.config.nativeReadView,nativeExecutionEvidence:s.config.nativeExecutionEvidence},
     contextSettings:{requestProjection:s.config.requestProjection,projectionRestore:s.config.projectionRestore,compressionControl:s.config.compressionControl,compactionTiming:s.config.compactionTiming,deferPressureCompaction:s.config.deferPressureCompaction,stubSummary:s.config.stubSummary,
       projectionMinChars:s.config.projectionMinChars,projectionRecentSteps:s.config.projectionRecentSteps,projectionStableSteps:s.config.projectionStableSteps,

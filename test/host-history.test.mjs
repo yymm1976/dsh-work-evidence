@@ -6,7 +6,7 @@ const price=[{provider:'scripted',model:'scripted-model',input:0.15,cacheRead:0.
 const usage=options=>{const tokens=Math.ceil(JSON.stringify(options.messages).length/3),cached=Math.floor(tokens*.85);
   return {inputTokens:tokens-cached,cacheReadTokens:cached,cacheWriteTokens:0,outputTokens:60,totalTokens:[tokens,60].reduce((sum,n)=>sum+n,0)};};
 async function commandHistory(workspace,contextWindow=60000){
-  const host=await startHost({workspace:{contextProtocol:false,projectionPricing:price,...workspace},contextWindow,usage,
+  const host=await startHost({workspace:{contextProtocol:false,swLedger:false,swEviction:false,projectionPricing:price,...workspace},contextWindow,usage,
     script:(_o,n)=>n<=14?[tool('pwsh',{command:n%2?"1..400 | % { 'same output line ' + $_ + ' ' + ('w'*60) }":
       "1..300 | % { 'unique line ' + $_ + ' ' + ('v'*60) }",description:'list'})]:[text('完成。')]});
   try{
@@ -38,9 +38,9 @@ test('SW evicts exact duplicate outputs under context pressure and respects its 
   console.log('measurement',JSON.stringify({feature:'swEviction',onChars:on.total,offChars:off.total,evictions:on.status.sw.evicted,charsSaved:on.status.sw.charsSaved}));
 });
 
-test('ledgerFoldPlan alone is descriptive; ledgerFoldWrite commits a recoverable fold',async()=>{
-  const planned=await commandHistory({ledgerFoldPlan:true,ledgerFoldWrite:false});
-  const written=await commandHistory({ledgerFoldPlan:true,ledgerFoldWrite:true});
+test('ledgerFoldWrite commits a recoverable fold only when enabled',async()=>{
+  const planned=await commandHistory({ledgerFoldWrite:false});
+  const written=await commandHistory({ledgerFoldWrite:true});
   assert.equal(planned.status.metrics.ledgerFoldWrites,0);
   assert.ok(written.status.metrics.ledgerFoldWrites>0);
   assert.ok(written.total<planned.total,`${written.total} / ${planned.total}`);

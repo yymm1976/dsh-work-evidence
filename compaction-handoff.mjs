@@ -83,12 +83,10 @@ function targetFromArguments(value){
   return JSON.stringify([normalized,command,cwd]);
 }
 // Deterministic stub checkpoint: no summarizer model call. Row selection and serialization are
-// deterministic for a given event log. Both modes list older rows before newer rows;
-// cacheOrderedStub additionally annotates resolved problem rows. Provider cache savings
-// depend on the complete request and are not established by this serialization.
+// deterministic for a given event log. Provider cache savings depend on the full request.
 // Problem rows get checked markers only
 // when a later successful result has the same tool and path/command target.
-export function stubCheckpoint(agent,cacheOrdered,archiveEntries){
+export function stubCheckpoint(agent){
   const log=eventLog(agent.session),events=[],problems=[],humans=[],problemSeqs=new Set(),targetBySeq=new Map(),callTargets=new Map();
   for(const event of log){
     const message=messageOf(event),data=event.data??{};
@@ -117,15 +115,13 @@ export function stubCheckpoint(agent,cacheOrdered,archiveEntries){
     const isProblem=event.type==='tool/result'&&(message?.isError===true||hasPruneProblem([{type:'text',text}]));
     if(isProblem){problems.push(row);problemSeqs.add(event.seq);}
   }
-  const line=row=>'- '+JSON.stringify(row)+'\n  recall: work_recall({kind:"event",seq:'+row.seq+',offset:0})',
-    serialize=rows=>rows.map(line).join('\n');
+  const line=row=>'- '+JSON.stringify(row)+'\n  recall: work_recall({kind:"event",seq:'+row.seq+',offset:0})';
   const selectedHumans=humans.slice(-STUB_HUMAN_MAX_ROWS);
   let body=selectedHumans.length?
     'human requests (continuation sources may carry text or bounded excerpts; these entries locate the full originals):\n'+
     selectedHumans.map(row=>'- '+JSON.stringify(row)+
       '\n  continuation: record.humanRequests.requests\n  recall: work_recall({kind:"event",seq:'+row.seq+',offset:0})').join('\n')+'\n'
     :'';
-  if(cacheOrdered){
     // Problem rows carry a verification marker; checked ones were later answered by a
     // successful result and only need re-reading after explicit recall.
     const successSeqs=new Set(events.filter(r=>r.kind==='result'&&!problemSeqs.has(r.seq)&&!/error|failed|exception|cannot|undefined|null pointer|traceback/i.test(r.head)).map(r=>r.seq));
@@ -141,12 +137,8 @@ export function stubCheckpoint(agent,cacheOrdered,archiveEntries){
       marked.map(row=>'- '+JSON.stringify({seq:row.seq,kind:row.kind,tool:row.tool,head:row.head,checked:row.checked})+
         '\n  recall: work_recall({kind:"event",seq:'+row.seq+',offset:0})').join('\n')+
       '\nrecent events (oldest first; bounded rows may shift as the conversation grows):\n';
-  }else{
-    body+='problem rows (latest '+STUB_PROBLEM_MAX_ROWS+', full priority):\n'+serialize(problems.slice(-STUB_PROBLEM_MAX_ROWS))+
-      '\nrecent events (newest last, oldest listed first):\n';
-  }
-  const head='[work-evidence stub checkpoint policy='+POLICY+' deterministic=true'+(cacheOrdered?' cacheOrdered=true':'')+(archiveEntries?' archiveEntries=true':'')+']\n'+
-    'Event rows are bounded; the continuation sources retain human requests where budget permits, and the entries below locate their original events'+(archiveEntries?' and serve as archive entries: the full original lives behind the listed work_recall, so treat heads as pointers, not evidence':'')+'. Recover original text with the listed work_recall before relying on a head; never rerun an operation only to recreate its text. Problem results are listed regardless of recency'+(archiveEntries?', and checked ones were already resolved — recall only if the resolution itself matters':'')+'. Continue from the next unmet dependency. Assistant heads are not user decisions.\n\n';
+  const head='[work-evidence stub checkpoint policy='+POLICY+' deterministic=true]\n'+
+    'Event rows are bounded pointers to original events. Continuation sources retain human requests where budget permits. Recover original text with work_recall before relying on a head; never rerun an operation only to recreate its text. Problem results are listed regardless of recency. A checked row has a later successful observation of the same tool and target. Continue from the next unmet dependency. Assistant heads are not user decisions.\n\n';
   const rowLines=events.filter(row=>row.kind!=='user').map(line),budget=STUB_MAX_CHARS-head.length-body.length;
   let used=0,end=rowLines.length;
   while(end>0&&used+rowLines[end-1].length+1<=budget){used+=rowLines[end-1].length+1;end--;}
@@ -298,11 +290,11 @@ function handoffRecord(agent,runtime,taskFlow,input,recallAvailable){
 
 /** Extend the one native summarizer; leave its pressure/overflow and commit checks in charge. */
 export function createCompactionHandoff(ctx,runtime,taskFlow,{canRecall=()=>false}={}){
-  const states=new Map(),active=new Map();let attachment=null;
+  const states=new Map(),active=new Map(),pressureOwners=new Set();let attachment=null;
   const deferring=agent=>!!agent&&runtime.isEnabled(agent)&&runtime.get(agent).config.compressionControl&&runtime.get(agent).config.deferPressureCompaction;
   ctx.on('llm/stream',async function*(options,next){
     const agent=options.purpose==='compaction'?ctx.agents?.get?.(options.sessionId):null;
-    if(!deferring(agent)||!(options.maxTokens>DEFERRED_SUMMARY_MAX_TOKENS)){yield* next();return;}
+    if(!pressureOwners.has(agent)||!deferring(agent)||!(options.maxTokens>DEFERRED_SUMMARY_MAX_TOKENS)){yield* next();return;}
     const prior=options.maxTokens;options.maxTokens=DEFERRED_SUMMARY_MAX_TOKENS;
     get(agent).summaryMaxTokensCapped=(get(agent).summaryMaxTokensCapped??0)+1;
     try{yield* next();}finally{options.maxTokens=prior;}
@@ -334,7 +326,7 @@ export function createCompactionHandoff(ctx,runtime,taskFlow,{canRecall=()=>fals
         const record=handoffRecord(agent,runtime,taskFlow,{messages},canRecall(agent));
         const estimate=text=>meter.estimateMessage({role:'user',content:[{type:'text',text}]});
         return {stub:true,inputTokens:0,
-          framedOverheadTokens:estimate(CHECKPOINT_PREAMBLE+'\n\n<compacted-summary>\n[Work Evidence continuation sources]\n'+JSON.stringify(record)+'\n\n'+stubCheckpoint(agent,runtime.get(agent).config.cacheOrderedStub===true,runtime.get(agent).config.archiveEntries===true).text+'\n</compacted-summary>'),
+          framedOverheadTokens:estimate(CHECKPOINT_PREAMBLE+'\n\n<compacted-summary>\n[Work Evidence continuation sources]\n'+JSON.stringify(record)+'\n\n'+stubCheckpoint(agent).text+'\n</compacted-summary>'),
           method:'stub-summary: no model call; framed deterministic checkpoint priced via injected meter'};
       }
       const messages=(agent.session.surface?.nodes??[]).flatMap(seq=>{
@@ -359,22 +351,28 @@ export function createCompactionHandoff(ctx,runtime,taskFlow,{canRecall=()=>fals
     // steps. Overflow recovery and manual compaction are left untouched.
     const compactIfNeeded=async function(agent,trigger,signal){
       if(trigger!=='pressure'||!deferring(agent))return originalCompact.call(this,agent,trigger,signal);
-      let budget=null,total=null;
+      let budget=null,total=null,nativeThreshold=null;
       try{
         const header=agent.session.requestHeader()?.config;
         const info=header?await ctx.llm.resolveModelInfo(header.provider,header.model,signal):null;
         const window=info?.context?.contextWindow;
         if(Number.isInteger(window)&&window>0)budget=window-(header.maxTokens??info.defaultMaxTokens??0);
+        const policy=service.config,override=policy?.modelPolicies?.find(p=>p.provider===header?.provider&&p.model===header?.model);
+        const ratio=override?.thresholdRatio??policy?.thresholdRatio,headroom=override?.headroomTokens??policy?.headroomTokens;
+        if(!(budget>0)||!Number.isFinite(ratio)||!Number.isFinite(headroom))return originalCompact.call(this,agent,trigger,signal);
+        nativeThreshold=Math.min(window*ratio,budget-headroom);
+        if(nativeThreshold<=0||nativeThreshold>=budget*DEFER_BUDGET_RATIO)return originalCompact.call(this,agent,trigger,signal);
         total=service.regionDependencies()?.meter?.measure(agent.session)?.totalTokens??null;
       }catch{}
       if(!(budget>0)||!Number.isFinite(total))return originalCompact.call(this,agent,trigger,signal);
       const state=get(agent);
       if(total<budget*DEFER_BUDGET_RATIO){
         state.deferredPressure=(state.deferredPressure??0)+1;
-        state.lastDeferral={promptTokensEstimate:total,messageBudgetTokens:budget,deferBelowTokens:Math.floor(budget*DEFER_BUDGET_RATIO)};
+        state.lastDeferral={promptTokensEstimate:total,messageBudgetTokens:budget,nativeThresholdTokens:nativeThreshold,deferBelowTokens:Math.floor(budget*DEFER_BUDGET_RATIO)};
         return null;
       }
-      return originalCompact.call(this,agent,trigger,signal);
+      pressureOwners.add(agent);
+      try{return await originalCompact.call(this,agent,trigger,signal);}finally{pressureOwners.delete(agent);}
     };
     // The host rejects a checkpoint that is not smaller than the span it replaces.
     // Size the appended sources against the span so a doomed summary call is not paid for.
@@ -407,7 +405,7 @@ export function createCompactionHandoff(ctx,runtime,taskFlow,{canRecall=()=>fals
       const stubPolicy=runtime.get(agent).config.stubSummary;
       if(stubPolicy){
         signal?.throwIfAborted();
-        const stub=stubCheckpoint(agent,runtime.get(agent).config.cacheOrderedStub===true,runtime.get(agent).config.archiveEntries===true),text='[Work Evidence continuation sources]\n'+JSON.stringify(record)+'\n\n'+stub.text;
+        const stub=stubCheckpoint(agent),text='[Work Evidence continuation sources]\n'+JSON.stringify(record)+'\n\n'+stub.text;
         state.stubSummaries++;state.summariesReturned++;state.last.status='prepared-awaiting-native-commit';
         state.last.method='deterministic-stub-summary';state.last.stub={events:stub.events,problemRows:stub.problemRows,rows:stub.rows,chars:text.length};
         runtime.get(agent).dirty=true;

@@ -7,12 +7,21 @@ export function createContextWindow(ctx,runtime){
   const ledgers=new Map(),pendingCalls=new Map();
   const get=agent=>{
     const id=agent.session.id;let state=ledgers.get(id);
-    if(!state||state.policyEpoch!==(runtime.get(agent).viewEpoch||0)){state={policyEpoch:runtime.get(agent).viewEpoch||0,observations:[],step:0,evictions:[],recoveries:[],problems:[],lastRewriteStep:-Infinity,
+    if(!state||state.policyEpoch!==(runtime.get(agent).viewEpoch||0)){state={policyEpoch:runtime.get(agent).viewEpoch||0,observations:[],bodyCounts:new Map(),duplicateBodies:0,observedChars:0,step:0,evictions:[],recoveries:[],problems:[],lastRewriteStep:-Infinity,
       debug:{outerCalls:0,sessionResults:0,matched:0},skips:{}};ledgers.set(id,state);}
     return state;
   };
   const config=agent=>runtime.get(agent).config;
   const skip=(state,reason)=>{state.skips[reason]=(state.skips[reason]??0)+1;};
+  function countBody(state,item,delta){
+    let bodies=state.bodyCounts.get(item.tool);
+    if(!bodies){bodies=new Map();state.bodyCounts.set(item.tool,bodies);}
+    const before=bodies.get(item.text)??0,after=before+delta;
+    if(before===1&&after===2)state.duplicateBodies++;
+    if(before===2&&after===1)state.duplicateBodies--;
+    if(after>0)bodies.set(item.text,after);else bodies.delete(item.text);
+    if(!bodies.size)state.bodyCounts.delete(item.tool);
+  }
   function recordResult(agent,callInfo,event){
     if(!runtime.isEnabled(agent)||!config(agent).swLedger)return;
     const message=event.data?.message,content=message?.content??[],text=resultText(content),state=get(agent);
@@ -23,12 +32,17 @@ export function createContextWindow(ctx,runtime){
     if(contentReferences(text).hasReferences)return skip(state,'reference-result');
     if(['work_state','work_status','work_report'].includes(callInfo.name))return;
     if(text.length>1024*1024)return skip(state,'large-result');
-    state.observations.push({seq:event.seq,tool:callInfo.name,text,chars:text.length,step:state.step,evicted:false});
-    let chars=state.observations.reduce((sum,item)=>sum+item.chars,0);
-    while(state.observations.length>MAX_OBSERVATIONS||chars>8*1024*1024)chars-=state.observations.shift().chars;
+    const observation={seq:event.seq,tool:callInfo.name,text,chars:text.length,step:state.step,evicted:false};
+    state.observations.push(observation);state.observedChars+=text.length;countBody(state,observation,1);
+    while(state.observations.length>MAX_OBSERVATIONS||state.observedChars>8*1024*1024){
+      const removed=state.observations.shift();state.observedChars-=removed.chars;
+      if(!removed.evicted)countBody(state,removed,-1);
+    }
   }
   function candidates(agent){
-    const state=get(agent),session=agent.session,settings=config(agent),pins=surfaceReferences(session);
+    const state=get(agent),session=agent.session,settings=config(agent);
+    if(!state.duplicateBodies)return [];
+    const pins=surfaceReferences(session);
     if(pins.opaque)return [];
     const live=state.observations.filter(item=>!item.evicted&&session.surface.nodes.includes(item.seq)&&
       (runtime.isBodyVisible?.(agent,item.seq)??true)&&!runtime.isProjectionManaged?.(agent,item.seq));
@@ -48,6 +62,8 @@ export function createContextWindow(ctx,runtime){
   function propose(agent){
     const state=get(agent),settings=config(agent),session=agent.session;
     if(!runtime.isEnabled(agent)||!settings.swLedger||!settings.swEviction||runtime.canRecall?.(agent)!==true)return null;
+    // Unique results cannot produce a safe SW fold. Avoid all history and prefix-cost scans.
+    if(!state.duplicateBodies)return null;
     const decline=reason=>{skip(state,reason);runtime.effects?.decide(agent,'swFold','not-applicable',reason);return null;};
     if(!rewriteSpacingReady(session,runtime.get(agent)))return decline('shared-rewrite-spacing');
     if(state.step-state.lastRewriteStep<Math.max(8,settings.swEvictionSteps))return decline('rewrite-spacing');
@@ -85,7 +101,7 @@ export function createContextWindow(ctx,runtime){
         const replacement=session.append('tool/result',{...original.data,message:{...original.data.message,content:[{type:'text',text:item.body}]}},
           {surfaceOp:{op:'replace',startSeq:item.seq,endSeq:item.seq},sourceEventSeqs:[item.seq]});
         runtime.effects?.rewrite(agent,{feature:'swFold',seq:replacement.seq,sourceSeqs:[item.seq],retainedSeqs:[item.targetSeq],afterMessage:replacement.data.message,beforeMessages:[original.data.message]});
-        const observed=state.observations.find(value=>value.seq===item.seq);if(observed)observed.evicted=true;
+        const observed=state.observations.find(value=>value.seq===item.seq);if(observed){countBody(state,observed,-1);observed.evicted=true;}
         state.evictions.push({seq:item.seq,targetSeq:item.targetSeq,replacementSeq:replacement.seq,charsBefore:item.chars,charsAfter:item.body.length,saved:item.saving});
         replaced++;saved+=item.saving;
       }catch(error){state.problems.push(String(error?.message??error).slice(0,240));}
@@ -132,7 +148,7 @@ export function createContextWindow(ctx,runtime){
       }
       return {recentEvictions:state.evictions.slice(-8),legacyRecoveries:legacy.slice(-16),problems:state.problems.slice()};
     },
-    metrics(agent){const state=get(agent);return {observations:state.observations.length,evicted:state.evictions.length,recoveries:state.recoveries.length,
+    metrics(agent){const state=get(agent);return {observations:state.observations.length,duplicateBodies:state.duplicateBodies,retainedChars:state.observedChars,evicted:state.evictions.length,recoveries:state.recoveries.length,
       candidates:candidates(agent).length,charsSaved:state.evictions.reduce((sum,item)=>sum+item.saved,0),
       policy:'later-visible-identical-body',skips:{...state.skips},problems:state.problems.slice(),debug:state.debug};},
   };

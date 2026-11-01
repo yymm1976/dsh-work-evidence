@@ -26,23 +26,6 @@ test('executionTriage identifies repeated failures and repeated successful calls
   }
 });
 
-test('executionAdvice suggests native execution after reading concrete input sources',async()=>{
-  for(const executionAdvice of [true,false]){
-    const run=await scenario({executionAdvice},'m.js 的函数对输入 21 返回什么结果？',[[tool('read',{file_path:'m.js'})]],
-      {setup:cwd=>fs.writeFile(path.join(cwd,'m.js'),'module.exports=x=>x*2;\n')});
-    assert.equal(run.body.includes('当前具体问题可以优先考虑已有代码的原生执行'),executionAdvice);
-  }
-});
-
-test('finishAdvice uses completed todos and an observed post-write execution',async()=>{
-  const steps=[[tool('todo_write',{todos:[{content:'写 a.txt',status:'completed'}]})],
-    [tool('write',{file_path:'a.txt',content:'1\n'})],[tool('pwsh',{command:'Get-Content a.txt',description:'check'})]];
-  for(const finishAdvice of [true,false]){
-    const run=await scenario({finishAdvice},'写 a.txt 并检查',steps,{extraMounts:[['dsh-tool-todo',{allowParallelInProgress:true}]]});
-    assert.equal(run.body.includes('已有计划全部标为完成'),finishAdvice);
-  }
-});
-
 test('stepPacing can disable automatic progress guidance',async()=>{
   const steps=Array.from({length:4},()=>[tool('pwsh',{command:'echo ok',description:'observe'})]);
   const on=await scenario({},'观察结果',steps),off=await scenario({stepPacing:false},'观察结果',steps);
