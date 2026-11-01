@@ -87,6 +87,8 @@ export function registerManagementTools({ctx,runtime,state,effects,available,cap
       if(args.quality_review_retry!==undefined&&typeof args.quality_review_retry!=='boolean')throw new Error('quality_review_retry must be a boolean');
       await runtime.init(exec.agent,exec.signal??AbortSignal.timeout(10000)).catch(()=>{});
       const s=state(exec.agent);
+      if(!runtime.isEnabled(exec.agent)&&(args.config!==undefined||Object.hasOwn(args,'session_enabled')||args.quality_review_retry))
+        throw new Error('Work Evidence is disabled. Configuration changes require the user to enable it with /work-evidence on.');
       await effects.flush(exec.agent);
       await qualityReview.load(exec.agent);
       if(args.quality_review_retry)await qualityReview.retry(exec.agent);
@@ -95,7 +97,7 @@ export function registerManagementTools({ctx,runtime,state,effects,available,cap
         if(Object.hasOwn(args.config,'mode'))throw new Error('Mode follows the selected reasoning effort.');
         if(!s.workspaceConfigValid)throw new Error('Workspace configuration is unavailable or invalid');
         const before=runtime.isEnabled(exec.agent),next=defaults({...s.config,...args.config});
-        await runtime.save(exec.agent,path.join(s.dir,'config.json'),next,exec.signal);s.config=next;
+        await runtime.save(exec.agent,path.join(s.dir,'config.json'),next,exec.signal);s.config=next;s.workspaceFileSeen=true;s.workspaceFileMissing=false;
         applyToolSurface(exec.agent);
         if(before!==runtime.isEnabled(exec.agent)){runtime.clearSessionState(exec.agent);clearPluginState(exec.agent);}
       }
@@ -126,9 +128,11 @@ export function registerManagementTools({ctx,runtime,state,effects,available,cap
     },{gate:false});
   register('work_state','Inspect session evidence; handoff exports bounded task records and source-session references as JSON, without a model call or workspace write. recall retrieves historical tool text by seq, not current disk. stage records focus; clear preserves projection plans.',
     {mode:{type:'string',enum:['summary','detail','handoff','clear','recall','stage']},phase:{type:'string',enum:['investigate','modify','execute','deliver','mixed']},focus:{type:'array',maxItems:24,items:{type:'string'}},seq:{type:'integer',minimum:0,description:'recall: original tool result event in this session.'},
-      offset:{type:'integer',minimum:0,description:'recall: character offset, initially zero.'},maxChars:{type:'integer',minimum:256,maximum:64000,description:'handoff: total serialized JSON limit, 8000–64000, default 32000. recall: text page limit.'}},[],async(args,exec)=>{
+      offset:{type:'integer',minimum:0,description:'recall: character offset, initially zero.'},maxChars:{type:'integer',minimum:256,maximum:64000,description:'handoff: total serialized JSON limit, 8000–64000, default 32000. recall: text page limit.'},
+      incremental:{type:'boolean',description:'handoff: request a full delivery ID for later incremental exports.'},
+      baseDeliveryId:{type:'string',minLength:1,maxLength:128,description:'handoff: the prior complete full delivery ID. Returns a JSON Patch only while that complete delivery remains visible and the patch is substantially smaller; otherwise returns full JSON.'}},[],async(args,exec)=>{
       const s=state(exec.agent),mode=args.mode||'summary';
-      if(mode==='handoff')return taskHandoff(exec.agent,{maxChars:args.maxChars,signal:exec.signal,
+      if(mode==='handoff')return taskHandoff(exec.agent,{maxChars:args.maxChars,incremental:args.incremental,baseDeliveryId:args.baseDeliveryId,signal:exec.signal,
         excludeCallIds:[exec.callId,exec.rootCallId].filter(Boolean)});
       if(mode==='stage')return s.config.stageWorkingSet?taskFlow.declaration(args):{status:'disabled',feature:'stageWorkingSet'};
       if(mode==='recall'){

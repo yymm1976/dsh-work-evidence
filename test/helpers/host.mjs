@@ -97,7 +97,7 @@ export async function startHost({script,auxiliary=()=>[text('{}')],pluginConfig=
   ctx.llm.registerAdapter(['scripted'],new ScriptedAdapter());
   if(mountPlugin){
     const plugin=await import(pathToFileURL(path.join(PLUGIN,'index.mjs')).href);
-    await ctx.plugin(plugin,pluginConfig);
+    await ctx.plugin(plugin,{...(process.env.DSH_TEST_FASTEDIT_PYTHON?{fastEditPython:process.env.DSH_TEST_FASTEDIT_PYTHON}:{}),...pluginConfig});
   }
   const events=[];
   ctx.on('session/event',(_session,event)=>events.push(event));

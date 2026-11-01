@@ -79,6 +79,26 @@ export function contentReferences(content){
 }
 
 const surfaceReferenceCache=new WeakMap();
+const historicalReferenceCache=new WeakMap();
+export function hasHistoricalReferences(agent){
+  const session=agent.session,nodes=session.surface?.nodes??[],generation=session.surface?.contentGeneration;
+  const previous=historicalReferenceCache.get(session);
+  const appendOnly=generation!==undefined&&previous?.generation===generation&&nodes.length>=previous.scanned&&
+    (!previous.scanned||nodes[previous.scanned-1]===previous.lastSeq);
+  if(appendOnly&&previous.found)return true;
+  for(let index=appendOnly?previous.scanned:0;index<nodes.length;index++){
+    let event;try{event=session.eventAt(nodes[index]);}catch{return true;}
+    if(!event)return true;
+    const message=event.data?.message??event.data;
+    if((message?.content??[]).some(block=>block?.type==='text'&&typeof block.text==='string'&&
+      /work_recall|work_state|\[work-evidence history |work-evidence-reference|\[work-evidence ledger receipt\]|\[SW evicted\]/.test(block.text))){
+      historicalReferenceCache.set(session,{generation,scanned:nodes.length,lastSeq:nodes.at(-1),found:true});
+      return true;
+    }
+  }
+  historicalReferenceCache.set(session,{generation,scanned:nodes.length,lastSeq:nodes.at(-1),found:false});
+  return false;
+}
 export function surfaceReferences(session){
   const generation=session.surface.contentGeneration,previous=surfaceReferenceCache.get(session);
   if(previous&&generation!==undefined&&previous.generation===generation&&previous.seq===session.seq)return previous.result;

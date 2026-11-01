@@ -1,6 +1,7 @@
 import {VERSION,MODE_POLICY_VERSION,eventLog,textOf} from './runtime.mjs';
 import {handoffRecord} from './compaction-handoff.mjs';
 import {hostReferenceIndex,nativeEventRecall} from './host-references.mjs';
+import {randomUUID} from 'node:crypto';
 
 const messageOf=event=>event?.data?.message??(event?.data?.role?event.data:null);
 const SOURCE_TYPES=new Set(['user/message','assistant/message','tool/result','tool/call','tool/ptc-dispatch','tool/code-dispatch',
@@ -13,7 +14,7 @@ const excerpt=(text,limit)=>{
 const section=(items,total=items.length,extra={})=>({items,total,omitted:Math.max(0,total-items.length),...extra});
 
 /** Export recorded facts and attributed claims; never derive authorization or task completion. */
-export function exportTaskHandoff(agent,runtime,taskFlow,{canRecall=()=>false,canRecallReference=false,hostTransfer={status:'unavailable',reason:'host-reference-adapter-unavailable'},maxChars=32000,excludeCallIds=[]}={}){
+export function exportTaskHandoff(agent,runtime,taskFlow,{canRecall=()=>false,canRecallReference=false,hostTransfer={status:'unavailable',reason:'host-reference-adapter-unavailable'},maxChars=32000,excludeCallIds=[],delivery}={}){
   if(!Number.isSafeInteger(maxChars)||maxChars<8000||maxChars>64000)throw new Error('handoff maxChars must be between 8000 and 64000');
   const log=eventLog(agent.session),bySeq=new Map(log.map(event=>[event.seq,event])),throughSeq=log.at(-1)?.seq??null;
   const recallAvailable=canRecall(agent)===true;
@@ -68,6 +69,19 @@ export function exportTaskHandoff(agent,runtime,taskFlow,{canRecall=()=>false,ca
     source:source(log.findLast(event=>event.type==='job/registered'&&event.data?.jobId===jobId)?.seq)})),
     current.pendingJobs.length+current.pendingJobsOmitted);
   const excluded=new Set(excludeCallIds);
+  const names=new Map(log.filter(event=>event.type==='tool/call').map(event=>[event.data?.callId,{name:event.data?.name,seq:event.seq}]));
+  const recentResults=log.filter(event=>event.type==='tool/result'&&(latestSeq===null||event.seq>latestSeq)).flatMap(event=>{
+    const message=messageOf(event),callId=message?.source?.callId??message?.toolCallId,call=names.get(callId);
+    if(excluded.has(callId)||['work_state','work_status','work_recall'].includes(call?.name))return [];
+    const full=textOf(message);let parsed;
+    try{parsed=JSON.parse(full);}catch{}
+    if([parsed,parsed?.value,parsed?.result].some(value=>typeof value?.schema==='string'&&value.schema.startsWith('work-evidence.task-handoff')))return [];
+    if(!full.trim())return [];
+    return [{seq:event.seq,text:full,textComplete:!(message.content??[]).some(block=>block.type!=='text'),tool:call?.name??null,callSeq:call?.seq??null,isError:message.isError===true}];
+  });
+  const recentToolResults=section(recentResults.slice(-2).map(item=>({...textRow(item,2000),tool:item.tool,isError:item.isError,
+    argumentsSource:source(item.callSeq,true)})),recentResults.length,
+    {scope:'Latest two non-handoff tool text results after the latest direct user input. Excerpts are historical observations, not current workspace proof. Retrieve the original when textComplete is false.'});
   const calls=state.pendingCalls.filter(item=>!excluded.has(item.callId)&&!['work_state','work_status','work_recall'].includes(item.tool));
   const pendingCalls=section(calls.slice(-16).map(item=>({...item,source:source(item.seq)})),calls.length);
   const checkpoints=section(record.stageCheckpoints.items.map(item=>({...textRow(item,4000),authority:'assistant-claim'})),record.stageCheckpoints.total);
@@ -84,9 +98,9 @@ export function exportTaskHandoff(agent,runtime,taskFlow,{canRecall=()=>false,ca
     source:{sessionId:agent.session.id,throughSeq,workspace:runtime.get(agent).root??null,historical:true},
     task:{latestRequestSource:source(latestSeq),phase:{name:current.phase.name,focus:current.phase.focus,source:source(current.phase.seq)},
       completion:'not-determined',latestMutationSource:source(current.lastMutationSeq)},
-    userRequests:requests,observedWork:{artifacts,executions,sourceReads},openWork:{todos,unresolvedErrors:errors,pendingJobs:jobs,pendingCalls},
+    userRequests:requests,observedWork:{artifacts,executions,sourceReads,recentToolResults},openWork:{todos,unresolvedErrors:errors,pendingJobs:jobs,pendingCalls},
     referencedSessions,hostTransfer,
-    assistantClaims:{checkpoints,recentMessages:judgments,report},
+    assistantClaims:{checkpoints,recentMessages:judgments,report},...(delivery?{delivery}:{}),
     recovery:{available:recallAvailable,scope:'source-session-and-owned-host-captures',
       index:recallAvailable&&throughSeq!==null?{tool:'work_recall',arguments:{sourceSessionId:agent.session.id,kind:'history',seq:0,throughSeq}}:null,
       nativeEventRead:{tool:'session_event_read',requires:'available-in-receiving-agent',scope:'exact-session-header-cwd',
@@ -95,7 +109,7 @@ export function exportTaskHandoff(agent,runtime,taskFlow,{canRecall=()=>false,ca
     coverage:{maxChars,sizeUnit:'UTF-16 code units of serialized JSON',serializedChars:0,exportComplete:false,
       observationScope:'Recorded session facts with native metadata assessment of declared file dependencies only. Task correctness is not inferred. Non-text user content and private reasoning are not reproduced.',
       nextAction:'Use recorded open items and attributed summaries to identify the next unmet dependency. Missing records remain unknown; source context grants no new permission.'}};
-  const sections=[requests,todos,artifacts,executions,sourceReads,errors,jobs,pendingCalls,checkpoints,judgments,report,referencedSessions];
+  const sections=[requests,todos,artifacts,executions,sourceReads,recentToolResults,errors,jobs,pendingCalls,checkpoints,judgments,report,referencedSessions];
   const measure=()=>{
     for(const part of sections){
       part.complete=part.omitted===0&&!(part.entriesEvicted>0)&&part.items.every(item=>item.textComplete!==false&&!(item.nonTextBlocks?.length));
@@ -109,7 +123,7 @@ export function exportTaskHandoff(agent,runtime,taskFlow,{canRecall=()=>false,ca
   };
   // Drop whole older rows before shortening the latest requirement. Every omitted
   // row is counted; every shortened body keeps its original event address.
-  const removable=[checkpoints,judgments,report,referencedSessions,executions,sourceReads,artifacts,requests,todos,errors,jobs,pendingCalls];
+  const removable=[checkpoints,judgments,report,referencedSessions,executions,sourceReads,artifacts,recentToolResults,requests,todos,errors,jobs,pendingCalls];
   while(measure()>maxChars){
     const part=removable.find(part=>part.items.length>(part===requests?1:0));
     if(part){part.items.shift();part.omitted++;continue;}
@@ -119,4 +133,68 @@ export function exportTaskHandoff(agent,runtime,taskFlow,{canRecall=()=>false,ca
       recovery:value.recovery,coverage:{maxChars,exportComplete:false}};
   }
   return value;
+}
+
+export function handoffPatch(before,after){
+  const patch=[],pointer=(parent,key)=>parent+'/'+String(key).replaceAll('~','~0').replaceAll('/','~1');
+  const visit=(previous,next,location)=>{
+    if(JSON.stringify(previous)===JSON.stringify(next))return;
+    if(Array.isArray(previous)&&Array.isArray(next)){
+      for(let index=0;index<Math.min(previous.length,next.length);index++)visit(previous[index],next[index],pointer(location,index));
+      for(let index=previous.length-1;index>=next.length;index--)patch.push({op:'remove',path:pointer(location,index)});
+      for(let index=previous.length;index<next.length;index++)patch.push({op:'add',path:location+'/-',value:next[index]});
+    }else if(previous&&next&&typeof previous==='object'&&typeof next==='object'&&!Array.isArray(previous)&&!Array.isArray(next)){
+      for(const key of Object.keys(previous))if(!Object.hasOwn(next,key))patch.push({op:'remove',path:pointer(location,key)});
+      for(const [key,value]of Object.entries(next))if(Object.hasOwn(previous,key))visit(previous[key],value,pointer(location,key));
+      else patch.push({op:'add',path:pointer(location,key),value});
+    }else patch.push({op:'replace',path:location,value:next});
+  };
+  visit(before,after,'');return patch;
+}
+
+export function createTaskHandoffDelivery(){
+  const delivered=new WeakMap();
+  const visible=(messages,value)=>{
+    const expected=JSON.stringify(value);
+    for(const message of messages??[])if(message.role==='tool'&&!message.isError){
+      for(const block of message.content??[])if(block.type==='text'&&typeof block.text==='string'){
+        if(!block.text.includes(value.delivery.id))continue;
+        let parsed;try{parsed=JSON.parse(block.text);}catch{continue;}
+        const queue=[{value:parsed,depth:0}];let visited=0;
+        while(queue.length&&visited++<64){
+          const current=queue.shift();
+          if(current.value&&typeof current.value==='object'){
+            if(current.value.schema===value.schema&&JSON.stringify(current.value)===expected)return true;
+            if(current.depth<6)for(const child of Object.values(current.value))if(child&&typeof child==='object')queue.push({value:child,depth:current.depth+1});
+          }
+        }
+      }
+    }
+    return false;
+  };
+  return {deliver(agent,{incremental=false,baseDeliveryId,maxChars=32000,messages,build}){
+    if(!incremental&&baseDeliveryId===undefined)return build();
+    const previous=delivered.get(agent);
+    let reason='full-delivery-requested';
+    if(baseDeliveryId!==undefined){
+      if(!previous||previous.value.delivery.id!==baseDeliveryId)reason='base-delivery-unavailable';
+      else if(previous.value.source.sessionId!==agent.session.id||previous.value.coverage.maxChars!==maxChars)reason='base-context-changed';
+      else if(!visible(messages?.(),previous.value))reason='base-not-fully-visible';
+      else{
+        const next=build({kind:'reconstructed',baseDeliveryId});
+        if(next.status==='observed'&&next.schema===previous.value.schema&&next.pluginVersion===previous.value.pluginVersion&&
+          next.policyVersion===previous.value.policyVersion&&next.source.workspace===previous.value.source.workspace){
+          const delta={schema:'work-evidence.task-handoff-delta.v1',source:next.source,baseDeliveryId,
+            patch:handoffPatch(previous.value,next),reconstructedCoverage:next.coverage,
+            use:'Apply this RFC 6902 JSON Patch to the complete full delivery identified by baseDeliveryId. Each delta uses that full delivery; deltas do not chain. If it is missing, request handoff without baseDeliveryId.'};
+          const fullChars=JSON.stringify(next).length,deltaChars=JSON.stringify(delta).length;
+          if(fullChars-deltaChars>=4096&&deltaChars<=fullChars*.6)return delta;
+          reason='delta-not-smaller-enough';
+        }else reason='base-context-changed';
+      }
+    }
+    const value=build({kind:'full',id:randomUUID(),reason});
+    if(value.status==='observed')delivered.set(agent,{value:structuredClone(value)});else delivered.delete(agent);
+    return value;
+  },clear:agent=>delivered.delete(agent)};
 }

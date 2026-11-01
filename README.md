@@ -1,6 +1,6 @@
 # DSH 工程证据插件
 
-当前源码版本为 0.28.20，模式策略为 pb001-v24。
+当前源码版本为 0.28.21，模式策略为 pb001-v24。
 桌面加载目录独立维护。运行中的会话采用哪个版本，取决于宿主加载时间。
 插件提供任务指引、观察账本、历史取回和按需工程工具。
 历史说明见 [HISTORY.md](HISTORY.md)。历史结果不代表当前版本的实际效果。
@@ -54,6 +54,18 @@ work_status 始终保留；历史中仍有取回引用时保留 work_recall。
 超出上限时先省略整条旧记录，再缩短最新要求。各组的 `omitted` 与 `textComplete` 标明省略或截断。
 `coverage.exportComplete` 只说明所列记录是否完整导出。任务完成状态始终为 `not-determined`。
 正文中的图片等非文本内容只列类型，不复述私有推理。来源缺失或无法读取时保留未知状态。
+
+摘要的 `observedWork.recentToolResults` 保留最新直接用户输入之后最近两份工具结果，各最多 2000 个 UTF-16 单元。
+条目保留工具原文、错误状态和原事件地址；`textComplete:false` 时需要按地址取回原文。
+交接、状态和取回工具的输出不再次嵌入摘要。工具结果仍是历史观察，不能据此断言文件未变。
+
+需要连续导出时，full 工具面可先调用 `work_state({mode:"handoff",incremental:true})`，保存返回的完整交接与 `delivery.id`。
+后续调用 `work_state({mode:"handoff",baseDeliveryId:"该ID"})`，插件会检查原完整交接是否仍在实际请求的工具正文中。
+条件满足且补丁至少减少 4096 个字符、长度不超过全文的 60% 时，返回 `work-evidence.task-handoff-delta.v1`。
+接收方按 RFC 6902 应用 `patch`；每次补丁都相对该完整交接，增量之间不串联。
+
+仅有 ID、PTC 内部读过却没有输出全文、压缩后正文消失、新会话、工作区或版本改变、上限改变，以及内容太小时，入口返回新的完整交接。
+普通 `/work-evidence handoff` 和未请求增量的工具调用继续返回完整 JSON。
 
 ## 宿主会话引用
 

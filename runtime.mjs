@@ -5,7 +5,7 @@ import {randomUUID} from 'node:crypto';
 import {within,references,assertExistingFileWithin,readUtf8File} from './evidence.mjs';
 import {recoveryFor,recoveryOf} from './recovery.mjs';
 
-export const VERSION='0.28.20';
+export const VERSION='0.28.21';
 export const MODES=Object.freeze(['default','aggressive','quality']);
 export const MODE_POLICY_VERSION='pb001-v24';
 export function checkedMode(mode){if(!MODES.includes(mode))throw new Error('mode must be default, aggressive or quality');return mode;}
@@ -108,7 +108,7 @@ export function createRuntime(ctx,call,initial={}){
   function get(agent){
     const id=agent.session.id;
     let s=states.get(id);
-    if(!s){s={id,cursor:0,step:0,turn:null,config:defaults(initial),workspaceConfigValid:false,root:null,telemetryDir:null,telemetryScope:null,configured:false,initPromise:null,seen:new Set(),calls:new Map(),
+    if(!s){s={id,cursor:0,step:0,turn:null,config:defaults(initial),workspaceConfigValid:false,workspaceFileSeen:false,workspaceFileMissing:false,sessionFileSeen:false,sessionFileMissing:false,root:null,telemetryDir:null,telemetryScope:null,configured:false,initPromise:null,seen:new Set(),calls:new Map(),
       failures:[],writes:[],emptyLookups:new Map(),readPages:new Map(),automaticEvidence:new Set(),active:false,pendingFailure:null,pendingLookupFact:null,pendingStateNotice:null,pendingOpsAdvice:[],
       commandRoots:new Map(),failureRoots:new Set(),requestObservations:[],auxiliarySignals:new WeakSet(),selectedPreset:agent.session.header?.agentPreset||null,evidenceViewReasons:{},viewEpoch:0,
       reads:[],searches:[],index:[],indexLoaded:false,indexDirty:false,
@@ -139,16 +139,23 @@ export function createRuntime(ctx,call,initial={}){
       try{
         const workspace=await loadLocalJson(s.root,path.join(s.dir,'config.json'),signal);
         signal?.throwIfAborted();
-        if(workspace.ok){s.workspaceConfigValid=false;s.config=workspaceConfig(workspace.value);s.workspaceConfigValid=true;}
-        else if(workspace.missing){s.config=defaults(initial);s.workspaceConfigValid=true;}
+        if(workspace.ok){s.workspaceConfigValid=false;s.config=workspaceConfig(workspace.value);s.workspaceConfigValid=true;s.workspaceFileSeen=true;s.workspaceFileMissing=false;}
+        else if(workspace.missing){
+          if(s.workspaceFileSeen&&!s.workspaceFileMissing)problem(s,'config-missing','Workspace settings file is missing; retaining the settings already loaded in this session.');
+          s.workspaceFileMissing=s.workspaceFileSeen;s.workspaceConfigValid=true;
+        }
         else{s.workspaceConfigValid=false;problem(s,'config-read',workspace.error?.message||'Workspace settings unavailable');}
         const policy=await loadLocalJson(s.root,s.sessionPolicyPath,signal);
         signal?.throwIfAborted();
         if(policy.ok){
           const value=checkedSessionPolicy(policy.value);
           s.sessionEnabledOverride=value.enabled;s.sessionDefaultResponseView=value.sessionDefaultResponseView;s.sessionModeOverride=value.mode;
+          s.sessionFileSeen=true;s.sessionFileMissing=false;
           s.taskMode??=value.taskMode;
-        }else if(policy.missing){s.sessionEnabledOverride=null;s.sessionDefaultResponseView=null;s.sessionModeOverride=null;}
+        }else if(policy.missing){
+          if(s.sessionFileSeen&&!s.sessionFileMissing)problem(s,'session-policy-missing','Session settings file is missing; retaining the current session choice.');
+          s.sessionFileMissing=s.sessionFileSeen;
+        }
         else{s.sessionEnabledOverride=false;problem(s,'session-policy-read',policy.error?.message||'Session settings unavailable');}
       }catch(error){signal?.throwIfAborted();s.sessionEnabledOverride=false;problem(s,'configuration-refresh',error.message);}
       if(before!==(s.workspaceConfigValid&&(s.sessionEnabledOverride??s.config.enabled)))clearSessionState(agent);
@@ -169,7 +176,7 @@ export function createRuntime(ctx,call,initial={}){
       else if(outside(fallback)){s.telemetryDir=fallback;s.telemetryScope='user-session';}
       else problem(s,'telemetry-location','No persistent observability directory outside the workspace is available');
       const result=await loadLocalJson(s.root,path.join(s.dir,'config.json'),signal);
-      if(result.ok){try{s.config=workspaceConfig(result.value);s.workspaceConfigValid=true;}catch(e){s.workspaceConfigValid=false;problem(s,'config',e.message);}}
+      if(result.ok){try{s.config=workspaceConfig(result.value);s.workspaceConfigValid=true;s.workspaceFileSeen=true;}catch(e){s.workspaceConfigValid=false;problem(s,'config',e.message);}}
       else if(result.missing)s.workspaceConfigValid=true;
       else{s.workspaceConfigValid=false;problem(s,'config-read',result.error?.message||'Config unavailable');}
       s.sessionPolicyPath=path.join(s.dir,'sessions',s.id+'.json');
@@ -178,6 +185,7 @@ export function createRuntime(ctx,call,initial={}){
         try{
           const value=checkedSessionPolicy(policy.value);
           s.sessionEnabledOverride=value.enabled;s.sessionDefaultResponseView=value.sessionDefaultResponseView;s.sessionModeOverride=value.mode;s.taskMode=value.taskMode;
+          s.sessionFileSeen=true;
         }catch(e){
           s.sessionEnabledOverride=false;
           problem(s,'session-policy',e.message);
@@ -239,6 +247,7 @@ export function createRuntime(ctx,call,initial={}){
         ...(s.sessionDefaultResponseView?{defaultResponseView:s.sessionDefaultResponseView}:{}),...patch,updatedAt:new Date().toISOString()};
       const checked=checkedSessionPolicy(value);
       await save(agent,s.sessionPolicyPath,value,signal);
+      s.sessionFileSeen=true;s.sessionFileMissing=false;
       s.sessionEnabledOverride=checked.enabled;s.sessionModeOverride=checked.mode;s.taskMode=checked.taskMode;s.taskModePersisted=true;s.dirty=true;
       return value;
     });
@@ -254,7 +263,7 @@ export function createRuntime(ctx,call,initial={}){
     const s=await init(agent,signal);
     if(!s.workspaceConfigValid)throw new Error('Workspace configuration is unavailable or invalid');
     const next=defaults({...s.config,aggressiveMode:enabled});
-    await save(agent,path.join(s.dir,'config.json'),next,signal);s.config=next;s.dirty=true;
+    await save(agent,path.join(s.dir,'config.json'),next,signal);s.config=next;s.workspaceFileSeen=true;s.workspaceFileMissing=false;s.dirty=true;
     return modeStatus(agent);
   }
   async function beginRequest(agent,signal){
@@ -538,8 +547,8 @@ export function createRuntime(ctx,call,initial={}){
     return {version:VERSION,sessionId:s.id,at:new Date().toISOString(),turn:s.turn,steps:s.step,
     mode:modeStatus(agent??s),
     enabled:effective,workspaceDefaultEnabled:s.config.enabled,session:{enabled:effective,override:s.sessionEnabledOverride,source:s.sessionEnabledOverride===null?'workspace-setting':'session-setting',defaultResponseView:s.sessionDefaultResponseView??s.config.defaultResponseView,
-      policyPath:s.sessionPolicyPath,loaded:s.sessionPolicyLoaded},
-    telemetry:{directory:s.telemetryDir,scope:s.telemetryScope,workspaceConfiguration:s.dir},workspaceConfigValid:s.workspaceConfigValid,
+      policyPath:s.sessionPolicyPath,loaded:s.sessionPolicyLoaded,settingsRetainedInMemory:s.sessionFileMissing},
+    telemetry:{directory:s.telemetryDir,scope:s.telemetryScope,workspaceConfiguration:s.dir},workspaceConfigValid:s.workspaceConfigValid,workspaceSettingsRetainedInMemory:s.workspaceFileMissing,
       features:{aggressiveMode:s.config.aggressiveMode,selfIndex:s.config.selfIndex,completionNotice:s.config.completionNotice,ptcPatterns:true,ptcFastpath:true,verifiedExec:true,fastEdit:s.config.fastEditEnabled,contextProtocol:s.config.contextProtocol,historyHygiene:s.config.historyHygiene,
       stateLedger:s.config.stateLedger,stateInform:s.config.stateInform,archiveReadRouting:s.config.archiveReadRouting,readArgumentRecovery:s.config.readArgumentRecovery,requestAccounting:s.config.requestAccounting,evidenceViews:s.config.evidenceViews,memberParsing:s.config.memberParsing,mavenSourceBinding:s.config.mavenSourceBinding,
       ledgerReceipt:s.config.ledgerReceipt,ledgerUnresolved:s.config.ledgerUnresolved,

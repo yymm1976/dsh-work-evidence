@@ -1,6 +1,5 @@
 import {canonicalUsage} from './context-economics.mjs';
 
-const numeric=value=>typeof value==='number'&&Number.isFinite(value)&&value>=0?value:null;
 const fields=['inputTokens','cacheReadTokens','cacheWriteTokens','outputTokens','reasoningTokens','totalTokens'];
 export function measureText(value){
   const text=typeof value==='string'?value:JSON.stringify(value);
@@ -36,7 +35,7 @@ export function observeRequests(ctx,runtime){
     try{
       for await(const chunk of next()){
         if(chunk.type==='usage'){
-          record.usage??={};for(const field of fields){const value=numeric(chunk.usage?.[field]);if(value!==null)record.usage[field]=value;}
+          record.usage??={};for(const field of fields){const value=chunk.usage?.[field];if(value!==null&&value!==undefined)record.usage[field]=value;}
           if(effectRecord)effectRecord.usageChunks++;
         }
         if(chunk.type==='finish'){record.finishReason=chunk.reason?.kind||null;record.failureCode=chunk.reason?.failure?.code||null;record.settled=true;}
@@ -48,7 +47,8 @@ export function observeRequests(ctx,runtime){
       const canonical=canonicalUsage(record.usage);record.usage=canonical.usage;record.usageSources=canonical.sources;
       record.usageConsistent=canonical.consistent;record.usageComplete=canonical.complete;
       runtime.contextControl?.requestFinished(agent,options,record);
-      if(effectRecord){Object.assign(effectRecord,{usage:record.usage,settled:record.settled,finishReason:record.finishReason,failureCode:record.failureCode,elapsedMs:record.elapsedMs,aborted:record.aborted});runtime.effects.finish(agent,effectRecord);}
+      if(effectRecord){Object.assign(effectRecord,{usage:record.usage,usageSources:record.usageSources,usageConsistent:record.usageConsistent,usageComplete:record.usageComplete,
+        settled:record.settled,finishReason:record.finishReason,failureCode:record.failureCode,elapsedMs:record.elapsedMs,aborted:record.aborted});runtime.effects.finish(agent,effectRecord);}
       if(!auxiliary)runtime.noteProjectionDispatch?.(agent,options,effectRecord);
     }
   });

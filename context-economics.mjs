@@ -1,5 +1,10 @@
 const finite=value=>typeof value==='number'&&Number.isFinite(value)&&value>=0;
 const validCount=value=>Number.isSafeInteger(value)&&value>=0;
+const sumCounts=values=>{
+  let total=0;
+  for(const value of values){if(!validCount(value)||!Number.isSafeInteger(total+value))return null;total+=value;}
+  return total;
+};
 const usageFields=['inputTokens','cacheReadTokens','cacheWriteTokens','outputTokens','reasoningTokens','totalTokens'];
 
 /**
@@ -15,24 +20,24 @@ export function canonicalUsage(raw){
     raw[key]===null||raw[key]===undefined?'missing':'invalid-adapter-value']));
   const cacheKeys=['cacheReadTokens','cacheWriteTokens'];
   if(usage.inputTokens!==null&&usage.outputTokens!==null&&usage.totalTokens!==null){
-    const remainder=usage.totalTokens-usage.inputTokens-usage.outputTokens-cacheKeys.reduce((sum,key)=>sum+(usage[key]??0),0);
-    if(remainder===0)for(const key of cacheKeys)if(sources[key]==='missing'){usage[key]=0;sources[key]='zero-proven-by-reported-disjoint-total';}
+    const knownSum=sumCounts([usage.inputTokens,usage.outputTokens,...cacheKeys.map(key=>usage[key]??0)]);
+    if(knownSum!==null&&knownSum===usage.totalTokens)for(const key of cacheKeys)if(sources[key]==='missing'){usage[key]=0;sources[key]='zero-proven-by-reported-disjoint-total';}
   }
   const sumKeys=['inputTokens','cacheReadTokens','cacheWriteTokens','outputTokens'];
   let complete=sumKeys.every(key=>usage[key]!==null);
-  const sum=complete?sumKeys.reduce((total,key)=>total+usage[key],0):null;
-  const consistent=!Object.values(sources).includes('invalid-adapter-value')&&(!complete||usage.totalTokens===null||sum===usage.totalTokens);
-  if(complete&&sources.totalTokens==='missing'){usage.totalTokens=sum;sources.totalTokens='sum-of-reported-disjoint-fields';}
+  const sum=complete?sumCounts(sumKeys.map(key=>usage[key])):null;
+  const consistent=!Object.values(sources).includes('invalid-adapter-value')&&(!complete||sum!==null&&(usage.totalTokens===null||sum===usage.totalTokens));
+  if(complete&&sum!==null&&sources.totalTokens==='missing'){usage.totalTokens=sum;sources.totalTokens='sum-of-reported-disjoint-fields';}
   complete=complete&&consistent;
   return {usage,sources,consistent,complete,method:'disjoint-adapter-usage; omitted-zero-cache-fields require exact total equality'};
 }
-export const promptTokens=usage=>usage&&['inputTokens','cacheReadTokens','cacheWriteTokens'].every(key=>finite(usage[key]))
-  ?usage.inputTokens+usage.cacheReadTokens+usage.cacheWriteTokens:null;
+export const promptTokens=usage=>usage?sumCounts(['inputTokens','cacheReadTokens','cacheWriteTokens'].map(key=>usage[key])):null;
 export function usageCost(usage,price){
-  if(!price||!usage||!['inputTokens','cacheReadTokens','cacheWriteTokens','outputTokens'].every(key=>finite(usage[key]))||
+  if(!price||!usage||sumCounts(['inputTokens','cacheReadTokens','cacheWriteTokens','outputTokens'].map(key=>usage[key]))===null||
     usage.cacheWriteTokens>0&&!finite(price.cacheWrite))return null;
-  return (usage.inputTokens*price.input+usage.cacheReadTokens*price.cacheRead+
+  const cost=(usage.inputTokens*price.input+usage.cacheReadTokens*price.cacheRead+
     usage.cacheWriteTokens*(price.cacheWrite??0)+usage.outputTokens*price.output)/1e6;
+  return finite(cost)?cost:null;
 }
 
 // Estimates guide a decision; only adapter usage is reported as observed tokens.
@@ -208,8 +213,10 @@ export function createContextEconomics(ctx,runtime){
     return results;
   }
   function requestFinished(agent,options,record){
-    const state=get(agent),canonical=canonicalUsage(record.usage),usage=canonical.usage,total=promptTokens(usage),price=pricing(agent,options);
-    record.usage=usage;record.usageSources=canonical.sources;record.usageConsistent=canonical.consistent;record.usageComplete=canonical.complete;
+    const state=get(agent),canonical=record.usageSources!==undefined?{usage:record.usage,sources:record.usageSources,
+      consistent:record.usageConsistent===true,complete:record.usageComplete===true}:canonicalUsage(record.usage),
+      usage=canonical.consistent?canonical.usage:null,total=promptTokens(usage),price=pricing(agent,options);
+    record.usage=canonical.usage;record.usageSources=canonical.sources;record.usageConsistent=canonical.consistent;record.usageComplete=canonical.complete;
     state.requests++;
     if(record.auxiliary)state.auxiliaryRequests++;
     if(usage&&(!finite(usage.cacheReadTokens)||!finite(usage.cacheWriteTokens)))state.missingCacheUsage++;
@@ -217,7 +224,7 @@ export function createContextEconomics(ctx,runtime){
     else{state.reportedPromptTokens+=total;state.reportedOutputTokens+=usage.outputTokens??0;}
     const billingComplete=record.settled&&['stop','tool-calls','max-tokens','length'].includes(record.finishReason);
     const cacheWritePriced=usage?.cacheWriteTokens===0||finite(price?.cacheWrite);
-    if(price&&usage&&total!==null&&finite(usage.outputTokens)&&billingComplete&&cacheWritePriced){
+    if(price&&canonical.complete&&usage&&total!==null&&finite(usage.outputTokens)&&billingComplete&&cacheWritePriced){
       state.costByCurrency[price.currency]=(state.costByCurrency[price.currency]??0)+(usage.inputTokens*price.input+(usage.cacheReadTokens??0)*price.cacheRead+
         usage.cacheWriteTokens*(price.cacheWrite??0)+usage.outputTokens*price.output)/1e6;
       state.pricedRequests++;
@@ -298,6 +305,7 @@ export function createContextEconomics(ctx,runtime){
       mainPromptRequests:state.mainPromptRequests,
       missingUsageRequests:state.missingUsage,missingCacheUsageRequests:state.missingCacheUsage,pricedRequests:state.pricedRequests,
       reportedCost:currencies.length===1&&state.pricedRequests===state.requests?state.costByCurrency[currencies[0]]:null,knownReportedCost:currencies.length===1?state.costByCurrency[currencies[0]]:null,costComplete:state.pricedRequests===state.requests,costByCurrency:{...state.costByCurrency},
+      costObservation:{basis:'configured-reference-prices',actualCharge:null,allowanceConsumption:null,budgetEnforcement:'none'},
       currency:currencies.length===1?currencies[0]:null,skips:{...state.skips},recentDecisions:state.decisions.slice(-6),
       projectionReviews:state.reviewedOutcomes.slice(-6),pendingProjectionReviews:state.pendingReviews.length,
       note:'Observed usage and configured-price cost are totals, not causal savings; forecast decisions predict reuse and do not prove a global cost optimum.'};

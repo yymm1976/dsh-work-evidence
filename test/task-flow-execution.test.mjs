@@ -7,7 +7,7 @@ function reviewResult(value,{body=typeof value==='string'?value:JSON.stringify(v
   const log=[{seq:0,type:'turn/start',data:{turn:1}},
     {seq:1,type:'user/message',data:{message:{id:'request',role:'user',source:{kind:'user'},content:[{type:'text',text:'运行检查并说明结果'}]}}},
     {seq:2,type:'tool/call',data:{turn:1,step:1,callId:'shell',name:'pwsh',arguments:{command:'run-checks',description:'checks'}}}];
-  const agent={session:{id:'execution-facts',log,seq:4}},state={config:defaults(),root:process.cwd()};
+  const agent={session:{id:'execution-facts',log,seq:4}},state={config:{...defaults(),qualityReview:true},root:process.cwd()};
   const flow=createTaskFlow({}, {get:()=>state,isEnabled:()=>true,activeMode:()=> 'quality'});
   if(live)flow.observe({agent,name:'pwsh',callId:'shell'},{value,content:[{type:'text',text:body}],isError});
   log.push({seq:3,type:'tool/result',data:{turn:1,step:1,message:{role:'tool',source:{callId:'shell'},content:[{type:'text',text:body}],isError}}});

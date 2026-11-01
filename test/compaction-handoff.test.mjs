@@ -69,7 +69,7 @@ test('stub checkpoints keep problem resolution markers and chronological recover
   assert.match(checkpoint.text,/bounded pointers/);assert.ok(!checkpoint.text.includes('cacheOrdered='));
 });
 
-test('pressure deferral preserves overflow recovery, disabled behavior and native method cleanup',async()=>{
+test('missing request evidence preserves native pressure, overflow recovery and method cleanup',async()=>{
   const calls=[],original=async(_agent,trigger)=>{calls.push(trigger);return {trigger};};
   const service={config:{thresholdRatio:.8,headroomTokens:65536},compactIfNeeded:original,summarize:async()=>({summary:[]}),regionDependencies:()=>({meter:{measure:()=>({totalTokens:1000})}})};
   let cleanup;
@@ -79,12 +79,53 @@ test('pressure deferral preserves overflow recovery, disabled behavior and nativ
   const runtime={isEnabled:()=>true,get:()=>({config})};
   const agent={session:{id:'pressure-test',requestHeader:()=>({config:{provider:'p',model:'m',maxTokens:29000}})}};
   const handoff=createCompactionHandoff(ctx,runtime,{});
-  assert.equal(await service.compactIfNeeded(agent,'pressure'),null);
+  assert.deepEqual(await service.compactIfNeeded(agent,'pressure'),{trigger:'pressure'});
   assert.deepEqual(await service.compactIfNeeded(agent,'context-overflow'),{trigger:'context-overflow'});
   config.deferPressureCompaction=false;await service.compactIfNeeded(agent,'pressure');
-  assert.deepEqual(calls,['context-overflow','pressure']);
+  assert.deepEqual(calls,['pressure','context-overflow','pressure']);
   await handoff.dispose();assert.equal(service.compactIfNeeded,original);
 });
+
+test('oversized native summaries retain human sources when possible and report actual omissions',async()=>{
+  for(const [nativeChars,expected]of [[12500,'human-requests'],[15500,'none']]){
+    const hooks=new Map();let cleanup,calls=0,prompt='';
+    const meter={estimateMessage:message=>textOfMessage(message).length};
+    const agent={session:{id:'source-sizing-'+nativeChars,seq:2,log:[userMessage(1,'Preserve EXACT_REQUIREMENT and the public API.')],
+      requestHeader:()=>({config:{provider:'p',model:'m'}})}};
+    const service={regionDependencies:()=>({meter}),summarize:async()=>{
+      calls++;
+      const options={purpose:'compaction',sessionId:agent.session.id,provider:'p',model:'m',messages:[]};
+      for await(const _chunk of hooks.get('llm/stream')(options,async function*(){prompt=textOfMessage(options.messages.at(-1));yield {type:'finish'};})){}
+      return {summary:[{type:'text',text:'Native checkpoint: EXACT_REQUIREMENT. '+ 'n'.repeat(nativeChars)}]};
+    }};
+    const local={config:{compressionControl:true}};
+    const ctx={on:(name,fn)=>hooks.set(name,fn),llm:{},inject:(_dependencies,callback)=>{
+      callback({compaction:service,effect:fn=>{cleanup=fn();}});return {dispose:async()=>cleanup()};
+    }};
+    const runtime={init:async()=>{},get:()=>local,isEnabled:()=>true,activeMode:()=> 'aggressive',problem:()=>assert.fail('preparation failed')};
+    const taskFlow={handoff:()=>({phase:'work',unresolvedErrors:[],pendingJobs:[],executions:[],sourceReads:[],
+      artifacts:[{path:'main.mjs',observed:'x'.repeat(5000)}]})};
+    const handoff=createCompactionHandoff(ctx,runtime,taskFlow);
+    try{
+      const result=await service.summarize({messages:[{role:'user',content:[{type:'text',text:'s'.repeat(16000)}]}]},agent);
+      const last=handoff.metrics(agent).last;
+      assert.equal(last.sourcesAppended,expected);
+      assert.equal(last.sourcesFit,expected!=='none');
+      assert.equal(last.sourcesOmitted,expected==='none'?'all':'state');
+      assert.equal(calls,1);
+      assert.match(prompt,/never assume that an independent source appendix will be present/);
+      assert.ok(result.summary.some(block=>block.text.includes('EXACT_REQUIREMENT')));
+      if(expected==='human-requests'){
+        assert.equal(JSON.parse(result.summary.at(-1).text.split('\n').slice(1).join('\n')).currentState,undefined);
+        const smaller=await service.summarize({messages:[{role:'user',content:[{type:'text',text:'s'.repeat(15000)}]}]},agent);
+        assert.equal(calls,2,'fitting human requests must survive the previous large-summary estimate');
+        assert.equal(smaller.summary.length,2);
+      }
+      else assert.equal(result.summary.length,1);
+    }finally{await handoff.dispose();}
+  }
+});
+function textOfMessage(message){return (message?.content??[]).map(block=>block.text??'').join('');}
 
 test('pressure deferral leaves normal thresholds and exact model overrides to the host',async()=>{
   let window=1000000,hostCalls=0,meterCalls=0,cleanup;

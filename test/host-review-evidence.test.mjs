@@ -6,7 +6,7 @@ for(const toolMode of ['native','ptc'])test(`quality review retains implementati
   const marker='IMPORTANT_MIDDLE_REQUIREMENT_BRANCH',body='header\n'.repeat(300)+marker+'\n'+'tail\n'.repeat(300);
   let payload=null;
   const invoke=(name,args)=>toolMode==='native'?tool(name,args):tool('run_code',{code:`return await tools.${name}(${JSON.stringify(args)});`});
-  const host=await startHost({toolMode,extraMounts:toolMode==='ptc'?[['dsh-ptc-runtime-node',{}],['dsh-agent-tool-presentation',{mode:'ptc'}]]:[],
+  const host=await startHost({workspace:{qualityReview:true},toolMode,extraMounts:toolMode==='ptc'?[['dsh-ptc-runtime-node',{}],['dsh-agent-tool-presentation',{mode:'ptc'}]]:[],
     script:(_o,n)=>n===1?[invoke('write',{file_path:'a.txt',content:body})]:
     n===2?[invoke('read',{file_path:'a.txt'})]:[text('a.txt 已写入并读取。')],
     auxiliary:options=>{payload=JSON.parse(options.messages[0].content[0].text);return [text('{"issues":[]}')];}});
@@ -25,7 +25,7 @@ for(const toolMode of ['native','ptc'])test(`quality review retains implementati
 test('quality review does not promote a source read superseded by a later write',async()=>{
   const marker='SUPERSEDED_SOURCE_MIDDLE',body='header\n'.repeat(300)+marker+'\n'+'tail\n'.repeat(300);
   let payload=null;
-  const host=await startHost({script:(_o,n)=>n===1?[tool('write',{file_path:'a.txt',content:body})]:
+  const host=await startHost({workspace:{qualityReview:true},script:(_o,n)=>n===1?[tool('write',{file_path:'a.txt',content:body})]:
     n===2?[tool('read',{file_path:'a.txt'})]:n===3?[tool('write',{file_path:'a.txt',content:'replacement\n'})]:[text('a.txt 已替换。')],
     auxiliary:options=>{payload=JSON.parse(options.messages[0].content[0].text);return [text('{"issues":[]}')];}});
   try{

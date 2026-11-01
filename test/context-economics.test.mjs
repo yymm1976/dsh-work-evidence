@@ -1,6 +1,21 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {createContextEconomics} from '../context-economics.mjs';
+import {createContextEconomics,canonicalUsage,promptTokens,usageCost} from '../context-economics.mjs';
+
+test('unsafe disjoint sums stay unknown even when each reported field is a safe integer',()=>{
+  const usage={inputTokens:Number.MAX_SAFE_INTEGER,cacheReadTokens:1,cacheWriteTokens:0,outputTokens:1};
+  const normalized=canonicalUsage(usage);
+  assert.equal(normalized.complete,false);
+  assert.equal(normalized.consistent,false);
+  assert.equal(normalized.usage.totalTokens,null);
+  assert.equal(promptTokens(usage),null);
+  assert.equal(usageCost(usage,{input:.15,cacheRead:.003,output:.6}),null);
+  let belowLimit=Number.MAX_SAFE_INTEGER;
+  belowLimit--;
+  const exact=canonicalUsage({inputTokens:belowLimit,cacheReadTokens:0,cacheWriteTokens:0,outputTokens:1});
+  assert.equal(exact.complete,true);
+  assert.equal(exact.usage.totalTokens,Number.MAX_SAFE_INTEGER);
+});
 function harness(){
   const state={step:0,config:{projectionPricing:[],projectionHorizonSteps:16}};
   const agent={session:{id:'economics',surface:{nodes:[]},requestHeader:()=>({config:{provider:'p',model:'m'}}),requestContext:()=>({contextWindow:10000})}};

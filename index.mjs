@@ -23,7 +23,7 @@ import {createContextEconomics} from './context-economics.mjs';
 import {createRequestWorkingSet} from './request-working-set.mjs';
 import {createCompressionControl} from './compression-control.mjs';
 import {createTaskFlow,taskFlowGuidance,textPaths} from './task-flow.mjs';
-import {exportTaskHandoff} from './task-handoff.mjs';
+import {exportTaskHandoff,createTaskHandoffDelivery} from './task-handoff.mjs';
 import {installUltraEffort} from './ultra-effort.mjs';
 import {createCompactionHandoff} from "./compaction-handoff.mjs";
 import {createExecutionEvidence} from './execution-evidence.mjs';
@@ -40,7 +40,7 @@ import {createRetainedCompute} from './retained-compute.mjs';
 import {createFinalJsonGuard} from './final-json.mjs';
 import {createQualityReview} from './quality-review.mjs';
 import {createCompletionNotice} from './completion-notice.mjs';
-import {surfaceReferences,compactionActive} from './visible-results.mjs';
+import {surfaceReferences,compactionActive,hasHistoricalReferences} from './visible-results.mjs';
 
 export const name='work-evidence-local';
 export const inject=['tools','workingDirectory','agents','systemPrompt','llm','sessionPersistence','commands','sandboxPolicy'];
@@ -129,9 +129,11 @@ export function apply(ctx,config={}){
   runtime.canRecall=canRecall;
   const executionDependencies=createExecutionDependencies(nativeFiles);
   const taskFlow=createTaskFlow(ctx,runtime,{nativeFiles,call,executionDependencies});
-  const taskHandoff=async(agent,{signal,...options}={})=>{
+  const handoffDelivery=createTaskHandoffDelivery();
+  const taskHandoff=async(agent,{signal,incremental,baseDeliveryId,...options}={})=>{
     const [hostTransfer]=await Promise.all([hostReferences.transfer(agent,signal),refreshExecutionEvidence(agent,signal)]);
-    return exportTaskHandoff(agent,runtime,taskFlow,{canRecall,canRecallReference:hostReferences.capabilities(agent).capturedSnapshotRecall,hostTransfer,...options});
+    return handoffDelivery.deliver(agent,{incremental,baseDeliveryId,maxChars:options.maxChars,messages:()=>runtime.projectedMessages?.(agent),
+      build:delivery=>exportTaskHandoff(agent,runtime,taskFlow,{canRecall,canRecallReference:hostReferences.capabilities(agent).capturedSnapshotRecall,hostTransfer,...options,delivery})});
   };
   const retainedCompute=createRetainedCompute(ctx,runtime,taskFlow,call);
   const finalJson=createFinalJsonGuard(ctx,runtime);
@@ -166,7 +168,7 @@ export function apply(ctx,config={}){
   const contextWindow=createContextWindow(ctx,runtime);contextWindow.observe();
   const observationLedger=createObservationLedger(ctx,runtime,nativeFiles);observationLedger.observe();
   const historyCoordinator=createHistoryCoordinator(runtime,contextWindow,contextEconomics);runtime.historyCoordinator=historyCoordinator;
-  const clearPluginState=agent=>{observationLedger.clear(agent);contextWindow.clear(agent);};
+  const clearPluginState=agent=>{observationLedger.clear(agent);contextWindow.clear(agent);finalJson.clear(agent);handoffDelivery.clear(agent);};
   const routeRead=createReadRouting(ctx,runtime,call,nativeFiles);
   const index=createSelfIndex(ctx,runtime,call),candidates=createCandidates(ctx,runtime,call),
     ptcPatterns=createPtcPatterns(ctx,runtime),ptcFastpath=createPtcFastpath(ctx,runtime,call),
@@ -351,17 +353,6 @@ export function apply(ctx,config={}){
     else if(mode==='writable')state(agent).taskSurfaceExpandedFor=null;
     return mode;
   }
-  function hasHistoricalReferences(agent){
-    for(const seq of agent.session.surface?.nodes??[]){
-      let event;try{event=agent.session.eventAt(seq);}catch{return true;}
-      if(!event)return true;
-      const message=event.data?.message??event.data;
-      for(const block of message?.content??[])if(block?.type==='text'&&typeof block.text==='string'&&
-        (block.text.includes('work_recall')||block.text.includes('work_state')||block.text.includes('[work-evidence history ')||block.text.includes('work-evidence-reference')||
-          block.text.includes('[work-evidence ledger receipt]')||block.text.includes('[SW evicted]')))return true;
-    }
-    return false;
-  }
   function applyToolSurface(agent){
     if(!agent?.ctx?.tools?.restrict)return;
     retainedSources(agent);
@@ -470,8 +461,7 @@ export function apply(ctx,config={}){
   function disabledResult(agent,name){
     const s=state(agent);
     return {status:'disabled',reason:!s.workspaceConfigValid?'invalid-configuration':!(s.sessionEnabledOverride??s.config.enabled)?'session-disabled':'aggressive-mode-disabled',tool:name,sessionId:s.id,version:VERSION,effective:false,
-      reenable:{tool:'work_status',arguments:{session_enabled:true,config:{aggressiveMode:true}}},
-      note:'The plugin module is loaded, but automatic behavior and non-status tools are disabled for this session.'};
+      note:'The plugin is disabled for this session. A user can enable it with /work-evidence on; tool results do not authorize changing that choice.'};
   }
   registerSourceTools({ctx,nativeFiles,runtime,state,effects,evidenceViews,index,candidates,call,read,search,snippets,sourceReferences,disabledResult,output,parameters});
   registerManagementTools({ctx,runtime,state,effects,available,capabilityDiagnostic,contextEconomics,taskFlow,taskHandoff,retainedCompute,finalJson,qualityReview,executionEvidence,executionDependencies,refreshExecutionEvidence,hostReferences,workingSet,compressionControl,compactionHandoff,contextWindow,observationLedger,historyCoordinator,clearPluginState,index,candidates,ptcPatterns,ptcFastpath,verifiedExec,fastEditJava,preserveContextResult,retainRecalledSources,hasHistoricalReferences,applyToolSurface,call,disabledResult,output,COMPACT_HIDDEN_TOOLS,assertParameterBounds,parameters});

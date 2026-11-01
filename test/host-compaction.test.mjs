@@ -4,8 +4,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import {startHost,text,tool} from './helpers/host.mjs';
 
-// Window 40K with no output reservation: host pressure starts at 30% (12K tokens);
-// deferral waits until 60% of the message budget (24K tokens).
+// Without request pruning, the effective request still reaches native pressure.
 async function run(workspace,{manual=false}={}){
   const summaries=[];
   const host=await startHost({workspace,contextWindow:40000,
@@ -25,15 +24,15 @@ async function run(workspace,{manual=false}={}){
   }finally{await host.close();}
 }
 
-test('deferPressureCompaction waits for 60% of the message budget and caps summary output', async()=>{
+test('pressure deferral retains native pressure when the effective request is not reduced', async()=>{
   const off=await run({contextProtocol:false});
   const on=await run({contextProtocol:false,deferPressureCompaction:true});
   assert.equal(off.completed,'completed');
   assert.equal(on.completed,'completed');
   assert.ok(off.starts>=2,`host compacts early without deferral (${off.starts})`);
-  assert.ok(on.handoff.deferredPressure>=1,'pressure passes below the deferral line are skipped');
-  assert.ok(on.starts<off.starts,`fewer compactions with deferral (${on.starts} vs ${off.starts})`);
-  assert.ok(on.summaries.every(o=>o.maxTokens<=16384),'deferred summaries reserve at most 16K output');
+  assert.equal(on.handoff.deferredPressure??0,0,'an unshortened request must not defer pressure');
+  assert.equal(on.starts,off.starts,'both runs preserve the native pressure decisions');
+  assert.ok(on.summaries.every(o=>o.maxTokens===30000),'native summaries retain the configured output reservation');
   assert.ok(off.summaries.some(o=>o.maxTokens===30000),'without deferral the host reservation is unchanged');
   assert.equal(off.handoff.deferredPressure??0,0);
 });

@@ -6,10 +6,10 @@ import {messageTokens} from './context-economics.mjs';
 const POLICY='kimi-codex-handoff-v10-stub';
 const INSTRUCTION='Produce one consolidated continuation checkpoint with these sections: Goal and user decisions; Work and artifacts; Evidence and failed approaches; Open work and next action. Preserve current requirements and corrections, separating user decisions from assistant assumptions. Keep exact paths, symbols, configuration values, input conditions, error strings, job IDs and source event seqs needed to continue. Describe what actually changed in each relevant artifact and what remains unfinished. Preserve unresolved failures, excluded approaches and their reasons; distinguish process success from correctness.\n'+
   'Update the previous checkpoint using newer events. Carry forward still-valid earlier facts, decisions and open questions; explicitly replace corrected claims and remove resolved work from the next action. Do not nest old checkpoints, reproduce old continuation-source wrappers or append a per-edit changelog. Reuse public stage conclusions and evidence without treating their headings as proof of coverage. Do not invent completion or turn assistant judgments into user decisions.\n'+
-  'Bounded human excerpts, public checkpoints and current TODOs are appended independently. Preserve relevant decisions and facts absent from those sources, especially omitted middle history. Identify any exact detail that still requires historical recovery. Use historical recovery when available; if it is unavailable, preserve the exact evidence needed for continuation instead of relying on a future lookup. Never rerun an action only to recreate its text. Continue from the next unmet dependency without asking answered questions. Output only the complete text checkpoint, no tools or other actions.';
+  'Continuation sources are appended only when they fit after the checkpoint is generated. Preserve all still-relevant requirements, decisions and facts in the checkpoint itself; never assume that an independent source appendix will be present. Identify any exact detail that still requires historical recovery. Use historical recovery when available; if it is unavailable, preserve the exact evidence needed for continuation instead of relying on a future lookup. Never rerun an action only to recreate its text. Continue from the next unmet dependency without asking answered questions. Output only the complete text checkpoint, no tools or other actions.';
 function summaryPrompt(record,complete=record.humanRequests.requirementsComplete,recallAvailable=record.recovery.available){
   const coverage=complete
-    ?'The complete text of all human requests is appended independently. Avoid duplicating their full text; retain the observed work state and decisions.'
+    ?'The available human-source record contains the complete text of all human requests. Space can still prevent its attachment; preserve the requirements and corrections needed for continuation in your checkpoint.'
     :'The appended human sources are incomplete or include non-text content. Do not assume the full requirements are appended. Preserve the still-relevant requirements, constraints, corrections and exceptions visible in the selected conversation, especially details missing from the excerpts. '+
       (recallAvailable?'Identify missing details and their event locations for later text recovery; historical text recovery does not reproduce non-text content.'
         :'Historical recovery is unavailable. Retain the exact available details needed to continue and explicitly identify gaps that cannot be recovered from the selected conversation.');
@@ -430,10 +430,13 @@ export function createCompactionHandoff(ctx,runtime,taskFlow,{canRecall=()=>fals
       // summary size, or a third of the span before any summary exists.
       const sourceTokens=size?size.framed([{type:'text',text}]):null;
       const nativeEstimate=size?(state.lastNativeSummaryTokens??Math.ceil(size.region/3)):null;
+      const requestsOnly='[Work Evidence continuation sources]\n'+JSON.stringify({policy:record.policy,sourceAuthority:record.sourceAuthority,
+        humanRequests:record.humanRequests,recovery:record.recovery,continuation:record.continuation});
+      const requestsFit=!size||size.framed([{type:'text',text:requestsOnly}])+nativeEstimate<size.region;
       // Sources that cannot fit are left out so the host summary can still shrink the span;
       // only a span too small for the summary itself skips the paid call.
       const sourcesFit=!size||sourceTokens+nativeEstimate<size.region;
-      if(size&&!sourcesFit&&nativeEstimate*1.25>=size.region){
+      if(size&&!sourcesFit&&!requestsFit&&nativeEstimate*1.25>=size.region){
         state.failed++;state.last.status='failed';state.last.method='span-smaller-than-sources';
         state.last.sizing={regionTokensEstimate:size.region,sourceTokensEstimate:sourceTokens,nativeSummaryTokensEstimate:nativeEstimate};
         state.skippedSmallSpans=(state.skippedSmallSpans??0)+1;
@@ -445,12 +448,9 @@ export function createCompactionHandoff(ctx,runtime,taskFlow,{canRecall=()=>fals
       // host summary is most likely to paraphrase away.
       let appended=text;
       if(!sourcesFit){
-        const requestsOnly='[Work Evidence continuation sources]\n'+JSON.stringify({policy:record.policy,sourceAuthority:record.sourceAuthority,
-          humanRequests:record.humanRequests,recovery:record.recovery,continuation:record.continuation});
-        appended=size.framed([{type:'text',text:requestsOnly}])+nativeEstimate<size.region?requestsOnly:null;
-        state.last.sourcesOmitted=appended?'state':'all';state.sourcesOmitted=(state.sourcesOmitted??0)+1;
+        appended=requestsFit?requestsOnly:null;
       }
-      return {record,size,appended,sourcesFit};
+      return {record,size,appended,requestsOnly,fullText:text};
       };
       try{prepared=await prepare();}
       catch(error){
@@ -465,9 +465,10 @@ export function createCompactionHandoff(ctx,runtime,taskFlow,{canRecall=()=>fals
       }
       if(!prepared)return original.call(this,input,agent,signal);
       if(prepared.result)return prepared.result;
-      const {record,size,appended,sourcesFit}=prepared;
+      const {record,size,requestsOnly}=prepared;
+      let appended=prepared.appended;
       // Without appended sources the host's own directive (verbatim user goals) applies unchanged.
-      const previous=active.get(agent.session.id);if(sourcesFit)active.set(agent.session.id,record);
+      const previous=active.get(agent.session.id);if(appended)active.set(agent.session.id,record);
       try{
         state.nativeSummaryCalls++;
         const result=await original.call(this,input,agent,signal);
@@ -475,13 +476,18 @@ export function createCompactionHandoff(ctx,runtime,taskFlow,{canRecall=()=>fals
         if(!Array.isArray(result?.summary)||!result.summary.length||result.summary.some(block=>block.type!=='text'||typeof block.text!=='string')||!result.summary.some(block=>block.text.trim()))throw new Error('Native compaction returned an empty or non-text summary');
         state.summariesReturned++;state.last.status='prepared-awaiting-native-commit';
         if(size)try{state.lastNativeSummaryTokens=size.framed(result.summary);}catch{}
-        const combined=appended?[...result.summary,{type:'text',text:appended}]:result.summary;
-        if(size&&appended&&size.framed(combined)>=size.region&&state.lastNativeSummaryTokens<size.region){
-          state.last.sourcesOmitted='all';
-          runtime.effects?.decide(agent,'compactionHandoff','applied','continuation-sources-omitted-to-fit-span',{regionTokensEstimate:size.region});
-          return result;
+        const fits=text=>!size||size.framed([...result.summary,{type:'text',text}])<size.region;
+        appended=fits(prepared.fullText)?prepared.fullText:fits(requestsOnly)?requestsOnly:null;
+        state.last.sourcesAppended=appended===null?'none':appended===requestsOnly?'human-requests':'full';
+        state.last.sourcesFit=appended!==null;
+        state.last.appendedSourceChars=appended?.length??0;
+        state.last.sourcesOmitted=state.last.sourcesAppended==='full'?null:appended?'state':'all';
+        if(state.last.sourcesOmitted){
+          state.sourcesOmitted=(state.sourcesOmitted??0)+1;
+          runtime.effects?.decide(agent,'compactionHandoff','applied','continuation-sources-omitted-to-fit-span',
+            {regionTokensEstimate:size?.region??null,sourcesAppended:state.last.sourcesAppended});
         }
-        return {...result,summary:combined};
+        return appended?{...result,summary:[...result.summary,{type:'text',text:appended}]}:result;
       }catch(error){state.failed++;state.last.status='failed';throw error;}
       finally{if(previous)active.set(agent.session.id,previous);else active.delete(agent.session.id);runtime.get(agent).dirty=true;}
     };

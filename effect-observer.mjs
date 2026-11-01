@@ -27,7 +27,7 @@ const RETIRED_FEATURES=new Set(['programHistory','ledgerFold','foldPlan','reason
 export function createEffectObserver(ctx,runtime){
   const states=new Map();
   const storageFor=agent=>{const s=runtime.get(agent);return s.telemetryDir===undefined?s.dir:s.telemetryDir;};
-  const get=agent=>{let state=states.get(agent.session.id);if(!state){state={features:{},effects:new Map(),decisions:[],pendingDecisions:[],recentRequests:[],requests:0,mainRequests:0,auxiliaryRequests:0,missingUsage:0,unknownConsumption:0,reported:{inputTokens:0,cacheReadTokens:0,cacheWriteTokens:0,outputTokens:0,totalTokens:0},totals:{directTokensEstimate:0,directChars:0,instructionTokensEstimate:0,systemTokensEstimate:0,messageTokensEstimate:0,toolSchemaTokensEstimate:0,requestReconstructionMisses:0},queue:Promise.resolve(),writeErrors:[],effectBytes:0,loaded:false,snippets:new Map()};states.set(agent.session.id,state);}return state;};
+  const get=agent=>{let state=states.get(agent.session.id);if(!state){state={features:{},effects:new Map(),decisions:[],pendingDecisions:[],recentRequests:[],requests:0,mainRequests:0,auxiliaryRequests:0,missingUsage:0,unknownConsumption:0,reported:{inputTokens:0,cacheReadTokens:0,cacheWriteTokens:0,outputTokens:0,totalTokens:0},totals:{directTokensEstimate:0,directChars:0,instructionTokensEstimate:0,systemTokensEstimate:0,messageTokensEstimate:0,toolSchemaTokensEstimate:0,requestReconstructionMisses:0},queue:Promise.resolve(),writeErrors:[],effectBytes:0,loaded:false,snippets:new Map(),needsLeadingNewline:new Set()};states.set(agent.session.id,state);}return state;};
   function feature(state,name){return state.features[name]??=( {decisions:0,applied:0,deferred:0,notApplicable:0,unavailable:0,failed:0,requestsAffected:0,directTokensEstimate:0,directChars:0,reasons:{}} );}
   function decide(agent,name,status,reason,details={}){
     const state=get(agent),item=feature(state,name);item.decisions++;item[status==='not-applicable'?'notApplicable':status]=(item[status==='not-applicable'?'notApplicable':status]??0)+1;item.lastStatus=status;item.lastReason=reason;item.reasons[reason]=(item.reasons[reason]??0)+1;
@@ -51,7 +51,13 @@ export function createEffectObserver(ctx,runtime){
     const dir=storageFor(agent);if(!dir){state.writeErrors.push('Observability storage outside the workspace is unavailable');state.writeErrors=state.writeErrors.slice(-8);return;}
     if(!/^[-a-zA-Z0-9_][-.a-zA-Z0-9_]{0,127}$/.test(agent.session.id)){state.writeErrors.push('Invalid session ID for observability record');return;}
     const file=path.join(dir,agent.session.id+'.'+kind+'.jsonl');
-    state.queue=state.queue.catch(()=>{}).then(async()=>{await fs.mkdir(dir,{recursive:true});await fs.appendFile(file,JSON.stringify(row)+'\n','utf8');}).catch(error=>{state.writeErrors.push(String(error.message).slice(0,240));state.writeErrors=state.writeErrors.slice(-8);});
+    // After a failed trailing-newline repair the file is known to end mid-line, so the next
+    // append for that file starts with its own newline instead of merging two rows.
+    state.queue=state.queue.catch(()=>{}).then(async()=>{await fs.mkdir(dir,{recursive:true});
+      await fs.appendFile(file,(state.needsLeadingNewline.has(kind)?'\n':'')+JSON.stringify(row)+'\n','utf8');
+      // Clear the marker only once a row actually landed: an append that failed wrote nothing,
+      // so the file still ends mid-line and the following row must keep its own leading newline.
+      state.needsLeadingNewline.delete(kind);}).catch(error=>{state.writeErrors.push(String(error.message).slice(0,240));state.writeErrors=state.writeErrors.slice(-8);});
   }
   function begin(agent,options,{auxiliary=false}={}){
     const state=get(agent),byFeature={},used=new Set();let misses=0;
@@ -88,14 +94,27 @@ export function createEffectObserver(ctx,runtime){
       decisions:auxiliary?[]:state.pendingDecisions.splice(0),sourceSeq:agent.session.seq,step:runtime.get(agent).step};
   }
   function normalizeRow(row){
+    // Canonicalize only the raw adapter usage. A caller or a stored row that already carries
+    // its source verdicts holds a detached result where a rejected adapter value became a
+    // null; re-reading that null as an omission lets a matching reported total prove it zero.
+    if(row.usageSources!==undefined)return row.usage;
     const canonical=canonicalUsage(row.usage);
     row.usage=canonical.usage;row.usageSources=canonical.sources;row.usageConsistent=canonical.consistent;row.usageComplete=canonical.complete;
     return canonical.usage;
   }
+  // Rows reach accumulate already canonical. Normalizing a second time re-reads the
+  // nulls written for a rejected adapter value as omissions, and a matching reported
+  // total then turns them into proven zeros.
   function accumulate(state,row){
-    const usage=normalizeRow(row),required=['inputTokens','cacheReadTokens','cacheWriteTokens','outputTokens'];
+    const usage=row.usage,required=['inputTokens','cacheReadTokens','cacheWriteTokens','outputTokens'];
     const missing=!usage||required.some(key=>!Number.isFinite(usage[key]));
-    row.usageComplete=!missing;row.unknownConsumption=missing||!row.settled||!['stop','tool-calls','max-tokens','length'].includes(row.finishReason);
+    // A canonical or caller verdict already proved whether the disjoint fields are complete and
+    // add up to the reported total: four finite parts with a total that does not match is not
+    // complete consumption, so the verdict is kept and only rows without one fall back to the
+    // local check. The verdict is never upgraded from an explicit false.
+    const inconsistent=row.usageConsistent===false;
+    row.usageComplete=row.usageSources!==undefined?row.usageComplete!==false&&!missing:!missing;
+    row.unknownConsumption=missing||inconsistent||!row.settled||!['stop','tool-calls','max-tokens','length'].includes(row.finishReason);
     state.requests++;if(row.auxiliary)state.auxiliaryRequests++;else state.mainRequests++;
     if(missing)state.missingUsage++;if(row.unknownConsumption)state.unknownConsumption++;
     for(const key of Object.keys(state.reported))if(Number.isFinite(usage?.[key]))state.reported[key]+=usage[key];
@@ -107,7 +126,7 @@ export function createEffectObserver(ctx,runtime){
   }
   function finish(agent,row){const state=get(agent);normalizeRow(row);accumulate(state,row);queue(state,agent,row);runtime.get(agent).dirty=true;}
   async function load(agent){
-    const state=get(agent);if(state.loaded)return;if(state.loading)return state.loading;
+    const state=get(agent);if(state.loaded)return;if(state.loading)return state.loading.catch(()=>{});
     const dir=storageFor(agent);if(!dir)return;
     state.loading=(async()=>{
       for(const kind of ['attribution','observability']){
@@ -130,14 +149,23 @@ export function createEffectObserver(ctx,runtime){
             if(state.effectBytes+(item.bytes??0)>16*1024*1024){state.writeErrors.push('attribution restore exceeds memory limit');break;}
             const list=state.effects.get(item.messageId)??[];if(!list.some(effect=>effect.id===item.id)){list.push(item);state.effects.set(item.messageId,list);state.effectBytes+=item.bytes??0;}
           }else if(kind==='observability'&&item.schema==='work-evidence.request-effects.v1'){
+            // A persisted row keeps the verdicts stored with it; only rows written before
+            // that field existed are canonicalized here, and only once.
+            normalizeRow(item);
             accumulate(state,item);
             for(const decision of item.decisions??[]){const value=feature(state,decision.feature),key=decision.status==='not-applicable'?'notApplicable':decision.status;value.decisions++;value[key]=(value[key]??0)+1;value.lastStatus=decision.status;value.lastReason=decision.reason;value.reasons[decision.reason]=(value.reasons[decision.reason]??0)+1;state.decisions.push(decision);if(state.decisions.length>64)state.decisions.shift();}
           }
         }catch(error){state.writeErrors.push('Unreadable '+kind+' row retained: '+error.message);}
-        if(raw&&!raw.endsWith('\n'))await fs.appendFile(file,'\n','utf8');
+        // Repairing a missing trailing newline keeps later appends one row per line. When
+        // that write fails the restore itself already succeeded, so record the failure,
+        // mark the next append self-terminating and do not re-read on every request.
+        if(raw&&!raw.endsWith('\n')){try{await fs.appendFile(file,'\n','utf8');}
+          catch(error){state.needsLeadingNewline.add(kind);state.writeErrors.push('newline repair: '+String(error.message??error).slice(0,200));}}
       }
-      state.writeErrors=state.writeErrors.slice(-8);state.loaded=true;
-    })();try{await state.loading;}finally{state.loading=null;}
+    })().finally(()=>{state.writeErrors=state.writeErrors.slice(-8);state.loaded=true;});
+    try{await state.loading;}
+    catch(error){state.writeErrors.push('load: '+String(error.message??error).slice(0,200));}
+    finally{state.loading=null;}
   }
   function snapshot(agent){const state=get(agent),config=runtime.get(agent).config,features={};for(const name of new Set([...Object.keys(FEATURES),...Object.keys(state.features)])){const item=state.features[name];const setting=FEATURES[name],retired=RETIRED_FEATURES.has(name);features[name]={enabled:!retired&&runtime.isEnabled(agent)&&(setting?!!config[setting]:true),...(retired?{retired:true}:{}),...(item??{decisions:0,applied:0,lastStatus:'not-observed',lastReason:'no-opportunity-observed'} )};}
     return {version:1,schema:'work-evidence.observability.v1',requests:{count:state.requests,main:state.mainRequests,auxiliary:state.auxiliaryRequests,missingUsage:state.missingUsage,unknownConsumption:state.unknownConsumption,providerReported:{...state.reported}},

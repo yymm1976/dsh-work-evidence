@@ -57,7 +57,7 @@ test('quality review runs only under Ultra, steers on a gap and re-reviews the r
     const issues=reviews===1?[{kind:'requirement',detail:'b.txt 未修改',evidence:[payload.request.seq,payload.answer.seq]}]:[];
     return [text(JSON.stringify({issues}))];
   };
-  const host=await startHost({auxiliary,script:(_o,n)=>[text(n===1?'已修改 a.txt 和 b.txt。':'已补充说明。')]});
+  const host=await startHost({workspace:{qualityReview:true},auxiliary,script:(_o,n)=>[text(n===1?'已修改 a.txt 和 b.txt。':'已补充说明。')]});
   try{
     const max=await host.createAgent('max');
     await host.send(max,'修改 a.txt 和 b.txt');
@@ -148,7 +148,7 @@ test('work_recall returns the exact original text that pruning removed', async()
   }finally{await host.close();}
 });
 
-test('work_status rejects unknown settings and re-enables a disabled session', async()=>{
+test('work_status keeps a disabled session disabled until a user command enables it', async()=>{
   const host=await startHost({script:(_o,n)=>n===1?[tool('work_status',{config:{noSuchSetting:true}})]:n===2?[tool('work_status',{session_enabled:true})]:[text('完成。')]});
   try{
     const agent=await host.createAgent('max');
@@ -157,6 +157,8 @@ test('work_status rejects unknown settings and re-enables a disabled session', a
     await host.send(agent,'检查插件状态');
     const results=host.events.filter(event=>event.type==='tool/result').map(event=>event.data.message.content.map(block=>block.text??'').join(''));
     assert.match(results[0],/Unknown work-evidence setting|error/iu);
+    assert.equal((await host.command(agent,'status')).effective,false);
+    await host.command(agent,'on');
     assert.equal((await host.command(agent,'status')).effective,true);
   }finally{await host.close();}
 });

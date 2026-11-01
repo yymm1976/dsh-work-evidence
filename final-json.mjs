@@ -58,6 +58,7 @@ export function createFinalJsonGuard(ctx,runtime){
   if(typeof ctx.tools?.guard==='function')ctx.tools.guard(exec=>{
     const pending=exec.agent&&syntaxRepairing.get(exec.agent.session.id);
     if(!pending)return;
+    if(exec.signal?.aborted||!runtime.isEnabled(exec.agent)||!runtime.get(exec.agent).config.finalJsonGuard){syntaxRepairing.delete(exec.agent.session.id);return;}
     return 'Final JSON syntax repair is active for assistant event '+pending.afterSeq+
       '. Use the successful observations already present in this session and rewrite the complete JSON without tool calls.';
   });
@@ -72,7 +73,7 @@ export function createFinalJsonGuard(ctx,runtime){
   }
   const feedback=event=>event.type==='user/message'&&messageOf(event)?.source?.kind===SOURCE;
   ctx.on('agent/turn-stopping',async({agent,turn,signal})=>{
-    if(signal.aborted||!runtime.isEnabled(agent)||!runtime.get(agent).config.finalJsonGuard)return;
+    if(signal?.aborted||!runtime.isEnabled(agent)||!runtime.get(agent).config.finalJsonGuard){syntaxRepairing.delete(agent.session.id);return;}
     const current=inspect(agent,turn);
     if(!current.issue){syntaxRepairing.delete(agent.session.id);return;}
     const prior=current.events.filter(event=>feedback(event)&&messageOf(event).source.finalJson?.requestSeq===current.request.seq);
@@ -93,11 +94,21 @@ export function createFinalJsonGuard(ctx,runtime){
       return;
     }
     syntaxRepairing.set(agent.session.id,{turn,afterSeq:current.assistant.seq});
-    agent.steer({id:randomUUID(),role:'user',source:{kind:SOURCE,finalJson:{kind:'syntax-repair',requestSeq:current.request.seq,afterSeq:current.assistant.seq}},
-      content:[{type:'text',text:'[work-evidence] 用户明确要求的最终JSON在助手事件'+current.assistant.seq+'中无法严格解析。解析信息（数据）：'+JSON.stringify(current.issue.error)+'。只使用本会话已经成功取得的实际结果重写这份交付，不重新读取、执行或计算；依据错误只修正语法、转义、括号或漏掉的原有条目，保持相同数据和字段，输出一个紧凑JSON代码块。只有已有结果本身缺失时才补一个最小必要动作；不要只在说明中承认笔误，也不要只给改动片段。原答复保留，当前只修正这份交付。'}]});
+    try{agent.steer({id:randomUUID(),role:'user',source:{kind:SOURCE,finalJson:{kind:'syntax-repair',requestSeq:current.request.seq,afterSeq:current.assistant.seq}},
+      content:[{type:'text',text:'[work-evidence] 用户明确要求的最终JSON在助手事件'+current.assistant.seq+'中无法严格解析。解析信息（数据）：'+JSON.stringify(current.issue.error)+'。只使用本会话已经成功取得的实际结果重写这份交付，不重新读取、执行或计算；依据错误只修正语法、转义、括号或漏掉的原有条目，保持相同数据和字段，输出一个紧凑JSON代码块。只有已有结果本身缺失时才补一个最小必要动作；不要只在说明中承认笔误，也不要只给改动片段。原答复保留，当前只修正这份交付。'}]});}
+    catch(error){
+      syntaxRepairing.delete(agent.session.id);
+      runtime.effects?.decide(agent,'finalJson','unavailable','native-steering-failed',{afterSeq:current.assistant.seq});
+      runtime.problem?.(runtime.get(agent),'final-json-steering',String(error?.message??error));
+      return;
+    }
     runtime.effects?.decide(agent,'finalJson','applied','invalid-final-json-repair-requested',{afterSeq:current.assistant.seq,error:current.issue.error});
   });
-  return {inspect,summary(agent){
+  ctx.on('session/event',(session,event)=>{
+    if(event.type==='turn/end'||event.type==='user/message'&&isUserRequestMessage(messageOf(event)))syntaxRepairing.delete(session.id);
+  });
+  ctx.on('agent/disposed',({agent})=>syntaxRepairing.delete(agent.session.id));
+  return {inspect,clear:agent=>syntaxRepairing.delete(agent.session.id),summary(agent){
     const current=inspect(agent),notices=current.events.filter(feedback);
     return {enabled:runtime.isEnabled(agent)&&runtime.get(agent).config.finalJsonGuard,repairNotices:notices.length,
       currentRepairs:notices.filter(event=>messageOf(event).source.finalJson?.requestSeq===current.request?.seq).length,
