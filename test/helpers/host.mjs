@@ -29,13 +29,18 @@ export const load=name=>import(pathToFileURL(require.resolve('@deepseek-ai/'+nam
 const PLUGIN=path.resolve(import.meta.dirname,'..','..');
 
 export const text=value=>({kind:'text',text:value});
+export const reasoning=value=>({kind:'reasoning',text:value});
 export const tool=(name,args)=>({kind:'tool',name,args});
 
 async function* emit(turn,usage){
   const calls=turn.filter(item=>item.kind==='tool');
   let index=0;
   for(const item of turn){
-    if(item.kind==='text'){
+    if(item.kind==='reasoning'){
+      yield {type:'block-start',index,blockType:'reasoning'};
+      yield {type:'reasoning-delta',index,text:item.text};
+      yield {type:'block-end',index,block:{type:'reasoning',text:item.text}};
+    }else if(item.kind==='text'){
       yield {type:'block-start',index,blockType:'text'};
       yield {type:'text-delta',index,text:item.text};
       yield {type:'block-end',index,block:{type:'text',text:item.text}};
@@ -81,7 +86,8 @@ export async function startHost({script,auxiliary=()=>[text('{}')],pluginConfig=
     }
   }
   const ctx=new Context();
-  const mount=async(name,config={})=>{const m=await load(name);await ctx.plugin(m.default??m,config);};
+  // A mount name is a desktop runtime package; a module object mounts as given (for example OPS).
+  const mount=async(name,config={})=>{const m=typeof name==='string'?await load(name):name;await ctx.plugin(m.default??m,config);};
   for(const [name,config] of [
     ['dsh-session'],['dsh-agent'],['dsh-session-projection'],['dsh-session-query'],['dsh-token-meter'],['dsh-system-prompt'],['dsh-tools',{mode:toolMode}],
     ['dsh-fs-local',{cwd}],['dsh-working-directory',{defaultDirectory:cwd}],['dsh-subprocess-local'],['dsh-sandbox-local'],['dsh-sandbox-policy',{mode:'danger-full-access',workspaceRoot:cwd}],

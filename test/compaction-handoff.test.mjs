@@ -51,6 +51,41 @@ function countOccurrences(text, value) {
   return text.split(value).length - 1;
 }
 
+test('cacheOrderedStub annotates problem resolution; both modes retain chronological event locators',()=>{
+  const agent=eventLogAgent([userMessage(0,'Read a.txt'),
+    event(1,'tool/call',{name:'read',callId:'r1',arguments:{file_path:'a.txt'}}),
+    toolResult(2,'read','Error: missing a.txt',{isError:true,source:{kind:'tool',callId:'r1'}}),
+    event(3,'tool/call',{name:'read',callId:'r2',arguments:{file_path:'a.txt'}}),
+    toolResult(4,'read','current source',{source:{kind:'tool',callId:'r2'}})]);
+  const plain=stubCheckpoint(agent,false,false),ordered=stubCheckpoint(agent,true,false),archived=stubCheckpoint(agent,true,true);
+  assert.match(ordered.text,/"checked":true/);assert.ok(!plain.text.includes('"checked":'));
+  for(const checkpoint of [plain,ordered,archived]){
+    const recent=checkpoint.text.slice(checkpoint.text.indexOf('recent events'));
+    const locators=[...recent.matchAll(/kind:"event",seq:(\d+)/g)].map(m=>Number(m[1]));
+    assert.deepEqual(locators,[1,2,3,4]);
+    assert.ok(checkpoint.text.includes('kind:"event",seq:0'));
+    assert.equal(recallHistory(agent,{seq:4,kind:'event'}).status,'observed');
+  }
+  assert.match(archived.text,/archiveEntries=true/);assert.match(archived.text,/treat heads as pointers/);
+});
+
+test('pressure deferral preserves overflow recovery, disabled behavior and native method cleanup',async()=>{
+  const calls=[],original=async(_agent,trigger)=>{calls.push(trigger);return {trigger};};
+  const service={compactIfNeeded:original,summarize:async()=>({summary:[]}),regionDependencies:()=>({meter:{measure:()=>({totalTokens:1000})}})};
+  let cleanup;
+  const ctx={on(){},llm:{resolveModelInfo:async()=>({context:{contextWindow:116000}})},
+    inject(_dependencies,callback){callback({compaction:service,effect:fn=>{cleanup=fn();}});return {dispose:async()=>cleanup()};}};
+  const config={compressionControl:true,deferPressureCompaction:true};
+  const runtime={isEnabled:()=>true,get:()=>({config})};
+  const agent={session:{id:'pressure-test',requestHeader:()=>({config:{provider:'p',model:'m',maxTokens:29000}})}};
+  const handoff=createCompactionHandoff(ctx,runtime,{});
+  assert.equal(await service.compactIfNeeded(agent,'pressure'),null);
+  assert.deepEqual(await service.compactIfNeeded(agent,'context-overflow'),{trigger:'context-overflow'});
+  config.deferPressureCompaction=false;await service.compactIfNeeded(agent,'pressure');
+  assert.deepEqual(calls,['context-overflow','pressure']);
+  await handoff.dispose();assert.equal(service.compactIfNeeded,original);
+});
+
 test('stubCheckpoint retains leading exact paths, commands, and error strings', () => {
   const path = 'src/deep/context-pruning.mjs';
   const command = 'node --test test/context-pruning.test.mjs';

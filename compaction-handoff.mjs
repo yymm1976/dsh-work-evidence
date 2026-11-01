@@ -83,11 +83,10 @@ function targetFromArguments(value){
   return JSON.stringify([normalized,command,cwd]);
 }
 // Deterministic stub checkpoint: no summarizer model call. Row selection and serialization are
-// byte-stable for a given event log, so later requests replay the block from provider cache
-// instead of re-paying it; prose summaries drift in wording and keep missing the cache.
-// cacheOrderedStub (v12): older rows are serialized first and the newest rows land at the tail,
-// so a provider prefix cache keeps matching the unchanged head across successive compactions and
-// each new checkpoint only re-pays its incremental tail. Problem rows get checked markers only
+// deterministic for a given event log. Both modes list older rows before newer rows;
+// cacheOrderedStub additionally annotates resolved problem rows. Provider cache savings
+// depend on the complete request and are not established by this serialization.
+// Problem rows get checked markers only
 // when a later successful result has the same tool and path/command target.
 export function stubCheckpoint(agent,cacheOrdered,archiveEntries){
   const log=eventLog(agent.session),events=[],problems=[],humans=[],problemSeqs=new Set(),targetBySeq=new Map(),callTargets=new Map();
@@ -141,7 +140,7 @@ export function stubCheckpoint(agent,cacheOrdered,archiveEntries){
     body+='problem rows (latest '+STUB_PROBLEM_MAX_ROWS+', checked rows need recall before re-reading):\n'+
       marked.map(row=>'- '+JSON.stringify({seq:row.seq,kind:row.kind,tool:row.tool,head:row.head,checked:row.checked})+
         '\n  recall: work_recall({kind:"event",seq:'+row.seq+',offset:0})').join('\n')+
-      '\nrecent events (oldest first — stable prefix for provider cache; newest rows at the tail are the only part that changes between compactions):\n';
+      '\nrecent events (oldest first; bounded rows may shift as the conversation grows):\n';
   }else{
     body+='problem rows (latest '+STUB_PROBLEM_MAX_ROWS+', full priority):\n'+serialize(problems.slice(-STUB_PROBLEM_MAX_ROWS))+
       '\nrecent events (newest last, oldest listed first):\n';

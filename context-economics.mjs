@@ -269,7 +269,7 @@ export function createContextEconomics(ctx,runtime){
     const context=routeContext??agent.session.requestContext(),limit=context?.contextWindow;
     const last=get(agent).last,reported=promptTokens(last?.usage);
     let measured=null;
-    try{measured=(ctx.tokenMeter??ctx.get?.('tokenMeter'))?.measure(agent.session)?.projectedTokens??null;}catch{}
+    try{const measurement=(ctx.tokenMeter??ctx.get?.('tokenMeter'))?.measure(agent.session);measured=measurement?.totalTokens??measurement?.projectedTokens??null;}catch{}
     const projected=runtime.projectedMessages?.(agent);
     let tokens,method;
     if(projected){

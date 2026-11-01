@@ -71,7 +71,17 @@ await tools.work_status({session_enabled: null});
 历史裁剪采用 forecast；时机交给宿主。
 旧 online-batch 和 adaptive 设置分别归入 forecast 和 native。
 requestProjection、stubSummary、cacheOrderedStub、archiveEntries 默认关闭。
+核查分支新增的 deferPressureCompaction 默认关闭。
+开启后，普通压力压缩等到消息预算的 60% 再执行。
+消息预算是上下文容量减去主请求输出预留量。
+该选项把摘要输出预留上限设为 16384 Token。
+溢出恢复和手动压缩沿用宿主路径。
 裁剪保留原始事件和取回入口；取回不可用时保留正文。
+
+cacheOrderedStub 为问题行增加后续成功标记。
+两种 stub 模式都按时间排列近期事件。
+archiveEntries 为摘要增加历史取回说明，不另建归档服务。
+这两个开关的缓存费用收益尚未证明。
 
 ## 开发与桌面加载
 
@@ -88,7 +98,20 @@ plugin-command.mjs 负责命令；source-tools.mjs 负责源码和报告入口�
 ## 当前方向
 
 激进模式作为主要使用方向。质量模式围绕质量复核和完成提醒维护。
-停止增加输入侧压缩调参和质量提示词条款。
-用户要求暂停实验，当前不运行新的批次。
+用户已恢复激进模式、压缩和提示词实验。
+功能核查单独使用 auto/deepseek-v4.1-flash / max。
+核查改动保留在 verify/function-audit，不并入 main 或同步桌面。
 现行交接位于 DSH 工作区的 Codex-2026-10-23/outputs/Work-Evidence-当前交接-2026-10-31.md。
 旧运行目录清理后，历史说明里的原始记录路径可能已不可用。
+
+## 功能测试
+
+```powershell
+node --test --test-concurrency=2 test/*.test.mjs
+```
+
+宿主测试使用已安装 DSH 运行时和脚本化模型，不调用远程模型。
+OPS 和 FastEdit 成功路径使用本机已安装环境。
+环境缺失时，对应成功路径会显示 skipped。
+开关触发和历史取回通过，不代表真实任务费用改善。
+费用比较和未证实的效果见 DSH 工作区现行功能核查页。
