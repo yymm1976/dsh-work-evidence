@@ -6,6 +6,20 @@ const forms={
   project_evidence:'source: {mode:"source",query:"ClassName",members:["method"]} or batch queries:[{query,members},...]; archive: {mode:"archive",archive:"lib.jar",entry:"pkg/Class.java",members:["method"]}; read: {mode:"read",files:[{path:"file",offset:1,limit:80}]}'
 };
 const readTools=new Set(['ops_read_files','ops_glob','ops_grep','ops_stat','project_evidence']);
+// The desktop compatibility handlers derive missing UI descriptions by mutating
+// parsed arguments, which the tool service freezes. Add the same display value
+// before validation; keep the original argument object and host execution path.
+export function installExecutionDescriptionCompatibility(ctx,runtime){
+  ctx.on('tools/pre-execute',(exec,next)=>{
+    const args=exec.arguments,field=exec.name==='run_code'?'code':['pwsh','bash'].includes(exec.name)?'command':null;
+    if(field&&exec.agent&&runtime.isEnabled(exec.agent)&&args&&typeof args==='object'&&!Array.isArray(args)&&
+      typeof args[field]==='string'&&(args.description===undefined||typeof args.description==='string'&&!args.description.trim())){
+      const description=args[field].trim().split(/\r?\n/)[0].slice(0,80)||(field==='code'?'Run program':'Run shell command');
+      exec.arguments=Object.freeze({...args,description});
+    }
+    return next();
+  },{prepend:true});
+}
 const object=value=>!!value&&typeof value==='object'&&!Array.isArray(value);
 const text=value=>typeof value==='string'&&value.trim().length>0;
 export function correctedReadArguments(name,args){

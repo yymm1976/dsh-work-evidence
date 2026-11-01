@@ -14,7 +14,7 @@ import {createVerifiedExec} from './verified-exec.mjs';
 import {createFastEditJava} from './fastedit-java.mjs';
 
 import {createReadRouting} from './read-routing.mjs';
-import {correctedReadArguments,recoveryFor,withRecovery,recoveredResult,normalizedReadResult} from "./recovery.mjs";
+import {correctedReadArguments,recoveryFor,withRecovery,recoveredResult,normalizedReadResult,installExecutionDescriptionCompatibility} from "./recovery.mjs";
 import {observeRequests} from './request-observation.mjs';
 import {createContextWindow} from './context-window.mjs';
 import {createObservationLedger} from './observation-ledger.mjs';
@@ -102,6 +102,7 @@ export function apply(ctx,config={}){
   const nativeFiles=createNativeFiles(ctx);
   const pendingSaves=new Set();
   const runtime=createRuntime(ctx,call,config),state=runtime.get;
+  installExecutionDescriptionCompatibility(ctx,runtime);
   const disposeUltra=installUltraEffort(ctx);
   ctx.effect(()=>disposeUltra);
   const toolSurfaceDisposers=new Map(),taskSurfaceModes=new Map();

@@ -33,6 +33,8 @@ work_status 始终保留；历史中仍有取回引用时保留 work_recall。
 
 qualityReview 控制质量模式的最终答复复核。
 复核使用当前会话路由和有界历史；结果没有充分依据时保留原答复。
+复核优先携带已修改文件在修改后读到的正文，并限制证据长度。
+当前 auto/max 的单次复核曾耗尽输出预算，尚未形成可用判断；诊断记录见现行功能核查页。
 
 completionNotice 独立控制阶段摘要后的继续提醒，默认开启。
 插件启用的档位均可使用。提醒要求模型继续已授权且能执行的工作。
@@ -50,6 +52,7 @@ completionNotice 独立控制阶段摘要后的继续提醒，默认开启。
 compact 工具面保留工作所需入口。明确只读任务隐藏 work_exec。
 原生 DSH 文件服务承担核心读取；OPS 只用于可选读取和精确编辑。
 FastEdit Python 路径由 fastEditPython 设置。
+省略 run_code 或原生 Shell 的界面说明时，插件在宿主执行前补充说明，避免宿主修改只读参数失败。
 
 工作区设置位于 .dsh/work-evidence/config.json。
 会话开关位于 .dsh/work-evidence/sessions/<session-id>.json。
