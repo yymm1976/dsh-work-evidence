@@ -15,6 +15,13 @@ test('capacity pressure reads the installed token meter totalTokens field before
   const {agent,economics}=harness();
   const pressure=economics.pressure(agent);assert.equal(pressure.tokens,9000);assert.equal(pressure.emergency,true);
 });
+test('capacity pressure uses the optional service getter when direct property access requires inject',()=>{
+  const {agent}=harness(),state={config:{projectionPricing:[],projectionHorizonSteps:16}};
+  const ctx={get:name=>name==='tokenMeter'?{measure:()=>({totalTokens:9500})}:undefined,
+    get tokenMeter(){throw Error('cannot get property tokenMeter without inject');}};
+  const economics=createContextEconomics(ctx,{get:()=>state}),pressure=economics.pressure(agent);
+  assert.equal(pressure.tokens,9500);assert.equal(pressure.emergency,true);
+});
 test('projection review settles after three main prompt observations and ignores auxiliary and missing usage',()=>{
   const {agent,economics,finish}=harness();finish();
   economics.reviewAdoption(agent,{kind:'projection',appliedAtStep:1,expectedSavedChars:350});
