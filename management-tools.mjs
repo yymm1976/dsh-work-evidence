@@ -101,7 +101,7 @@ export function registerManagementTools({ctx,runtime,state,effects,available,cap
       const snapshot=runtime.snapshot(s),effective=runtime.isEnabled(exec.agent);
       const activeCounters=['evidenceAttempts','evidenceDelivered','evidenceLocated','evidenceIncomplete','evidenceUnavailable','evidenceNoSource','indexLearned','indexHits','candidatePredictions','candidateRuns','ptcFastpathRuns',
         'verifiedExecPreviews','verifiedExecApplies','fastEditEntityFinds','fastEditEntityReads','fastEditPreviews','fastEditApplies',
-        'stateObservations','stateSearches','stateNotices','ledgerObservations','ledgerReceipts','ledgerStale','ledgerUnresolvedInjected','ledgerFoldCandidates','ledgerFoldWrites','nativeReadViews'];
+        'stateObservations','stateSearches','stateNotices','ledgerObservations','ledgerReceipts','ledgerStale','ledgerUnresolvedInjected','nativeReadViews'];
       return {...snapshot,mode:runtime.modeStatus(exec.agent),loaded:true,version:VERSION,effective,ledger:observationLedger.metrics(exec.agent),sw:contextWindow.metrics(exec.agent),diagnostic:{
         loaded:true,version:VERSION,effective,sessionId:s.id,ptcMode:mode,sessionPolicyLoaded:s.sessionPolicyLoaded,
         pluginTools:Object.fromEntries(pluginTools.map(name=>[name,available(exec.agent,name)])),

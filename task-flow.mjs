@@ -66,6 +66,13 @@ const normalize=value=>String(value).replaceAll('\\','/').toLowerCase();
 const streamText=value=>typeof value==='string'?value:typeof value?.text==='string'?value.text:'';
 const isCommand=name=>SHELL.includes(name)||name==='job_output';
 const shellReportedFailure=text=>/The term[^\r\n]{0,500}is not recognized as a name of a cmdlet|(?:^|\n)\s*(?:ParserError|CommandNotFoundException|ParameterBindingException):/iu.test(String(text??''));
+// stderr can contain warnings from a successful process. Missing structured
+// metadata proves neither success nor failure in persisted legacy results.
+const executionFailed=value=>typeof value==='string'?resultHasProblem(value):!!value&&(
+  value.isError===true||value.success===false||value.ok===false||!!(value.error||value.err)||
+  Number.isFinite(value.exitCode)&&value.exitCode!==0||Number.isFinite(value.exit_code)&&value.exit_code!==0||
+  ['error','failed','killed','cancelled','rejected'].includes(String(value.job?.status??value.status??value.state??'').toLowerCase())||
+  value.timedOut===true||value.aborted===true||value.cancelled===true||value.signal!=null||value.stopped!==undefined);
 function failureSignature(text){
   const tail=String(text??'').slice(-4096);
   const coded=/^\s*error\[[A-Za-z0-9_-]+\]:\s*[^\r\n]{1,160}/mu.exec(tail)?.[0];
@@ -87,31 +94,15 @@ function reportedCheckFailure(text){
   const lines=String(text??'').slice(-12000).split(/\r?\n/u);
   const numericMarkers=new Set();let summary=null;
   for(const line of lines){
-    const match=/^\s*(?:FAIL(?:ED|URES?|_TOTAL|_COUNT)?)\s*[:=(]\s*(\d+)\b/iu.exec(line)??
-      /^\s*(?:checks?|tests?|total)\b[^\r\n]{0,160}?\b(?:failed|failures)\s*[:=]\s*(\d+)\b/iu.exec(line)??
-      /^\s*(?:checks?|tests?|total)\b[^\r\n]{0,160}?\b(\d+)\s+(?:failed|failures)\b/iu.exec(line)??
+    const match=/^\s*(?:FAIL(?:ED|URES?|_TOTAL|_COUNT)?)(?:\s*[:=(]\s*|\s+)(\d+)\b/iu.exec(line)??
+      /^\s*(?:\d+\s+)?(?:checks?|tests?|total)\b[^\r\n]{0,160}?\b(?:failed|failures)\s*[:=]?\s*(\d+)\b/iu.exec(line)??
+      /^\s*(?:\d+\s+)?(?:checks?|tests?|total)\b[^\r\n]{0,160}?\b(\d+)\s+(?:failed|failures)\b/iu.exec(line)??
       /^\s*(\d+)\s+(?:failed|failures)\b/iu.exec(line);
     if(match){numericMarkers.add(line);if(Number(match[1])>0)summary=line.trim().slice(0,180);}
   }
   const first=lines.find(line=>!numericMarkers.has(line)&&/^\s*FAIL(?:ED)?\s*:\s*\S/iu.test(line))?.trim().slice(0,180);
   return summary||first?{signature:first??summary}:null;
 }
-function presentationLimit(text){
-  const matches=[...String(text).matchAll(/(?:不超过|至多|最多)\s*(\d{1,6})\s*(?:个\s*)?(汉字|字符)/gu)];
-  const limits=[...new Map(matches.map(match=>[match[1]+match[2],{max:Number(match[1]),unit:match[2]}])).values()];
-  return limits.length===1?limits[0]:null;
-}
-function presentationCounts(args,text){
-  const description=String(args?.description??'');
-  if(!/解释|答复|说明|文本|篇幅|定稿/u.test(description)||!/长度|字数|字符/u.test(description)||typeof text!=='string'||text.length>4096)return null;
-  const select=pattern=>{
-    const values=[...text.matchAll(pattern)].map(match=>Number(match[1]));
-    return values.length===1&&Number.isSafeInteger(values[0])?values[0]:null;
-  };
-  const han=select(/汉字\s*[：:=]?\s*(\d+)/gu),characters=select(/总字符\s*[：:=]?\s*(\d+)/gu);
-  return han!==null||characters!==null?{汉字:han,字符:characters}:null;
-}
-
 function pathsOf(value){
   const paths=new Set();let budget=256;
   const visit=(node,depth=0)=>{
@@ -148,8 +139,8 @@ export function createTaskFlow(ctx,runtime,{nativeFiles,call}={}){
     let state=states.get(agent.session.id);
     if(!state){state={cursor:0,turn:null,step:0,calls:new Map(),nested:new Map(),nestedFailures:new Map(),completedNested:new Set(),live:new Map(),errors:new Map(),reads:new Map(),jobs:new Set(),pacing:newPacing(),programFailure:null,legacyInterpreterShell:null,
       todos:null,todoSeq:null,artifacts:new Map(),artifactsEvicted:0,qualityArtifacts:new Map(),qualityExecutions:[],lastQualityReviewedMutation:null,phase:{name:null,seq:null,focus:[],source:null},lastCompaction:null,report:null,lastMutation:-1,mutationVersion:0,
-      lastUser:null,stageReporting:{lastTextSeq:null,lastTextSteps:0,lastNoticeSteps:0,notices:0},lastInlineExec:-1,inlineExecAdvised:new Set(),scriptReuseAdvised:new Set(),diagnosticAdvised:new Set(),advised:new Set(),finishAdvised:new Set(),reuseAdvised:new Set(),cleanupAdvised:new Set(),presentationAdvised:new Set(),
-      probes:[],executions:[],repeatedExecution:null,cleanup:null,presentation:null,transitions:[],opportunities:0,finishNotices:0,reuseNotices:0,cleanupNotices:0,presentationNotices:0};states.set(agent.session.id,state);}
+      lastUser:null,stageReporting:{lastTextSeq:null,lastTextSteps:0,lastNoticeSteps:0,notices:0},lastInlineExec:-1,inlineExecAdvised:new Set(),scriptReuseAdvised:new Set(),diagnosticAdvised:new Set(),reuseAdvised:new Set(),cleanupAdvised:new Set(),
+      probes:[],executions:[],repeatedExecution:null,cleanup:null,transitions:[],reuseNotices:0,cleanupNotices:0};states.set(agent.session.id,state);}
     return state;
   }
   function transition(state,name,seq,focus,source){
@@ -171,13 +162,15 @@ export function createTaskFlow(ctx,runtime,{nativeFiles,call}={}){
       /access.{0,12}denied|permissionerror|winerror\s*5|拒绝访问|访问.{0,8}拒绝/iu.test(payload?.errorText||resultText(result.content));
     const reportedShellFailure=call.name==='pwsh'&&shellReportedFailure(streamText(payload?.stderr??payload?.stderrText)||payload?.errorText||resultText(result.content));
     const partialOutput=payload?.outputPartial===true||payload?.truncated===true||payload?.stdout?.truncated===true||payload?.stderr?.truncated===true;
-    const checkFailure=SHELL.includes(call.name)&&!pending&&!partialOutput?payload?.checkFailure??reportedCheckFailure(streamText(payload?.stdout??payload?.stdoutText)):null;
-    const failed=!!result.isError||deletionDenied||reportedShellFailure||!!checkFailure||!pending&&(result.observedProblem||resultHasProblem(value??resultText(result.content)))||['failed','killed'].includes(jobState)||
-      SHELL.includes(call.name)&&(value==null||payload?.nativeStructured===false);
+    const checkFailure=SHELL.includes(call.name)&&!pending&&!partialOutput?payload?.checkFailure??reportedCheckFailure(
+      streamText(payload?.stdout??payload?.stdoutText)||(value==null||typeof value==='string'?resultText(result.content):'')):null;
+    const failed=!!result.isError||deletionDenied||reportedShellFailure||!!checkFailure||!pending&&
+      (result.observedProblem||(isCommand(call.name)?executionFailed(payload??resultText(result.content)):resultHasProblem(value??resultText(result.content))))||['failed','killed'].includes(jobState);
     const cwd=payload?.cwd??call.args.workdir??runtime.get(agent).root??null;
     const exitCode=Number.isInteger(payload?.exitCode)?payload.exitCode:Number.isInteger(payload?.exit_code)?payload.exit_code:null;
     const complete=!failed&&!pending&&payload?.nativeStructured!==false&&value!=null&&
-      (exitCode===0||jobState==='completed')&&payload?.outputPartial!==true&&call.name!=='job_output';
+      (exitCode===0||jobState==='completed')&&!partialOutput&&payload?.complete!==false&&payload?.executionCompleted!==false&&
+      !['partial','unknown','unavailable','deopt','disabled'].includes(jobState)&&call.name!=='job_output';
     const key=call.name==='job_output'?'job:'+(call.args.job_id??call.args.jobId??call.args.id):operationKey(call,cwd),seq=event.seq;
     const callId=payload?.scriptRef??event.data?.subCallId??event.data?.callId??messageOf(event)?.source?.callId??null;
     if(!INTERNAL.has(call.name)&&!(call.name==='run_code'&&coveredFailure&&failed&&!result.isError)){
@@ -207,7 +200,7 @@ export function createTaskFlow(ctx,runtime,{nativeFiles,call}={}){
       const id=call.args.job_id??call.args.jobId??call.args.id;if(id)state.jobs.delete(id);
     }
     const runtimeConfig=runtime.get(agent).config;
-    if(isCommand(call.name)&&(['executionTriage','stageWorkingSet','finishAdvice'].some(key=>runtimeConfig[key])||
+    if(isCommand(call.name)&&(['executionTriage','stageWorkingSet'].some(key=>runtimeConfig[key])||
       runtime.activeMode(agent)==='quality'&&runtimeConfig.qualityReview)){
       const entry={seq,tool:call.name,command:String(call.args.command??'').slice(0,180),description:String(call.args.description??'').slice(0,180),
         cwd,exitCode,
@@ -232,15 +225,6 @@ export function createTaskFlow(ctx,runtime,{nativeFiles,call}={}){
       if(complete)transition(state,'execute',seq,textPaths(call.args.command??''),'native-execution');
       if(deletionDenied)
         state.cleanup={seq,key:JSON.stringify([state.turn,state.lastUser?.seq,state.lastMutation]),callKey:key,userSeq:state.lastUser?.seq,tool:call.name};
-    }
-    if(call.name==='run_code'&&!failed){
-      const limit=presentationLimit(state.lastUser?.text),counts=payload?.presentationCounts??presentationCounts(call.args,resultText(result.content));
-      const count=limit?counts?.[limit.unit]:null;
-      if(limit&&count!==null&&count!==undefined){
-        state.presentation=null;
-        if(count<=limit.max)state.presentation={...limit,count,seq,userSeq:state.lastUser?.seq,
-          key:JSON.stringify([state.turn,state.lastUser?.seq,limit.unit,limit.max])};
-      }
     }
     if(call.name==='work_probe'&&call.args.mode!=='recall'&&call.args.mode!=='inspect'&&payload?.id&&payload.question){
       if(!state.probes.some(probe=>probe.id===payload.id))state.probes.push({id:payload.id,seq,status:payload.status,question:payload.question,elapsedMs:payload.elapsedMs});
@@ -286,7 +270,7 @@ export function createTaskFlow(ctx,runtime,{nativeFiles,call}={}){
       const event=log[state.cursor++],data=event.data??{},message=messageOf(event);
       if(event.type==='turn/start'){
         state.turn=data.turn;state.todos=null;state.todoSeq=null;state.report=null;state.lastMutation=-1;state.errors.clear();state.calls.clear();state.nested.clear();state.nestedFailures.clear();state.reads.clear();
-        state.phase={name:null,seq:null,focus:[],source:null};state.executions=[];state.repeatedExecution=null;state.cleanup=null;state.presentation=null;
+        state.phase={name:null,seq:null,focus:[],source:null};state.executions=[];state.repeatedExecution=null;state.cleanup=null;
         state.pacing=newPacing();state.completedNested.clear();state.programFailure=null;state.legacyInterpreterShell=null;
         state.qualityArtifacts.clear();state.qualityExecutions=[];state.lastQualityReviewedMutation=null;
       }
@@ -301,11 +285,8 @@ export function createTaskFlow(ctx,runtime,{nativeFiles,call}={}){
         const kind=String(message?.source?.kind??'');
         if(kind===SOURCE){
           const advice=message.source.taskFlow;
-          if(advice?.kind==='execution'&&!state.advised.has(advice.key)){state.advised.add(advice.key);state.opportunities++;}
-          if(advice?.kind==='finish'&&!state.finishAdvised.has(advice.key)){state.finishAdvised.add(advice.key);state.finishNotices++;}
           if(advice?.kind==='reuse'&&!state.reuseAdvised.has(advice.key)){state.reuseAdvised.add(advice.key);state.reuseNotices++;}
           if(advice?.kind==='cleanup'&&!state.cleanupAdvised.has(advice.key)){state.cleanupAdvised.add(advice.key);state.cleanupNotices++;}
-          if(advice?.kind==='presentation'&&!state.presentationAdvised.has(advice.key)){state.presentationAdvised.add(advice.key);state.presentationNotices++;}
           if(advice?.kind==='pacing')rememberPacing(state,advice.key,advice.outputTokens,advice.stepCount);
           if(advice?.kind==='compute'){state.pacing.computeAdvised=true;state.pacing.notices.add(advice.key);}
           if(advice?.kind==='validation'){state.pacing.validationAdvised=true;state.pacing.notices.add(advice.key);}
@@ -315,7 +296,7 @@ export function createTaskFlow(ctx,runtime,{nativeFiles,call}={}){
           if(advice?.kind==='judgment'){state.stageReporting.lastNoticeSteps=state.pacing.steps.size;state.stageReporting.notices++;}
           if(advice?.kind==='mode')state.pacing.notices.add(advice.key);
         }else if(isUserRequestMessage(message)){
-          state.lastUser={id:message.id,seq:event.seq,text:resultText(message?.content)};state.report=null;state.presentation=null;state.pacing=newPacing();
+          state.lastUser={id:message.id,seq:event.seq,text:resultText(message?.content)};state.report=null;state.pacing=newPacing();
           state.stageReporting={lastTextSeq:null,lastTextSteps:0,lastNoticeSteps:0,notices:0};
           state.programFailure=null;state.legacyInterpreterShell=null;state.lastQualityReviewedMutation=null;
         }
@@ -352,9 +333,7 @@ export function createTaskFlow(ctx,runtime,{nativeFiles,call}={}){
         state.nestedFailures.delete(id);
         state.calls.delete(id);
       }
-      if(state.advised.size>64)state.advised.delete(state.advised.values().next().value);
-      if(state.finishAdvised.size>64)state.finishAdvised.delete(state.finishAdvised.values().next().value);
-      for(const notices of [state.reuseAdvised,state.cleanupAdvised,state.presentationAdvised,state.diagnosticAdvised,state.scriptReuseAdvised])if(notices.size>64)notices.delete(notices.values().next().value);
+      for(const notices of [state.reuseAdvised,state.cleanupAdvised,state.diagnosticAdvised,state.scriptReuseAdvised])if(notices.size>64)notices.delete(notices.values().next().value);
     }
     return state;
   }
@@ -400,7 +379,7 @@ export function createTaskFlow(ctx,runtime,{nativeFiles,call}={}){
     if(surfaceMode==='minimal')return messages;
     const user=state.lastUser,text=user?.text??'',key=String(user?.seq);
     const emit=(kind,id,text)=>{
-      runtime.effects?.decide(agent,({execution:'executionAdvice',reuse:'reuseAdvice',cleanup:'cleanupAdvice',finish:'finishAdvice',presentation:'presentationAdvice',pacing:'stepPacing',compute:'retainedComputeAdvice',validation:'stepPacing',inlineExec:'inlineExecAdvice',diagnostic:'failureAdvice',scriptReuse:'scriptReuseAdvice',scriptVersion:'scriptReuseAdvice',review:'qualityReview'}[kind]??'guidance'),'applied','observed-scene-condition',{noticeId:id});
+      runtime.effects?.decide(agent,({reuse:'reuseAdvice',cleanup:'cleanupAdvice',pacing:'stepPacing',compute:'retainedComputeAdvice',validation:'stepPacing',inlineExec:'inlineExecAdvice',diagnostic:'failureAdvice',scriptReuse:'scriptReuseAdvice',scriptVersion:'scriptReuseAdvice',review:'qualityReview'}[kind]??'guidance'),'applied','observed-scene-condition',{noticeId:id});
       const notice=message(kind,id,text);
       if(kind==='pacing'){notice.source.taskFlow.outputTokens=state.pacing.outputTokens;notice.source.taskFlow.stepCount=state.pacing.steps.size;}
       messages.push(notice);runtime.get(agent).dirty=true;return messages;
@@ -507,13 +486,6 @@ export function createTaskFlow(ctx,runtime,{nativeFiles,call}={}){
       return emit('inlineExec',legacyShellKey,'[work-evidence] 事件'+legacyShell.seq+'的直接'+legacyShell.tool+'调用嵌入了'+legacyShell.chars+
         '字符的Node/Python解释器程序。下一次执行同类完整解释器程序时直接用work_exec({runtime,code,executable?})提交原文，避免继续拼接Shell、here-string或临时文件；普通Shell原生命令仍可用现有入口。');
     }
-    const measured=state.presentation;
-    if(config.finishAdvice&&measured&&measured.userSeq===user?.seq&&!state.presentationAdvised.has(measured.key)){
-      state.presentationAdvised.add(measured.key);state.presentationNotices++;
-      return emit('presentation',measured.key,'[work-evidence] 用户明确的篇幅上限为'+measured.max+'个'+measured.unit+'；事件'+measured.seq+
-        '显示的对应计数为'+measured.count+'，该次计数已在上限内。'+(measured.unit==='汉字'?'汉字数量与总字符数量是两个计量口径。':'')+
-        '若这对应准备交付的说明，保留所需内容并整理答复，无需为了更紧贴上限反复改写计数；其他具体要求或错误仍需处理。本提示只核对这条已显示的计量条件，不宣告整个任务完成。');
-    }
     const repeated=state.repeatedExecution;
     if(config.executionTriage&&repeated&&repeated.userSeq===user?.seq&&repeated.mutationSeq===state.lastMutation&&!state.reuseAdvised.has(repeated.reuseKey)){
       state.reuseAdvised.add(repeated.reuseKey);state.reuseNotices++;
@@ -532,15 +504,6 @@ export function createTaskFlow(ctx,runtime,{nativeFiles,call}={}){
     }
     const pacing=state.pacing,steps=pacing.steps.size;
     const latestExecution=state.executions.findLast(item=>item.executionCompleted&&item.seq>state.lastMutation&&item.seq>(user?.seq??Infinity));
-    const report=state.report,args=report?.args;
-    const reportReady=report&&args?.status==='complete'&&args.observed?.length&&!args.remaining?.length&&!args.unverified?.length&&
-      !(args.claims??[]).some(claim=>['unknown','challenged'].includes(claim.status)||claim.remaining)&&report.seq>state.lastMutation&&report.seq>(user?.seq??-1);
-    const finishKey=JSON.stringify([state.turn,user?.seq,state.lastMutation,state.todos?.map(item=>item.content)]);
-    if(mode!=='quality'&&config.finishAdvice&&(reportReady||!report&&latestExecution)&&state.todos?.length&&state.todos.every(item=>item.status==='completed')&&
-      !state.errors.size&&!state.jobs.size&&!state.finishAdvised.has(finishKey)){
-      state.finishAdvised.add(finishKey);state.finishNotices++;
-      return emit('finish',finishKey,'[work-evidence] 已有计划全部标为完成，近期原生观察或结论记录可用于答复，未观察到待完成调用或未解决工具错误。先核对现有结果是否覆盖用户要求，覆盖时直接整理完整答复；仍有具体缺口则继续。无需为获得此提醒另写报告，不自动宣告完成、拒绝调用或截断输出。');
-    }
     if(steps===pacing.noticeSteps&&pacing.outputTokens===pacing.noticeOutputTokens)return messages;
     const currentWriteObserved=state.lastMutation>(user?.seq??Infinity)&&latestExecution&&!state.errors.size&&!state.jobs.size&&
       !(state.todos??[]).some(item=>item.status!=='completed');
@@ -620,27 +583,15 @@ export function createTaskFlow(ctx,runtime,{nativeFiles,call}={}){
         return emit('pacing',reminderKey,'[work-evidence] 最近一段工具往返没有带来新的覆盖或进展。先指出仍未覆盖的唯一缺口并处理；没有该缺口就直接交付，保留已观察错误与未完成项。');
       }
     }
-    const executableQuestion=/返回(?:值|什么|结果|结构)|输出(?:什么|结果|是)|运行(?:结果|行为)|执行(?:结果|行为)|遇到.+(?:怎样|如何)|实际(?:版本|结构)|安装.*版本|what\b.{0,80}\b(?:return|output)|installed\s+version|runtime\s+behavior|response\s+shape/iu.test(text);
-    const concreteInput=/["'`][^"'`\n]+["'`]|\b\d+\b|[\[{][^\]}\n]+[\]}]|\w+\s*=|无参|no\s+arg|实际版本|安装.*版本|installed\s+version|接口.*结构|response\s+shape/iu.test(text);
-    const sources=[...state.reads.values()].filter(item=>item.seq>(user?.seq??Infinity)&&item.seq>state.lastMutation).slice(-4).map(item=>item.path);
-    if(config.executionTriage&&config.executionAdvice&&executableQuestion&&concreteInput&&sources.length&&!latestExecution&&!state.jobs.size&&!state.advised.has(key)&&SHELL.some(name=>{try{return !!ctx.tools.get(name,agent);}catch{return false;}})&&
-      !state.probes.some(probe=>probe.seq>(user?.seq??Infinity))){
-      state.advised.add(key);state.opportunities++;
-      const probeNote=config.toolSurface==='full'
-        ?'；确需明确预期比较时可用当前已暴露的work_probe，已有结果足够时直接解释'
-        :'；已有结果足够时直接解释，缺少运行条件时继续必要推理';
-      return emit('execution',key,'[work-evidence] 当前具体问题可以优先考虑已有代码的原生执行。已观察来源：'+JSON.stringify(sources)+
-        '。在当前授权内直接使用已有运行入口，短程序可通过解释器标准输入运行；原生调用会自动记录观察，无需另建重复执行记录'+probeNote+'。');
-    }
     return messages;
   }
   function summary(agent){
     const state=sync(agent),config=runtime.get(agent).config;
-    return {enabled:runtime.isEnabled(agent),mode:runtime.modeStatus(agent),stageReporting:{...state.stageReporting,enabled:runtime.isEnabled(agent)&&config.stepPacing,delivery:'assistant-text-guidance; content-not-semantically-verified'},executionTriage:config.executionTriage,executionAdvice:config.executionAdvice,stageWorkingSet:config.stageWorkingSet,finishAdvice:config.finishAdvice,
-      phase:phase(agent),opportunities:state.opportunities,finishNotices:state.finishNotices,pendingCalls:state.calls.size+state.nested.size,
+    return {enabled:runtime.isEnabled(agent),mode:runtime.modeStatus(agent),stageReporting:{...state.stageReporting,enabled:runtime.isEnabled(agent)&&config.stepPacing,delivery:'assistant-text-guidance; content-not-semantically-verified'},executionTriage:config.executionTriage,stageWorkingSet:config.stageWorkingSet,
+      phase:phase(agent),pendingCalls:state.calls.size+state.nested.size,
       userId:state.lastUser?.id??null,userSeq:state.lastUser?.seq??null,lastMutationSeq:state.lastMutation,mutationVersion:state.mutationVersion,
       unresolvedErrors:[...state.errors.values()].slice(-8),pendingJobs:[...state.jobs].slice(-16),
-      probes:state.probes.slice(),nativeExecutions:state.executions.map(({key,comparisonText,...entry})=>entry),inlineExecNotices:state.inlineExecAdvised.size,scriptReuseNotices:state.scriptReuseAdvised.size,diagnosticNotices:state.diagnosticAdvised.size,reuseNotices:state.reuseNotices,cleanupNotices:state.cleanupNotices,presentationNotices:state.presentationNotices,
+      probes:state.probes.slice(),nativeExecutions:state.executions.map(({key,comparisonText,...entry})=>entry),inlineExecNotices:state.inlineExecAdvised.size,scriptReuseNotices:state.scriptReuseAdvised.size,diagnosticNotices:state.diagnosticAdvised.size,reuseNotices:state.reuseNotices,cleanupNotices:state.cleanupNotices,
       transitions:state.transitions.slice(),pacing:{enabled:config.stepPacing,toolBearingRequests:state.pacing.steps.size,operations:state.pacing.operations,
         reportedOutputTokens:state.pacing.outputTokens,lastResponseOutputTokens:state.pacing.lastOutputTokens,missingOutputUsage:state.pacing.missingOutputUsage,retainedComputeCalls:state.pacing.computeCalls,validationAdvised:state.pacing.validationAdvised,
         outputTokensSinceProgress:Math.max(0,state.pacing.outputTokens-state.pacing.progressOutputTokens),
@@ -690,13 +641,12 @@ export function createTaskFlow(ctx,runtime,{nativeFiles,call}={}){
         signal:value?.signal,stopped:value?.stopped,effectState:value?.effectState,cwd:value?.cwd,outputPartial,comparisonText,
         errorText:String(value?.error?.message??raw?.error?.message??value?.error??raw?.error??result.error?.message??(stderr||stdout||resultText(result.content))).slice(0,1200),
         failureSignature:failureSignature(stderr||stdout||resultText(result.content)),
-        checkFailure:isCommand(exec.name)?reportedCheckFailure(stdout):null,
+        checkFailure:isCommand(exec.name)?reportedCheckFailure(stdout||(raw==null||typeof raw==='string'?resultText(result.content):'')):null,
         scriptRef:value?.scriptRef,scriptChars:value?.scriptChars,scriptRuntime:value?.scriptRuntime,scriptSourceRefs:value?.scriptSourceRefs,
         files:Array.isArray(value?.files)?value.files.slice(0,50).map(file=>({path:file.path??file.file,effectState:file.effectState})):undefined,
         sources:pathsOf(value),saved:value?.saved,path:value?.path,id:value?.id,question:value?.question,
         elapsedMs:value?.elapsedMs,executionCompleted:value?.executionCompleted};
-      if(exec.name==='run_code'&&!result.isError)compact.presentationCounts=presentationCounts(exec.arguments,resultText(result.content));
-      bounded(get(exec.agent).live,exec.callId,{isError:!!result.isError,observedProblem:resultHasProblem(raw??resultText(result.content))||exec.name==='pwsh'&&shellReportedFailure(stderr),value:compact},256);
+      bounded(get(exec.agent).live,exec.callId,{isError:!!result.isError,observedProblem:(isCommand(exec.name)?executionFailed(value??resultText(result.content)):resultHasProblem(raw??resultText(result.content)))||exec.name==='pwsh'&&shellReportedFailure(stderr),value:compact},256);
     },
     disposeAgent:agent=>states.delete(agent.session.id),dispose:()=>states.clear()};
 }

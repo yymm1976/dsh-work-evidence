@@ -44,7 +44,24 @@ function repeatedLineOperations(text,{seq,offset}){
 }
 
 const DEDUP_MIN_CHARS=2048;
-const DEDUP_WINDOW_CHARS=4096;
+const DEDUP_HASH_BASES=[1000003,1000033];
+function hashWindow(text,start,length,base){
+  let hash=0;
+  for(let index=start;index<start+length;index++)hash=(Math.imul(hash,base)+text.charCodeAt(index))>>>0;
+  return hash;
+}
+function hashPower(base,length){
+  let power=1;
+  for(let index=1;index<length;index++)power=Math.imul(power,base)>>>0;
+  return power;
+}
+function rollHash(hash,base,power,outgoing,incoming){
+  return (Math.imul((hash-Math.imul(outgoing,power))>>>0,base)+incoming)>>>0;
+}
+function windowsEqual(text,left,right,length){
+  for(let index=0;index<length;index++)if(text.charCodeAt(left+index)!==text.charCodeAt(right+index))return false;
+  return true;
+}
 /**
  * Long-common-segment dedup within one result body. A segment that appears a
  * second time (a re-read of the same file region, a repeated command block) is
@@ -54,27 +71,44 @@ const DEDUP_WINDOW_CHARS=4096;
  */
 function dedupOperations(text,{seq,offset=0}){
   if(text.length<DEDUP_MIN_CHARS*2)return null;
-  // Anchor windows of DEDUP_MIN_CHARS at DEDUP_WINDOW_CHARS/2 stride. A window lying fully
-  // inside the first occurrence re-occurs inside the second, so repeats shorter than a full
-  // DEDUP_WINDOW_CHARS window are found as well. Offsets stay exact (no CRLF normalization).
-  const stride=DEDUP_WINDOW_CHARS/2;
-  const anchors=new Map();
-  for(let start=0;start+DEDUP_MIN_CHARS<=text.length;start+=stride){
-    const window=text.slice(start,start+DEDUP_MIN_CHARS);
-    const later=text.indexOf(window,start+DEDUP_MIN_CHARS);
-    if(later<0)continue;
-    // Extend both ends while the two occurrences agree, bounded by the anchor separation.
-    const gap=later-start;
-    let from=later,to=later+DEDUP_MIN_CHARS;
+  // Hash every minimum-length window, then extend a hit to the real duplicate
+  // boundary. Jumping past an adopted duplicate keeps the scan near-linear.
+  const powers=DEDUP_HASH_BASES.map(base=>hashPower(base,DEDUP_MIN_CHARS));
+  const seen=new Map(),segments=new Map();
+  let cursor=0,hashes=DEDUP_HASH_BASES.map(base=>hashWindow(text,0,DEDUP_MIN_CHARS,base));
+  while(cursor+DEDUP_MIN_CHARS<=text.length){
+    const key=hashes.join(':');
+    let prior=seen.get(key);
+    let later=-1;
+    if(prior===undefined)seen.set(key,cursor);
+    else if(typeof prior==='number'){
+      if(windowsEqual(text,prior,cursor,DEDUP_MIN_CHARS))later=prior;
+      else seen.set(key,[prior,cursor]);
+    }else{
+      later=prior.find(start=>windowsEqual(text,start,cursor,DEDUP_MIN_CHARS))??-1;
+      if(later<0)prior.push(cursor);
+    }
+    if(later<0){
+      if(cursor+DEDUP_MIN_CHARS===text.length)break;
+      const outgoing=text.charCodeAt(cursor),incoming=text.charCodeAt(cursor+DEDUP_MIN_CHARS);
+      hashes=hashes.map((hash,index)=>rollHash(hash,DEDUP_HASH_BASES[index],powers[index],outgoing,incoming));
+      cursor++;
+      continue;
+    }
+    const gap=cursor-later;
+    // Extend both ends while the two occurrences agree.
+    let from=cursor,to=cursor+DEDUP_MIN_CHARS;
     while(from-gap>=0&&text[from-1]===text[from-1-gap])from--;
     while(to<text.length&&text[to]===text[to-gap])to++;
     const chars=to-from;
-    if(chars<DEDUP_MIN_CHARS)continue;
-    const prev=anchors.get(from);
-    if(!prev||chars>prev.chars)anchors.set(from,{chars,gap});
+    const prev=segments.get(from);
+    if(!prev||chars>prev.chars)segments.set(from,{chars,gap});
+    if(to+DEDUP_MIN_CHARS>text.length)break;
+    cursor=to;
+    hashes=DEDUP_HASH_BASES.map(base=>hashWindow(text,cursor,DEDUP_MIN_CHARS,base));
   }
   const merged=[];
-  const ordered=[...anchors.entries()].sort((x,y)=>x[0]-y[0]);
+  const ordered=[...segments.entries()].sort((x,y)=>x[0]-y[0]);
   for(const [later,{chars,gap}] of ordered){
     const last=merged.at(-1);
     if(last&&later<last.later+last.chars)continue;

@@ -1,9 +1,14 @@
 import {isAgentLoopRequest,markAgentLoopRequest} from '@deepseek-ai/dsh-llm';
 
 const nativeEffort=info=>info?.reasoning?.efforts?.find(item=>item.id==='max')?.id;
+// Adapters relying on the base prepareCall resolve through the wrapped resolveModel,
+// so the added entry must stay distinguishable from a provider's own ultra.
+const synthetic=new WeakSet();
+const nativeUltraOf=info=>!!info?.reasoning?.efforts?.some(item=>item.id==='ultra'&&!synthetic.has(item));
 function expose(info){
   if(!nativeEffort(info)||info.reasoning.efforts.some(item=>item.id==='ultra'))return info;
-  const result={...info,reasoning:{...info.reasoning,efforts:[...info.reasoning.efforts,{id:'ultra',name:'Ultra'}]}};
+  const added={id:'ultra',name:'Ultra'};synthetic.add(added);
+  const result={...info,reasoning:{...info.reasoning,efforts:[...info.reasoning.efforts,added]}};
   return result;
 }
 function transport(options,effort,nativeUltra){
@@ -30,7 +35,7 @@ export function installUltraEffort(ctx){
       const wrappedResolve=async function(provider,model,signal){return expose(await resolve.call(this,provider,model,signal));};
       const wrappedPrepare=async function(provider,model,signal){
         const call=await prepare.call(this,provider,model,signal);
-        const effort=nativeEffort(call.model),nativeUltra=!!call.model?.reasoning?.efforts?.some(item=>item.id==='ultra');
+        const effort=nativeEffort(call.model),nativeUltra=nativeUltraOf(call.model);
         return {...call,model:expose(call.model),stream:options=>call.stream(transport(options,effort,nativeUltra))};
       };
       try{

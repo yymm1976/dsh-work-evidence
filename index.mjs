@@ -14,7 +14,7 @@ import {createVerifiedExec} from './verified-exec.mjs';
 import {createFastEditJava} from './fastedit-java.mjs';
 
 import {createReadRouting} from './read-routing.mjs';
-import {correctedReadArguments,recoveryFor,withRecovery,recoveredResult,normalizedReadResult} from "./recovery.mjs";
+import {correctedReadArguments,recoveryFor,withRecovery,recoveredResult,normalizedReadResult,installExecutionDescriptionCompatibility} from "./recovery.mjs";
 import {observeRequests} from './request-observation.mjs';
 import {createContextWindow} from './context-window.mjs';
 import {createObservationLedger} from './observation-ledger.mjs';
@@ -31,7 +31,6 @@ import {createEffectObserver} from './effect-observer.mjs';
 import {createHistoryCoordinator} from './history-coordinator.mjs';
 import {planContextPrune,prunableMessage,hasPruneProblem,readDispatch,historyReferences} from './context-pruning.mjs';
 import {createHistoryHygiene} from "./history-hygiene.mjs";
-import {createReasoningHistory} from './reasoning-history.mjs';
 
 import {createRetainedCompute} from './retained-compute.mjs';
 import {createFinalJsonGuard} from './final-json.mjs';
@@ -103,6 +102,7 @@ export function apply(ctx,config={}){
   const nativeFiles=createNativeFiles(ctx);
   const pendingSaves=new Set();
   const runtime=createRuntime(ctx,call,config),state=runtime.get;
+  installExecutionDescriptionCompatibility(ctx,runtime);
   const disposeUltra=installUltraEffort(ctx);
   ctx.effect(()=>disposeUltra);
   const toolSurfaceDisposers=new Map(),taskSurfaceModes=new Map();
@@ -139,17 +139,17 @@ export function apply(ctx,config={}){
     toolSurfaceDisposers.clear();
     taskSurfaceModes.clear();
     try{await retainedCompute.dispose();}finally{
-      workingSet.dispose();historyHygiene.dispose();reasoningHistory.dispose();await compactionHandoff.dispose();compressionControl.dispose();contextEconomics.dispose();taskFlow.dispose();executionEvidence.dispose();
+      workingSet.dispose();historyHygiene.dispose();await compactionHandoff.dispose();compressionControl.dispose();contextEconomics.dispose();taskFlow.dispose();executionEvidence.dispose();
     }
   });
   runtime.setContextSnapshot(id=>{
-    const agent=ctx.agents.get(id);return agent?{observability:effects.snapshot(agent),coordination:historyCoordinator.summary(agent),workingSet:workingSet.metrics(agent),historyHygiene:historyHygiene.summary(agent),reasoningHistory:reasoningHistory.summary(agent),contextEconomics:contextEconomics.summary(agent),compression:{...compressionControl.metrics(agent),nativeHandoff:compactionHandoff.metrics(agent)},taskFlow:taskFlow.summary(agent),retainedCompute:retainedCompute.summary(agent),finalJson:finalJson.summary(agent),qualityReview:qualityReview.summary(agent),effortPolicy:{enabled:false,configuredEffort:agent.options?.reasoningEffort??null,selectedEffort:null,reason:'automatic-effort-disabled',classifierModelCalls:0},nativeExecution:executionEvidence.summary(agent)}:{};
+    const agent=ctx.agents.get(id);return agent?{observability:effects.snapshot(agent),coordination:historyCoordinator.summary(agent),workingSet:workingSet.metrics(agent),historyHygiene:historyHygiene.summary(agent),contextEconomics:contextEconomics.summary(agent),compression:{...compressionControl.metrics(agent),nativeHandoff:compactionHandoff.metrics(agent)},taskFlow:taskFlow.summary(agent),retainedCompute:retainedCompute.summary(agent),finalJson:finalJson.summary(agent),qualityReview:qualityReview.summary(agent),effortPolicy:{enabled:false,configuredEffort:agent.options?.reasoningEffort??null,selectedEffort:null,reason:'automatic-effort-disabled',classifierModelCalls:0},nativeExecution:executionEvidence.summary(agent)}:{};
   });
   observeRequests(ctx,runtime);
   const evidenceViews=createEvidenceViews(ctx,runtime);
   const contextWindow=createContextWindow(ctx,runtime);contextWindow.observe();
   const observationLedger=createObservationLedger(ctx,runtime,nativeFiles);observationLedger.observe();
-  const historyCoordinator=createHistoryCoordinator(runtime,observationLedger,contextWindow,contextEconomics);runtime.historyCoordinator=historyCoordinator;
+  const historyCoordinator=createHistoryCoordinator(runtime,contextWindow,contextEconomics);runtime.historyCoordinator=historyCoordinator;
   const clearPluginState=agent=>{observationLedger.clear(agent);contextWindow.clear(agent);};
   const routeRead=createReadRouting(ctx,runtime,call,nativeFiles);
   const index=createSelfIndex(ctx,runtime,call),candidates=createCandidates(ctx,runtime,call),
@@ -198,8 +198,7 @@ export function apply(ctx,config={}){
     retainedSource:(agent,file)=>retainedSources(agent).has(sourceKey(agent,file)),
     canRecall,
   });
-  const reasoningHistory=createReasoningHistory(ctx,runtime);
-  runtime.rewriteRequestHistory=(agent,messages,options)=>reasoningHistory.project(agent,historyHygiene.project(agent,messages,options),options);
+  runtime.rewriteRequestHistory=(agent,messages,options)=>historyHygiene.project(agent,messages,options);
   ctx.on('session/event',(session,event)=>{
     if(event.type==='agent/inbox/spliced'){
       const inserted=event.data?.inserted;
@@ -562,7 +561,6 @@ export function apply(ctx,config={}){
       const generation=payload.agent.session.surface.contentGeneration;
       let decision=await next();if(decision.kind==='enter')decision=historyCoordinator.beforeStep(payload,decision,generation);
       const s=state(payload.agent);if(decision.kind!=='enter')return decision;
-      await reasoningHistory.prepare(payload.agent,payload.signal);
       const locations=await taskFlow.startupPaths(payload.agent,decision.messages,payload.signal);
       const messages=[...(s.queuedMessages??[]),...taskFlow.beforeStep(payload.agent,decision.messages,locations)];s.queuedMessages=[];
       return messages.length?{...decision,messages:[...decision.messages,...messages]}:decision;
@@ -570,12 +568,11 @@ export function apply(ctx,config={}){
     const generation=payload.agent.session.surface.contentGeneration;
     let decision=await next();if(decision.kind==='enter')decision=historyCoordinator.beforeStep(payload,decision,generation);
     if(decision.kind!=='enter')return decision;
-    await reasoningHistory.prepare(payload.agent,payload.signal);
     const locations=await taskFlow.startupPaths(payload.agent,decision.messages,payload.signal);
     const messages=[...await maintenance(payload),...taskFlow.beforeStep(payload.agent,decision.messages,locations)];
     return messages.length?{...decision,messages:[...decision.messages,...messages]}:decision;
   },{prepend:true});
-  ctx.on('agent/disposed',async({agent})=>{await Promise.allSettled([...pendingSaves]);try{toolSurfaceDisposers.get(agent.session.id)?.dispose?.();}catch{}toolSurfaceDisposers.delete(agent.session.id);contextPruning.delete(agent.session.id);pendingContextPrunes.delete(agent.session.id);contextRetainedSources.delete(agent.session.id);for(const key of contextReadCalls.keys())if(key.startsWith(agent.session.id+':'))contextReadCalls.delete(key);for(const key of preserveContextResults)if(key.startsWith(agent.session.id+':'))preserveContextResults.delete(key);try{await retainedCompute.disposeAgent(agent);}catch(error){runtime.problem(state(agent),'retained-compute-cleanup',error.message);}await effects.disposeAgent(agent);historyCoordinator.disposeAgent(agent);workingSet.disposeAgent(agent);historyHygiene.disposeAgent(agent);reasoningHistory.disposeAgent(agent);contextEconomics.clear(agent);taskFlow.disposeAgent(agent);executionEvidence.disposeAgent(agent);runtime.dispose(agent.session.id);});
+  ctx.on('agent/disposed',async({agent})=>{await Promise.allSettled([...pendingSaves]);try{toolSurfaceDisposers.get(agent.session.id)?.dispose?.();}catch{}toolSurfaceDisposers.delete(agent.session.id);contextPruning.delete(agent.session.id);pendingContextPrunes.delete(agent.session.id);contextRetainedSources.delete(agent.session.id);for(const key of contextReadCalls.keys())if(key.startsWith(agent.session.id+':'))contextReadCalls.delete(key);for(const key of preserveContextResults)if(key.startsWith(agent.session.id+':'))preserveContextResults.delete(key);try{await retainedCompute.disposeAgent(agent);}catch(error){runtime.problem(state(agent),'retained-compute-cleanup',error.message);}await effects.disposeAgent(agent);historyCoordinator.disposeAgent(agent);workingSet.disposeAgent(agent);historyHygiene.disposeAgent(agent);contextEconomics.clear(agent);taskFlow.disposeAgent(agent);executionEvidence.disposeAgent(agent);runtime.dispose(agent.session.id);});
   async function saveInterruption(agent,{turn,step,provider,reason,signal,observed}){
     const sessionId=agent.session.id,s=state(agent);
     if(!observed.active||s.notedTurn>=turn||s.savingTurn===turn||!/^[-a-zA-Z0-9_][-.a-zA-Z0-9_]{0,127}$/.test(sessionId))return;

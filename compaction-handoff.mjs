@@ -3,6 +3,13 @@ import {hasPruneProblem} from './context-pruning.mjs';
 import {stageCheckpoints,stageReuseCandidate} from './stage-checkpoints.mjs';
 
 const POLICY='kimi-codex-handoff-v10-stub';
+// Pressure compaction below this share of the routed message budget (context window minus
+// the request's output reservation) is deferred: the request still fits, and a committed
+// checkpoint rewrites the cached prefix, so every later step pays uncached input again.
+const DEFER_BUDGET_RATIO=0.6;
+// A deferred compaction runs on a larger prompt; cap the summary output reservation so the
+// summary request itself still fits the window. Observed summaries use about 1-3K tokens.
+const DEFERRED_SUMMARY_MAX_TOKENS=16384;
 const INSTRUCTION='Produce one consolidated continuation checkpoint with these sections: Goal and user decisions; Work and artifacts; Evidence and failed approaches; Open work and next action. Preserve current requirements and corrections, separating user decisions from assistant assumptions. Keep exact paths, symbols, configuration values, input conditions, error strings, job IDs and source event seqs needed to continue. Describe what actually changed in each relevant artifact and what remains unfinished. Preserve unresolved failures, excluded approaches and their reasons; distinguish process success from correctness.\n'+
   'Update the previous checkpoint using newer events. Carry forward still-valid earlier facts, decisions and open questions; explicitly replace corrected claims and remove resolved work from the next action. Do not nest old checkpoints, reproduce old continuation-source wrappers or append a per-edit changelog. Reuse public stage conclusions and evidence without treating their headings as proof of coverage. Do not invent completion or turn assistant judgments into user decisions.\n'+
   'Bounded human excerpts, public checkpoints and current TODOs are appended independently. Preserve relevant decisions and facts absent from those sources, especially omitted middle history. Identify any exact detail that still requires historical recovery. Use historical recovery when available; if it is unavailable, preserve the exact evidence needed for continuation instead of relying on a future lookup. Never rerun an action only to recreate its text. Continue from the next unmet dependency without asking answered questions. Output only the complete text checkpoint, no tools or other actions.';
@@ -57,63 +64,88 @@ const CHECKPOINT_PREAMBLE='This is an automatically generated checkpoint condens
 const STUB_ROW_MAX_CHARS=240;
 const STUB_RECENT_MAX_ROWS=96;
 const STUB_PROBLEM_MAX_ROWS=8;
+const STUB_HUMAN_MAX_ROWS=32;
 const STUB_MAX_CHARS=20000;
+function targetFromArguments(value){
+  let args=value;
+  if(typeof args==='string'){try{args=JSON.parse(args);}catch{return null;}}
+  if(!args||typeof args!=='object'||Array.isArray(args))return null;
+  const paths=[];
+  for(const key of ['file_path','path','file'])if(typeof args[key]==='string'&&args[key].trim())paths.push(args[key]);
+  if(Array.isArray(args.files))for(const item of args.files){
+    const path=typeof item==='string'?item:item?.path;
+    if(typeof path==='string'&&path.trim())paths.push(path);
+  }
+  const normalized=[...new Set(paths.map(path=>path.replaceAll('\\','/')))].sort();
+  const command=typeof args.command==='string'?args.command:typeof args.cmd==='string'?args.cmd:null;
+  const cwd=typeof args.cwd==='string'?args.cwd:typeof args.workdir==='string'?args.workdir:null;
+  if(!normalized.length&&command===null&&cwd===null)return null;
+  return JSON.stringify([normalized,command,cwd]);
+}
 // Deterministic stub checkpoint: no summarizer model call. Row selection and serialization are
-// byte-stable for a given event log, so later requests replay the block from provider cache
-// instead of re-paying it; prose summaries drift in wording and keep missing the cache.
-// cacheOrderedStub (v12): older rows are serialized first and the newest rows land at the tail,
-// so a provider prefix cache keeps matching the unchanged head across successive compactions and
-// each new checkpoint only re-pays its incremental tail. Also adds checked/unchecked markers on
-// problem rows (archiveEntries): a problem row whose same-seq result later appears with a
-// matching success follow-up is marked checked and skipped on re-read unless recalled.
-export function stubCheckpoint(agent,cacheOrdered,archiveEntries){
-  const log=eventLog(agent.session),events=[],problems=[];
+// deterministic for a given event log. Provider cache savings depend on the full request.
+// Problem rows get checked markers only
+// when a later successful result has the same tool and path/command target.
+export function stubCheckpoint(agent){
+  const log=eventLog(agent.session),events=[],problems=[],humans=[],problemSeqs=new Set(),targetBySeq=new Map(),callTargets=new Map();
   for(const event of log){
     const message=messageOf(event),data=event.data??{};
     const isTool=['tool/call','tool/result','tool/ptc-dispatch','tool/code-dispatch'].includes(event.type);
-    if(!isTool&&!['assistant/message','todo/write','compaction/summary'].includes(event.type))continue;
+    const human=isUserRequestMessage(message);
+    if(!isTool&&!human&&!['assistant/message','todo/write','compaction/summary'].includes(event.type))continue;
     const name=data.name??null,callId=message?.source?.callId??message?.toolCallId??data.subCallId??data.callId??null;
     const text=message?textOf(message):event.type==='todo/write'?JSON.stringify(data.todos??[]):
       event.type==='tool/call'?(typeof data.arguments==='string'?data.arguments:JSON.stringify(data.arguments??{})):
       isTool?textOf({content:message?.content??(Array.isArray(data.content)?data.content:[{type:'text',text:String(data.content??'')}])}):
       textOf({content:data.content??data.summary});
     if(!text.trim())continue;
+    if(human){
+      const row={seq:event.seq,kind:'user',chars:text.length};
+      humans.push(row);events.push(row);
+      continue;
+    }
     const row={seq:event.seq,kind:event.type==='tool/call'||event.type==='tool/ptc-dispatch'||event.type==='tool/code-dispatch'?'call':
       event.type==='tool/result'?'result':event.type==='assistant/message'?'assistant':event.type==='todo/write'?'todos':'prior-compaction',
       ...(isTool||event.type==='assistant/message'?{tool:name}:{}),...(callId?{callId}:{}),head:text.slice(0,STUB_ROW_MAX_CHARS).replace(/\s+/g,' ').trim()};
     events.push(row);
-    if(event.type==='tool/result'&&hasPruneProblem([{type:'text',text}]))problems.push(row);
+    const target=targetFromArguments(data.arguments);
+    if(callId&&target&&row.kind==='call')callTargets.set(callId,target);
+    const resolvedTarget=target??(row.kind==='result'&&callId?callTargets.get(callId):null);
+    if(resolvedTarget)targetBySeq.set(event.seq,resolvedTarget);
+    const isProblem=event.type==='tool/result'&&(message?.isError===true||hasPruneProblem([{type:'text',text}]));
+    if(isProblem){problems.push(row);problemSeqs.add(event.seq);}
   }
-  const line=row=>'- '+JSON.stringify(row)+'\n  recall: work_recall({kind:"event",seq:'+row.seq+',offset:0})',
-    serialize=rows=>rows.map(line).join('\n');
-  let body;
-  if(cacheOrdered){
+  const line=row=>'- '+JSON.stringify(row)+'\n  recall: work_recall({kind:"event",seq:'+row.seq+',offset:0})';
+  const selectedHumans=humans.slice(-STUB_HUMAN_MAX_ROWS);
+  let body=selectedHumans.length?
+    'human requests (continuation sources may carry text or bounded excerpts; these entries locate the full originals):\n'+
+    selectedHumans.map(row=>'- '+JSON.stringify(row)+
+      '\n  continuation: record.humanRequests.requests\n  recall: work_recall({kind:"event",seq:'+row.seq+',offset:0})').join('\n')+'\n'
+    :'';
     // Problem rows carry a verification marker; checked ones were later answered by a
     // successful result and only need re-reading after explicit recall.
-    const successSeqs=new Set(events.filter(r=>r.kind==='result'&&!/error|failed|exception|cannot|undefined|null pointer|traceback/i.test(r.head)).map(r=>r.seq));
+    const successSeqs=new Set(events.filter(r=>r.kind==='result'&&!problemSeqs.has(r.seq)&&!/error|failed|exception|cannot|undefined|null pointer|traceback/i.test(r.head)).map(r=>r.seq));
     const marked=problems.slice(-STUB_PROBLEM_MAX_ROWS).map(row=>{
-      // A problem row counts as checked when a later successful result exists for the same
-      // tool within the following few events (a retry that landed), not just seq+1.
+      // A retry counts only when tool and target both match.
       const sameTool=r=>r.tool&&row.tool&&r.tool===row.tool;
-      const checked=events.some(r=>r.kind==='result'&&successSeqs.has(r.seq)&&r.seq>row.seq&&r.seq<=row.seq+6&&(sameTool(r)||r.seq===row.seq+2));
+      const target=targetBySeq.get(row.seq);
+      const checked=!!target&&events.some(r=>r.kind==='result'&&successSeqs.has(r.seq)&&r.seq>row.seq&&r.seq<=row.seq+6&&
+        sameTool(r)&&targetBySeq.get(r.seq)===target);
       return {...row,checked};
     });
-    body='problem rows (latest '+STUB_PROBLEM_MAX_ROWS+', checked rows need recall before re-reading):\n'+
+    body+='problem rows (latest '+STUB_PROBLEM_MAX_ROWS+', checked rows need recall before re-reading):\n'+
       marked.map(row=>'- '+JSON.stringify({seq:row.seq,kind:row.kind,tool:row.tool,head:row.head,checked:row.checked})+
         '\n  recall: work_recall({kind:"event",seq:'+row.seq+',offset:0})').join('\n')+
-      '\nrecent events (oldest first — stable prefix for provider cache; newest rows at the tail are the only part that changes between compactions):\n';
-  }else{
-    body='problem rows (latest '+STUB_PROBLEM_MAX_ROWS+', full priority):\n'+serialize(problems.slice(-STUB_PROBLEM_MAX_ROWS))+
-      '\nrecent events (newest last, oldest listed first):\n';
-  }
-  const head='[work-evidence stub checkpoint policy='+POLICY+' deterministic=true'+(cacheOrdered?' cacheOrdered=true':'')+(archiveEntries?' archiveEntries=true':'')+']\n'+
-    'One line per historical event; head text is bounded, not full content'+(archiveEntries?' and serves as an archive entry: the full original lives behind the listed work_recall, so treat heads as pointers, not evidence':'')+'. Recover original text with the listed work_recall before relying on a head; never rerun an operation only to recreate its text. Problem results are listed regardless of recency'+(archiveEntries?', and checked ones were already resolved — recall only if the resolution itself matters':'')+'. Continue from the next unmet dependency. Human requests are preserved in the continuation sources; assistant heads are not user decisions.\n\n';
-  const rowLines=events.map(line),budget=STUB_MAX_CHARS-head.length-body.length;
+      '\nrecent events (oldest first; bounded rows may shift as the conversation grows):\n';
+  const head='[work-evidence stub checkpoint policy='+POLICY+' deterministic=true]\n'+
+    'Event rows are bounded pointers to original events. Continuation sources retain human requests where budget permits. Recover original text with work_recall before relying on a head; never rerun an operation only to recreate its text. Problem results are listed regardless of recency. A checked row has a later successful observation of the same tool and target. Continue from the next unmet dependency. Assistant heads are not user decisions.\n\n';
+  const rowLines=events.filter(row=>row.kind!=='user').map(line),budget=STUB_MAX_CHARS-head.length-body.length;
   let used=0,end=rowLines.length;
   while(end>0&&used+rowLines[end-1].length+1<=budget){used+=rowLines[end-1].length+1;end--;}
   const tailRows=end<rowLines.length?rowLines.slice(end):[];
   if(!tailRows.length&&rowLines.length)body+='[all events exceed the stub budget; recover from the continuation sources]\n';
-  return {text:head+body+tailRows.join('\n'),events:events.length,problemRows:problems.length,rows:rowLines.length-end};
+  return {text:head+body+tailRows.join('\n'),events:events.length,problemRows:problems.length,
+    rows:selectedHumans.length+rowLines.length-end};
 }
 const clip=(text,max)=>{
   if(text.length<=max)return text;
@@ -181,6 +213,8 @@ export function recallHistory(agent,{seq,kind='event',offset=0,maxChars=16000,fi
     type=event.type;const message=messageOf(event);
     if(['user/message','assistant/message','tool/result'].includes(type)&&message){
       text=textOf(message);nonTextBlocks=(message.content??[]).filter(block=>block.type!=='text').map(block=>block.type);
+    }else if(type==='tool/call'){
+      text=typeof event.data.arguments==='string'?event.data.arguments:JSON.stringify(event.data.arguments??{});
     }else if(['tool/ptc-dispatch','tool/code-dispatch'].includes(type))text=textOf({content:event.data.content});
     else if(type==='todo/write')text=JSON.stringify(event.data.todos);
     else if(type==='compaction/summary')text=textOf({content:event.data.summary});
@@ -256,7 +290,15 @@ function handoffRecord(agent,runtime,taskFlow,input,recallAvailable){
 
 /** Extend the one native summarizer; leave its pressure/overflow and commit checks in charge. */
 export function createCompactionHandoff(ctx,runtime,taskFlow,{canRecall=()=>false}={}){
-  const states=new Map(),active=new Map();let attachment=null;
+  const states=new Map(),active=new Map(),pressureOwners=new Set();let attachment=null;
+  const deferring=agent=>!!agent&&runtime.isEnabled(agent)&&runtime.get(agent).config.compressionControl&&runtime.get(agent).config.deferPressureCompaction;
+  ctx.on('llm/stream',async function*(options,next){
+    const agent=options.purpose==='compaction'?ctx.agents?.get?.(options.sessionId):null;
+    if(!pressureOwners.has(agent)||!deferring(agent)||!(options.maxTokens>DEFERRED_SUMMARY_MAX_TOKENS)){yield* next();return;}
+    const prior=options.maxTokens;options.maxTokens=DEFERRED_SUMMARY_MAX_TOKENS;
+    get(agent).summaryMaxTokensCapped=(get(agent).summaryMaxTokensCapped??0)+1;
+    try{yield* next();}finally{options.maxTokens=prior;}
+  },{prepend:true});
   ctx.on('llm/stream',async function*(options,next){
     const record=options.purpose==='compaction'?active.get(options.sessionId):null;
     if(!record){yield* next();return;}
@@ -284,7 +326,7 @@ export function createCompactionHandoff(ctx,runtime,taskFlow,{canRecall=()=>fals
         const record=handoffRecord(agent,runtime,taskFlow,{messages},canRecall(agent));
         const estimate=text=>meter.estimateMessage({role:'user',content:[{type:'text',text}]});
         return {stub:true,inputTokens:0,
-          framedOverheadTokens:estimate(CHECKPOINT_PREAMBLE+'\n\n<compacted-summary>\n[Work Evidence continuation sources]\n'+JSON.stringify(record)+'\n\n'+stubCheckpoint(agent,runtime.get(agent).config.cacheOrderedStub===true,runtime.get(agent).config.archiveEntries===true).text+'\n</compacted-summary>'),
+          framedOverheadTokens:estimate(CHECKPOINT_PREAMBLE+'\n\n<compacted-summary>\n[Work Evidence continuation sources]\n'+JSON.stringify(record)+'\n\n'+stubCheckpoint(agent).text+'\n</compacted-summary>'),
           method:'stub-summary: no model call; framed deterministic checkpoint priced via injected meter'};
       }
       const messages=(agent.session.surface?.nodes??[]).flatMap(seq=>{
@@ -302,6 +344,46 @@ export function createCompactionHandoff(ctx,runtime,taskFlow,{canRecall=()=>fals
   function attach(service){
     if(!service||typeof service.summarize!=='function'||typeof service.regionDependencies!=='function')return ()=>{};
     const original=service.summarize,descriptor=Object.getOwnPropertyDescriptor(service,'summarize');
+    const originalCompact=typeof service.compactIfNeeded==='function'?service.compactIfNeeded:null,
+      compactDescriptor=Object.getOwnPropertyDescriptor(service,'compactIfNeeded');
+    // Host pressure compaction starts at min(80% window, window - output - headroom); for a
+    // 116K window with 29K output that is about 21K tokens, so short tasks compact every few
+    // steps. Overflow recovery and manual compaction are left untouched.
+    const compactIfNeeded=async function(agent,trigger,signal){
+      if(trigger!=='pressure'||!deferring(agent))return originalCompact.call(this,agent,trigger,signal);
+      let budget=null,total=null,nativeThreshold=null;
+      try{
+        const header=agent.session.requestHeader()?.config;
+        const info=header?await ctx.llm.resolveModelInfo(header.provider,header.model,signal):null;
+        const window=info?.context?.contextWindow;
+        if(Number.isInteger(window)&&window>0)budget=window-(header.maxTokens??info.defaultMaxTokens??0);
+        const policy=service.config,override=policy?.modelPolicies?.find(p=>p.provider===header?.provider&&p.model===header?.model);
+        const ratio=override?.thresholdRatio??policy?.thresholdRatio,headroom=override?.headroomTokens??policy?.headroomTokens;
+        if(!(budget>0)||!Number.isFinite(ratio)||!Number.isFinite(headroom))return originalCompact.call(this,agent,trigger,signal);
+        nativeThreshold=Math.min(window*ratio,budget-headroom);
+        if(nativeThreshold<=0||nativeThreshold>=budget*DEFER_BUDGET_RATIO)return originalCompact.call(this,agent,trigger,signal);
+        total=service.regionDependencies()?.meter?.measure(agent.session)?.totalTokens??null;
+      }catch{}
+      if(!(budget>0)||!Number.isFinite(total))return originalCompact.call(this,agent,trigger,signal);
+      const state=get(agent);
+      if(total<budget*DEFER_BUDGET_RATIO){
+        state.deferredPressure=(state.deferredPressure??0)+1;
+        state.lastDeferral={promptTokensEstimate:total,messageBudgetTokens:budget,nativeThresholdTokens:nativeThreshold,deferBelowTokens:Math.floor(budget*DEFER_BUDGET_RATIO)};
+        return null;
+      }
+      pressureOwners.add(agent);
+      try{return await originalCompact.call(this,agent,trigger,signal);}finally{pressureOwners.delete(agent);}
+    };
+    // The host rejects a checkpoint that is not smaller than the span it replaces.
+    // Size the appended sources against the span so a doomed summary call is not paid for.
+    const sizing=input=>{
+      const meter=service.regionDependencies()?.meter;
+      if(typeof meter?.estimateMessage!=='function')return null;
+      const region=(input.messages??[]).filter((message,index)=>!(index===0&&message.role==='system'))
+        .reduce((sum,message)=>sum+meter.estimateMessage(message),0);
+      const framed=summary=>meter.estimateMessage({role:'user',content:[{type:'text',text:CHECKPOINT_PREAMBLE+'\n\n<compacted-summary>'},...summary,{type:'text',text:'</compacted-summary>'}]});
+      return {region,framed};
+    };
     const wrapped=async function(input,agent,signal){
       await runtime.init(agent,signal);
       if(!runtime.isEnabled(agent)||!runtime.get(agent).config.compressionControl)return original.call(this,input,agent,signal);
@@ -323,7 +405,7 @@ export function createCompactionHandoff(ctx,runtime,taskFlow,{canRecall=()=>fals
       const stubPolicy=runtime.get(agent).config.stubSummary;
       if(stubPolicy){
         signal?.throwIfAborted();
-        const stub=stubCheckpoint(agent,runtime.get(agent).config.cacheOrderedStub===true,runtime.get(agent).config.archiveEntries===true),text='[Work Evidence continuation sources]\n'+JSON.stringify(record)+'\n\n'+stub.text;
+        const stub=stubCheckpoint(agent),text='[Work Evidence continuation sources]\n'+JSON.stringify(record)+'\n\n'+stub.text;
         state.stubSummaries++;state.summariesReturned++;state.last.status='prepared-awaiting-native-commit';
         state.last.method='deterministic-stub-summary';state.last.stub={events:stub.events,problemRows:stub.problemRows,rows:stub.rows,chars:text.length};
         runtime.get(agent).dirty=true;
@@ -331,25 +413,63 @@ export function createCompactionHandoff(ctx,runtime,taskFlow,{canRecall=()=>fals
         return {summary:[{type:'text',text}],provider:'work-evidence',model:'deterministic-stub',llmStreamCall:false};
       }
       state.last.method='native-summary-with-stage-sources';
-      const previous=active.get(agent.session.id);active.set(agent.session.id,record);
+      let size=null;try{size=sizing(input);}catch{}
+      // The native part is not known before the call; use this session's last native
+      // summary size, or a third of the span before any summary exists.
+      const sourceTokens=size?size.framed([{type:'text',text}]):null;
+      const nativeEstimate=size?(state.lastNativeSummaryTokens??Math.ceil(size.region/3)):null;
+      // Sources that cannot fit are left out so the host summary can still shrink the span;
+      // only a span too small for the summary itself skips the paid call.
+      const sourcesFit=!size||sourceTokens+nativeEstimate<size.region;
+      if(size&&!sourcesFit&&nativeEstimate*1.25>=size.region){
+        state.failed++;state.last.status='failed';state.last.method='span-smaller-than-sources';
+        state.last.sizing={regionTokensEstimate:size.region,sourceTokensEstimate:sourceTokens,nativeSummaryTokensEstimate:nativeEstimate};
+        state.skippedSmallSpans=(state.skippedSmallSpans??0)+1;
+        runtime.effects?.decide(agent,'compactionHandoff','not-applicable','span-smaller-than-continuation-sources',state.last.sizing);
+        runtime.get(agent).dirty=true;
+        throw new Error('work-evidence: the selected span is smaller than its continuation sources; no summary call was made');
+      }
+      // When the full sources do not fit, keep the human requests: they are the part a
+      // host summary is most likely to paraphrase away.
+      let appended=text;
+      if(!sourcesFit){
+        const requestsOnly='[Work Evidence continuation sources]\n'+JSON.stringify({policy:record.policy,sourceAuthority:record.sourceAuthority,
+          humanRequests:record.humanRequests,recovery:record.recovery,continuation:record.continuation});
+        appended=size.framed([{type:'text',text:requestsOnly}])+nativeEstimate<size.region?requestsOnly:null;
+        state.last.sourcesOmitted=appended?'state':'all';state.sourcesOmitted=(state.sourcesOmitted??0)+1;
+      }
+      // Without appended sources the host's own directive (verbatim user goals) applies unchanged.
+      const previous=active.get(agent.session.id);if(sourcesFit)active.set(agent.session.id,record);
       try{
         state.nativeSummaryCalls++;
         const result=await original.call(this,input,agent,signal);
         signal?.throwIfAborted();
         if(!Array.isArray(result?.summary)||!result.summary.length||result.summary.some(block=>block.type!=='text'||typeof block.text!=='string')||!result.summary.some(block=>block.text.trim()))throw new Error('Native compaction returned an empty or non-text summary');
         state.summariesReturned++;state.last.status='prepared-awaiting-native-commit';
-        return {...result,summary:[...result.summary,{type:'text',text}]};
+        if(size)try{state.lastNativeSummaryTokens=size.framed(result.summary);}catch{}
+        const combined=appended?[...result.summary,{type:'text',text:appended}]:result.summary;
+        if(size&&appended&&size.framed(combined)>=size.region&&state.lastNativeSummaryTokens<size.region){
+          state.last.sourcesOmitted='all';
+          runtime.effects?.decide(agent,'compactionHandoff','applied','continuation-sources-omitted-to-fit-span',{regionTokensEstimate:size.region});
+          return result;
+        }
+        return {...result,summary:combined};
       }catch(error){state.failed++;state.last.status='failed';throw error;}
       finally{if(previous)active.set(agent.session.id,previous);else active.delete(agent.session.id);runtime.get(agent).dirty=true;}
     };
     service.summarize=wrapped;attachment={service,wrapped};
-    return ()=>{if(Object.getOwnPropertyDescriptor(service,'summarize')?.value===wrapped){if(descriptor)Object.defineProperty(service,'summarize',descriptor);else delete service.summarize;}if(attachment?.wrapped===wrapped)attachment=null;};
+    if(originalCompact)service.compactIfNeeded=compactIfNeeded;
+    return ()=>{
+      if(Object.getOwnPropertyDescriptor(service,'summarize')?.value===wrapped){if(descriptor)Object.defineProperty(service,'summarize',descriptor);else delete service.summarize;}
+      if(originalCompact&&Object.getOwnPropertyDescriptor(service,'compactIfNeeded')?.value===compactIfNeeded){if(compactDescriptor)Object.defineProperty(service,'compactIfNeeded',compactDescriptor);else delete service.compactIfNeeded;}
+      if(attachment?.wrapped===wrapped)attachment=null;
+    };
   }
   // Optional service lifecycle: the plugin still works without a native basic backend.
   const fiber=ctx.inject(['compaction'],scope=>{scope.effect(()=>attach(scope.compaction));});
   ctx.on('session/event',(session,event)=>{
     const state=states.get(session.id);if(!state?.last)return;
-    if(event.type==='compaction/summary'&&textOf({content:event.data?.summary}).includes('[Work Evidence continuation sources]')){
+    if(event.type==='compaction/summary'&&(state.last.status==='prepared-awaiting-native-commit'||textOf({content:event.data?.summary}).includes('[Work Evidence continuation sources]'))){
       state.last.compactionId=event.data.compactionId;state.last.summarySeq=event.seq;state.last.status='summary-recorded';
     }
     if(event.type==='compaction/end'&&event.data?.compactionId===state.last.compactionId){

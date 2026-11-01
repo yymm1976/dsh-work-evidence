@@ -14,7 +14,7 @@ function shellValue(value){
   const stdout=typeof data?.stdout==='string'?data.stdout:data?.stdout?.text;
   const stderr=typeof data?.stderr==='string'?data.stderr:data?.stderr?.text;
   return {status:value?.data?.status||value?.status||null,exitCode:Number.isInteger(data?.exitCode)?data.exitCode:null,
-    timedOut:data?.timedOut===true,stdout:stdout??'',stderr:stderr??'',error:data?.error||value?.error||null};
+    timedOut:data?.timedOut===true,aborted:data?.aborted===true||data?.cancelled===true,stdout:stdout??'',stderr:stderr??'',error:data?.error||value?.error||null};
 }
 function shellTool(ctx,agent){return (process.platform==='win32'?['pwsh','ops_bash','bash']:['ops_bash','bash','pwsh']).find(name=>{try{return Boolean(ctx.tools.get(name,agent));}catch{return false;}})||null;}
 function quote(value){return "'"+String(value).replaceAll("'","'\\''")+"'";}
@@ -96,7 +96,8 @@ export function createFastEditJava(ctx,runtime,call,verifiedExec){
         return {status:'deopt',reason:record.reason,reportPath,shell:{exitCode:shell.exitCode,stderr:shell.stderr.slice(0,1000)}};
       }
       record.fastEdit=receipt;
-      if(result.isError||shell.status!=='completed'||shell.exitCode!==0||receipt.ok!==true){
+      // Native DSH pwsh results carry exitCode without a status field; OPS shells report status.
+      if(result.isError||(shell.status!==null&&shell.status!=='completed')||shell.timedOut||shell.aborted||shell.error||shell.exitCode!==0||receipt.ok!==true){
         record.status='deopt';record.reason=receipt.reason||'fastedit-bridge-failed';record.shell={status:shell.status,exitCode:shell.exitCode,stderr:shell.stderr.slice(0,4000)};
         s.metrics.fastEditDeopts++;await save();
         return {status:'deopt',reason:record.reason,reportPath,detail:receipt};
