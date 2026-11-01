@@ -45,7 +45,7 @@ work_status 始终保留；历史中仍有取回引用时保留 work_recall。
 
 每项来源包含 `sessionId`、`seq`、`kind` 和 `offset`。`recoverable` 表示当前会话是否能读取该类原始记录。
 `source.nativeRecall` 给出原生 `session_event_read` 的调用地址；接收宿主在调用时判断跨会话访问范围。
-在来源会话中，可调用 `work_recall({sourceSessionId:source.sessionId,kind:source.kind,seq:source.seq,offset:source.offset})`。
+原会话内的普通记录可调用 `work_recall({sourceSessionId:source.sessionId,kind:source.kind,seq:source.seq,offset:source.offset})`。
 携带的会话标识不匹配时，调用返回 `source-session-mismatch`。原文按返回的 `nextOffset` 续读。
 历史索引按 `nextSeq` 续读，并保留同一 `throughSeq`。其他会话的原始 seq 不能作为当前会话的本地 seq 传给 `work_recall`。原生跨会话取回使用 `nativeRecall` 地址；引用快照按下节所述的本地地址读取。
 
