@@ -74,7 +74,7 @@ await tools.work_status({session_enabled: null});
 swLedger 和 swEviction 默认开启。
 SW 只替换旧的完整成功输出，要求后续仍有相同正文可见。
 替换后的地址能取回原始事件。
-没有相同正文时，SW 不遍历历史或评估缓存费用。
+没有相同正文且未开启账本折叠时，SW 与外层协调器不遍历历史或评估缓存费用。
 
 ledgerFoldWrite、programHistory、requestProjection、projectionRestore、stubSummary 默认关闭。
 deferPressureCompaction 也保持默认关闭。
@@ -92,6 +92,7 @@ deferPressureCompaction 也保持默认关闭。
 - executionAdvice、finishAdvice：不再增加执行或收尾建议。
 
 旧配置中的这些布尔字段兼容读取后固定为 false。
+早已退役的 taskEffort、nativeReadView 和 nativeExecutionEvidence 也退出有效功能列表。
 旧的缓存排序和归档环境变量不能重新启用对应模式。
 stubSummary 保留问题处理标记、事件指针和原文取回。
 

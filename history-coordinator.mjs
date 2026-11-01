@@ -9,6 +9,7 @@ export function createHistoryCoordinator(runtime,ledger,sw,economics){
     const session=agent.session,current=state(agent);current.boundaries++;
     const config=runtime.get(agent).config;
     if(!config.ledgerFoldWrite&&!config.swEviction)return decision;
+    if(!config.ledgerFoldWrite&&sw.hasDuplicates?.(agent)===false)return decision;
     if(session.surface.contentGeneration!==generation||decision.messages.some(message=>message.source?.kind==='compact-checkpoint')||compactionActive(session))return decision;
     if(!rewriteSpacingReady(session,runtime.get(agent)))return decision;
     const candidates=[...ledger.planFolds(payload,decision,generation),sw.propose(agent)].filter(Boolean),viable=[];

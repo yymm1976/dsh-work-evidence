@@ -135,7 +135,7 @@ export function createContextWindow(ctx,runtime){
     });
     ctx.on('dispose',()=>{ledgers.clear();pendingCalls.clear();});
   }
-  return {observe,beforeStep,propose,get,recordResult,
+  return {observe,beforeStep,propose,get,recordResult,hasDuplicates:agent=>get(agent).duplicateBodies>0,
     recall(agent,args){const value=recallResult(agent,args);if(value.status==='observed'){const state=get(agent);state.recoveries.push({seq:args.seq});state.recoveries=state.recoveries.slice(-64);}return value;},
     clear(agent){ledgers.delete(agent.session.id);},
     detail(agent){

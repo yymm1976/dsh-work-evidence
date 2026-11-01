@@ -5,7 +5,7 @@ import path from 'node:path';
 import {defaults} from '../runtime.mjs';
 import {createEffectObserver} from '../effect-observer.mjs';
 import {startHost,text,tool,reasoning} from './helpers/host.mjs';
-const retired=['reasoningHistory','cacheOrderedStub','archiveEntries','ledgerFoldPlan','executionAdvice','finishAdvice'];
+const retired=['reasoningHistory','cacheOrderedStub','archiveEntries','ledgerFoldPlan','executionAdvice','finishAdvice','taskEffort','nativeReadView','nativeExecutionEvidence'];
 test('retired settings accept old boolean values without re-enabling code',()=>{
   const config=defaults(Object.fromEntries(retired.map(key=>[key,true])));
   for(const key of retired){assert.equal(config[key],false);assert.throws(()=>defaults({[key]:'true'}),new RegExp('Invalid '+key));}

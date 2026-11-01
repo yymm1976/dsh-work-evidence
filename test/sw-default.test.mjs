@@ -5,6 +5,7 @@ import path from 'node:path';
 import {performance} from 'node:perf_hooks';
 import {defaults} from '../runtime.mjs';
 import {createContextWindow} from '../context-window.mjs';
+import {createHistoryCoordinator} from '../history-coordinator.mjs';
 import {startHost,text,tool,requestText} from './helpers/host.mjs';
 test('default SW exits before history reads or economic assessment when outputs are unique',()=>{
   const config=defaults(),events=new Map(),nodes=[];let historyReads=0,assessments=0;
@@ -85,4 +86,13 @@ test('SW bounds retained characters and keeps duplicate counts separate by tool'
   assert.equal(metrics.duplicateBodies,0);assert.equal(sw.get(agent).bodyCounts.has('read'),false);
   assert.equal(metrics.retainedChars,sw.get(agent).observations.reduce((n,item)=>n+item.chars,0));
   assert.equal(sw.propose(agent),null);
+});
+test('history coordination also avoids history reads when default SW has no duplicate',()=>{
+  const {agent,state,sw,record}=ledgerFixture();record('one unique output');let reads=0;
+  agent.session.eventAt=()=>{reads++;throw Error('idle coordination must not read the log');};
+  const runtime={get:()=>state,isEnabled:()=>true},unreachable=()=>{throw Error('idle coordination must not assess plans');};
+  const coordinator=createHistoryCoordinator(runtime,{planFolds:unreachable},sw,{pressure:unreachable});
+  const decision={kind:'enter',messages:[]};
+  for(let i=0;i<100;i++)assert.equal(coordinator.beforeStep({agent},decision,agent.session.surface.contentGeneration),decision);
+  assert.equal(reads,0);
 });
