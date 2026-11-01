@@ -206,8 +206,8 @@ export function createRuntime(ctx,call,initial={}){
   }
   function effortSelection(agent){
     let projection;
-    try{projection=ctx.sessionProjections?.stateOf?.(agent.session,'modelSelection');}catch{}
-    const fallback=agent.session.requestHeader?.()?.config??ctx.agentDefaultModel?.currentSelection?.()??agent.options;
+    try{projection=ctx.get?.('sessionProjections')?.stateOf?.(agent.session,'modelSelection');}catch{}
+    const fallback=agent.session.requestHeader?.()?.config??ctx.get?.('agentDefaultModel')?.currentSelection?.()??agent.options;
     if(projection&&Object.hasOwn(projection,'pending'))return projection.pending??projection.lastUsed??fallback;
     const s=get(agent),events=eventLog(agent.session);
     if(!s.effortCache||s.effortCache.cursor>events.length)s.effortCache={cursor:0,selection:null,header:null};
