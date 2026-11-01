@@ -32,7 +32,7 @@ export function resultHasProblem(value){
       node.complete===false||node.rangeComplete===false||node.textComplete===false||node.scanComplete===false||node.truncated===true||node.budgetTruncated===true)return true;
     if(Array.isArray(node))return node.some(item=>visit(item,depth+1));
     // Applicability and optional host capabilities do not change the recorded call's outcome.
-    return Object.entries(node).some(([key,item])=>!['text','lines','content','fileDependencies','evidenceAssessment','evidenceValidity','hostTransfer','referencedSessions'].includes(key)&&visit(item,depth+1));
+    return Object.entries(node).some(([key,item])=>!['text','lines','content','fileDependencies','evidenceAssessment','evidenceValidity','hostTransfer','referencedSessions','sourceReads'].includes(key)&&visit(item,depth+1));
   };
   return visit(value);
 }

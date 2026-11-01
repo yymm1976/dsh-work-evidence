@@ -5,7 +5,7 @@ import {randomUUID} from 'node:crypto';
 import {within,references,assertExistingFileWithin,readUtf8File} from './evidence.mjs';
 import {recoveryFor,recoveryOf} from './recovery.mjs';
 
-export const VERSION='0.28.18';
+export const VERSION='0.28.19';
 export const MODES=Object.freeze(['default','aggressive','quality']);
 export const MODE_POLICY_VERSION='pb001-v24';
 export function checkedMode(mode){if(!MODES.includes(mode))throw new Error('mode must be default, aggressive or quality');return mode;}
@@ -40,7 +40,7 @@ export function defaults(raw={}){
     requestProjection:false,projectionRestore:false,compressionControl:true,compactionTiming:'native',
     deferPressureCompaction:process.env.DSH_EXPERIMENT_DEFER_COMPACTION==='1'||process.env.DSH_EXPERIMENT_DEFER_COMPACTION==='true',
     stubSummary:process.env.DSH_EXPERIMENT_STUB_SUMMARY==='1'||process.env.DSH_EXPERIMENT_STUB_SUMMARY==='true',
-    executionTriage:true,stageWorkingSet:true,stepPacing:true,retainedCompute:true,finalJsonGuard:true,qualityReview:true,
+    executionTriage:true,stageWorkingSet:true,stepPacing:true,retainedCompute:true,finalJsonGuard:true,qualityReview:false,
     projectionMinChars:64000,projectionRecentSteps:6,projectionStableSteps:8,projectionHorizonSteps:16,projectionPricing:[],
     toolSurface:'compact',
     defaultResponseView:'reference-if-visible',...raw};

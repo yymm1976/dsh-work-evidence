@@ -532,7 +532,7 @@ export function createObservationLedger(ctx,runtime,nativeFiles=null){
     const match=REASONING_MARKER.exec(reasoning);
     if(!match)return;
     const item={id:'reasoning-'+randomUUID(),seq:event.seq,turn:event.data?.turn??null,step:event.data?.step??null,
-      text:match[1].trim(),resolved:false,at:new Date().toISOString()};
+      text:match[1].trim(),resolved:text.includes(match[1].trim()),at:new Date().toISOString()};
     state.reasoning.push(item);
     if(state.reasoning.length>24)state.reasoning.shift();
     addChange(state,{kind:'reasoning',id:item.id,seq:item.seq,text:item.text});

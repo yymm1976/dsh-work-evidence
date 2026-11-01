@@ -40,7 +40,7 @@ import {createRetainedCompute} from './retained-compute.mjs';
 import {createFinalJsonGuard} from './final-json.mjs';
 import {createQualityReview} from './quality-review.mjs';
 import {createCompletionNotice} from './completion-notice.mjs';
-import {surfaceReferences} from './visible-results.mjs';
+import {surfaceReferences,compactionActive} from './visible-results.mjs';
 
 export const name='work-evidence-local';
 export const inject=['tools','workingDirectory','agents','systemPrompt','llm','sessionPersistence','commands','sandboxPolicy'];
@@ -257,7 +257,7 @@ export function apply(ctx,config={}){
     queueMicrotask(()=>{
       let pruned=0,charsRemoved=0;
       try{
-        if(!runtime.isEnabled(agent))return;
+        if(!runtime.isEnabled(agent)||compactionActive(session))return;
         const tokenMeter=ctx.get?.('tokenMeter');
         const visible=new Set(session.surface.nodes);
         const references=surfaceReferences(session);
@@ -286,6 +286,7 @@ export function apply(ctx,config={}){
           effects.decide(agent,'contextPrune',economics.allowed?'approved':'deferred',economics.reason,{seq,economics});
           if(!economics.allowed)continue;
           const shadowedTokenCount=typeof tokenMeter?.estimateMessage==='function'?tokenMeter.estimateMessage(original):0;
+          if(compactionActive(session))break;
           session.append('compaction/prune',{
             shadowedRange:{start:seq,end:seq},shadowedSeqs:[seq],shadowedTokenCount,
           });

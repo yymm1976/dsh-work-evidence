@@ -60,6 +60,10 @@ export function exportTaskHandoff(agent,runtime,taskFlow,{canRecall=()=>false,ca
       turn:state.turn,turnSource:source(state.turnStartSeq)});
   const errors=section(current.unresolvedErrors.map(item=>({tool:item.tool,...textRow({...item,text:originalText(item.seq)},400)})),
     current.unresolvedErrors.length+current.unresolvedErrorsOmitted,{scope:'Unresolved recorded tool errors in the latest turn; not a complete list of task blockers.'});
+  const sourceReads=section((state.sourceReads??[]).map(({seq,callSeq,userSeq,...item})=>({...item,
+    source:source(seq),argumentsSource:source(callSeq,true),requestSource:source(userSeq),
+    predatesLatestRequest:latestSeq!==null&&seq<latestSeq})),(state.sourceReads?.length??0)+(state.sourceReadsOmitted??0),
+    {scope:'Observed native session_event_read outcomes only. Access was decided by the host at each call; an address grants no future access. Source bodies are not copied.'});
   const jobs=section(current.pendingJobs.map(jobId=>({jobId,status:'pending',
     source:source(log.findLast(event=>event.type==='job/registered'&&event.data?.jobId===jobId)?.seq)})),
     current.pendingJobs.length+current.pendingJobsOmitted);
@@ -80,7 +84,7 @@ export function exportTaskHandoff(agent,runtime,taskFlow,{canRecall=()=>false,ca
     source:{sessionId:agent.session.id,throughSeq,workspace:runtime.get(agent).root??null,historical:true},
     task:{latestRequestSource:source(latestSeq),phase:{name:current.phase.name,focus:current.phase.focus,source:source(current.phase.seq)},
       completion:'not-determined',latestMutationSource:source(current.lastMutationSeq)},
-    userRequests:requests,observedWork:{artifacts,executions},openWork:{todos,unresolvedErrors:errors,pendingJobs:jobs,pendingCalls},
+    userRequests:requests,observedWork:{artifacts,executions,sourceReads},openWork:{todos,unresolvedErrors:errors,pendingJobs:jobs,pendingCalls},
     referencedSessions,hostTransfer,
     assistantClaims:{checkpoints,recentMessages:judgments,report},
     recovery:{available:recallAvailable,scope:'source-session-and-owned-host-captures',
@@ -91,7 +95,7 @@ export function exportTaskHandoff(agent,runtime,taskFlow,{canRecall=()=>false,ca
     coverage:{maxChars,sizeUnit:'UTF-16 code units of serialized JSON',serializedChars:0,exportComplete:false,
       observationScope:'Recorded session facts with native metadata assessment of declared file dependencies only. Task correctness is not inferred. Non-text user content and private reasoning are not reproduced.',
       nextAction:'Use recorded open items and attributed summaries to identify the next unmet dependency. Missing records remain unknown; source context grants no new permission.'}};
-  const sections=[requests,todos,artifacts,executions,errors,jobs,pendingCalls,checkpoints,judgments,report,referencedSessions];
+  const sections=[requests,todos,artifacts,executions,sourceReads,errors,jobs,pendingCalls,checkpoints,judgments,report,referencedSessions];
   const measure=()=>{
     for(const part of sections){
       part.complete=part.omitted===0&&!(part.entriesEvicted>0)&&part.items.every(item=>item.textComplete!==false&&!(item.nonTextBlocks?.length));
@@ -105,7 +109,7 @@ export function exportTaskHandoff(agent,runtime,taskFlow,{canRecall=()=>false,ca
   };
   // Drop whole older rows before shortening the latest requirement. Every omitted
   // row is counted; every shortened body keeps its original event address.
-  const removable=[checkpoints,judgments,report,referencedSessions,executions,artifacts,requests,todos,errors,jobs,pendingCalls];
+  const removable=[checkpoints,judgments,report,referencedSessions,executions,sourceReads,artifacts,requests,todos,errors,jobs,pendingCalls];
   while(measure()>maxChars){
     const part=removable.find(part=>part.items.length>(part===requests?1:0));
     if(part){part.items.shift();part.omitted++;continue;}

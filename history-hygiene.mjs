@@ -100,7 +100,10 @@ export function createHistoryHygiene(runtime,taskFlow,{isProtected=()=>false,ret
         runtime.effects?.decide(agent,feature,economics.allowed?'approved':'deferred',economics.reason,{sourceSeq:seq,economics});}
       return economics?.allowed===true;
     };
-    const state=sync(agent),pins=surfaceReferences(agent.session),root=runtime.get(agent).root,flow=taskFlow.phase(agent),focus=new Set((flow.focus??[]).map(file=>fileKey(root,file)));
+    const config=runtime.get(agent).config;
+    const pruneSettings={thresholdChars:config.contextPruneMinChars,headChars:config.contextPruneHeadChars,tailChars:config.contextPruneTailChars};
+    const settingsKey=JSON.stringify(pruneSettings),state=sync(agent),pins=surfaceReferences(agent.session),root=runtime.get(agent).root,flow=taskFlow.phase(agent),focus=new Set((flow.focus??[]).map(file=>fileKey(root,file)));
+    if(state.settingsKey!==settingsKey){state.outputPlans.clear();state.settingsKey=settingsKey;}
     let outputs=0,saved=0;const hidden=new Set();
     const result=messages.map(message=>{
       if(message.role!=='tool')return message;
@@ -113,7 +116,7 @@ export function createHistoryHygiene(runtime,taskFlow,{isProtected=()=>false,ret
       const original=agent.session.eventAt(entry.seq)?.data?.message;
       if(!original)return message;
       const existing=state.outputPlans.get(entry.seq);
-      const planned=existing??planContextPrune(original,entry.reads,{seq:entry.seq,thresholdChars:8000,headChars:4096,tailChars:1024,retainSource:protect});
+      const planned=existing??planContextPrune(original,entry.reads,{seq:entry.seq,...pruneSettings,retainSource:protect});
       if(!planned)return message;
       const reduction=resultText(message.content).length-resultText(planned.content).length;
       if(reduction<MIN_SAVING)return message;
@@ -141,7 +144,7 @@ export function createHistoryHygiene(runtime,taskFlow,{isProtected=()=>false,ret
       if(!runtime.isEnabled(agent)||!runtime.get(agent).config.historyHygiene)return false;
       const s=sync(agent);if(s.suspended)return false;
       return [...s.results.values()].some(entry=>!entry.failed&&!entry.reads.length&&s.step-entry.step>=1&&
-        resultText(agent.session.eventAt(entry.seq)?.data?.message?.content).length>8000);
+        resultText(agent.session.eventAt(entry.seq)?.data?.message?.content).length>=runtime.get(agent).config.contextPruneMinChars);
     },
     bodyVisible(agent,seq){return !runtime.isEnabled(agent)||!runtime.get(agent).config.historyHygiene||get(agent).suspended||!get(agent).hiddenResults.has(seq)&&referenceContext?.bodyVisible(agent,seq)!==false;},
     manages(agent,seq){return runtime.isEnabled(agent)&&runtime.get(agent).config.historyHygiene&&!get(agent).suspended&&(get(agent).hiddenResults.has(seq)||referenceContext?.manages(agent,seq)===true);},

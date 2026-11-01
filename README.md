@@ -1,6 +1,6 @@
 # DSH 工程证据插件
 
-当前源码版本为 0.28.18，模式策略为 pb001-v24。
+当前源码版本为 0.28.19，模式策略为 pb001-v24。
 桌面加载目录独立维护。运行中的会话采用哪个版本，取决于宿主加载时间。
 插件提供任务指引、观察账本、历史取回和按需工程工具。
 历史说明见 [HISTORY.md](HISTORY.md)。历史结果不代表当前版本的实际效果。
@@ -83,6 +83,11 @@ work_status 始终保留；历史中仍有取回引用时保留 work_recall。
 跨会话读取要求双方会话记录中的 `cwd` 完全相同；调用方没有 `cwd` 时只能读取自身。
 工具必须已在接收方启用。地址存在不表示已经获得访问许可，插件不自动启用该工具。
 
+实际调用 `session_event_read` 后，`taskFlow.sourceReads` 记录已取得、范围拒绝、来源缺失、取消、不可用或结果格式未知。
+状态最多保留 24 条；交接的 `observedWork.sourceReads` 最多导出最近 6 条，附读取结果、参数和原要求的本地地址。
+成功结果必须与请求的会话和事件地址一致。不能识别的宿主格式保留 unknown。
+记录不复制来源正文或私有推理，也不把一次获准读取视为今后的访问许可。
+
 宿主为截断快照保存了完整文字时，`fullSnapshot` 转交宿主的保存状态和取回提示。
 没有保存结果时，仍显示截断数量。插件不会据此重新读取来源会话或补造原文。
 缺少宿主服务、快照格式不支持或地址不匹配时，入口返回 unavailable。
@@ -134,13 +139,14 @@ URL、目录、项目外路径、缺失文件和版本信息不可用的来源�
 
 ## 质量复核与完成提醒
 
-qualityReview 控制质量模式的最终答复复核。
+qualityReview 控制质量模式的最终答复复核，默认关闭。现有记录尚未证明能稳定发现遗漏。
 复核使用当前会话路由和有界历史；结果没有充分依据时保留原答复。
 复核优先携带已修改文件在修改后读到的正文，并限制证据长度。
 复核输出上限为 16384 Token，最长等待 120 秒。
 没有可用结果时，状态为 unavailable，并暂停本会话在同一路由上的后续自动复核。
 暂停原因、结束原因和已知用量保存在会话目录，重启后仍保留。
-用户明确要求重试时，可调用 work_status({quality_review_retry:true})。
+手动启用后，用户明确要求重试时，可调用 work_status({quality_review_retry:true})。
+v10 为每条用户要求提供一次显式重试额度。旧失败记录、已知消耗和未知消耗的预留均保留；重试不能清空预算或无限续调。
 复核返回空问题列表只表示没有报告可证实缺口，不证明交付正确。
 
 completionNotice 独立控制阶段摘要后的继续提醒，默认开启。
@@ -174,7 +180,7 @@ FastEdit Python 路径由 fastEditPython 设置。
 await tools.work_status({config: {
   aggressiveMode: true,
   completionNotice: true,
-  qualityReview: true,
+  qualityReview: false,
   toolSurface: 'compact'
 }});
 await tools.work_status({session_enabled: false});
@@ -213,7 +219,6 @@ stubSummary 保留问题处理标记、事件指针和原文取回。
 ## 开发与桌面加载
 
 开发目录：C:/Users/杨铭/Documents/Codex/2026-10-19/wo/outputs/dsh-work-evidence。
-核查工作树：C:/Users/杨铭/Documents/Codex/2026-10-19/wo/outputs/dsh-work-evidence-verify。
 桌面加载目录：C:/Users/杨铭/Documents/DSH Desktop/home/tools/dsh-work-evidence。
 桌面 web profile 的包依赖和目录联接指向加载目录。
 加载目录保存独立源码与 Python 环境；宿主依赖来自已安装的桌面运行时。

@@ -269,7 +269,8 @@ export function handoffRecord(agent,runtime,taskFlow,input,recallAvailable,{requ
       pendingJobs:state.pendingJobs.slice(-16),pendingJobsOmitted:Math.max(0,state.pendingJobs.length-16),
       artifacts,artifactsOmitted:(state.artifacts?.length??0)-artifacts.length,artifactEntriesEvicted:state.artifactsEvicted??0,
       artifactScope:'Latest observed explicit file-tool effects, at most 32 paths and 6000 JSON characters; partial and unknown effects remain distinct. Script or external writes may not be recorded.',
-      executions:state.executions,lastMutationSeq:state.lastMutationSeq,completion:'not-determined',
+      executions:state.executions,sourceReads:state.sourceReads,sourceReadsOmitted:state.sourceReadsOmitted,
+      lastMutationSeq:state.lastMutationSeq,completion:'not-determined',
       latestHumanSeq,priorCompletedTodos:oldCompleted,priorCompletedTodoCount:oldCompleted?todos.length:0,
       scope:'Recorded observations may predate the latest human request. Old completed TODOs and a deliver phase do not establish completion of newer requests.'},
     recentAssistantJudgments:{verified:false,possiblySuperseded:true,items:judgments.filter(item=>latestHumanSeq===null||item.seq>latestHumanSeq),
@@ -393,9 +394,12 @@ export function createCompactionHandoff(ctx,runtime,taskFlow,{canRecall=()=>fals
       return {region,framed};
     };
     const wrapped=async function(input,agent,signal){
+      let state,prepared;
+      const prepare=async()=>{
       await runtime.init(agent,signal);
-      if(!runtime.isEnabled(agent)||!runtime.get(agent).config.compressionControl)return original.call(this,input,agent,signal);
-      const state=get(agent),record=handoffRecord(agent,runtime,taskFlow,input,canRecall(agent)),text='[Work Evidence continuation sources]\n'+JSON.stringify(record);
+      if(!runtime.isEnabled(agent)||!runtime.get(agent).config.compressionControl)return null;
+      state=get(agent);
+      const record=handoffRecord(agent,runtime,taskFlow,input,canRecall(agent)),text='[Work Evidence continuation sources]\n'+JSON.stringify(record);
       const start=eventLog(agent.session).findLast(event=>event.type==='compaction/start');
       state.prepared++;state.last={policy:POLICY,compactionId:start?.data?.compactionId??null,preparedAtSeq:agent.session.seq,sourceChars:text.length,mode:runtime.activeMode(agent),status:'preparing'};
       runtime.effects?.decide(agent,'compactionHandoff','applied','native-summary-extension',{policy:POLICY,sourceChars:text.length});
@@ -408,7 +412,7 @@ export function createCompactionHandoff(ctx,runtime,taskFlow,{canRecall=()=>fals
         state.reusedStageSummaries++;state.summariesReturned++;state.last.status='prepared-awaiting-native-commit';state.last.method='stage-checkpoint-reuse';
         runtime.get(agent).dirty=true;
         runtime.effects?.decide(agent,'compactionHandoff','applied','existing-stage-checkpoint-reused',{policy:POLICY,checkpointSeq:reuse.checkpointSeq,newModelCall:false});
-        return {summary:stageSummary,provider:'work-evidence',model:'stage-checkpoint-reuse',llmStreamCall:false};
+        return {result:{summary:stageSummary,provider:'work-evidence',model:'stage-checkpoint-reuse',llmStreamCall:false}};
       }
       const stubPolicy=runtime.get(agent).config.stubSummary;
       if(stubPolicy){
@@ -418,7 +422,7 @@ export function createCompactionHandoff(ctx,runtime,taskFlow,{canRecall=()=>fals
         state.last.method='deterministic-stub-summary';state.last.stub={events:stub.events,problemRows:stub.problemRows,rows:stub.rows,chars:text.length};
         runtime.get(agent).dirty=true;
         runtime.effects?.decide(agent,'compactionHandoff','applied','deterministic-stub-summary',{policy:POLICY,newModelCall:false,stubChars:stub.text.length,events:stub.events,problemRows:stub.problemRows});
-        return {summary:[{type:'text',text}],provider:'work-evidence',model:'deterministic-stub',llmStreamCall:false};
+        return {result:{summary:[{type:'text',text}],provider:'work-evidence',model:'deterministic-stub',llmStreamCall:false}};
       }
       state.last.method='native-summary-with-stage-sources';
       let size=null;try{size=sizing(input);}catch{}
@@ -435,7 +439,7 @@ export function createCompactionHandoff(ctx,runtime,taskFlow,{canRecall=()=>fals
         state.skippedSmallSpans=(state.skippedSmallSpans??0)+1;
         runtime.effects?.decide(agent,'compactionHandoff','not-applicable','span-smaller-than-continuation-sources',state.last.sizing);
         runtime.get(agent).dirty=true;
-        throw new Error('work-evidence: the selected span is smaller than its continuation sources; no summary call was made');
+        throw Object.assign(new Error('work-evidence: the selected span is smaller than its continuation sources; no summary call was made'),{workEvidenceSmallSpan:true});
       }
       // When the full sources do not fit, keep the human requests: they are the part a
       // host summary is most likely to paraphrase away.
@@ -446,6 +450,22 @@ export function createCompactionHandoff(ctx,runtime,taskFlow,{canRecall=()=>fals
         appended=size.framed([{type:'text',text:requestsOnly}])+nativeEstimate<size.region?requestsOnly:null;
         state.last.sourcesOmitted=appended?'state':'all';state.sourcesOmitted=(state.sourcesOmitted??0)+1;
       }
+      return {record,size,appended,sourcesFit};
+      };
+      try{prepared=await prepare();}
+      catch(error){
+        signal?.throwIfAborted();
+        if(error?.workEvidenceSmallSpan)throw error;
+        // Only plugin preparation can fall back. A host failure must never trigger a second call.
+        try{
+          if(state){state.failed++;state.nativeFallbacks=(state.nativeFallbacks??0)+1;state.last={...state.last,status:'native-fallback',reason:'preparation-failed'};}
+          runtime.problem(runtime.get(agent),'compaction-handoff-preparation',String(error?.message??error));
+        }catch{}
+        return original.call(this,input,agent,signal);
+      }
+      if(!prepared)return original.call(this,input,agent,signal);
+      if(prepared.result)return prepared.result;
+      const {record,size,appended,sourcesFit}=prepared;
       // Without appended sources the host's own directive (verbatim user goals) applies unchanged.
       const previous=active.get(agent.session.id);if(sourcesFit)active.set(agent.session.id,record);
       try{

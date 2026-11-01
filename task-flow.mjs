@@ -4,6 +4,7 @@ import {argsOf,eventLog,isUserRequestMessage,MODE_POLICY_VERSION} from './runtim
 import {resultText,parseResult,resultHasProblem,resultIdentity} from './visible-results.mjs';
 import {STAGE_CHECKPOINT_GUIDANCE} from './stage-checkpoints.mjs';
 import {createExecutionDependencies,dependencyView} from './execution-dependencies.mjs';
+import {nativeReadObservation} from './host-references.mjs';
 
 const SOURCE='work-evidence-task-flow';
 const PHASES=['investigate','modify','execute','deliver','mixed'];
@@ -142,7 +143,7 @@ export function createTaskFlow(ctx,runtime,{nativeFiles,call,executionDependenci
     if(!state){state={cursor:0,turn:null,step:0,calls:new Map(),nested:new Map(),nestedFailures:new Map(),completedNested:new Set(),live:new Map(),errors:new Map(),reads:new Map(),jobs:new Set(),pacing:newPacing(),programFailure:null,legacyInterpreterShell:null,
       todos:null,todoSeq:null,artifacts:new Map(),artifactsEvicted:0,executionsEvicted:0,turnStartSeq:null,qualityArtifacts:new Map(),qualityExecutions:[],lastQualityReviewedMutation:null,phase:{name:null,seq:null,focus:[],source:null},lastCompaction:null,report:null,lastMutation:-1,mutationVersion:0,
       lastUser:null,stageReporting:{lastTextSeq:null,lastTextSteps:0,lastNoticeSteps:0,notices:0},lastInlineExec:-1,inlineExecAdvised:new Set(),scriptReuseAdvised:new Set(),diagnosticAdvised:new Set(),reuseAdvised:new Set(),cleanupAdvised:new Set(),
-      probes:[],executions:[],repeatedExecution:null,cleanup:null,transitions:[],reuseNotices:0,cleanupNotices:0};states.set(agent.session.id,state);}
+      probes:[],executions:[],sourceReads:[],sourceReadsEvicted:0,repeatedExecution:null,cleanup:null,transitions:[],reuseNotices:0,cleanupNotices:0};states.set(agent.session.id,state);}
     return state;
   }
   function transition(state,name,seq,focus,source){
@@ -158,6 +159,12 @@ export function createTaskFlow(ctx,runtime,{nativeFiles,call,executionDependenci
       state.pacing.operations++;state.pacing.steps.add(state.step);
     }
     const value=result.value??parseResult(resultText(result.content)),payload=value?.data??value;
+    if(call.name==='session_event_read'){
+      const observation=payload?.nativeSourceRead??nativeReadObservation(agent.session.id,call.args,result);
+      state.sourceReads.push({...observation,seq:event.seq,callSeq:call.seq??(['tool/ptc-dispatch','tool/code-dispatch'].includes(event.type)?event.seq:null),userSeq:state.lastUser?.seq??null,turn:state.turn});
+      if(state.sourceReads.length>24){state.sourceReads.shift();state.sourceReadsEvicted++;}
+      return result.isError===true;
+    }
     if((call.name==='work_compute'||call.name==='work_exec'&&payload?.mode==='retained')&&!result.isError&&payload?.status==='completed')state.pacing.computeCalls++;
     const jobState=payload?.job?.status??payload?.status,pending=['background','promoted'].includes(payload?.kind)||['running','pending','queued','stopping'].includes(jobState);
     const deletionDenied=SHELL.includes(call.name)&&/Remove-Item|\bos\.remove\s*\(|\.unlink\s*\(/iu.test(call.args.command??'')&&
@@ -598,6 +605,7 @@ export function createTaskFlow(ctx,runtime,{nativeFiles,call,executionDependenci
       phase:phase(agent),pendingCalls:state.calls.size+state.nested.size,
       userId:state.lastUser?.id??null,userSeq:state.lastUser?.seq??null,lastMutationSeq:state.lastMutation,mutationVersion:state.mutationVersion,
       unresolvedErrors:[...state.errors.values()].slice(-8),pendingJobs:[...state.jobs].slice(-16),
+      sourceReads:state.sourceReads.map(item=>({...item})),sourceReadsOmitted:state.sourceReadsEvicted,
       probes:state.probes.map(probe=>({...probe,...dependencyView(state.executions.find(item=>item.probeId===probe.id))})),nativeExecutions:state.executions.map(executionView),inlineExecNotices:state.inlineExecAdvised.size,scriptReuseNotices:state.scriptReuseAdvised.size,diagnosticNotices:state.diagnosticAdvised.size,reuseNotices:state.reuseNotices,cleanupNotices:state.cleanupNotices,
       transitions:state.transitions.slice(),pacing:{enabled:config.stepPacing,toolBearingRequests:state.pacing.steps.size,operations:state.pacing.operations,
         reportedOutputTokens:state.pacing.outputTokens,lastResponseOutputTokens:state.pacing.lastOutputTokens,missingOutputUsage:state.pacing.missingOutputUsage,retainedComputeCalls:state.pacing.computeCalls,validationAdvised:state.pacing.validationAdvised,
@@ -637,6 +645,7 @@ export function createTaskFlow(ctx,runtime,{nativeFiles,call,executionDependenci
         evidenceHighWater:{seq:agent.session.seq,mutationVersion:state.mutationVersion}};
     },
     handoff(agent){const state=sync(agent);return {phase:{...state.phase},todos:state.todos,todoSeq:state.todoSeq,userSeq:state.lastUser?.seq??null,userId:state.lastUser?.id??null,unresolvedErrors:[...state.errors.values()],pendingJobs:[...state.jobs],
+      sourceReads:state.sourceReads.slice(-6).map(item=>({...item})),sourceReadsOmitted:state.sourceReadsEvicted+Math.max(0,state.sourceReads.length-6),
       artifacts:[...state.artifacts.values()],artifactsEvicted:state.artifactsEvicted,executions:state.executions.slice(-6).map(executionView),
       executionsOmitted:state.executionsEvicted+Math.max(0,state.executions.length-6),turn:state.turn,turnStartSeq:state.turnStartSeq,
       pendingCalls:[...new Map([...state.calls,...state.nested]).entries()].map(([callId,{name,seq}])=>({callId,tool:name,seq})),
@@ -652,6 +661,7 @@ export function createTaskFlow(ctx,runtime,{nativeFiles,call,executionDependenci
         (value?.stdout!==undefined||value?.stdoutText!==undefined)?JSON.stringify([value?.exitCode??value?.exit_code??null,stdout,stderr]):null;
       // Keep status and dependency metadata, never another copy of large bodies.
       const compact={nativeStructured:raw!=null,status:value?.status??raw?.status,kind:value?.kind,mode:value?.mode,
+        ...(exec.name==='session_event_read'?{nativeSourceRead:nativeReadObservation(exec.agent.session.id,argsOf(exec.arguments),result)}:{}),
         exitCode:value?.exitCode,exit_code:value?.exit_code,jobId:value?.jobId??value?.job_id,job:value?.job,
         error:!!(value?.error||raw?.error),timedOut:value?.timedOut,aborted:value?.aborted,cancelled:value?.cancelled,
         signal:value?.signal,stopped:value?.stopped,effectState:value?.effectState,cwd:value?.cwd,outputPartial,comparisonText,
