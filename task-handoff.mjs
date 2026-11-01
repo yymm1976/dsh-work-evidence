@@ -149,7 +149,8 @@ export function handoffPatch(before,after){
       else patch.push({op:'add',path:pointer(location,key),value});
     }else patch.push({op:'replace',path:location,value:next});
   };
-  visit(before,after,'');return patch;
+  // Optional undefined fields disappear from JSON; compare the delivered values.
+  visit(JSON.parse(JSON.stringify(before)),JSON.parse(JSON.stringify(after)),'');return patch;
 }
 
 export function createTaskHandoffDelivery(){

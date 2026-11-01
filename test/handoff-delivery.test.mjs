@@ -9,6 +9,7 @@ function applyPatch(value,patch){
     const keys=operation.path.slice(1).split('/').map(key=>key.replaceAll('~1','/').replaceAll('~0','~'));
     let parent=result;for(const key of keys.slice(0,-1))parent=parent[key];
     const key=keys.at(-1);
+    if(operation.op==='replace'||operation.op==='remove')assert.ok(Object.hasOwn(parent,key),'JSON Patch target must exist: '+operation.path);
     if(operation.op==='remove'){if(Array.isArray(parent))parent.splice(Number(key),1);else delete parent[key];}
     else if(Array.isArray(parent)&&operation.op==='add')parent.splice(key==='-'?parent.length:Number(key),0,structuredClone(operation.value));
     else parent[key]=structuredClone(operation.value);
@@ -20,6 +21,15 @@ test('handoff patches reconstruct additions, removals, changed arrays and escape
   for(const [before,after]of [[{a:[1,2,3],old:true},{a:[1,4],fresh:{value:null}}],
     [{a:[]},{a:[{value:1},{value:2}]}],[{'a/b':{'~name':1}},{'a/b':{'~name':2},arr:[]}],
     [{a:{value:1}},{a:null}]])assert.deepEqual(applyPatch(before,handoffPatch(before,after)),after);
+});
+
+test('handoff patches apply to the serialized delivery when optional fields appear or disappear',()=>{
+  const before={state:'observed',assessment:undefined,nested:{failure:'old',optional:undefined},items:[undefined,{status:undefined}]};
+  const after={state:'observed',assessment:{state:'current'},nested:{failure:undefined,optional:null},items:[{status:'observed'},undefined]};
+  const patch=JSON.parse(JSON.stringify(handoffPatch(before,after)));
+  assert.deepEqual(applyPatch(JSON.parse(JSON.stringify(before)),patch),JSON.parse(JSON.stringify(after)));
+  assert.ok(patch.some(operation=>operation.op==='add'&&operation.path==='/assessment'));
+  assert.ok(patch.some(operation=>operation.op==='remove'&&operation.path==='/nested/failure'));
 });
 
 function fixture(){
@@ -43,6 +53,16 @@ test('a visible full handoff permits a smaller patch with exactly reconstructed 
   assert.ok(JSON.stringify(delta).length<JSON.stringify(full).length*.6);
   const unchanged=host.deliver({baseDeliveryId:full.delivery.id});
   assert.equal(unchanged.baseDeliveryId,full.delivery.id,'deltas continue to use the visible full delivery');
+});
+
+test('visible handoff delivery patches reconstruct optional execution fields on the JSON wire',()=>{
+  const host=fixture();host.state.items=[{status:'observed',evidenceAssessment:undefined,failureSignature:'old'}];
+  const full=host.deliver({incremental:true});host.show(full);host.state.cursor++;
+  host.state.items=[{status:'observed',evidenceAssessment:{state:'current'},failureSignature:undefined}];
+  const delta=JSON.parse(JSON.stringify(host.deliver({baseDeliveryId:full.delivery.id})));
+  assert.equal(delta.schema,'work-evidence.task-handoff-delta.v1');
+  const reconstructed=applyPatch(JSON.parse(JSON.stringify(full)),delta.patch);
+  assert.deepEqual(reconstructed,JSON.parse(JSON.stringify(host.build({kind:'reconstructed',baseDeliveryId:full.delivery.id}))));
 });
 
 test('missing, hidden, changed or small bases return complete full handoffs',()=>{

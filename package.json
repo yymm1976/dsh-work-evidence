@@ -1,6 +1,6 @@
 {
   "name": "@local/dsh-work-evidence",
-  "version": "0.28.21",
+  "version": "0.28.22",
   "private": true,
   "description": "DSH-native evidence, stable request working sets, history recovery and optional OPS CAS/Java adapters",
   "type": "module",
