@@ -3,6 +3,13 @@ import {hasPruneProblem} from './context-pruning.mjs';
 import {stageCheckpoints,stageReuseCandidate} from './stage-checkpoints.mjs';
 
 const POLICY='kimi-codex-handoff-v10-stub';
+// Pressure compaction below this share of the routed message budget (context window minus
+// the request's output reservation) is deferred: the request still fits, and a committed
+// checkpoint rewrites the cached prefix, so every later step pays uncached input again.
+const DEFER_BUDGET_RATIO=0.6;
+// A deferred compaction runs on a larger prompt; cap the summary output reservation so the
+// summary request itself still fits the window. Observed summaries use about 1-3K tokens.
+const DEFERRED_SUMMARY_MAX_TOKENS=16384;
 const INSTRUCTION='Produce one consolidated continuation checkpoint with these sections: Goal and user decisions; Work and artifacts; Evidence and failed approaches; Open work and next action. Preserve current requirements and corrections, separating user decisions from assistant assumptions. Keep exact paths, symbols, configuration values, input conditions, error strings, job IDs and source event seqs needed to continue. Describe what actually changed in each relevant artifact and what remains unfinished. Preserve unresolved failures, excluded approaches and their reasons; distinguish process success from correctness.\n'+
   'Update the previous checkpoint using newer events. Carry forward still-valid earlier facts, decisions and open questions; explicitly replace corrected claims and remove resolved work from the next action. Do not nest old checkpoints, reproduce old continuation-source wrappers or append a per-edit changelog. Reuse public stage conclusions and evidence without treating their headings as proof of coverage. Do not invent completion or turn assistant judgments into user decisions.\n'+
   'Bounded human excerpts, public checkpoints and current TODOs are appended independently. Preserve relevant decisions and facts absent from those sources, especially omitted middle history. Identify any exact detail that still requires historical recovery. Use historical recovery when available; if it is unavailable, preserve the exact evidence needed for continuation instead of relying on a future lookup. Never rerun an action only to recreate its text. Continue from the next unmet dependency without asking answered questions. Output only the complete text checkpoint, no tools or other actions.';
@@ -293,6 +300,14 @@ function handoffRecord(agent,runtime,taskFlow,input,recallAvailable){
 /** Extend the one native summarizer; leave its pressure/overflow and commit checks in charge. */
 export function createCompactionHandoff(ctx,runtime,taskFlow,{canRecall=()=>false}={}){
   const states=new Map(),active=new Map();let attachment=null;
+  const deferring=agent=>!!agent&&runtime.isEnabled(agent)&&runtime.get(agent).config.compressionControl&&runtime.get(agent).config.deferPressureCompaction;
+  ctx.on('llm/stream',async function*(options,next){
+    const agent=options.purpose==='compaction'?ctx.agents?.get?.(options.sessionId):null;
+    if(!deferring(agent)||!(options.maxTokens>DEFERRED_SUMMARY_MAX_TOKENS)){yield* next();return;}
+    const prior=options.maxTokens;options.maxTokens=DEFERRED_SUMMARY_MAX_TOKENS;
+    get(agent).summaryMaxTokensCapped=(get(agent).summaryMaxTokensCapped??0)+1;
+    try{yield* next();}finally{options.maxTokens=prior;}
+  },{prepend:true});
   ctx.on('llm/stream',async function*(options,next){
     const record=options.purpose==='compaction'?active.get(options.sessionId):null;
     if(!record){yield* next();return;}
@@ -338,6 +353,30 @@ export function createCompactionHandoff(ctx,runtime,taskFlow,{canRecall=()=>fals
   function attach(service){
     if(!service||typeof service.summarize!=='function'||typeof service.regionDependencies!=='function')return ()=>{};
     const original=service.summarize,descriptor=Object.getOwnPropertyDescriptor(service,'summarize');
+    const originalCompact=typeof service.compactIfNeeded==='function'?service.compactIfNeeded:null,
+      compactDescriptor=Object.getOwnPropertyDescriptor(service,'compactIfNeeded');
+    // Host pressure compaction starts at min(80% window, window - output - headroom); for a
+    // 116K window with 29K output that is about 21K tokens, so short tasks compact every few
+    // steps. Overflow recovery and manual compaction are left untouched.
+    const compactIfNeeded=async function(agent,trigger,signal){
+      if(trigger!=='pressure'||!deferring(agent))return originalCompact.call(this,agent,trigger,signal);
+      let budget=null,total=null;
+      try{
+        const header=agent.session.requestHeader()?.config;
+        const info=header?await ctx.llm.resolveModelInfo(header.provider,header.model,signal):null;
+        const window=info?.context?.contextWindow;
+        if(Number.isInteger(window)&&window>0)budget=window-(header.maxTokens??info.defaultMaxTokens??0);
+        total=service.regionDependencies()?.meter?.measure(agent.session)?.totalTokens??null;
+      }catch{}
+      if(!(budget>0)||!Number.isFinite(total))return originalCompact.call(this,agent,trigger,signal);
+      const state=get(agent);
+      if(total<budget*DEFER_BUDGET_RATIO){
+        state.deferredPressure=(state.deferredPressure??0)+1;
+        state.lastDeferral={promptTokensEstimate:total,messageBudgetTokens:budget,deferBelowTokens:Math.floor(budget*DEFER_BUDGET_RATIO)};
+        return null;
+      }
+      return originalCompact.call(this,agent,trigger,signal);
+    };
     // The host rejects a checkpoint that is not smaller than the span it replaces.
     // Size the appended sources against the span so a doomed summary call is not paid for.
     const sizing=input=>{
@@ -422,7 +461,12 @@ export function createCompactionHandoff(ctx,runtime,taskFlow,{canRecall=()=>fals
       finally{if(previous)active.set(agent.session.id,previous);else active.delete(agent.session.id);runtime.get(agent).dirty=true;}
     };
     service.summarize=wrapped;attachment={service,wrapped};
-    return ()=>{if(Object.getOwnPropertyDescriptor(service,'summarize')?.value===wrapped){if(descriptor)Object.defineProperty(service,'summarize',descriptor);else delete service.summarize;}if(attachment?.wrapped===wrapped)attachment=null;};
+    if(originalCompact)service.compactIfNeeded=compactIfNeeded;
+    return ()=>{
+      if(Object.getOwnPropertyDescriptor(service,'summarize')?.value===wrapped){if(descriptor)Object.defineProperty(service,'summarize',descriptor);else delete service.summarize;}
+      if(originalCompact&&Object.getOwnPropertyDescriptor(service,'compactIfNeeded')?.value===compactIfNeeded){if(compactDescriptor)Object.defineProperty(service,'compactIfNeeded',compactDescriptor);else delete service.compactIfNeeded;}
+      if(attachment?.wrapped===wrapped)attachment=null;
+    };
   }
   // Optional service lifecycle: the plugin still works without a native basic backend.
   const fiber=ctx.inject(['compaction'],scope=>{scope.effect(()=>attach(scope.compaction));});
