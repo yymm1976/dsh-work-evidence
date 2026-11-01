@@ -66,6 +66,13 @@ const normalize=value=>String(value).replaceAll('\\','/').toLowerCase();
 const streamText=value=>typeof value==='string'?value:typeof value?.text==='string'?value.text:'';
 const isCommand=name=>SHELL.includes(name)||name==='job_output';
 const shellReportedFailure=text=>/The term[^\r\n]{0,500}is not recognized as a name of a cmdlet|(?:^|\n)\s*(?:ParserError|CommandNotFoundException|ParameterBindingException):/iu.test(String(text??''));
+// stderr can contain warnings from a successful process. Missing structured
+// metadata proves neither success nor failure in persisted legacy results.
+const executionFailed=value=>typeof value==='string'?resultHasProblem(value):!!value&&(
+  value.isError===true||value.success===false||value.ok===false||!!(value.error||value.err)||
+  Number.isFinite(value.exitCode)&&value.exitCode!==0||Number.isFinite(value.exit_code)&&value.exit_code!==0||
+  ['error','failed','killed','cancelled','rejected'].includes(String(value.job?.status??value.status??value.state??'').toLowerCase())||
+  value.timedOut===true||value.aborted===true||value.cancelled===true||value.signal!=null||value.stopped!==undefined);
 function failureSignature(text){
   const tail=String(text??'').slice(-4096);
   const coded=/^\s*error\[[A-Za-z0-9_-]+\]:\s*[^\r\n]{1,160}/mu.exec(tail)?.[0];
@@ -87,9 +94,9 @@ function reportedCheckFailure(text){
   const lines=String(text??'').slice(-12000).split(/\r?\n/u);
   const numericMarkers=new Set();let summary=null;
   for(const line of lines){
-    const match=/^\s*(?:FAIL(?:ED|URES?|_TOTAL|_COUNT)?)\s*[:=(]\s*(\d+)\b/iu.exec(line)??
-      /^\s*(?:checks?|tests?|total)\b[^\r\n]{0,160}?\b(?:failed|failures)\s*[:=]\s*(\d+)\b/iu.exec(line)??
-      /^\s*(?:checks?|tests?|total)\b[^\r\n]{0,160}?\b(\d+)\s+(?:failed|failures)\b/iu.exec(line)??
+    const match=/^\s*(?:FAIL(?:ED|URES?|_TOTAL|_COUNT)?)(?:\s*[:=(]\s*|\s+)(\d+)\b/iu.exec(line)??
+      /^\s*(?:\d+\s+)?(?:checks?|tests?|total)\b[^\r\n]{0,160}?\b(?:failed|failures)\s*[:=]?\s*(\d+)\b/iu.exec(line)??
+      /^\s*(?:\d+\s+)?(?:checks?|tests?|total)\b[^\r\n]{0,160}?\b(\d+)\s+(?:failed|failures)\b/iu.exec(line)??
       /^\s*(\d+)\s+(?:failed|failures)\b/iu.exec(line);
     if(match){numericMarkers.add(line);if(Number(match[1])>0)summary=line.trim().slice(0,180);}
   }
@@ -155,13 +162,15 @@ export function createTaskFlow(ctx,runtime,{nativeFiles,call}={}){
       /access.{0,12}denied|permissionerror|winerror\s*5|拒绝访问|访问.{0,8}拒绝/iu.test(payload?.errorText||resultText(result.content));
     const reportedShellFailure=call.name==='pwsh'&&shellReportedFailure(streamText(payload?.stderr??payload?.stderrText)||payload?.errorText||resultText(result.content));
     const partialOutput=payload?.outputPartial===true||payload?.truncated===true||payload?.stdout?.truncated===true||payload?.stderr?.truncated===true;
-    const checkFailure=SHELL.includes(call.name)&&!pending&&!partialOutput?payload?.checkFailure??reportedCheckFailure(streamText(payload?.stdout??payload?.stdoutText)):null;
-    const failed=!!result.isError||deletionDenied||reportedShellFailure||!!checkFailure||!pending&&(result.observedProblem||resultHasProblem(value??resultText(result.content)))||['failed','killed'].includes(jobState)||
-      SHELL.includes(call.name)&&(value==null||payload?.nativeStructured===false);
+    const checkFailure=SHELL.includes(call.name)&&!pending&&!partialOutput?payload?.checkFailure??reportedCheckFailure(
+      streamText(payload?.stdout??payload?.stdoutText)||(value==null||typeof value==='string'?resultText(result.content):'')):null;
+    const failed=!!result.isError||deletionDenied||reportedShellFailure||!!checkFailure||!pending&&
+      (result.observedProblem||(isCommand(call.name)?executionFailed(payload??resultText(result.content)):resultHasProblem(value??resultText(result.content))))||['failed','killed'].includes(jobState);
     const cwd=payload?.cwd??call.args.workdir??runtime.get(agent).root??null;
     const exitCode=Number.isInteger(payload?.exitCode)?payload.exitCode:Number.isInteger(payload?.exit_code)?payload.exit_code:null;
     const complete=!failed&&!pending&&payload?.nativeStructured!==false&&value!=null&&
-      (exitCode===0||jobState==='completed')&&payload?.outputPartial!==true&&call.name!=='job_output';
+      (exitCode===0||jobState==='completed')&&!partialOutput&&payload?.complete!==false&&payload?.executionCompleted!==false&&
+      !['partial','unknown','unavailable','deopt','disabled'].includes(jobState)&&call.name!=='job_output';
     const key=call.name==='job_output'?'job:'+(call.args.job_id??call.args.jobId??call.args.id):operationKey(call,cwd),seq=event.seq;
     const callId=payload?.scriptRef??event.data?.subCallId??event.data?.callId??messageOf(event)?.source?.callId??null;
     if(!INTERNAL.has(call.name)&&!(call.name==='run_code'&&coveredFailure&&failed&&!result.isError)){
@@ -632,12 +641,12 @@ export function createTaskFlow(ctx,runtime,{nativeFiles,call}={}){
         signal:value?.signal,stopped:value?.stopped,effectState:value?.effectState,cwd:value?.cwd,outputPartial,comparisonText,
         errorText:String(value?.error?.message??raw?.error?.message??value?.error??raw?.error??result.error?.message??(stderr||stdout||resultText(result.content))).slice(0,1200),
         failureSignature:failureSignature(stderr||stdout||resultText(result.content)),
-        checkFailure:isCommand(exec.name)?reportedCheckFailure(stdout):null,
+        checkFailure:isCommand(exec.name)?reportedCheckFailure(stdout||(raw==null||typeof raw==='string'?resultText(result.content):'')):null,
         scriptRef:value?.scriptRef,scriptChars:value?.scriptChars,scriptRuntime:value?.scriptRuntime,scriptSourceRefs:value?.scriptSourceRefs,
         files:Array.isArray(value?.files)?value.files.slice(0,50).map(file=>({path:file.path??file.file,effectState:file.effectState})):undefined,
         sources:pathsOf(value),saved:value?.saved,path:value?.path,id:value?.id,question:value?.question,
         elapsedMs:value?.elapsedMs,executionCompleted:value?.executionCompleted};
-      bounded(get(exec.agent).live,exec.callId,{isError:!!result.isError,observedProblem:resultHasProblem(raw??resultText(result.content))||exec.name==='pwsh'&&shellReportedFailure(stderr),value:compact},256);
+      bounded(get(exec.agent).live,exec.callId,{isError:!!result.isError,observedProblem:(isCommand(exec.name)?executionFailed(value??resultText(result.content)):resultHasProblem(raw??resultText(result.content)))||exec.name==='pwsh'&&shellReportedFailure(stderr),value:compact},256);
     },
     disposeAgent:agent=>states.delete(agent.session.id),dispose:()=>states.clear()};
 }

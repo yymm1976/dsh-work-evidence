@@ -54,6 +54,8 @@ compact 工具面保留工作所需入口。明确只读任务隐藏 work_exec�
 原生 DSH 文件服务承担核心读取；OPS 只用于可选读取和精确编辑。
 FastEdit Python 路径由 fastEditPython 设置。
 省略 run_code 或原生 Shell 的界面说明时，插件在宿主执行前补充说明，避免宿主修改只读参数失败。
+执行状态分别记录明确失败、已完成和信息不完整。
+零失败汇总与普通 stderr 警告不作为进程失败；旧文字结果缺少结构化退出信息时保留不完整状态。
 
 工作区设置位于 .dsh/work-evidence/config.json。
 会话开关位于 .dsh/work-evidence/sessions/<session-id>.json。
