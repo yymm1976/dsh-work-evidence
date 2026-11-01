@@ -1,14 +1,15 @@
 import {argsOf,eventLog,isUserRequestMessage,textOf} from './runtime.mjs';
 
 const quote=value=>"'"+String(value).replaceAll("'","''")+"'";
-const INPUT_KEYS=new Set(['runtime','language','code','scriptRef','edits','executable','interpreter','format','cwd','workdir','timeoutMs']);
+const INPUT_KEYS=new Set(['runtime','language','code','scriptRef','edits','executable','interpreter','format','cwd','workdir','timeoutMs','mode','sources']);
 const CALL_EVENT_TYPES=new Set(['tool/call','tool/ptc-dispatch-start','tool/ptc-dispatch','tool/code-dispatch-start','tool/code-dispatch']);
 const RESULT_EVENT_TYPES=new Set(['tool/result','tool/ptc-dispatch','tool/code-dispatch']);
 const validExecutable=value=>typeof value==='string'&&value.trim()&&value.length<=4096&&!/[\0\r\n]/u.test(value);
 function normalizeInput(input){
   if(!input||typeof input!=='object'||Array.isArray(input))throw new Error('work_exec arguments must be an object');
   for(const key of Object.keys(input))if(!INPUT_KEYS.has(key))throw new Error('Unknown work_exec argument: '+key);
-  const {language,interpreter,cwd,workdir,...normalized}=input;
+  const {language,interpreter,cwd,workdir,mode,sources,...normalized}=input;
+  if(mode!==undefined&&mode!=='once')throw new Error('scriptRef requires a fresh-process work_exec call');
   for(const [key,value]of [['runtime',language],['executable',interpreter]])if(value!==undefined){
     if(normalized[key]!==undefined&&normalized[key]!==value)throw new Error('Conflicting work_exec '+key+' alias');
     normalized[key]=value;

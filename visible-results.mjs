@@ -31,7 +31,8 @@ export function resultHasProblem(value){
       ['error','failed','cancelled','unavailable','disabled','deopt','unknown','partial','not_found','running','pending','queued','blocked','not-attempted'].includes(String(node.status??node.state??'').toLowerCase())||
       node.complete===false||node.rangeComplete===false||node.textComplete===false||node.scanComplete===false||node.truncated===true||node.budgetTruncated===true)return true;
     if(Array.isArray(node))return node.some(item=>visit(item,depth+1));
-    return Object.entries(node).some(([key,item])=>!['text','lines','content'].includes(key)&&visit(item,depth+1));
+    // Applicability annotations do not change the outcome of the recorded call.
+    return Object.entries(node).some(([key,item])=>!['text','lines','content','fileDependencies','evidenceAssessment','evidenceValidity'].includes(key)&&visit(item,depth+1));
   };
   return visit(value);
 }

@@ -3,6 +3,7 @@ import {randomUUID} from 'node:crypto';
 import {argsOf,eventLog,isUserRequestMessage,MODE_POLICY_VERSION} from './runtime.mjs';
 import {resultText,parseResult,resultHasProblem,resultIdentity} from './visible-results.mjs';
 import {STAGE_CHECKPOINT_GUIDANCE} from './stage-checkpoints.mjs';
+import {createExecutionDependencies,dependencyView} from './execution-dependencies.mjs';
 
 const SOURCE='work-evidence-task-flow';
 const PHASES=['investigate','modify','execute','deliver','mixed'];
@@ -55,6 +56,7 @@ function rememberPacing(state,key,outputTokens=state.pacing.outputTokens,noticeS
   else pacing.nextConvergence=Math.max(steps+6,steps*2);
 }
 const messageOf=event=>event?.data?.message??(event?.data?.role?event.data:null);
+const executionView=({key,comparisonText,fileDependencies,...entry})=>({...entry,...dependencyView(entry)});
 export const operationKey=(call,cwd)=>{
   if(!isCommand(call.name))return JSON.stringify([call.name,call.args]);
   const {description,...args}=call.args;
@@ -133,7 +135,7 @@ function todoPhase(todos){
   return {name:phases.size===1?[...phases][0]:phases.size>1?'mixed':null,focus:active.flatMap(item=>textPaths(item.content)).slice(0,24)};
 }
 
-export function createTaskFlow(ctx,runtime,{nativeFiles,call}={}){
+export function createTaskFlow(ctx,runtime,{nativeFiles,call,executionDependencies=createExecutionDependencies(nativeFiles)}={}){
   const states=new Map();
   function get(agent){
     let state=states.get(agent.session.id);
@@ -200,12 +202,16 @@ export function createTaskFlow(ctx,runtime,{nativeFiles,call}={}){
       const id=call.args.job_id??call.args.jobId??call.args.id;if(id)state.jobs.delete(id);
     }
     const runtimeConfig=runtime.get(agent).config;
-    if(isCommand(call.name)&&(['executionTriage','stageWorkingSet'].some(key=>runtimeConfig[key])||
+    const probeExecution=call.name==='work_probe'&&call.args.mode!=='recall'&&call.args.mode!=='inspect'&&payload?.fileDependencies&&payload?.id;
+    if((isCommand(call.name)||probeExecution)&&(['executionTriage','stageWorkingSet'].some(key=>runtimeConfig[key])||
       runtime.activeMode(agent)==='quality'&&runtimeConfig.qualityReview)){
-      const entry={seq,tool:call.name,command:String(call.args.command??'').slice(0,180),description:String(call.args.description??'').slice(0,180),
+      const entry={seq,tool:call.name,command:String(probeExecution?call.args.arguments?.command??'':call.args.command??'').slice(0,180),description:String(probeExecution?payload.question:call.args.description??'').slice(0,180),
         cwd,exitCode,
-        status:pending?'pending':failed?'failed':complete?'observed':'partial',executionCompleted:complete,
-        userSeq:state.lastUser?.seq??null,mutationSeq:state.lastMutation,key,
+        status:probeExecution?payload.status:pending?'pending':failed?'failed':complete?'observed':'partial',executionCompleted:probeExecution?payload.executionCompleted===true:complete,
+        partial:partialOutput||payload?.partial===true,
+        ...(probeExecution?{probeId:payload.id,nativeTool:payload.tool}:{}),
+        fileDependencies:payload?.fileDependencies,...dependencyView(payload),
+        userSeq:state.lastUser?.seq??null,mutationSeq:state.lastMutation,turn:state.turn,key,
         comparisonText:payload?.comparisonText??null,
         scriptRef:call.name==='work_exec'&&typeof payload?.scriptRef==='string'?payload.scriptRef:null,
         scriptEditCount:call.name==='work_exec'&&Array.isArray(call.args.edits)?call.args.edits.length:0,
@@ -238,13 +244,14 @@ export function createTaskFlow(ctx,runtime,{nativeFiles,call}={}){
       const files=pathsOf(call.args).filter(file=>!normalize(path.resolve(runtime.get(agent).root??'.',file)).includes('/.dsh/work-evidence/'));
       const conditional=['verified_exec','fastedit_java'].includes(call.name),fileKey=file=>normalize(path.resolve(cwd??'.',file));
       const mutations=files.flatMap(file=>{
-        const effect=conditional?(Array.isArray(payload?.files)?payload.files.find(item=>typeof item.file==='string'&&fileKey(item.file)===fileKey(file))?.effectState:payload?.effectState):!failed?'applied':null;
+        const effect=conditional?(Array.isArray(payload?.files)?payload.files.find(item=>typeof (item.file??item.path)==='string'&&fileKey(item.file??item.path)===fileKey(file))?.effectState:payload?.effectState):!failed?'applied':null;
         return ['applied','partial','unknown'].includes(effect)?[{path:file,effectState:effect}]:[];
       });
       if(mutations.length){
         state.lastMutation=seq;state.mutationVersion++;state.report=null;progress(state);transition(state,'modify',seq,mutations.map(item=>item.path),'observed-file-effect');
         for(const item of mutations){
           const key=fileKey(item.path);
+          executionDependencies.invalidate(runtime.get(agent).root,[...state.executions,...state.qualityExecutions],{...item,path:path.resolve(cwd??runtime.get(agent).root??'.',item.path),seq});
           if(runtime.activeMode(agent)==='quality'&&runtimeConfig.qualityReview)state.qualityArtifacts.set(key,{...item,path:path.resolve(cwd??runtime.get(agent).root??'.',item.path),seq,tool:call.name,callId,userSeq:state.lastUser?.seq??null});
           if(!state.artifacts.has(key)&&state.artifacts.size>=32)state.artifactsEvicted++;
           state.artifacts.delete(key);
@@ -269,8 +276,8 @@ export function createTaskFlow(ctx,runtime,{nativeFiles,call}={}){
     while(state.cursor<log.length){
       const event=log[state.cursor++],data=event.data??{},message=messageOf(event);
       if(event.type==='turn/start'){
-        state.turn=data.turn;state.turnStartSeq=event.seq;state.executionsEvicted=0;state.todos=null;state.todoSeq=null;state.report=null;state.lastMutation=-1;state.errors.clear();state.calls.clear();state.nested.clear();state.nestedFailures.clear();state.reads.clear();
-        state.phase={name:null,seq:null,focus:[],source:null};state.executions=[];state.repeatedExecution=null;state.cleanup=null;
+        state.turn=data.turn;state.turnStartSeq=event.seq;state.todos=null;state.todoSeq=null;state.report=null;state.lastMutation=-1;state.errors.clear();state.calls.clear();state.nested.clear();state.nestedFailures.clear();state.reads.clear();
+        state.phase={name:null,seq:null,focus:[],source:null};state.repeatedExecution=null;state.cleanup=null;
         state.pacing=newPacing();state.completedNested.clear();state.programFailure=null;state.legacyInterpreterShell=null;
         state.qualityArtifacts.clear();state.qualityExecutions=[];state.lastQualityReviewedMutation=null;
       }
@@ -430,7 +437,7 @@ export function createTaskFlow(ctx,runtime,{nativeFiles,call}={}){
       return messages;
     }
     const reporting=state.stageReporting,silentSteps=state.pacing.steps.size-Math.max(reporting.lastTextSteps,reporting.lastNoticeSteps);
-    if(config.stepPacing&&user&&silentSteps>=3&&(state.reads.size||state.executions.length||state.errors.size||state.lastMutation>user.seq||state.jobs.size)){
+    if(config.stepPacing&&user&&silentSteps>=3&&(state.reads.size||state.executions.some(item=>item.seq>=state.turnStartSeq)||state.errors.size||state.lastMutation>user.seq||state.jobs.size)){
       // Request a visible conclusion; never manufacture one from exit codes or counts.
       return emit('judgment',JSON.stringify([user.seq,'judgment',state.pacing.steps.size]),
         '[work-evidence] 已有工具观察，但连续多轮没有面向用户的阶段正文。若已有重要判断、方向变化或实际阻碍，先说明结论、对应依据、未决范围与下一步；只有未知时如实说明未知，不制造结论，不展示内部思考。'+STAGE_CHECKPOINT_GUIDANCE);
@@ -591,7 +598,7 @@ export function createTaskFlow(ctx,runtime,{nativeFiles,call}={}){
       phase:phase(agent),pendingCalls:state.calls.size+state.nested.size,
       userId:state.lastUser?.id??null,userSeq:state.lastUser?.seq??null,lastMutationSeq:state.lastMutation,mutationVersion:state.mutationVersion,
       unresolvedErrors:[...state.errors.values()].slice(-8),pendingJobs:[...state.jobs].slice(-16),
-      probes:state.probes.slice(),nativeExecutions:state.executions.map(({key,comparisonText,...entry})=>entry),inlineExecNotices:state.inlineExecAdvised.size,scriptReuseNotices:state.scriptReuseAdvised.size,diagnosticNotices:state.diagnosticAdvised.size,reuseNotices:state.reuseNotices,cleanupNotices:state.cleanupNotices,
+      probes:state.probes.map(probe=>({...probe,...dependencyView(state.executions.find(item=>item.probeId===probe.id))})),nativeExecutions:state.executions.map(executionView),inlineExecNotices:state.inlineExecAdvised.size,scriptReuseNotices:state.scriptReuseAdvised.size,diagnosticNotices:state.diagnosticAdvised.size,reuseNotices:state.reuseNotices,cleanupNotices:state.cleanupNotices,
       transitions:state.transitions.slice(),pacing:{enabled:config.stepPacing,toolBearingRequests:state.pacing.steps.size,operations:state.pacing.operations,
         reportedOutputTokens:state.pacing.outputTokens,lastResponseOutputTokens:state.pacing.lastOutputTokens,missingOutputUsage:state.pacing.missingOutputUsage,retainedComputeCalls:state.pacing.computeCalls,validationAdvised:state.pacing.validationAdvised,
         outputTokensSinceProgress:Math.max(0,state.pacing.outputTokens-state.pacing.progressOutputTokens),
@@ -599,6 +606,10 @@ export function createTaskFlow(ctx,runtime,{nativeFiles,call}={}){
         notices:state.pacing.notices.size,sourceFocus:state.pacing.sourceFocus,lastProgressAt:state.pacing.lastProgress,nextConvergenceAt:state.pacing.nextConvergence,mode:'stable-policy-and-observed-notices'},completion:'not-determined',automaticStop:false};
   }
   return {sync,phase,declaration,beforeStep,startupPaths,summary,
+    refreshEvidence(agent,signal,cache){
+      const state=sync(agent);
+      return executionDependencies.refresh(runtime.get(agent).root,[...state.executions,...state.qualityExecutions],signal,cache);
+    },
     reviewState(agent){
       const state=sync(agent),log=eventLog(agent.session);
       const assistant=log.findLast(event=>event.type==='assistant/message'&&event.data?.turn===state.turn&&event.surfaceOp?.op!=='replace');
@@ -612,7 +623,7 @@ export function createTaskFlow(ctx,runtime,{nativeFiles,call}={}){
         .filter(item=>item.userSeq===userSeq&&afterRequest(item)).slice(-8)
         .map(item=>({seq:item.seq,tool:item.tool,description:item.description,exitCode:item.exitCode,
           status:item.status,executionCompleted:item.executionCompleted,userSeq:item.userSeq,mutationSeq:item.mutationSeq,
-          failureSignature:item.failureSignature,failureSource:item.failureSource,scriptRef:item.scriptRef}));
+          failureSignature:item.failureSignature,failureSource:item.failureSource,scriptRef:item.scriptRef,...dependencyView(item)}));
       return {request:state.lastUser?{...state.lastUser}:null,
         assistant:assistant&&afterRequest(assistant)?{
           seq:assistant.seq,text:resultText(message?.content),turn:assistant.data?.turn,
@@ -626,7 +637,7 @@ export function createTaskFlow(ctx,runtime,{nativeFiles,call}={}){
         evidenceHighWater:{seq:agent.session.seq,mutationVersion:state.mutationVersion}};
     },
     handoff(agent){const state=sync(agent);return {phase:{...state.phase},todos:state.todos,todoSeq:state.todoSeq,userSeq:state.lastUser?.seq??null,userId:state.lastUser?.id??null,unresolvedErrors:[...state.errors.values()],pendingJobs:[...state.jobs],
-      artifacts:[...state.artifacts.values()],artifactsEvicted:state.artifactsEvicted,executions:state.executions.slice(-6).map(({key,comparisonText,...item})=>item),
+      artifacts:[...state.artifacts.values()],artifactsEvicted:state.artifactsEvicted,executions:state.executions.slice(-6).map(executionView),
       executionsOmitted:state.executionsEvicted+Math.max(0,state.executions.length-6),turn:state.turn,turnStartSeq:state.turnStartSeq,
       pendingCalls:[...new Map([...state.calls,...state.nested]).entries()].map(([callId,{name,seq}])=>({callId,tool:name,seq})),
       report:state.report?{seq:state.report.seq,argumentsSeq:state.report.argumentsSeq,path:state.report.path,claimedStatus:state.report.args.status,summary:state.report.args.summary,
@@ -648,6 +659,7 @@ export function createTaskFlow(ctx,runtime,{nativeFiles,call}={}){
         failureSignature:failureSignature(stderr||stdout||resultText(result.content)),
         checkFailure:isCommand(exec.name)?reportedCheckFailure(stdout||(raw==null||typeof raw==='string'?resultText(result.content):'')):null,
         scriptRef:value?.scriptRef,scriptChars:value?.scriptChars,scriptRuntime:value?.scriptRuntime,scriptSourceRefs:value?.scriptSourceRefs,
+        fileDependencies:value?.fileDependencies,...dependencyView(value),partial:value?.partial,tool:value?.tool,
         files:Array.isArray(value?.files)?value.files.slice(0,50).map(file=>({path:file.path??file.file,effectState:file.effectState})):undefined,
         sources:pathsOf(value),saved:value?.saved,path:value?.path,id:value?.id,question:value?.question,
         elapsedMs:value?.elapsedMs,executionCompleted:value?.executionCompleted};

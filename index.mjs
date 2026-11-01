@@ -27,6 +27,7 @@ import {exportTaskHandoff} from './task-handoff.mjs';
 import {installUltraEffort} from './ultra-effort.mjs';
 import {createCompactionHandoff} from "./compaction-handoff.mjs";
 import {createExecutionEvidence} from './execution-evidence.mjs';
+import {createExecutionDependencies} from './execution-dependencies.mjs';
 import {createNativeFiles} from './native-files.mjs';
 import {createEffectObserver} from './effect-observer.mjs';
 import {createHistoryCoordinator} from './history-coordinator.mjs';
@@ -122,13 +123,21 @@ export function apply(ctx,config={}){
   runtime.contextControl=contextEconomics;
   const canRecall=agent=>toolSurfaceDisposers.get(agent.session.id)?.surface!=='compact-minimal'&&available(agent,'work_recall');
   runtime.canRecall=canRecall;
-  const taskFlow=createTaskFlow(ctx,runtime,{nativeFiles,call});
-  const taskHandoff=(agent,options)=>exportTaskHandoff(agent,runtime,taskFlow,{canRecall,...options});
+  const executionDependencies=createExecutionDependencies(nativeFiles);
+  const taskFlow=createTaskFlow(ctx,runtime,{nativeFiles,call,executionDependencies});
+  const taskHandoff=async(agent,{signal,...options}={})=>{
+    await refreshExecutionEvidence(agent,signal);
+    return exportTaskHandoff(agent,runtime,taskFlow,{canRecall,...options});
+  };
   const retainedCompute=createRetainedCompute(ctx,runtime,taskFlow,call);
   const finalJson=createFinalJsonGuard(ctx,runtime);
   const qualityReview=createQualityReview(ctx,runtime,taskFlow,finalJson);
   createCompletionNotice(ctx,runtime,finalJson);
-  const executionEvidence=createExecutionEvidence(ctx,runtime,call);
+  const executionEvidence=createExecutionEvidence(ctx,runtime,call,{executionDependencies});
+  async function refreshExecutionEvidence(agent,signal){
+    const cache=new Map();
+    await Promise.all([taskFlow.refreshEvidence(agent,signal,cache),executionEvidence.refreshEvidence(agent,signal,cache)]);
+  }
   const workingSet=createRequestWorkingSet(ctx,runtime,contextEconomics,taskFlow);
   runtime.noteProjectionDispatch=workingSet.noteDispatch;
   runtime.isBodyVisible=(agent,seq)=>workingSet.bodyVisible(agent,seq)&&historyHygiene.bodyVisible(agent,seq);
@@ -390,7 +399,7 @@ export function apply(ctx,config={}){
       _assembly.tools=_assembly.tools.filter(tool=>tool?.name!=='work_exec');
     return next();
   },{prepend:true});
-  registerPluginCommand({ctx,runtime,state,effects,available,capabilityDiagnostic,contextEconomics,taskFlow,taskHandoff,finalJson,qualityReview,executionEvidence,workingSet,compressionControl,compactionHandoff,contextWindow,observationLedger,historyCoordinator,clearPluginState,applyToolSurface});
+  registerPluginCommand({ctx,runtime,state,effects,available,capabilityDiagnostic,contextEconomics,taskFlow,taskHandoff,finalJson,qualityReview,executionEvidence,refreshExecutionEvidence,workingSet,compressionControl,compactionHandoff,contextWindow,observationLedger,historyCoordinator,clearPluginState,applyToolSurface});
   const nested=new Set();
   async function call(name,args,exec){
     exec.signal.throwIfAborted();
@@ -458,7 +467,7 @@ export function apply(ctx,config={}){
       note:'The plugin module is loaded, but automatic behavior and non-status tools are disabled for this session.'};
   }
   registerSourceTools({ctx,nativeFiles,runtime,state,effects,evidenceViews,index,candidates,call,read,search,snippets,sourceReferences,disabledResult,output,parameters});
-  registerManagementTools({ctx,runtime,state,effects,available,capabilityDiagnostic,contextEconomics,taskFlow,taskHandoff,retainedCompute,finalJson,qualityReview,executionEvidence,workingSet,compressionControl,compactionHandoff,contextWindow,observationLedger,historyCoordinator,clearPluginState,index,candidates,ptcPatterns,ptcFastpath,verifiedExec,fastEditJava,preserveContextResult,retainRecalledSources,hasHistoricalReferences,applyToolSurface,call,disabledResult,output,COMPACT_HIDDEN_TOOLS,assertParameterBounds,parameters});
+  registerManagementTools({ctx,runtime,state,effects,available,capabilityDiagnostic,contextEconomics,taskFlow,taskHandoff,retainedCompute,finalJson,qualityReview,executionEvidence,executionDependencies,refreshExecutionEvidence,workingSet,compressionControl,compactionHandoff,contextWindow,observationLedger,historyCoordinator,clearPluginState,index,candidates,ptcPatterns,ptcFastpath,verifiedExec,fastEditJava,preserveContextResult,retainRecalledSources,hasHistoricalReferences,applyToolSurface,call,disabledResult,output,COMPACT_HIDDEN_TOOLS,assertParameterBounds,parameters});
   ctx.on('tools/result',(exec,result)=>{
     taskFlow.observe(exec,result);
     historyHygiene.observe(exec,result);

@@ -1,7 +1,7 @@
 import path from 'node:path';
 import {VERSION} from "./runtime.mjs";
 
-export function registerPluginCommand({ctx,runtime,state,effects,available,capabilityDiagnostic,contextEconomics,taskFlow,taskHandoff,finalJson,qualityReview,executionEvidence,workingSet,compressionControl,compactionHandoff,contextWindow,observationLedger,historyCoordinator,clearPluginState,applyToolSurface}){
+export function registerPluginCommand({ctx,runtime,state,effects,available,capabilityDiagnostic,contextEconomics,taskFlow,taskHandoff,finalJson,qualityReview,executionEvidence,refreshExecutionEvidence,workingSet,compressionControl,compactionHandoff,contextWindow,observationLedger,historyCoordinator,clearPluginState,applyToolSurface}){
   ctx.commands.register({name:'work-evidence',
     description:'Inspect plugin status, export task handoff JSON and control the session switch. Mode follows the selected reasoning effort.',
     input:{hint:'status | detail | handoff | on | off | inherit | mode | aggressive on|off'},
@@ -10,7 +10,7 @@ export function registerPluginCommand({ctx,runtime,state,effects,available,capab
       try{
         await runtime.init(agent,signal);
         const action=String(rawInput||'').trim().toLowerCase()||'status';
-        if(action==='handoff')return {kind:'success',text:JSON.stringify(taskHandoff(agent))};
+        if(action==='handoff')return {kind:'success',text:JSON.stringify(await taskHandoff(agent,{signal}))};
         const contextWindowMetrics=contextWindow.metrics(agent);
         const before=runtime.isEnabled(agent);
         let sessionChange=null;
@@ -33,6 +33,7 @@ export function registerPluginCommand({ctx,runtime,state,effects,available,capab
           policyPath:action.startsWith('workspace-mode ')?path.join(state(agent).dir,'config.json'):state(agent).sessionPolicyPath,
           ...(action!=='mode'?{settingsSaved:true}:{}),
           note:'模式由思考档位决定：Ultra 使用质量模式，其他档位在 aggressiveMode 开启时使用激进模式，关闭时交给宿主；切换从下一次模型请求生效。'} )};
+        await refreshExecutionEvidence(agent,signal);
         const s=state(agent),snapshot=runtime.snapshot(s);
         const value={...snapshot,mode:runtime.modeStatus(agent),loaded:true,version:VERSION,sessionId:s.id,
           effective:runtime.isEnabled(agent),workspaceDefaultEnabled:s.config.enabled,sessionEnabledOverride:s.sessionEnabledOverride,

@@ -4,6 +4,7 @@ import {randomUUID} from 'node:crypto';
 import {isDeepStrictEqual} from 'node:util';
 import {assertExistingFileWithin} from './evidence.mjs';
 import {resultText,parseResult} from './visible-results.mjs';
+import {createExecutionDependencies,declaredFileSources,dependencyView} from './execution-dependencies.mjs';
 
 const TOOLS=['pwsh','ops_bash','bash','job_output','read','grep','glob','ops_stat','ops_read_files','ops_inspect_local_file'];
 const SHELL=new Set(['pwsh','ops_bash','bash']);
@@ -11,7 +12,7 @@ const MAX_RECORD_BYTES=1500000;
 const MAX_RECORDS=32;
 const MAX_SUMMARY_RECORDS=8;
 const clip=(value,size)=>{const text=typeof value==='string'?value:JSON.stringify(value??null);return text.length<=size?text:text.slice(0,Math.floor(size/2))+'\n…\n'+text.slice(-Math.floor(size/2));};
-const stream=value=>typeof value==='string'?{text:value,truncated:false}:value&&typeof value==='object'?{text:typeof value.text==='string'?value.text:'',truncated:value.truncated===true,spillPath:value.spillPath??null}:{text:'',truncated:false};
+const stream=value=>typeof value==='string'?{text:value,truncated:false}:value&&typeof value==='object'?{text:typeof value.text==='string'?value.text:'',truncated:value.truncated===true||value.complete===false,spillPath:value.spillPath??null}:{text:'',truncated:false};
 const payloadOf=value=>value?.data&&typeof value.data==='object'?value.data:value;
 const statusOf=value=>value===undefined||value===null?'':String(value).toLowerCase();
 
@@ -41,8 +42,7 @@ function checked(input){
     if(input.arguments.timeoutMs!==undefined&&(!Number.isInteger(input.arguments.timeoutMs)||input.arguments.timeoutMs<1||input.arguments.timeoutMs>60000))throw new Error('Use native tools directly for foreground waits longer than 60000ms');
   }
   if(input.tool==='job_output'&&input.arguments.timeout_ms!==undefined&&(!Number.isInteger(input.arguments.timeout_ms)||input.arguments.timeout_ms<1||input.arguments.timeout_ms>60000))throw new Error('job_output timeout_ms must be from 1 to 60000');
-  const sources=input.sources??[];
-  if(!Array.isArray(sources)||sources.length>16||sources.some(source=>typeof source!=='string'||!source.trim()||source.length>2000))throw new Error('sources must be at most 16 explicit source paths or URLs');
+  const sources=declaredFileSources(input.sources);
   const cases=input.cases??[];
   if(!Array.isArray(cases)||cases.length>8)throw new Error('At most eight concrete observations are supported');
   const names=new Set();
@@ -60,7 +60,7 @@ function checked(input){
   return {...input,mode,maxChars,sources,cases};
 }
 
-export function createExecutionEvidence(ctx,runtime,call){
+export function createExecutionEvidence(ctx,runtime,call,{executionDependencies=createExecutionDependencies()}={}){
   const evidenceStates=new Map();
   const available=agent=>TOOLS.filter(name=>{try{return !!ctx.tools.get(name,agent);}catch{return false;}});
   const retrieveOriginal=id=>({tool:'work_probe',arguments:{mode:'recall',id,offset:0}});
@@ -113,7 +113,8 @@ export function createExecutionEvidence(ctx,runtime,call){
     const failed=!!result.isError||!!(payload?.error||value?.error)||['error','failed','killed','cancelled','rejected'].includes(nativeStatus)||
       payload?.timedOut===true||payload?.aborted===true||payload?.cancelled===true||payload?.signal!=null||payload?.stopped!==undefined||
       exitCode!==null&&exitCode!==0;
-    const nativePartial=nativeStatus==='partial'||payload?.complete===false||value?.complete===false||payload?.truncated===true||payload?.lossy===true;
+    const nativePartial=nativeStatus==='partial'||payload?.complete===false||value?.complete===false||payload?.completed===false||value?.completed===false||
+      payload?.outputPartial===true||payload?.partial===true||payload?.truncated===true||payload?.lossy===true;
     const uncertain=['unknown','unavailable','deopt'].includes(nativeStatus);
     const conclusive=!pending&&!failed&&!nativePartial&&!uncertain&&
       (exitCode===0||nativeStatus==='completed'||!SHELL.has(tool)&&value!==null&&value!==undefined&&tool!=='job_output');
@@ -185,6 +186,7 @@ export function createExecutionEvidence(ctx,runtime,call){
       question:observation.question,questionScope:observation.questionScope,tool:record.tool,observedAt:record.observedAt,
       elapsedMs:observation.elapsedMs,elapsedSource:observation.elapsedSource,status:observation.status,executionState:observation.executionState,
       nativeStatus:observation.nativeStatus,background:observation.background,partial:observation.partial,exitCode:observation.exitCode,jobId:observation.jobId,
+      executionCompleted:observation.executionCompleted,fileDependencies:observation.fileDependencies,...dependencyView(observation),
       cwd:observation.cwd,cwdSource:observation.cwdSource,error:observation.error,evidenceSaved:observation.evidenceSaved,
       ...(observation.evidenceSaved?{retrieveOriginal:observation.retrieveOriginal}:{evidenceError:observation.evidenceError})});
     if(state.records.length>MAX_RECORDS)state.records.splice(0,state.records.length-MAX_RECORDS);
@@ -198,6 +200,7 @@ export function createExecutionEvidence(ctx,runtime,call){
     if(plan.mode==='inspect')return {status:'available',tools:available(agent),
       note:'Use a concrete question and an already formed native call within the current task. No command or case is generated automatically.'};
     if(!available(agent).includes(plan.tool))return {status:'deopt',reason:'requested-native-tool-unavailable',tool:plan.tool,executionOccurred:false};
+    const dependencies=await executionDependencies.capture(s.root,plan.sources,signal);
     const id='probe-'+randomUUID(),started=performance.now(),observedAt=new Date().toISOString();
     const args={...plan.arguments};
     if(SHELL.has(plan.tool)){args.description??=plan.question.slice(0,180);args.timeoutMs??=10000;}
@@ -209,8 +212,9 @@ export function createExecutionEvidence(ctx,runtime,call){
     const observation=normalizeObservation({id,recordOrigin:'work_probe',question:plan.question,questionSource:'work-probe-input',
       questionScope:'caller-declared-unresolved-question',tool:plan.tool,args,result,sources:plan.sources,requestedCases:plan.cases,maxChars:plan.maxChars,
       observedAt,elapsedMs,elapsedSource:'work_probe-wall-clock',s,
-      sourceScope:'supplied dependency labels; not proof of source freshness',
+      sourceScope:'Caller-declared sources only. File applicability is assessed separately from execution and task correctness.',
       scope:'Only the supplied call, inputs and observed environment; no general correctness or task completion claim.'});
+    Object.assign(observation,await executionDependencies.finish(dependencies,observation.executionCompleted&&!observation.partial,signal));
     const record=makeRecord({s,id,recordOrigin:'work_probe',callId:explicitExecution?.callId??null,rootCallId:explicitExecution?.rootCallId??explicitExecution?.callId??null,
       observedAt,question:plan.question,tool:plan.tool,args,sources:plan.sources,requestedCases:plan.cases,observation,result});
     const state=evidenceState(agent);state.observed++;state.explicitObserved++;
@@ -226,9 +230,9 @@ export function createExecutionEvidence(ctx,runtime,call){
     return {sessionId:s.id,sessionEnabled:runtime.isEnabled(agent),observed:state.observed,
       explicitObserved:state.explicitObserved,explicitSaved:state.explicitSaved,
       saved:state.saved,saveFailures:state.saveFailures,recordCount:state.records.length,
-      recent:state.records.slice(-MAX_SUMMARY_RECORDS).map(record=>({...record,
+      recent:state.records.slice(-MAX_SUMMARY_RECORDS).map(({fileDependencies,...record})=>({...record,...dependencyView(record),
         ...(record.evidenceSaved===true?{retrieveOriginal:record.retrieveOriginal}:{})})),
-      scope:'Explicit observations only. Saved retrieval is historical; execution success is not task completion.'};
+      scope:'Explicit observations only. File applicability covers declared files at evidenceAssessment.assessedAt; saved retrieval is historical. Execution success is not task completion.'};
   }
 
   function disposeAgent(agent){
@@ -238,5 +242,7 @@ export function createExecutionEvidence(ctx,runtime,call){
 
   function dispose(){evidenceStates.clear();}
 
-  return {execute,available,summary,disposeAgent,dispose};
+  return {execute,available,summary,
+    refreshEvidence:(agent,signal,cache)=>executionDependencies.refresh(runtime.get(agent).root,evidenceState(agent).records,signal,cache),
+    disposeAgent,dispose};
 }

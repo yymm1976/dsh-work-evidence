@@ -1,6 +1,6 @@
 {
   "name": "@local/dsh-work-evidence",
-  "version": "0.28.15",
+  "version": "0.28.16",
   "private": true,
   "description": "DSH-native evidence, stable request working sets, history recovery and optional OPS CAS/Java adapters",
   "type": "module",
@@ -43,6 +43,7 @@
     "final-json.mjs",
     "quality-review.mjs",
     "execution-evidence.mjs",
+    "execution-dependencies.mjs",
     "evidence-view.mjs",
     "source-members.mjs",
     "source-members-bridge.py",

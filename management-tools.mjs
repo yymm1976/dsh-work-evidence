@@ -3,8 +3,9 @@ import {VERSION,defaults} from "./runtime.mjs";
 import {recallHistory} from "./compaction-handoff.mjs";
 import {recallCall} from "./history-hygiene.mjs";
 import {inlineCommand,resolveInlineScript,declaredInlineExecutable,inlineFailureLocation} from './inline-exec.mjs';
+import {declaredFileSources,dependencyExecutionComplete} from './execution-dependencies.mjs';
 
-export function registerManagementTools({ctx,runtime,state,effects,available,capabilityDiagnostic,contextEconomics,taskFlow,taskHandoff,retainedCompute,finalJson,qualityReview,executionEvidence,workingSet,compressionControl,compactionHandoff,contextWindow,observationLedger,historyCoordinator,clearPluginState,index,candidates,ptcPatterns,ptcFastpath,verifiedExec,fastEditJava,preserveContextResult,retainRecalledSources,hasHistoricalReferences,applyToolSurface,call,disabledResult,output,COMPACT_HIDDEN_TOOLS,assertParameterBounds,parameters}){
+export function registerManagementTools({ctx,runtime,state,effects,available,capabilityDiagnostic,contextEconomics,taskFlow,taskHandoff,retainedCompute,finalJson,qualityReview,executionEvidence,executionDependencies,refreshExecutionEvidence,workingSet,compressionControl,compactionHandoff,contextWindow,observationLedger,historyCoordinator,clearPluginState,index,candidates,ptcPatterns,ptcFastpath,verifiedExec,fastEditJava,preserveContextResult,retainRecalledSources,hasHistoricalReferences,applyToolSurface,call,disabledResult,output,COMPACT_HIDDEN_TOOLS,assertParameterBounds,parameters}){
   const register=(name,description,properties,required,execute,{gate=true,resultSchema=output.schema}={})=>ctx.tools.register({name,description,
     parameters:{...parameters(properties),required},output:{...output,schema:resultSchema},isConcurrencySafe:()=>false,execute:async(args,exec)=>runtime.withExecution(exec,async()=>{
       if(!exec.agent)throw new Error('Agent required');await runtime.init(exec.agent,exec.signal);await effects.load(exec.agent);runtime.sync(exec.agent);
@@ -32,17 +33,19 @@ export function registerManagementTools({ctx,runtime,state,effects,available,cap
       executable:{type:'string',description:'Use the exact existing interpreter path from the task when not on PATH.'},format:{type:'string',enum:['module','commonjs'],description:'Node only; default module.'},
       mode:{type:'string',enum:['once','retained'],description:'once (default) is a fresh process. retained is a read-only Node REPL whose state persists for this Agent; use it only when later cells must reuse the same data or functions.'},
       reset:{type:'boolean',description:"Retained mode only: clear this Agent's retained Node environment before running code."},
+      sources:{type:'array',maxItems:16,items:{type:'string'},description:'Explicit file dependencies for this call, relative to the project directory. Applicability covers only declared files; URLs remain unknown. Not inherited through scriptRef; unavailable in retained mode.'},
       timeoutMs:{type:'integer',minimum:1,maximum:600000,description:'Native foreground wait before background promotion, milliseconds; default 10000.'}},[],async(args,exec)=>{
       args=args??{};
       if(args.mode==='retained'){
         if(args.runtime!=='node')throw new Error('retained mode requires runtime: node');
-        if(args.scriptRef!==undefined||args.edits!==undefined||args.executable!==undefined||args.format!==undefined)
+        if(args.scriptRef!==undefined||args.edits!==undefined||args.executable!==undefined||args.format!==undefined||args.sources!==undefined)
           throw new Error('retained mode accepts code, reset and timeoutMs only');
         preserveContextResult(exec.agent.session.id,exec.rootCallId??exec.callId);
         const result=await retainedCompute.execute({code:args.code,reset:args.reset,timeoutMs:args.timeoutMs},exec);
         return {...result,mode:'retained'};
       }
       if(args.reset!==undefined)throw new Error('reset requires mode: retained');
+      const sources=declaredFileSources(args.sources);
       if(process.platform!=='win32'||!available(exec.agent,'pwsh'))return {status:'unavailable',reason:'native-pwsh-unavailable',executionOccurred:false};
       let script;
       try{script=resolveInlineScript(args,exec.agent.session,exec.signal);}catch(error){
@@ -57,11 +60,13 @@ export function registerManagementTools({ctx,runtime,state,effects,available,cap
       // Inline scripts may print source files. Their output has no native read
       // windows, so it must not be treated as disposable generic shell output.
       preserveContextResult(exec.agent.session.id,exec.rootCallId??exec.callId);
+      const dependencies=await executionDependencies.capture(root,sources,exec.signal);
       const result=await call('pwsh',{command,description:'Run '+script.runtime+' script via stdin',timeoutMs:script.timeoutMs??10000},exec);
+      const fileEvidence=await executionDependencies.finish(dependencies,dependencyExecutionComplete(result),exec.signal);
       if(args.scriptRef)effects.decide(exec.agent,'inlineScriptReuse','applied','explicit-same-session-script-reference',{scriptChars:script.code.length,sourceCallId:args.scriptRef});
       const aliases=['language','interpreter','cwd','workdir'].filter(key=>Object.hasOwn(args,key));
       if(aliases.length)effects.decide(exec.agent,'inlineArgumentRecovery','applied','unambiguous-explicit-script-arguments',{aliases});
-      const metadata={scriptRef:exec.callId??null,scriptChars:script.code.length,scriptRuntime:script.runtime,scriptExecutable:script.executable??script.runtime,
+      const metadata={...fileEvidence,scriptRef:exec.callId??null,scriptChars:script.code.length,scriptRuntime:script.runtime,scriptExecutable:script.executable??script.runtime,
         scriptExecutableSource:declaredExecutable?.source??null,scriptSourceRefs:script.sourceCallIds??[],scriptReused:!!args.scriptRef,
         failureLocation:inlineFailureLocation(script,result.value??result)};
       return result.value!==undefined?{...result.value,...metadata,isError:!!result.isError}:{...metadata,isError:!!result.isError,error:result.error,content:result.content};
@@ -102,6 +107,7 @@ export function registerManagementTools({ctx,runtime,state,effects,available,cap
       const toolNames=['read','write','edit','glob','grep','ops_glob','ops_grep','ops_inspect_local_file','ops_read_files','ops_stat','ops_edit_file','ops_write_file','ops_bash','bash','pwsh'];
       const pluginTools=COMPACT_HIDDEN_TOOLS;
       let mode=null;try{mode=ctx.tools.modeFor(exec.agent);}catch{}
+      await refreshExecutionEvidence(exec.agent,exec.signal);
       const snapshot=runtime.snapshot(s),effective=runtime.isEnabled(exec.agent);
       const activeCounters=['evidenceAttempts','evidenceDelivered','evidenceLocated','evidenceIncomplete','evidenceUnavailable','evidenceNoSource','indexLearned','indexHits','candidatePredictions','candidateRuns','ptcFastpathRuns',
         'verifiedExecPreviews','verifiedExecApplies','fastEditEntityFinds','fastEditEntityReads','fastEditPreviews','fastEditApplies',
@@ -122,7 +128,7 @@ export function registerManagementTools({ctx,runtime,state,effects,available,cap
     {mode:{type:'string',enum:['summary','detail','handoff','clear','recall','stage']},phase:{type:'string',enum:['investigate','modify','execute','deliver','mixed']},focus:{type:'array',maxItems:24,items:{type:'string'}},seq:{type:'integer',minimum:0,description:'recall: original tool result event in this session.'},
       offset:{type:'integer',minimum:0,description:'recall: character offset, initially zero.'},maxChars:{type:'integer',minimum:256,maximum:64000,description:'handoff: total serialized JSON limit, 8000–64000, default 32000. recall: text page limit.'}},[],async(args,exec)=>{
       const s=state(exec.agent),mode=args.mode||'summary';
-      if(mode==='handoff')return taskHandoff(exec.agent,{maxChars:args.maxChars,
+      if(mode==='handoff')return taskHandoff(exec.agent,{maxChars:args.maxChars,signal:exec.signal,
         excludeCallIds:[exec.callId,exec.rootCallId].filter(Boolean)});
       if(mode==='stage')return s.config.stageWorkingSet?taskFlow.declaration(args):{status:'disabled',feature:'stageWorkingSet'};
       if(mode==='recall'){
@@ -131,6 +137,7 @@ export function registerManagementTools({ctx,runtime,state,effects,available,cap
         return result;
       }
       if(mode==='clear'){s.ledger={observations:[],searches:[],mutations:[]};s.pendingStateNotice=null;s.dirty=true;observationLedger.clear(exec.agent);contextWindow.clear(exec.agent);return {status:'cleared'};}
+      await refreshExecutionEvidence(exec.agent,exec.signal);
       return {status:'observed',...(runtime.stateSnapshot(s,mode==='detail')),
         ledger:mode==='detail'?observationLedger.detail(exec.agent):observationLedger.metrics(exec.agent),
         observability:effects.snapshot(exec.agent),coordination:historyCoordinator.summary(exec.agent),workingSet:mode==='detail'?workingSet.detail(exec.agent):workingSet.metrics(exec.agent),
@@ -152,7 +159,7 @@ export function registerManagementTools({ctx,runtime,state,effects,available,cap
     },{gate:false});
   register('work_probe','用已有原生调用回答一个具体问题并返回紧凑的实际证据。只运行当前任务允许且已形成的调用，不生成命令、安装依赖或宣告业务完成。mode=execute 使用 question/tool/arguments；cases 最多8项，JSON pointer 从 stdout JSON 或完整原生 result 选值，可用 expectedJson 比较已明确预期。非零退出、截断及后台任务保持未解决；沿原任务ID继续，不重发命令。mode=recall 按id分页取回同一会话记录；inspect只列可用工具。',
     {mode:{type:'string',enum:['execute','recall','inspect']},question:{type:'string'},tool:{type:'string',enum:['pwsh','ops_bash','bash','job_output','read','grep','glob','ops_stat','ops_read_files','ops_inspect_local_file']},arguments:{type:'object'},
-      sources:{type:'array',maxItems:16,items:{type:'string'}},cases:{type:'array',maxItems:8,items:{type:'object',additionalProperties:false,properties:{name:{type:'string'},target:{type:'string',enum:['stdout','result']},pointer:{type:'string'},expectedJson:{type:'string'}},required:['name','pointer']}},
+      sources:{type:'array',maxItems:16,items:{type:'string'},description:'Explicit dependencies for this observation. File paths are relative to the project directory. Native file metadata is observed around execution; URLs and missing metadata remain unknown.'},cases:{type:'array',maxItems:8,items:{type:'object',additionalProperties:false,properties:{name:{type:'string'},target:{type:'string',enum:['stdout','result']},pointer:{type:'string'},expectedJson:{type:'string'}},required:['name','pointer']}},
       id:{type:'string'},offset:{type:'integer',minimum:0},maxChars:{type:'integer',minimum:1024,maximum:12000}},[],(args,exec)=>executionEvidence.execute(exec.agent,args,exec.signal));
   register('evidence_index','查询或维护有真实源码支持的附加检索入口；query读取当前源码核对，learn保留原入口，semantic=true时额外调用模型核对别名。',
     {mode:{type:'string',enum:['query','learn']},query:{type:'string'},file:{type:'string'},line:{type:'integer',minimum:1},quote:{type:'string'},semantic:{type:'boolean'}},['mode','query'],(args,exec)=>args.mode==='query'?index.query(exec.agent,args.query,exec.signal):index.learn(exec.agent,args,exec.signal));

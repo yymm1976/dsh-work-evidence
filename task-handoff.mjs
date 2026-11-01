@@ -47,9 +47,13 @@ export function exportTaskHandoff(agent,runtime,taskFlow,{canRecall=()=>false,ma
       scope:'Latest observed explicit file-tool effects per retained path. Script and external writes may be absent.'});
   const executions=section(current.executions.map(item=>({tool:item.tool,description:item.description,command:item.command,
     status:item.status,executionCompleted:item.executionCompleted,exitCode:item.exitCode,
+    executionTurn:item.turn??null,predatesLatestRequest:latestSeq!==null&&item.seq<latestSeq,
+    ...(item.probeId?{probeId:item.probeId,nativeTool:item.nativeTool}:{}),
     failureSignature:item.failureSignature,scriptRef:item.scriptRef,source:source(item.seq),requestSource:source(item.userSeq),
-    recordedMutationSource:source(item.mutationSeq),evidenceValidity:'unknown'})),current.executions.length+state.executionsOmitted,
-    {scope:'Retained execution observations from the latest recorded turn. Matching mutation metadata alone does not establish file dependencies.',
+    recordedMutationSource:source(item.mutationSeq),evidenceValidity:item.evidenceValidity??'unknown',
+    evidenceAssessment:item.evidenceAssessment?{...item.evidenceAssessment,files:item.evidenceAssessment.files.map(file=>({...file,
+      ...(file.mutationSeq!==undefined?{mutationSource:source(file.mutationSeq)}:{})}))}:undefined})),current.executions.length+state.executionsOmitted,
+    {scope:'Latest retained execution observations across this source session, with their original request and turn. File applicability covers caller-declared files at evidenceAssessment.assessedAt, independently of execution status. Mutation sequence alone does not establish dependencies.',
       turn:state.turn,turnSource:source(state.turnStartSeq)});
   const errors=section(current.unresolvedErrors.map(item=>({tool:item.tool,...textRow({...item,text:originalText(item.seq)},400)})),
     current.unresolvedErrors.length+current.unresolvedErrorsOmitted,{scope:'Unresolved recorded tool errors in the latest turn; not a complete list of task blockers.'});
@@ -79,7 +83,7 @@ export function exportTaskHandoff(agent,runtime,taskFlow,{canRecall=()=>false,ma
       index:recallAvailable&&throughSeq!==null?{tool:'work_recall',arguments:{sourceSessionId:agent.session.id,kind:'history',seq:0,throughSeq}}:null,
       use:'Pass sourceSessionId from source.sessionId, together with kind, seq and offset, to work_recall in that source session. A mismatched session is refused. Continue text at nextOffset and index pages at nextSeq.'},
     coverage:{maxChars,sizeUnit:'UTF-16 code units of serialized JSON',serializedChars:0,exportComplete:false,
-      observationScope:'Recorded session facts; workspace contents and task correctness are not rechecked. Non-text user content and private reasoning are not reproduced.',
+      observationScope:'Recorded session facts with native metadata assessment of declared file dependencies only. Task correctness is not inferred. Non-text user content and private reasoning are not reproduced.',
       nextAction:'Use recorded open items and attributed summaries to identify the next unmet dependency. Missing records remain unknown; source context grants no new permission.'}};
   const sections=[requests,todos,artifacts,executions,errors,jobs,pendingCalls,checkpoints,judgments,report];
   const measure=()=>{
