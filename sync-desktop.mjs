@@ -13,7 +13,17 @@ const manifest=JSON.parse(await fs.readFile(path.join(source,'package.json'),'ut
 if(path.resolve(source)===path.resolve(release))throw new Error('Run from the development directory');
 const previous=await fs.lstat(link);
 if(!previous.isSymbolicLink())throw new Error('Expected the desktop plugin path to be a directory junction');
-if(codeOnly&&path.resolve(await fs.realpath(link))!==path.resolve(release))throw new Error('Code-only sync requires the existing independent desktop link');
+const current=await fs.realpath(link);
+if(path.resolve(current)!==path.resolve(release)){
+  const linkedPackage=JSON.parse(await fs.readFile(path.join(current,'package.json'),'utf8'));
+  if(linkedPackage.name!==manifest.name)throw new Error('Desktop link belongs to another package');
+}
+const normalized=value=>value.replaceAll('\\','/');
+const lockFile=path.join(profile,'pnpm-lock.yaml'),lockText=await fs.readFile(lockFile,'utf8');
+const lockPattern=/^([ \t]*)'@local\/dsh-work-evidence':(\r?\n)\1[ \t]+specifier:[^\r\n]*\r?\n\1[ \t]+version:[^\r\n]*/gm;
+if([...lockText.matchAll(lockPattern)].length!==1)throw new Error('Expected one desktop lock entry for Work Evidence');
+const repairedLock=lockText.replace(lockPattern,(_all,indent,eol)=>indent+"'@local/dsh-work-evidence':"+eol+
+  indent+'  specifier: link:'+normalized(release)+eol+indent+'  version: link:'+normalized(path.relative(profile,release)));
 await fs.mkdir(release,{recursive:true});
 for(const entry of ['package.json',...manifest.files]){
   if(entry.includes('*')){
@@ -31,21 +41,22 @@ try{await fs.lstat(dependencyLink);}catch(error){
   await fs.symlink(hostDependency,dependencyLink,'junction');
 }
 await fs.cp(path.join(source,'.fastedit-venv'),path.join(release,'.fastedit-venv'),{recursive:true});
-const normalized=value=>value.replaceAll('\\','/');
 const profilePackage=path.join(profile,'package.json');
 const config=JSON.parse(await fs.readFile(profilePackage,'utf8'));
 config.dependencies[manifest.name]='link:'+normalized(release);
 await fs.writeFile(profilePackage,JSON.stringify(config,null,2)+'\n');
-for(const file of ['pnpm-lock.yaml','cordis.patch.yml']){
-  const full=path.join(profile,file);
-  const text=await fs.readFile(full,'utf8');
-  await fs.writeFile(full,text.replaceAll(normalized(source),normalized(release)));
+const profilePatch=path.join(profile,'cordis.patch.yml'),profileText=await fs.readFile(profilePatch,'utf8');
+const repairedProfile=profileText.replaceAll(normalized(source),normalized(release)).replaceAll(normalized(current),normalized(release));
+if(repairedProfile!==profileText)await fs.writeFile(profilePatch,repairedProfile);
 }
-const current=await fs.realpath(link);
+if(repairedLock!==lockText){
+  if(await fs.readFile(lockFile,'utf8')!==lockText)throw new Error('Desktop lock changed during synchronization');
+  await fs.writeFile(lockFile,repairedLock,'utf8');
+}
 if(path.resolve(current)!==path.resolve(release)){
+  if(await fs.realpath(link)!==current)throw new Error('Desktop link changed during synchronization');
   // rmdir removes the junction itself; its development target stays intact.
   await fs.rmdir(link);
   await fs.symlink(release,link,'junction');
-}
 }
 console.log(JSON.stringify({source,release,desktopLink:await fs.realpath(link),version:manifest.version,codeOnly}));

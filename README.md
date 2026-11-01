@@ -116,8 +116,8 @@ stubSummary 保留问题处理标记、事件指针和原文取回。
 加载目录保存独立源码与 Python 环境；宿主依赖来自已安装的桌面运行时。
 修改开发目录不会自动更新桌面加载目录。
 同步使用 node sync-desktop.mjs。正在运行的会话是否采用新代码取决于宿主生命周期。
-桌面已使用独立加载目录时，node sync-desktop.mjs --code-only 仅同步包内代码与说明。
-该选项保留桌面 profile、依赖联接及 Python 环境。
+node sync-desktop.mjs --code-only 同步包内代码与说明，并修正独立目录的加载联接及锁文件路径。
+该选项保留桌面模型配置、依赖环境及 Python 环境。
 
 index.mjs 负责组装和会话事件。
 plugin-command.mjs 负责命令；source-tools.mjs 负责源码和报告入口；management-tools.mjs 负责执行、状态与管理入口。
