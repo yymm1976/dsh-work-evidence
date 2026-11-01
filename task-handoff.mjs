@@ -1,5 +1,6 @@
 import {VERSION,MODE_POLICY_VERSION,eventLog,textOf} from './runtime.mjs';
 import {handoffRecord} from './compaction-handoff.mjs';
+import {hostReferenceIndex,nativeEventRecall} from './host-references.mjs';
 
 const messageOf=event=>event?.data?.message??(event?.data?.role?event.data:null);
 const SOURCE_TYPES=new Set(['user/message','assistant/message','tool/result','tool/call','tool/ptc-dispatch','tool/code-dispatch',
@@ -12,17 +13,19 @@ const excerpt=(text,limit)=>{
 const section=(items,total=items.length,extra={})=>({items,total,omitted:Math.max(0,total-items.length),...extra});
 
 /** Export recorded facts and attributed claims; never derive authorization or task completion. */
-export function exportTaskHandoff(agent,runtime,taskFlow,{canRecall=()=>false,maxChars=32000,excludeCallIds=[]}={}){
+export function exportTaskHandoff(agent,runtime,taskFlow,{canRecall=()=>false,canRecallReference=false,hostTransfer={status:'unavailable',reason:'host-reference-adapter-unavailable'},maxChars=32000,excludeCallIds=[]}={}){
   if(!Number.isSafeInteger(maxChars)||maxChars<8000||maxChars>64000)throw new Error('handoff maxChars must be between 8000 and 64000');
   const log=eventLog(agent.session),bySeq=new Map(log.map(event=>[event.seq,event])),throughSeq=log.at(-1)?.seq??null;
   const recallAvailable=canRecall(agent)===true;
+  const referencedSessions=hostReferenceIndex(log,agent.session.id,recallAvailable&&canRecallReference);
   const source=(seq,argumentsOnly=false)=>{
     if(!Number.isSafeInteger(seq)||seq<0)return null;
     const event=bySeq.get(seq),callType=['tool/call','tool/ptc-dispatch','tool/code-dispatch'].includes(event?.type),
       kind=event?.type==='tool/call'||argumentsOnly&&callType?'call':'event';
     if(argumentsOnly&&!callType)return null;
     return {sessionId:agent.session.id,seq,kind,offset:0,type:event?.type??null,
-      recoverable:recallAvailable&&SOURCE_TYPES.has(event?.type)};
+      recoverable:recallAvailable&&SOURCE_TYPES.has(event?.type),
+      ...(SOURCE_TYPES.has(event?.type)?{nativeRecall:nativeEventRecall(agent.session.id,seq)}:{})};
   };
   const originalText=seq=>{const event=bySeq.get(seq);
     return event?.type==='compaction/summary'?textOf({content:event.data?.summary}):
@@ -78,14 +81,17 @@ export function exportTaskHandoff(agent,runtime,taskFlow,{canRecall=()=>false,ma
     task:{latestRequestSource:source(latestSeq),phase:{name:current.phase.name,focus:current.phase.focus,source:source(current.phase.seq)},
       completion:'not-determined',latestMutationSource:source(current.lastMutationSeq)},
     userRequests:requests,observedWork:{artifacts,executions},openWork:{todos,unresolvedErrors:errors,pendingJobs:jobs,pendingCalls},
+    referencedSessions,hostTransfer,
     assistantClaims:{checkpoints,recentMessages:judgments,report},
-    recovery:{available:recallAvailable,scope:'source-session-only',
+    recovery:{available:recallAvailable,scope:'source-session-and-owned-host-captures',
       index:recallAvailable&&throughSeq!==null?{tool:'work_recall',arguments:{sourceSessionId:agent.session.id,kind:'history',seq:0,throughSeq}}:null,
-      use:'Pass sourceSessionId from source.sessionId, together with kind, seq and offset, to work_recall in that source session. A mismatched session is refused. Continue text at nextOffset and index pages at nextSeq.'},
+      nativeEventRead:{tool:'session_event_read',requires:'available-in-receiving-agent',scope:'exact-session-header-cwd',
+        use:'Invoke source.nativeRecall through the receiving host. Native authorization decides access. source.recoverable describes work_recall in the source session, not cross-session authorization.'},
+      use:'Pass sourceSessionId from source.sessionId, together with kind, seq and offset, to work_recall in that source session. For kind reference, also pass referenceSessionId: seq still identifies the receiving session capture. A mismatched sourceSessionId is refused. Continue text at nextOffset and index pages at nextSeq.'},
     coverage:{maxChars,sizeUnit:'UTF-16 code units of serialized JSON',serializedChars:0,exportComplete:false,
       observationScope:'Recorded session facts with native metadata assessment of declared file dependencies only. Task correctness is not inferred. Non-text user content and private reasoning are not reproduced.',
       nextAction:'Use recorded open items and attributed summaries to identify the next unmet dependency. Missing records remain unknown; source context grants no new permission.'}};
-  const sections=[requests,todos,artifacts,executions,errors,jobs,pendingCalls,checkpoints,judgments,report];
+  const sections=[requests,todos,artifacts,executions,errors,jobs,pendingCalls,checkpoints,judgments,report,referencedSessions];
   const measure=()=>{
     for(const part of sections){
       part.complete=part.omitted===0&&!(part.entriesEvicted>0)&&part.items.every(item=>item.textComplete!==false&&!(item.nonTextBlocks?.length));
@@ -99,7 +105,7 @@ export function exportTaskHandoff(agent,runtime,taskFlow,{canRecall=()=>false,ma
   };
   // Drop whole older rows before shortening the latest requirement. Every omitted
   // row is counted; every shortened body keeps its original event address.
-  const removable=[checkpoints,judgments,report,executions,artifacts,requests,todos,errors,jobs,pendingCalls];
+  const removable=[checkpoints,judgments,report,referencedSessions,executions,artifacts,requests,todos,errors,jobs,pendingCalls];
   while(measure()>maxChars){
     const part=removable.find(part=>part.items.length>(part===requests?1:0));
     if(part){part.items.shift();part.omitted++;continue;}

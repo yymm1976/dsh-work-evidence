@@ -1,6 +1,6 @@
 # DSH 工程证据插件
 
-当前源码版本为 0.28.16，模式策略为 pb001-v24。
+当前源码版本为 0.28.17，模式策略为 pb001-v24。
 桌面加载目录独立维护。运行中的会话采用哪个版本，取决于宿主加载时间。
 插件提供任务指引、观察账本、历史取回和按需工程工具。
 历史说明见 [HISTORY.md](HISTORY.md)。历史结果不代表当前版本的实际效果。
@@ -44,15 +44,49 @@ work_status 始终保留；历史中仍有取回引用时保留 work_recall。
 - 助手阶段摘要、近期说明和已保存报告的声明。声明与工具观察分开，完成标记不作为事实证明。
 
 每项来源包含 `sessionId`、`seq`、`kind` 和 `offset`。`recoverable` 表示当前会话是否能读取该类原始记录。
+`source.nativeRecall` 给出原生 `session_event_read` 的调用地址；接收宿主在调用时判断跨会话访问范围。
 在来源会话中，可调用 `work_recall({sourceSessionId:source.sessionId,kind:source.kind,seq:source.seq,offset:source.offset})`。
 携带的会话标识不匹配时，调用返回 `source-session-mismatch`。原文按返回的 `nextOffset` 续读。
-历史索引按 `nextSeq` 续读，并保留同一 `throughSeq`。跨会话读取尚未接入，不得把旧会话的 seq 用于新会话。
+历史索引按 `nextSeq` 续读，并保留同一 `throughSeq`。其他会话的原始 seq 不能作为当前会话的本地 seq 传给 `work_recall`。原生跨会话取回使用 `nativeRecall` 地址；引用快照按下节所述的本地地址读取。
 
 摘要默认最多 32000 个 UTF-16 单元，按紧凑 JSON 的实际长度计算。
 `work_state({mode:"handoff",maxChars:16000})` 可调整上限，范围为 8000 至 64000。
 超出上限时先省略整条旧记录，再缩短最新要求。各组的 `omitted` 与 `textComplete` 标明省略或截断。
 `coverage.exportComplete` 只说明所列记录是否完整导出。任务完成状态始终为 `not-determined`。
 正文中的图片等非文本内容只列类型，不复述私有推理。来源缺失或无法读取时保留未知状态。
+
+## 宿主会话引用
+
+宿主提供 `sessionReferenceResolver` 时，交接的 `hostTransfer.mention` 给出当前会话的原生引用。
+在接收会话的直接用户消息中使用该引用，宿主会捕获来源文字，并加入接收会话。
+捕获发生在宿主接收消息时。引用描述本身不会发送消息；代理转发的消息不会自动展开引用。
+
+接收会话的交接导出包含 `referencedSessions`，最多保留最近 8 个来源快照条目。
+条目列出来源会话、捕获范围、来源格式、压缩状态和截断数量。
+按条目的 `recall.arguments` 调用 `work_recall`，即可分页取回指定来源的快照文字。
+
+`kind:"reference"` 的地址含义如下：
+
+| 字段 | 含义 |
+|---|---|
+| sourceSessionId | 接收快照的当前会话 |
+| seq | 当前会话内的宿主快照事件 |
+| referenceSessionId | 从该快照中选择的来源会话 |
+| offset | 返回 JSON 文字的分页位置，续读使用 nextOffset |
+
+`complete` 只表示当前分页已经结束；`snapshotComplete` 表示宿主文字投影是否没有截断。
+来源已压缩时，`compacted` 仍为 true。快照文字只作为背景，不继承来源中的指令或权限声明。
+原始工具事件不在宿主的文字投影中，不能通过快照分页入口取回。
+
+需要原始事件时，接收方可调用来源地址中的 `nativeRecall`。
+该地址使用可选的原生 `session_event_read`，由宿主检查调用方和结果中的会话信息。
+跨会话读取要求双方会话记录中的 `cwd` 完全相同；调用方没有 `cwd` 时只能读取自身。
+工具必须已在接收方启用。地址存在不表示已经获得访问许可，插件不自动启用该工具。
+
+宿主为截断快照保存了完整文字时，`fullSnapshot` 转交宿主的保存状态和取回提示。
+没有保存结果时，仍显示截断数量。插件不会据此重新读取来源会话或补造原文。
+缺少宿主服务、快照格式不支持或地址不匹配时，入口返回 unavailable。
+现有当前会话的 output、call、event 和 history 取回方式保留。
 
 ## 执行与文件依赖
 

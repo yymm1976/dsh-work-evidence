@@ -28,6 +28,7 @@ import {installUltraEffort} from './ultra-effort.mjs';
 import {createCompactionHandoff} from "./compaction-handoff.mjs";
 import {createExecutionEvidence} from './execution-evidence.mjs';
 import {createExecutionDependencies} from './execution-dependencies.mjs';
+import {createHostReferences} from './host-references.mjs';
 import {createNativeFiles} from './native-files.mjs';
 import {createEffectObserver} from './effect-observer.mjs';
 import {createHistoryCoordinator} from './history-coordinator.mjs';
@@ -102,6 +103,7 @@ function assertParameterBounds(schema,value,at='arguments'){
 const parameters=properties=>({type:'object',additionalProperties:false,properties:supportedSchema(properties)});
 export function apply(ctx,config={}){
   const nativeFiles=createNativeFiles(ctx);
+  const hostReferences=createHostReferences(ctx);
   const pendingSaves=new Set();
   const runtime=createRuntime(ctx,call,config),state=runtime.get;
   installExecutionDescriptionCompatibility(ctx,runtime);
@@ -116,7 +118,8 @@ export function apply(ctx,config={}){
       archiveObservation:!!ctx.get('fs'),nativeFastpath:nativeReadTools},
       optionalAdapters:{opsRead:{available:['ops_read_files','ops_grep','ops_glob'].every(name=>available(agent,name)),role:'optional-read-adapter'},
         opsCasEdits:{available:['ops_stat','ops_edit_file','ops_write_file'].every(name=>available(agent,name)),role:'optional-verified-exec-edits; fastedit-all-operations-require-ops-stat',fastEditReadAvailable:available(agent,'ops_stat')},
-        externalCompress:{available:available(agent,'compress'),role:'optional-cooperation-not-core-compaction'}},
+        externalCompress:{available:available(agent,'compress'),role:'optional-cooperation-not-core-compaction'},
+        sessionReferences:hostReferences.capabilities(agent)},
       coreNote:'Auxiliary read, search and archive observation use DSH native tools/filesystem. OPS remains optional for its own read path and CAS edits; external compress cooperation is not required by core history folding or request projection.'};
   }
   const contextEconomics=createContextEconomics(ctx,runtime);
@@ -126,8 +129,8 @@ export function apply(ctx,config={}){
   const executionDependencies=createExecutionDependencies(nativeFiles);
   const taskFlow=createTaskFlow(ctx,runtime,{nativeFiles,call,executionDependencies});
   const taskHandoff=async(agent,{signal,...options}={})=>{
-    await refreshExecutionEvidence(agent,signal);
-    return exportTaskHandoff(agent,runtime,taskFlow,{canRecall,...options});
+    const [hostTransfer]=await Promise.all([hostReferences.transfer(agent,signal),refreshExecutionEvidence(agent,signal)]);
+    return exportTaskHandoff(agent,runtime,taskFlow,{canRecall,canRecallReference:hostReferences.capabilities(agent).capturedSnapshotRecall,hostTransfer,...options});
   };
   const retainedCompute=createRetainedCompute(ctx,runtime,taskFlow,call);
   const finalJson=createFinalJsonGuard(ctx,runtime);
@@ -193,8 +196,8 @@ export function apply(ctx,config={}){
         const data=event.data??{};
         if(!['tool/call','tool/ptc-dispatch','tool/code-dispatch'].includes(event.type))continue;
         const args=argsOf(data.arguments);
-        if(['work_exec','work_compute'].includes(data.name))preserveContextResult(agent.session.id,data.rootCallId??data.callId);
-        if(data.name==='work_recall'||data.name==='work_state'&&args.mode==='recall')retainRecalledSources(agent,args.seq);
+        if(['work_exec','work_compute'].includes(data.name)||data.name==='work_recall'&&args.kind==='reference')preserveContextResult(agent.session.id,data.rootCallId??data.callId);
+        if(data.name==='work_recall'&&args.kind!=='reference'||data.name==='work_state'&&args.mode==='recall')retainRecalledSources(agent,args.seq);
       }
     }
     return contextRetainedSources.get(agent.session.id);
@@ -467,7 +470,7 @@ export function apply(ctx,config={}){
       note:'The plugin module is loaded, but automatic behavior and non-status tools are disabled for this session.'};
   }
   registerSourceTools({ctx,nativeFiles,runtime,state,effects,evidenceViews,index,candidates,call,read,search,snippets,sourceReferences,disabledResult,output,parameters});
-  registerManagementTools({ctx,runtime,state,effects,available,capabilityDiagnostic,contextEconomics,taskFlow,taskHandoff,retainedCompute,finalJson,qualityReview,executionEvidence,executionDependencies,refreshExecutionEvidence,workingSet,compressionControl,compactionHandoff,contextWindow,observationLedger,historyCoordinator,clearPluginState,index,candidates,ptcPatterns,ptcFastpath,verifiedExec,fastEditJava,preserveContextResult,retainRecalledSources,hasHistoricalReferences,applyToolSurface,call,disabledResult,output,COMPACT_HIDDEN_TOOLS,assertParameterBounds,parameters});
+  registerManagementTools({ctx,runtime,state,effects,available,capabilityDiagnostic,contextEconomics,taskFlow,taskHandoff,retainedCompute,finalJson,qualityReview,executionEvidence,executionDependencies,refreshExecutionEvidence,hostReferences,workingSet,compressionControl,compactionHandoff,contextWindow,observationLedger,historyCoordinator,clearPluginState,index,candidates,ptcPatterns,ptcFastpath,verifiedExec,fastEditJava,preserveContextResult,retainRecalledSources,hasHistoricalReferences,applyToolSurface,call,disabledResult,output,COMPACT_HIDDEN_TOOLS,assertParameterBounds,parameters});
   ctx.on('tools/result',(exec,result)=>{
     taskFlow.observe(exec,result);
     historyHygiene.observe(exec,result);
