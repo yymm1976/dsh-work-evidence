@@ -36,12 +36,15 @@ test('scoped reviews keep their own allowance and never consume the unscoped bud
   try{
     assert.equal((await run('quality-review:10')).value.ok,true);
     assert.equal((await run('quality-review:10')).value.ok,true);
-    await assert.rejects(()=>run('quality-review:10'),/Auxiliary budget exhausted for quality-review:10 \(2 calls \/ 32000 tokens\)/);
+    // A spent allowance stops the call before dispatch, so it is not an upstream call failure.
+    await assert.rejects(()=>run('quality-review:10'),error=>error.auxiliaryCode==='auxiliary-budget-exhausted'&&
+      error.auxiliaryDispatched===false&&/Auxiliary budget exhausted for quality-review:10 \(2 calls \/ 32000 tokens\)/.test(error.message));
     assert.equal(state.metrics.auxiliaryCalls,2);
     // The reviews took two calls of their own; the unscoped allowance is still whole.
     assert.equal((await run(null)).value.ok,true);
     assert.equal((await run(null)).value.ok,true);
-    await assert.rejects(()=>run(null),/Auxiliary budget exhausted for calls without a budget scope \(2 calls \/ 32000 tokens\)/);
+    await assert.rejects(()=>run(null),error=>error.auxiliaryCode==='auxiliary-budget-exhausted'&&error.auxiliaryDispatched===false&&
+      /Auxiliary budget exhausted for calls without a budget scope \(2 calls \/ 32000 tokens\)/.test(error.message));
     assert.equal(state.metrics.auxiliaryCalls,4);
     assert.equal(dispatched.length,4);
     const record=await budget();
@@ -60,7 +63,8 @@ test('an auxiliary failure stops only the budget that failed',async()=>{
     assert.equal(state.metrics.auxiliaryFailures,1);
     control.finishKind='stop';
     assert.equal((await run(null)).value.ok,true);
-    await assert.rejects(()=>run('quality-review:11'),/Auxiliary calls for quality-review:11 stopped after a prior failure/);
+    await assert.rejects(()=>run('quality-review:11'),error=>error.auxiliaryCode==='auxiliary-scope-stopped'&&error.auxiliaryDispatched===false&&
+      /Auxiliary calls for quality-review:11 stopped after a prior failure/.test(error.message));
     const afterReviewFailure=await budget();
     assert.equal(afterReviewFailure.scopes['quality-review:11'].failed,true);
     assert.equal(afterReviewFailure.general.failed,false);
@@ -68,7 +72,8 @@ test('an auxiliary failure stops only the budget that failed',async()=>{
     control.finishKind='length';
     await assert.rejects(()=>run(null),/Auxiliary call did not finish: length/);
     control.finishKind='stop';
-    await assert.rejects(()=>run(null),/Auxiliary calls without a budget scope stopped after a prior failure/);
+    await assert.rejects(()=>run(null),error=>error.auxiliaryCode==='auxiliary-scope-stopped'&&error.auxiliaryDispatched===false&&
+      /Auxiliary calls without a budget scope stopped after a prior failure/.test(error.message));
     assert.equal((await run('quality-review:12')).value.ok,true);
     assert.equal((await budget()).general.failed,true);
   }finally{await close();}
@@ -138,9 +143,33 @@ test('an explicit single-call scope keeps its own bounded retry',async()=>{
   const {dispatched,run,close}=await start();
   try{
     assert.equal((await run('quality-review:13:explicit-retry',1)).value.ok,true);
-    await assert.rejects(()=>run('quality-review:13:explicit-retry',1),/Auxiliary budget exhausted for quality-review:13:explicit-retry \(1 calls \/ 32000 tokens\)/);
+    await assert.rejects(()=>run('quality-review:13:explicit-retry',1),error=>error.auxiliaryCode==='auxiliary-budget-exhausted'&&
+      error.auxiliaryDispatched===false&&
+      /Auxiliary budget exhausted for quality-review:13:explicit-retry \(1 calls \/ 32000 tokens\)/.test(error.message));
     assert.equal(dispatched.length,1);
   }finally{await close();}
+});
+
+test('a budget that cannot be read or saved stops before dispatch and hands the call back',async()=>{
+  const missing=await start();
+  try{
+    missing.state.telemetryDir=null;
+    await assert.rejects(()=>missing.run('quality-review:14'),error=>error.auxiliaryCode==='auxiliary-budget-unavailable'&&
+      error.auxiliaryDispatched===false&&/persistent session storage/.test(error.message));
+    assert.equal(missing.dispatched.length,0);
+  }finally{await missing.close();}
+  const unsavable=await start();
+  try{
+    // A file where the storage directory should be makes the reserve write fail. Nothing was
+    // dispatched, so the allowance is handed back instead of being silently spent.
+    const blocker=path.join(path.dirname(unsavable.file),'budget-blocker');
+    await fs.writeFile(blocker,'not a directory','utf8');
+    unsavable.state.telemetryDir=path.join(blocker,'telemetry');
+    await assert.rejects(()=>unsavable.run(null),error=>error.auxiliaryCode==='auxiliary-budget-unavailable'&&
+      error.auxiliaryDispatched===false&&/could not be saved/.test(error.message));
+    assert.equal(unsavable.dispatched.length,0);
+    assert.deepEqual(unsavable.state.auxiliaryBudget.general,{calls:0,tokens:0,failed:false});
+  }finally{await unsavable.close();}
 });
 
 test('a malformed budget record is rejected before any dispatch',async()=>{
@@ -158,8 +187,19 @@ test('a malformed budget record is rejected before any dispatch',async()=>{
     const {dispatched,run,close,file}=await start();
     try{
       await fs.writeFile(file,JSON.stringify(record),{flag:'wx'});
-      await assert.rejects(()=>run(null),/Invalid auxiliary budget record/);
+      await assert.rejects(()=>run(null),error=>error.auxiliaryCode==='auxiliary-budget-invalid'&&error.auxiliaryDispatched===false&&
+        /Invalid auxiliary budget record/.test(error.message));
       assert.equal(dispatched.length,0);
     }finally{await close();}
   }
+});
+
+test('budget record text that is not JSON is identified as an invalid record',async()=>{
+  const {dispatched,run,close,file}=await start();
+  try{
+    await fs.writeFile(file,'{stopped mid-write','utf8');
+    await assert.rejects(()=>run(null),error=>error.auxiliaryCode==='auxiliary-budget-invalid'&&error.auxiliaryDispatched===false&&
+      /not readable JSON/.test(error.message));
+    assert.equal(dispatched.length,0);
+  }finally{await close();}
 });

@@ -45,6 +45,18 @@ test('verified_exec previews, applies through OPS revisions and deopts on a stal
   assert.equal(results[3].status,'applied');
 });
 
+test('verified_exec keeps replacement text literal and addresses every edit in the original source', {skip:!hasOps}, async()=>{
+  const literal="literal $$ $& $` $' second";
+  const edits=[{file:'a.txt',mode:'replace_exact',old_text:'first',new_text:literal},
+    {file:'a.txt',mode:'replace_exact',old_text:'second',new_text:'changed'}];
+  const {results,read}=await run([
+    [tool('verified_exec',{summary:'Preview the requested literal edits',apply:false,edits})],
+    [tool('verified_exec',{summary:'Apply the requested literal edits',apply:true,edits})],
+  ],{'a.txt':'first second\n'});
+  assert.equal(results[0].status,'previewed');assert.equal(results[1].status,'applied');
+  assert.equal(read['a.txt'],literal+' changed\n');
+});
+
 test('fastedit_java finds, reads and replaces one method through the native pwsh bridge', {skip:!hasOps||!existsSync(PYTHON)}, async()=>{
   const java='public class Calc {\n  public int add(int a, int b) {\n    return a + b;\n  }\n\n  public int sub(int a, int b) {\n    return a - b;\n  }\n}\n';
   const replacement='public int add(int a, int b) {\n    return b + a;\n  }';

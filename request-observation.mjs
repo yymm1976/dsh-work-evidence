@@ -1,4 +1,4 @@
-import {canonicalUsage} from './context-economics.mjs';
+import {canonicalUsage,requestKindOf} from './context-economics.mjs';
 
 const fields=['inputTokens','cacheReadTokens','cacheWriteTokens','outputTokens','reasoningTokens','totalTokens'];
 export function measureText(value){
@@ -19,9 +19,9 @@ export function observeRequests(ctx,runtime){
     const config=runtime.get(agent).config;
     if(!config.requestAccounting&&!config.requestProjection&&!config.compressionControl){yield* next();return;}
     const s=runtime.sync(agent),started=performance.now();
-    const auxiliary=!!options.purpose||s.auxiliarySignals.has(options.signal);
-    const effectRecord=runtime.effects?.begin(agent,options,{auxiliary});
-    const record={ordinal:auxiliary?null:++s.metrics.contextRequests,at:new Date().toISOString(),sourceSeq:agent.session.seq,preset:s.selectedPreset||null,mode:runtime.modeStatus(agent),auxiliary,purpose:options.purpose??(auxiliary?'work-evidence-auxiliary':null),
+    const requestKind=requestKindOf({purpose:options.purpose,auxiliary:s.auxiliarySignals.has(options.signal)}),auxiliary=requestKind==='auxiliary',main=requestKind==='main';
+    const effectRecord=runtime.effects?.begin(agent,options,{auxiliary,requestKind});
+    const record={ordinal:main?++s.metrics.contextRequests:null,at:new Date().toISOString(),sourceSeq:agent.session.seq,preset:s.selectedPreset||null,mode:runtime.modeStatus(agent),requestKind,auxiliary,purpose:options.purpose??(auxiliary?'work-evidence-auxiliary':null),
       provider:options.provider,model:options.model,reasoningEffort:options.reasoningEffort??null,maxTokens:options.maxTokens??null,
       parameterScope:'assembled-llm-options; provider transport mapping not observed',
       generation:Number.isSafeInteger(agent.session.surface?.contentGeneration)?agent.session.surface.contentGeneration:null,
@@ -31,7 +31,7 @@ export function observeRequests(ctx,runtime){
       modelTextScope:'assembled text, reasoning, tool-call arguments and media descriptors after projection plus schemas; excludes source metadata; provider transport projection unobserved',
       finishReason:null,failureCode:null,usage:null,elapsedMs:null,settled:false};
     if(config.requestAccounting){s.requestObservations.push(record);if(s.requestObservations.length>24)s.requestObservations.shift();}
-    if(!auxiliary){s.metrics.contextRequestChars+=record.requestText.stringUnits;s.metrics.contextModelTextChars+=record.modelText.stringUnits;}s.dirty=true;
+    if(main){s.metrics.contextRequestChars+=record.requestText.stringUnits;s.metrics.contextModelTextChars+=record.modelText.stringUnits;}s.dirty=true;
     try{
       for await(const chunk of next()){
         if(chunk.type==='usage'){
@@ -49,7 +49,7 @@ export function observeRequests(ctx,runtime){
       runtime.contextControl?.requestFinished(agent,options,record);
       if(effectRecord){Object.assign(effectRecord,{usage:record.usage,usageSources:record.usageSources,usageConsistent:record.usageConsistent,usageComplete:record.usageComplete,
         settled:record.settled,finishReason:record.finishReason,failureCode:record.failureCode,elapsedMs:record.elapsedMs,aborted:record.aborted});runtime.effects.finish(agent,effectRecord);}
-      if(!auxiliary)runtime.noteProjectionDispatch?.(agent,options,effectRecord);
+      if(main)runtime.noteProjectionDispatch?.(agent,options,effectRecord);
     }
   });
 }

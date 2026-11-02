@@ -39,3 +39,27 @@ test('raw invalid usage keeps its provenance across request accounting, economic
     await runtime.effects.dispose();
   }
 });
+
+test('host compaction, plugin review and main requests are counted separately without calibrating main pressure from compaction',async t=>{
+  const folder=await fs.mkdtemp(path.join(os.tmpdir(),'we-purpose-accounting-'));
+  t.after(async()=>{const relative=path.relative(os.tmpdir(),folder);assert.ok(relative&&!relative.startsWith('..')&&!path.isAbsolute(relative));await fs.rm(folder,{recursive:true,force:true});});
+  const hooks=new Map(),agent={session:{id:'purpose-accounting',seq:0,surface:{nodes:[],contentGeneration:0},requestHeader:()=>({config:{provider:'p',model:'m'}})}};
+  const state={telemetryDir:folder,config:defaults(),metrics:{contextRequests:0,contextRequestChars:0,contextModelTextChars:0},requestObservations:[],auxiliarySignals:new WeakSet()};
+  const ctx={on:(name,fn)=>{hooks.set(name,fn);return ()=>{};},agents:{get:()=>agent}};
+  let projected=0;
+  const runtime={get:()=>state,init:async()=>state,sync:()=>state,isEnabled:()=>true,modeStatus:()=>({selected:'aggressive'}),noteProjectionDispatch:()=>projected++};
+  runtime.effects=createEffectObserver(ctx,runtime);runtime.contextControl=createContextEconomics(ctx,runtime);observeRequests(ctx,runtime);
+  for(const purpose of [null,'compaction','work-evidence:quality-review']){
+    const options={sessionId:agent.session.id,provider:'p',model:'m',signal:new AbortController().signal,purpose,
+      messages:[{role:'user',content:[{type:'text',text:'request'}]}],tools:[]};
+    for await(const _chunk of hooks.get('llm/stream')(options,async function*(){yield {type:'usage',usage:{inputTokens:100,outputTokens:50,totalTokens:150}};yield {type:'finish',reason:{kind:'stop'}};})){}
+  }
+  await runtime.effects.flush(agent);
+  assert.deepEqual(state.requestObservations.map(r=>[r.requestKind,r.auxiliary]),[['main',false],['compaction',false],['auxiliary',true]]);
+  assert.equal(projected,1);assert.equal(state.metrics.contextRequests,1);
+  const economics=runtime.contextControl.summary(agent),effects=runtime.effects.snapshot(agent);
+  assert.equal(economics.mainRequests,1);assert.equal(economics.compactionRequests,1);assert.equal(economics.auxiliaryRequests,1);
+  assert.equal(economics.mainHistory.length,1);assert.equal(effects.requests.main,1);assert.equal(effects.requests.compaction,1);assert.equal(effects.requests.auxiliary,1);
+  assert.equal(effects.requests.providerReported.totalTokens,450);
+  await runtime.effects.dispose();
+});

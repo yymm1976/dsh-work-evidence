@@ -3,6 +3,7 @@ import {argsOf,eventLog} from './runtime.mjs';
 import {planContextPrune,readDispatch,hasPruneProblem} from './context-pruning.mjs';
 import {resultText,surfaceReferences} from './visible-results.mjs';
 import {renderedReads} from './observation-ledger.mjs';
+import {messageTokens} from './context-economics.mjs';
 
 const AGE=2,MIN_SAVING=512;
 const messageOf=event=>event.data?.message??(event.data?.role?event.data:null);
@@ -95,6 +96,7 @@ export function createHistoryHygiene(runtime,taskFlow,{isProtected=()=>false,ret
     const allowed=(feature,before,after,seq)=>{
       const economics=runtime.contextControl?.assess(agent,{messages:[before],proposedMessages:undefined,
         savedChars:JSON.stringify(before.content).length-JSON.stringify(after.content).length,changedSeq:seq,changedMessageId:before.id,
+        savedTokensEstimate:Math.max(0,messageTokens(before)-messageTokens(after)),
         ...(feature==='referenceContext'?{route:runtime.currentSelection?.(agent)??null}:{})});
       if(record&&economics){runtime.contextControl.remember(agent,economics,feature);
         runtime.effects?.decide(agent,feature,economics.allowed?'approved':'deferred',economics.reason,{sourceSeq:seq,economics});}

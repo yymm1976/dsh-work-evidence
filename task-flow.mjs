@@ -60,7 +60,7 @@ const messageOf=event=>event?.data?.message??(event?.data?.role?event.data:null)
 function localRecallObservation(agent,args,result){
   const kind=args.kind??'output',sessionId=args.sourceSessionId??agent.session.id;
   const target={sessionId,seq:args.seq,kind,...(kind==='reference'?{referenceSessionId:args.referenceSessionId}:{}),offset:args.offset??0};
-  const base={tool:'work_recall',target,bodyRetained:false,authority:'historical-data',deliveryVisibility:'not-assessed'};
+  const base={tool:'work_recall',target,bodyRetained:false,authority:kind==='reference'?'untrusted-background':'historical-data',deliveryVisibility:'not-assessed'};
   if(sessionId!==agent.session.id)return {...base,status:'denied',reason:'source-session-mismatch'};
   const raw=result.value??parseResult(resultText(result.content)),value=raw?.data??raw;
   if(value?.status!=='observed')return {...base,status:['unavailable','disabled','cancelled'].includes(value?.status)?value.status:'unknown',

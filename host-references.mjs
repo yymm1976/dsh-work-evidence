@@ -14,6 +14,7 @@ export const nativeEventRecall=(sessionId,seq)=>({tool:'session_event_read',argu
 export function nativeReadObservation(ownerId,args,result){
   const sessionId=args?.session_id??ownerId,seq=args?.seq;
   const target=identity(sessionId)&&integer(seq)?{sessionId,seq}:null;
+  const base={target,authority:'historical-data',deliveryVisibility:'not-assessed',bodyRetained:false};
   const text=(result.content??[]).filter(block=>block?.type==='text').map(block=>block.text??'').join('\n');
   const errorCode=result.error?.code??result.value?.error?.code??result.value?.code;
   if(result.isError){
@@ -26,13 +27,13 @@ export function nativeReadObservation(ownerId,args,result){
     const status=code==='SESSION_QUERY_TOOL_UNAUTHORIZED'?'denied':
       ['SESSION_QUERY_EVENT_NOT_FOUND','SESSION_QUERY_SESSION_NOT_FOUND'].includes(code)?'missing':
       code==='SESSION_QUERY_ABORTED'?'cancelled':'unavailable';
-    return {target,status,code,authorization:'host-decides-per-call',bodyRetained:false};
+    return {...base,status,code,authorization:'host-decides-per-call'};
   }
   const match=/^Session ([^\r\n]+?) — [^\r\n]*\r?\nTarget event seq (\d+):\r?\n```json\r?\n([\s\S]*?)\r?\n```(?:\r?\n|$)/.exec(text);
   let event;try{if(match)event=JSON.parse(match[3]);}catch{}
   if(!target||!event||match[1]!==sessionId||Number(match[2])!==seq||event.seq!==seq||typeof event.type!=='string')
-    return {target,status:'unknown',reason:'host-result-not-recognized',authorization:'not-inferred',bodyRetained:false};
-  return {target,status:'observed',eventType:event.type,authorization:'host-authorized-at-read',bodyRetained:false};
+    return {...base,status:'unknown',reason:'host-result-not-recognized',authorization:'not-inferred'};
+  return {...base,status:'observed',eventType:event.type,authorization:'host-authorized-at-read'};
 }
 
 function referencesOf(event){
@@ -60,13 +61,18 @@ export function hostReferenceIndex(log,ownerId,recallAvailable=false){
     if(capture.reason){
       total++;items.push({status:'unavailable',reason:capture.reason,textComplete:false,
         source:{sessionId:ownerId,seq:event.seq,kind:'event',offset:0,type:event.type,recoverable:false}});
-    }else for(const ref of capture.references){
-      const source=sourceOf(ownerId,event.seq,ref.sessionId,recallAvailable);
-      total++;items.push({status:'captured',referenceSessionId:ref.sessionId,label:ref.label,
+    }else{
+      let envelope;try{envelope=captureEnvelope(event);}catch{}
+      for(const ref of capture.references){
+      let bodyAvailable=false;
+      try{if(envelope){capturedSource(event,ref,envelope);bodyAvailable=true;}}catch{}
+      const recoverable=recallAvailable&&bodyAvailable,source=sourceOf(ownerId,event.seq,ref.sessionId,recoverable);
+      total++;items.push({status:bodyAvailable?'captured':'unavailable',...(bodyAvailable?{}:{reason:'host-capture-body-unavailable'}),referenceSessionId:ref.sessionId,label:ref.label,
         capturedThroughSeq:ref.capturedThroughSeq,capturedFormatVersion:ref.capturedFormatVersion??0,
         originalMessages:ref.originalMessages,retainedMessages:ref.retainedMessages,omittedMessages:ref.omittedMessages,
-        omittedBytes:ref.omittedBytes,compacted:ref.compacted,snapshotComplete:!ref.truncated,textComplete:!ref.truncated,
-        authority:'untrusted-background',source,recall:recallAvailable?recallOf(source):null});
+        omittedBytes:ref.omittedBytes,compacted:ref.compacted,snapshotComplete:bodyAvailable&&!ref.truncated,textComplete:bodyAvailable&&!ref.truncated,
+        authority:'untrusted-background',source,recall:recoverable?recallOf(source):null});
+      }
     }
     if(items.length>LIMIT)items.splice(0,items.length-LIMIT);
   }
@@ -82,13 +88,19 @@ function captureEnvelope(event){
   return {data:JSON.parse(text.slice(start+open.length,end)),prefix:text.slice(0,start+open.length),suffix:text.slice(end),tail:text.slice(end+close.length)};
 }
 
-function capturedText(event,ref,envelope=captureEnvelope(event)){
+function capturedSource(event,ref,envelope=captureEnvelope(event)){
   const {data}=envelope;
   const selected=Array.isArray(data)?data[ref.inputIndex]:null;
   if(!selected||selected.sessionId!==ref.sessionId||selected.capturedThroughSeq!==ref.capturedThroughSeq||selected.label!==ref.label||
     !Array.isArray(selected.conversation)||selected.conversation.length!==ref.retainedMessages||
-    selected.conversation.some(item=>!['user','assistant'].includes(item?.role)||typeof item.text!=='string'))
+    selected.conversation.some(item=>!['user','assistant'].includes(item?.role)||typeof item.text!=='string')||
+    selected.cwd!==undefined&&selected.cwd!==null&&typeof selected.cwd!=='string')
     throw new Error('Host reference body does not match its capture metadata');
+  return selected;
+}
+
+function capturedText(event,ref,envelope=captureEnvelope(event)){
+  const selected=capturedSource(event,ref,envelope);
   let fullSnapshot={status:'not-needed'};
   if(ref.truncated){
     fullSnapshot={status:'unavailable',reason:'host-omission-notice-unavailable'};
@@ -101,7 +113,7 @@ function capturedText(event,ref,envelope=captureEnvelope(event)){
         fullSnapshot=notice.fullSnapshot;
     }catch{}
   }
-  return {text:JSON.stringify({sessionId:ref.sessionId,label:ref.label,capturedThroughSeq:ref.capturedThroughSeq,
+  return {text:JSON.stringify({sessionId:ref.sessionId,label:ref.label,...(selected.cwd!==undefined?{cwd:selected.cwd}:{}),capturedThroughSeq:ref.capturedThroughSeq,
     capturedFormatVersion:ref.capturedFormatVersion??0,compacted:ref.compacted,conversation:selected.conversation.map(item=>({role:item.role,text:item.text}))}),fullSnapshot};
 }
 
@@ -147,7 +159,9 @@ export function createHostReferences(ctx){
     try{projection=capturedText(snapshot.target,ref);}catch{
       return {status:'unavailable',reason:'host-capture-body-unavailable',executionOccurred:false};
     }
-    const end=Math.min(projection.text.length,offset+maxChars),source=sourceOf(agent.session.id,seq,ref.sessionId,true);
+    const source=sourceOf(agent.session.id,seq,ref.sessionId,true);
+    if(offset>projection.text.length)return {status:'unavailable',reason:'reference-offset-out-of-range',source,offset,totalChars:projection.text.length,executionOccurred:false};
+    const end=Math.min(projection.text.length,offset+maxChars);
     return {status:'observed',historical:true,scope:SCOPE,authority:'untrusted-background',warning,source,
       referenceSessionId:ref.sessionId,capturedThroughSeq:ref.capturedThroughSeq,capturedFormatVersion:ref.capturedFormatVersion??0,
       compacted:ref.compacted,snapshotComplete:!ref.truncated,originalMessages:ref.originalMessages,retainedMessages:ref.retainedMessages,

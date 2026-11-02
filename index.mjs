@@ -19,7 +19,7 @@ import {observeRequests} from './request-observation.mjs';
 import {createContextWindow} from './context-window.mjs';
 import {createObservationLedger} from './observation-ledger.mjs';
 import {createEvidenceViews} from './evidence-view.mjs';
-import {createContextEconomics} from './context-economics.mjs';
+import {createContextEconomics,messageTokens} from './context-economics.mjs';
 import {createRequestWorkingSet} from './request-working-set.mjs';
 import {createCompressionControl} from './compression-control.mjs';
 import {createTaskFlow,taskFlowGuidance,textPaths} from './task-flow.mjs';
@@ -283,6 +283,7 @@ export function apply(ctx,config={}){
           }
           const economics=contextEconomics.remember(agent,contextEconomics.assess(agent,{
             savedChars:result.charsBefore-result.charsAfter,changedSeq:seq,
+            savedTokensEstimate:Math.max(0,messageTokens(original)-messageTokens({...original,content:result.content})),
             emergency:contextEconomics.pressure(agent).emergency,
           }),'contextPrune');
           effects.decide(agent,'contextPrune',economics.allowed?'approved':'deferred',economics.reason,{seq,economics});

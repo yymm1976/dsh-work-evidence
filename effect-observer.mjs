@@ -1,7 +1,7 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import {randomUUID} from 'node:crypto';
-import {canonicalUsage,messageTokens,textTokens} from './context-economics.mjs';
+import {canonicalUsage,messageTokens,textTokens,requestKindOf} from './context-economics.mjs';
 
 const contentKey=message=>JSON.stringify({role:message.role,content:message.content,toolCallId:message.toolCallId,isError:message.isError});
 const chars=messages=>messages.reduce((sum,message)=>sum+(message.content??[]).reduce((n,block)=>n+String(block.text??(block.type==='tool-call'?JSON.stringify(block.arguments??{}):'')).length,0),0);
@@ -27,7 +27,7 @@ const RETIRED_FEATURES=new Set(['programHistory','ledgerFold','foldPlan','reason
 export function createEffectObserver(ctx,runtime){
   const states=new Map();
   const storageFor=agent=>{const s=runtime.get(agent);return s.telemetryDir===undefined?s.dir:s.telemetryDir;};
-  const get=agent=>{let state=states.get(agent.session.id);if(!state){state={features:{},effects:new Map(),decisions:[],pendingDecisions:[],recentRequests:[],requests:0,mainRequests:0,auxiliaryRequests:0,missingUsage:0,unknownConsumption:0,reported:{inputTokens:0,cacheReadTokens:0,cacheWriteTokens:0,outputTokens:0,totalTokens:0},totals:{directTokensEstimate:0,directChars:0,instructionTokensEstimate:0,systemTokensEstimate:0,messageTokensEstimate:0,toolSchemaTokensEstimate:0,requestReconstructionMisses:0},queue:Promise.resolve(),writeErrors:[],effectBytes:0,loaded:false,snippets:new Map(),needsLeadingNewline:new Set()};states.set(agent.session.id,state);}return state;};
+  const get=agent=>{let state=states.get(agent.session.id);if(!state){state={features:{},effects:new Map(),decisions:[],pendingDecisions:[],recentRequests:[],requests:0,mainRequests:0,auxiliaryRequests:0,compactionRequests:0,completeUsageRequests:0,missingUsage:0,unknownConsumption:0,reported:{inputTokens:0,cacheReadTokens:0,cacheWriteTokens:0,outputTokens:0,totalTokens:0},rawReported:{inputTokens:0,cacheReadTokens:0,cacheWriteTokens:0,outputTokens:0,totalTokens:0},totals:{directTokensEstimate:0,directChars:0,instructionTokensEstimate:0,systemTokensEstimate:0,messageTokensEstimate:0,toolSchemaTokensEstimate:0,requestReconstructionMisses:0},queue:Promise.resolve(),writeErrors:[],effectBytes:0,loaded:false,snippets:new Map(),needsLeadingNewline:new Set()};states.set(agent.session.id,state);}return state;};
   function feature(state,name){return state.features[name]??=( {decisions:0,applied:0,deferred:0,notApplicable:0,unavailable:0,failed:0,requestsAffected:0,directTokensEstimate:0,directChars:0,reasons:{}} );}
   function decide(agent,name,status,reason,details={}){
     const state=get(agent),item=feature(state,name);item.decisions++;item[status==='not-applicable'?'notApplicable':status]=(item[status==='not-applicable'?'notApplicable':status]??0)+1;item.lastStatus=status;item.lastReason=reason;item.reasons[reason]=(item.reasons[reason]??0)+1;
@@ -59,8 +59,9 @@ export function createEffectObserver(ctx,runtime){
       // so the file still ends mid-line and the following row must keep its own leading newline.
       state.needsLeadingNewline.delete(kind);}).catch(error=>{state.writeErrors.push(String(error.message).slice(0,240));state.writeErrors=state.writeErrors.slice(-8);});
   }
-  function begin(agent,options,{auxiliary=false}={}){
-    const state=get(agent),byFeature={},used=new Set();let misses=0;
+  function begin(agent,options,{auxiliary=false,requestKind}={}){
+    requestKind=requestKindOf({purpose:options.purpose,auxiliary,requestKind});
+    const main=requestKind==='main',state=get(agent),byFeature={},used=new Set();let misses=0;
     const expand=(message,depth=0)=>{
       if(depth>16){misses++;return [message];}
       const list=state.effects.get(message.id),effect=list?.findLast(item=>item.key===contentKey(message)&&!used.has(item.id));
@@ -74,8 +75,8 @@ export function createEffectObserver(ctx,runtime){
       }
       return [message];
     };
-    const reference=auxiliary?options.messages:options.messages.flatMap(message=>expand(message));
-    const delta=auxiliary?0:tokens(reference)-tokens(options.messages),charDelta=auxiliary?0:chars(reference)-chars(options.messages);
+    const reference=main?options.messages.flatMap(message=>expand(message)):options.messages;
+    const delta=main?tokens(reference)-tokens(options.messages):0,charDelta=main?chars(reference)-chars(options.messages):0;
     const systemTokens=textTokens(typeof options.system==='string'?options.system:JSON.stringify(options.system??null)),messageTokensEstimate=tokens(options.messages);
     const instructionText=state.instructionText??'';
     const instructionPresent=instructionText&&(typeof options.system==='string'&&options.system.includes(instructionText)||
@@ -83,7 +84,7 @@ export function createEffectObserver(ctx,runtime){
     const instruction=instructionPresent?textTokens(instructionText):0;
     const definitions=options.tools??[],withoutPlugin=definitions.filter(tool=>!PLUGIN_TOOLS.has(tool.name??tool.function?.name));
     const schemaOverhead=definitions.length===withoutPlugin.length?0:textTokens(JSON.stringify(definitions))-textTokens(JSON.stringify(withoutPlugin));
-    return {schema:'work-evidence.request-effects.v1',requestId:randomUUID(),at:new Date().toISOString(),provider:options.provider,model:options.model,reasoningEffort:options.reasoningEffort??null,auxiliary,
+    return {schema:'work-evidence.request-effects.v1',requestId:randomUUID(),at:new Date().toISOString(),provider:options.provider,model:options.model,reasoningEffort:options.reasoningEffort??null,requestKind,auxiliary:requestKind==='auxiliary',
       usage:null,usageChunks:0,usageAggregation:'last-non-null-adapter-value-per-field',settled:false,failureCode:null,finishReason:null,
       toolSurface:runtime.get(agent).config.toolSurface??null,mode:runtime.modeStatus(agent),purpose:options.purpose??null,
       effects:{directTokensEstimate:delta-instruction-schemaOverhead,directChars:charDelta,instructionTokensEstimate:instruction,schemaTokensEstimate:schemaOverhead,
@@ -91,9 +92,10 @@ export function createEffectObserver(ctx,runtime){
         coverage:'Recorded body changes, recognizable guidance and top-level plugin schemas; host-generated PTC SDK/prelude overhead is not reconstructed',
         method:'same-trajectory message reconstruction; local text-density estimate; provider tokenization not observed',causalTaskSaving:false},
       localRequestTokensEstimate:tokens(options.messages)+textTokens(JSON.stringify({system:options.system??null,tools:options.tools??[]})),
-      decisions:auxiliary?[]:state.pendingDecisions.splice(0),sourceSeq:agent.session.seq,step:runtime.get(agent).step};
+      decisions:main?state.pendingDecisions.splice(0):[],sourceSeq:agent.session.seq,step:runtime.get(agent).step};
   }
   function normalizeRow(row){
+    row.requestKind=requestKindOf(row);row.auxiliary=row.requestKind==='auxiliary';
     // Canonicalize only the raw adapter usage. A caller or a stored row that already carries
     // its source verdicts holds a detached result where a rejected adapter value became a
     // null; re-reading that null as an omission lets a matching reported total prove it zero.
@@ -113,12 +115,13 @@ export function createEffectObserver(ctx,runtime){
     // complete consumption, so the verdict is kept and only rows without one fall back to the
     // local check. The verdict is never upgraded from an explicit false.
     const inconsistent=row.usageConsistent===false;
-    row.usageComplete=row.usageSources!==undefined?row.usageComplete!==false&&!missing:!missing;
-    row.unknownConsumption=missing||inconsistent||!row.settled||!['stop','tool-calls','max-tokens','length'].includes(row.finishReason);
-    state.requests++;if(row.auxiliary)state.auxiliaryRequests++;else state.mainRequests++;
-    if(missing)state.missingUsage++;if(row.unknownConsumption)state.unknownConsumption++;
-    for(const key of Object.keys(state.reported))if(Number.isFinite(usage?.[key]))state.reported[key]+=usage[key];
-    if(!row.auxiliary){state.totals.directTokensEstimate+=row.effects.directTokensEstimate;state.totals.directChars+=row.effects.directChars;state.totals.instructionTokensEstimate+=row.effects.instructionTokensEstimate;
+    row.usageComplete=!inconsistent&&!missing&&row.usageComplete!==false;
+    row.unknownConsumption=!row.usageComplete||!row.settled||!['stop','tool-calls','max-tokens','length'].includes(row.finishReason);
+    const kind=requestKindOf(row);state.requests++;if(kind==='auxiliary')state.auxiliaryRequests++;else if(kind==='compaction')state.compactionRequests++;else state.mainRequests++;
+    if(!row.usageComplete)state.missingUsage++;if(row.unknownConsumption)state.unknownConsumption++;
+    if(row.usageComplete)state.completeUsageRequests++;
+    for(const key of Object.keys(state.reported))if(Number.isFinite(usage?.[key])){state.rawReported[key]+=usage[key];if(row.usageComplete)state.reported[key]+=usage[key];}
+    if(kind==='main'){state.totals.directTokensEstimate+=row.effects.directTokensEstimate;state.totals.directChars+=row.effects.directChars;state.totals.instructionTokensEstimate+=row.effects.instructionTokensEstimate;
       state.totals.systemTokensEstimate+=row.effects.systemTokensEstimate??0;state.totals.messageTokensEstimate+=row.effects.messageTokensEstimate??0;
       state.totals.toolSchemaTokensEstimate+=row.effects.schemaTokensEstimate??0;state.totals.requestReconstructionMisses+=row.effects.reconstructionMisses;
       for(const [name,value]of Object.entries(row.effects.byFeature)){const item=feature(state,name);item.requestsAffected++;item.directTokensEstimate+=value.tokensEstimate;item.directChars+=value.chars;}}
@@ -168,10 +171,10 @@ export function createEffectObserver(ctx,runtime){
     finally{state.loading=null;}
   }
   function snapshot(agent){const state=get(agent),config=runtime.get(agent).config,features={};for(const name of new Set([...Object.keys(FEATURES),...Object.keys(state.features)])){const item=state.features[name];const setting=FEATURES[name],retired=RETIRED_FEATURES.has(name);features[name]={enabled:!retired&&runtime.isEnabled(agent)&&(setting?!!config[setting]:true),...(retired?{retired:true}:{}),...(item??{decisions:0,applied:0,lastStatus:'not-observed',lastReason:'no-opportunity-observed'} )};}
-    return {version:1,schema:'work-evidence.observability.v1',requests:{count:state.requests,main:state.mainRequests,auxiliary:state.auxiliaryRequests,missingUsage:state.missingUsage,unknownConsumption:state.unknownConsumption,providerReported:{...state.reported}},
+    return {version:1,schema:'work-evidence.observability.v1',requests:{count:state.requests,main:state.mainRequests,compaction:state.compactionRequests,auxiliary:state.auxiliaryRequests,missingUsage:state.missingUsage,unknownConsumption:state.unknownConsumption,completeUsageRequests:state.completeUsageRequests,providerReported:{...state.reported},providerReportedRaw:{...state.rawReported}},
       totals:{...state.totals},features,recentRequests:state.recentRequests.slice(),decisions:state.decisions.slice(-24),
       persistence:{file:storageFor(agent)?path.join(storageFor(agent),agent.session.id+'.observability.jsonl'):null,writeErrors:state.writeErrors.slice(),scope:'session-local automatic records outside workspace discovery; one settled row per dispatched stream; no prompt bodies; survives rolling status window'},
-      interpretation:'Provider usage is observed. Direct feature token deltas are local estimates on the same trajectory, including visible guidance overhead; they are not measured task savings. Unmapped or evicted attribution remains unavailable.'};}
+      interpretation:'providerReported totals include only complete, internally consistent adapter counts; providerReportedRaw retains finite fields from all rows for diagnosis and does not establish complete consumption. Main, compaction and auxiliary requests are separate. Direct feature token deltas are local estimates on the same trajectory, including visible guidance overhead; they are not measured task savings. Unmapped or evicted attribution remains unavailable.'};}
   function snippet(agent,{callIds,feature,beforeText,afterText}){const state=get(agent);for(const id of new Set(callIds.filter(Boolean))){const list=state.snippets.get(id)??[];list.push({feature,beforeText,afterText});state.snippets.set(id,list.slice(-8));}if(state.snippets.size>128)state.snippets.delete(state.snippets.keys().next().value);}
   const unsubscribe=ctx.on('session/event',(session,event)=>{
     if(event.type!=='tool/result'||event.surfaceOp?.op==='replace')return;const agent=ctx.agents?.get?.(session.id);if(!agent)return;const message=event.data?.message,state=get(agent),id=message?.source?.callId??message?.toolCallId,list=state.snippets.get(id);if(!list)return;state.snippets.delete(id);

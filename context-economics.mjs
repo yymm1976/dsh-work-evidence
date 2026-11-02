@@ -55,6 +55,10 @@ export function messageTokens(message){
   }
   return total;
 }
+export function requestKindOf(record){
+  if(record.purpose==='compaction'||record.requestKind==='compaction')return 'compaction';
+  return record.auxiliary===true||record.requestKind==='auxiliary'||!!record.purpose&&record.purpose!=='main'?'auxiliary':'main';
+}
 const modelKey=message=>JSON.stringify({role:message.role,content:message.content,toolCallId:message.toolCallId,isError:message.isError});
 const textProjection=messages=>messages.every(message=>(message.content??[]).every(block=>['text','reasoning','tool-call'].includes(block.type)));
 const envelopeKey=value=>JSON.stringify({tools:value.tools??[],system:value.system??null});
@@ -69,9 +73,9 @@ export function createContextEconomics(ctx,runtime){
   const get=agent=>{
     let state=states.get(agent.session.id);
     if(!state){state={last:null,lastSuccessfulMain:null,mainHistory:[],mainAttempts:[],decisions:[],skips:{},requests:0,reportedPromptTokens:0,reportedMainPromptTokens:0,mainPromptRequests:0,reportedOutputTokens:0,
-      missingUsage:0,missingCacheUsage:0,pricedRequests:0,costByCurrency:Object.create(null),auxiliaryRequests:0,mainFinished:0,
-      surfaceChanges:0,cacheResetCount:0,uncachedInputAtReset:0,resetTaxUSD:0,
-      effortChanges:0,cacheResetAfterEffortChange:0,effortResetExposureUSD:0,
+      missingUsage:0,missingCacheUsage:0,pricedRequests:0,costByCurrency:Object.create(null),auxiliaryRequests:0,compactionRequests:0,mainFinished:0,
+      surfaceChanges:0,cacheResetCount:0,uncachedInputAtReset:0,resetTaxByCurrency:Object.create(null),
+      effortChanges:0,cacheResetAfterEffortChange:0,effortResetExposureByCurrency:Object.create(null),
       pendingReviews:[],reviewedOutcomes:[],
       };states.set(agent.session.id,state);}
     return state;
@@ -79,14 +83,14 @@ export function createContextEconomics(ctx,runtime){
   function pricing(agent,route){
     return runtime.get(agent).config.projectionPricing.find(row=>sameRoute(row,route))??null;
   }
-  function assess(agent,{messages,proposedMessages,savedChars=0,changedSeq=null,changedMessageId=null,route=null,tools,system,emergency=false,horizon,
+  function assess(agent,{messages,proposedMessages,savedChars=0,savedTokensEstimate=null,changedSeq=null,changedMessageId=null,route=null,tools,system,emergency=false,horizon,
     auxiliaryUsage=null,auxiliaryMargin=1.5}={}){
     const state=get(agent),config=runtime.get(agent).config;
     route??=agent.session.requestHeader()?.config??{};
     const old=state.last,price=pricing(agent,route),same=old&&sameObservedRoute(old,route);
     const rawSaving=messages&&proposedMessages
       ?messages.reduce((sum,message)=>sum+messageTokens(message),0)-proposedMessages.reduce((sum,message)=>sum+messageTokens(message),0)
-      :Math.ceil(Math.max(0,savedChars)/3.5);
+      :finite(savedTokensEstimate)?savedTokensEstimate:Math.ceil(Math.max(0,savedChars)/3.5);
     const firstReplayAssistant=Boolean(same&&changedMessageId&&!old.ids.includes(changedMessageId)&&
       messages?.some(message=>message.id===changedMessageId&&message.role==='assistant'));
     const beforeOutput=firstReplayAssistant?messages.reduce((sum,message)=>sum+messageTokens(message),0):null;
@@ -175,9 +179,9 @@ export function createContextEconomics(ctx,runtime){
     if(!decision.allowed)state.skips[decision.reason]=(state.skips[decision.reason]??0)+1;
     return decision;
   }
-  function reviewAdoption(agent,{kind,appliedAtStep,expectedSavedChars=0,expectedRefillTokens=0}){
+  function reviewAdoption(agent,{kind,appliedAtStep,expectedSavedChars=0,expectedSavedTokens=null,expectedRefillTokens=0}){
     const state=get(agent);
-    state.pendingReviews.push({kind,appliedAtStep,expectedSavedChars,expectedRefillTokens,
+    state.pendingReviews.push({kind,appliedAtStep,expectedSavedChars,expectedSavedTokens,expectedRefillTokens,
       baselineMainPromptRequests:state.mainPromptRequests,baselineMainPromptTokens:state.reportedMainPromptTokens,
       referencePromptTokens:promptTokens(state.last?.usage)??promptTokens(state.lastSuccessfulMain?.usage),
       baselineAt:new Date().toISOString()});
@@ -188,7 +192,7 @@ export function createContextEconomics(ctx,runtime){
     for(const review of state.pendingReviews){
       const observedRequests=state.mainPromptRequests-review.baselineMainPromptRequests;
       if(observedRequests<3)continue;
-      const expectedRemovedTokensPerRequest=Math.max(0,review.expectedSavedChars/3.5);
+      const expectedRemovedTokensPerRequest=finite(review.expectedSavedTokens)?review.expectedSavedTokens:Math.max(0,review.expectedSavedChars/3.5);
       const expectedPromptTokensPerRequest=review.referencePromptTokens===null?null:
         Math.max(0,review.referencePromptTokens-expectedRemovedTokensPerRequest);
       const observedPromptTokens=state.reportedMainPromptTokens-review.baselineMainPromptTokens;
@@ -218,7 +222,9 @@ export function createContextEconomics(ctx,runtime){
       usage=canonical.consistent?canonical.usage:null,total=promptTokens(usage),price=pricing(agent,options);
     record.usage=canonical.usage;record.usageSources=canonical.sources;record.usageConsistent=canonical.consistent;record.usageComplete=canonical.complete;
     state.requests++;
-    if(record.auxiliary)state.auxiliaryRequests++;
+    const requestKind=requestKindOf(record);
+    if(requestKind==='auxiliary')state.auxiliaryRequests++;
+    if(requestKind==='compaction')state.compactionRequests++;
     if(usage&&(!finite(usage.cacheReadTokens)||!finite(usage.cacheWriteTokens)))state.missingCacheUsage++;
     if(total===null)state.missingUsage++;
     else{state.reportedPromptTokens+=total;state.reportedOutputTokens+=usage.outputTokens??0;}
@@ -229,7 +235,7 @@ export function createContextEconomics(ctx,runtime){
         usage.cacheWriteTokens*(price.cacheWrite??0)+usage.outputTokens*price.output)/1e6;
       state.pricedRequests++;
     }else if(price){const reason=!billingComplete?'incomplete-request-billing':!cacheWritePriced?'cache-write-price-unavailable':'missing-usage-fields';state.skips[reason]=(state.skips[reason]??0)+1;}
-    if(record.auxiliary)return;
+    if(requestKind!=='main')return;
     state.mainFinished++;
     if(total!==null){state.reportedMainPromptTokens+=total;state.mainPromptRequests++;}
     const successfulMain=record.settled&&!record.aborted&&!record.failureCode&&successfulFinish.has(record.finishReason),
@@ -254,11 +260,11 @@ export function createContextEconomics(ctx,runtime){
     if(previous?.usage?.cacheReadTokens>0&&usage?.cacheReadTokens<previous.usage.cacheReadTokens*.5&&usage?.inputTokens>2000){
       state.cacheResetCount++;state.uncachedInputAtReset+=usage.inputTokens;
       if(changed&&price){const extra=Math.max(0,Math.min(usage.inputTokens-previous.usage.inputTokens,previous.usage.cacheReadTokens-usage.cacheReadTokens));
-        state.resetTaxUSD+=extra*Math.max(0,price.input-price.cacheRead)/1e6;}
+        state.resetTaxByCurrency[price.currency]=(state.resetTaxByCurrency[price.currency]??0)+extra*Math.max(0,price.input-price.cacheRead)/1e6;}
       if(effortChanged){
         state.cacheResetAfterEffortChange++;
         if(price){const extra=Math.max(0,Math.min(usage.inputTokens-previous.usage.inputTokens,previous.usage.cacheReadTokens-usage.cacheReadTokens));
-          state.effortResetExposureUSD+=extra*Math.max(0,price.input-price.cacheRead)/1e6;}
+          state.effortResetExposureByCurrency[price.currency]=(state.effortResetExposureByCurrency[price.currency]??0)+extra*Math.max(0,price.input-price.cacheRead)/1e6;}
       }
     }
     const weights=options.messages.map(messageTokens),envelopeTokens=textTokens(JSON.stringify({tools:options.tools??[],system:options.system??null}));
@@ -297,9 +303,9 @@ export function createContextEconomics(ctx,runtime){
     return {route:route?{provider:route.provider,model:route.model}:null,pricing:route?pricing(agent,route):null,
       mainHistory:state.mainHistory.slice(-8),
       usageMeaning:'DSH adapter input/cacheRead/cacheWrite are disjoint; reasoning is included in output',
-      requests:state.requests,mainRequests:state.requests-state.auxiliaryRequests,auxiliaryRequests:state.auxiliaryRequests,
-      surfaceChanges:state.surfaceChanges,cacheResetCount:state.cacheResetCount,uncachedInputAtReset:state.uncachedInputAtReset,resetTaxUSD:state.resetTaxUSD,
-      effortChanges:state.effortChanges,cacheResetAfterEffortChange:state.cacheResetAfterEffortChange,effortResetExposureUSD:state.effortResetExposureUSD,
+      requests:state.requests,mainRequests:state.requests-state.auxiliaryRequests-state.compactionRequests,auxiliaryRequests:state.auxiliaryRequests,compactionRequests:state.compactionRequests,
+      surfaceChanges:state.surfaceChanges,cacheResetCount:state.cacheResetCount,uncachedInputAtReset:state.uncachedInputAtReset,resetTaxUSD:state.resetTaxByCurrency.USD??0,resetTaxByCurrency:{...state.resetTaxByCurrency},
+      effortChanges:state.effortChanges,cacheResetAfterEffortChange:state.cacheResetAfterEffortChange,effortResetExposureUSD:state.effortResetExposureByCurrency.USD??0,effortResetExposureByCurrency:{...state.effortResetExposureByCurrency},
       effortResetScope:'Observed cache drops immediately after effort changes; exposure uses configured prices and does not establish causation or add to the billed total.',
       reportedPromptTokens:state.reportedPromptTokens,reportedOutputTokens:state.reportedOutputTokens,
       mainPromptRequests:state.mainPromptRequests,

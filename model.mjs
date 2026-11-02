@@ -41,20 +41,29 @@ function budgetOperation(s,operation){
 }
 const counters=value=>!!value&&typeof value==='object'&&!Array.isArray(value)&&Number.isSafeInteger(value.calls)&&Number.isSafeInteger(value.tokens)&&
   value.calls>=0&&value.tokens>=0&&typeof value.failed==='boolean';
+// A stop decided before any request is sent is not an upstream call failure. The code and the
+// dispatched flag let the caller keep the local reason and leave the rest of the route available.
+function budgetStop(message,code,cause){
+  const error=new Error(message);error.auxiliaryCode=code;error.auxiliaryDispatched=false;if(cause)error.cause=cause;return error;
+}
 async function reserveBudget(runtime,agent,estimate,tokenLimit=32000,scope=null,callLimit=2){
   const s=runtime.get(agent);
   return budgetOperation(s,async()=>{
-    if(!s.telemetryDir)throw new Error('Auxiliary budget requires persistent session storage');
+    if(!s.telemetryDir)throw budgetStop('Auxiliary budget requires persistent session storage','auxiliary-budget-unavailable');
     const file=path.join(s.telemetryDir,s.id+'.auxiliary-budget.json');
     if(!s.auxiliaryBudget){
       try{s.auxiliaryBudget=JSON.parse(await fs.readFile(file,'utf8'));}
-      catch(error){if(error.code!=='ENOENT')throw error;s.auxiliaryBudget={};}
+      catch(error){
+        if(error.code==='ENOENT')s.auxiliaryBudget={};
+        else if(error instanceof SyntaxError)throw budgetStop('Auxiliary budget record is not readable JSON: '+error.message,'auxiliary-budget-invalid',error);
+        else throw budgetStop('Auxiliary budget record could not be read: '+error.message,'auxiliary-budget-unavailable',error);
+      }
     }
     const budget=s.auxiliaryBudget;
     // A record that is not a plain object cannot carry the counters: an array would accept
     // them as properties but serialize back to "[]", losing every later write.
-    if(!budget||typeof budget!=='object'||Array.isArray(budget))throw new Error('Invalid auxiliary budget record');
-    if(budget.scopes!==undefined&&(!budget.scopes||typeof budget.scopes!=='object'||Array.isArray(budget.scopes)))throw new Error('Invalid auxiliary budget record');
+    if(!budget||typeof budget!=='object'||Array.isArray(budget))throw budgetStop('Invalid auxiliary budget record','auxiliary-budget-invalid');
+    if(budget.scopes!==undefined&&(!budget.scopes||typeof budget.scopes!=='object'||Array.isArray(budget.scopes)))throw budgetStop('Invalid auxiliary budget record','auxiliary-budget-invalid');
     budget.scopes??={};
     // Per-request features (final quality review) keep their own allowance so a long
     // session is not limited to two reviews in total, and calls without a scope keep
@@ -71,13 +80,15 @@ async function reserveBudget(runtime,agent,estimate,tokenLimit=32000,scope=null,
       }
       budget.general={calls:0,tokens:0,failed:false};
     }
-    if(!counters(budget.general)||Object.entries(budget.scopes).some(([key,entry])=>!key||!counters(entry)))throw new Error('Invalid auxiliary budget record');
+    if(!counters(budget.general)||Object.entries(budget.scopes).some(([key,entry])=>!key||!counters(entry)))throw budgetStop('Invalid auxiliary budget record','auxiliary-budget-invalid');
     const entry=scope?(budget.scopes[scope]??={calls:0,tokens:0,failed:false}):budget.general;
-    if(entry.failed)throw new Error(scope?'Auxiliary calls for '+scope+' stopped after a prior failure':'Auxiliary calls without a budget scope stopped after a prior failure');
-    if(entry.calls>=callLimit||entry.tokens+estimate>tokenLimit)throw new Error(scope?'Auxiliary budget exhausted for '+scope+' ('+callLimit+' calls / '+tokenLimit+' tokens)':'Auxiliary budget exhausted for calls without a budget scope ('+callLimit+' calls / '+tokenLimit+' tokens)');
+    if(entry.failed)throw budgetStop(scope?'Auxiliary calls for '+scope+' stopped after a prior failure':'Auxiliary calls without a budget scope stopped after a prior failure','auxiliary-scope-stopped');
+    if(entry.calls>=callLimit||entry.tokens+estimate>tokenLimit)throw budgetStop(scope?'Auxiliary budget exhausted for '+scope+' ('+callLimit+' calls / '+tokenLimit+' tokens)':'Auxiliary budget exhausted for calls without a budget scope ('+callLimit+' calls / '+tokenLimit+' tokens)','auxiliary-budget-exhausted');
     entry.calls++;entry.tokens+=estimate;
     const keys=Object.keys(budget.scopes);if(keys.length>32)delete budget.scopes[keys[0]];
-    await fs.mkdir(s.telemetryDir,{recursive:true});await fs.writeFile(file,JSON.stringify(budget),'utf8');
+    // Nothing was dispatched when the record cannot be saved, so the allowance is handed back.
+    try{await fs.mkdir(s.telemetryDir,{recursive:true});await fs.writeFile(file,JSON.stringify(budget),'utf8');}
+    catch(error){entry.calls--;entry.tokens-=estimate;throw budgetStop('Auxiliary budget record could not be saved: '+error.message,'auxiliary-budget-unavailable',error);}
     return {file,estimate,entry};
   });
 }
@@ -113,7 +124,7 @@ export async function modelJson(ctx,runtime,agent,signal,system,payload,{maxToke
   }catch(cause){
     const e=cause instanceof Error?cause:new Error(String(cause));
     failed=true;s.metrics.auxiliaryFailures++;runtime.problem(s,'auxiliary-model',e.message);
-    e.auxiliaryUsage=usage;e.auxiliaryFinish=finish;e.auxiliaryTextChars=text.length;
+    e.auxiliaryUsage=usage;e.auxiliaryFinish=finish;e.auxiliaryTextChars=text.length;e.auxiliaryDispatched=true;
     e.auxiliaryElapsedMs=Math.round(performance.now()-began);throw e;
   }
   finally{

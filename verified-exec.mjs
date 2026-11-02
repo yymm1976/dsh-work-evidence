@@ -247,15 +247,17 @@ export function createVerifiedExec(ctx,runtime,call){
           record.status='deopt';record.reason=found.length?'edit-target-not-unique':'edit-target-not-found';record.file=group.file;
           s.metrics.verifiedExecDeopts++;await save();return {status:'deopt',reason:record.reason,file:group.file,reportPath,effectState:'none'};
         }
-        ranges.push({start:found[0],end:found[0]+edit.oldText.length});
+        ranges.push({start:found[0],end:found[0]+edit.oldText.length,newText:edit.newText});
       }
       ranges.sort((a,b)=>a.start-b.start);
       for(let i=1;i<ranges.length;i++)if(ranges[i].start<ranges[i-1].end){
         record.status='deopt';record.reason='overlapping-edits';record.file=group.file;s.metrics.verifiedExecDeopts++;await save();
         return {status:'deopt',reason:record.reason,file:group.file,reportPath,effectState:'none'};
       }
+      let expectedText=source.text;
+      for(const edit of ranges.toReversed())expectedText=expectedText.slice(0,edit.start)+edit.newText+expectedText.slice(edit.end);
       record.files.push({file:group.file,mode:'replace_exact',beforeRevision:observation.revision,bytesBefore:observation.bytes,
-        expectedAfterHash:hash(group.edits.reduce((text,edit)=>text.replace(edit.oldText,edit.newText),source.text)),
+        expectedAfterHash:hash(expectedText),
         hunks:group.edits.length});
     }
     if(!plan.apply){

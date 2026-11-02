@@ -161,14 +161,37 @@ test('an inconsistent reported total stays incomplete in memory, on disk and aft
     assert.equal(caller.usageComplete,false);
     assert.equal(caller.unknownConsumption,true);
     const live=created.effects.snapshot(created.agent);
-    assert.equal(live.requests.missingUsage,0);
+    assert.equal(live.requests.missingUsage,2);
     assert.equal(live.requests.unknownConsumption,2);
+    assert.equal(live.requests.completeUsageRequests,0);
+    assert.equal(live.requests.providerReported.totalTokens,0);
+    assert.equal(live.requests.providerReportedRaw.totalTokens,1024);
     const restored=await start({telemetryDir:created.telemetryDir});
     await restored.effects.load(restored.agent);
     const snapshot=restored.effects.snapshot(restored.agent);
     assert.deepEqual(snapshot.recentRequests.map(item=>[item.requestId,item.usageComplete,item.unknownConsumption]),
       [['inconsistent-total',false,true],['caller-incomplete',false,true]]);
-    assert.equal(snapshot.requests.missingUsage,0);
+    assert.equal(snapshot.requests.missingUsage,2);
     assert.equal(snapshot.requests.unknownConsumption,2);
+    assert.deepEqual(snapshot.requests.providerReported,live.requests.providerReported);
+    assert.deepEqual(snapshot.requests.providerReportedRaw,live.requests.providerReportedRaw);
+  }finally{await remove(created.telemetryDir);}
+});
+
+test('restored host compaction is separate from plugin auxiliary calls and main feature attribution',async()=>{
+  const created=await start();
+  try{
+    const file=path.join(created.telemetryDir,SESSION+'.observability.jsonl');
+    await fs.writeFile(file,[row('old-compaction',COMPLETE,{purpose:'compaction',auxiliary:true}),
+      row('plugin-review',COMPLETE,{purpose:'work-evidence:quality-review',auxiliary:true})].map(r=>JSON.stringify(r)).join('\n')+'\n');
+    await created.effects.load(created.agent);
+    const snapshot=created.effects.snapshot(created.agent);
+    assert.equal(snapshot.requests.count,2);assert.equal(snapshot.requests.compaction,1);
+    assert.equal(snapshot.requests.auxiliary,1);assert.equal(snapshot.requests.main,0);
+    assert.equal(snapshot.totals.directTokensEstimate,0);
+    assert.equal(snapshot.recentRequests[0].requestKind,'compaction');
+    assert.equal(snapshot.recentRequests[0].auxiliary,false);
+    assert.equal(snapshot.requests.providerReported.totalTokens,2200);
+    assert.equal((await stored(created.telemetryDir))[0].auxiliary,true,'original stored rows are not rewritten');
   }finally{await remove(created.telemetryDir);}
 });
