@@ -5,6 +5,7 @@ import {summarizeAttempts} from './experiment-attempts.mjs';
 import {isUserRequestMessage,argsOf} from './runtime.mjs';
 import {resultText,parseResult} from './visible-results.mjs';
 import {recordedProcessCompletion} from './execution-evidence.mjs';
+import {resolveInlineScript} from './inline-exec.mjs';
 
 export const AUDIT_SCHEMA='work-evidence.trajectory-audit.v1';
 export const ASSESSMENT_SCHEMA='work-evidence.task-assessment.v1';
@@ -544,9 +545,10 @@ function constraintObservations(normal){
     const requirement=resultText(message?.content);
     if(!/(?:不得|不要|禁止|不)[^。；\n]{0,40}读取项目外文件/u.test(requirement))continue;
     for(const call of normal.calls){
-      if(call.callSeq<human.seq||call.name!=='work_exec'||typeof call.arguments?.code!=='string')continue;
+      if(call.callSeq<human.seq||call.name!=='work_exec')continue;
       if(normal.humans.some(next=>next.seq>human.seq&&next.seq<=call.callSeq))continue;
-      const code=call.arguments.code;
+      let code;
+      try{code=resolveInlineScript(call.arguments,{log:normal.events}).code;}catch{continue;}
       if(!/tempfile\.(?:mkdtemp|mkstemp|TemporaryDirectory)\b/u.test(code)||!/\bopen\s*\(/u.test(code))continue;
       const text=call.resultText??'',match=/[A-Za-z]:(?:\\|\/)[^\r\n"']*?AppData(?:\\|\/)+Local(?:\\|\/)+Temp(?:\\|\/)+[^\r\n"']+/u.exec(text);
       const location=match?.[0].replace(/\\[rn].*$/su,'').replace(/[,\]}].*$/su,'');

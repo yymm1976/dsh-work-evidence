@@ -337,7 +337,7 @@ test('outside workspace temporary reads stay source-bound candidates',()=>{
   const {f,audit}=reviewedFixture();
   f.events.find(event=>event.type==='user/message').data.message.content=[{type:'text',text:'修复并检查，不要安装依赖、修改pyproject.toml、读取项目外文件、Git写操作或派子代理。'}];
   const code='import tempfile\np=tempfile.mkdtemp()\nopen(p+"/a.env").read()';
-  const done=f.operation('work_exec',{code},'token=do-not-copy C:\\Users\\name\\AppData\\Local\\Temp\\tmp123\\a.env\\r\\n');
+  const done=f.operation('work_exec',{runtime:'python',code},'token=do-not-copy C:\\Users\\name\\AppData\\Local\\Temp\\tmp123\\a.env\\r\\n');
   const result=audit();assert.equal(result.constraints.items.length,1);
   const item=result.constraints.items[0];assert.equal(item.resultSeq,done.resultSeq);
   assert.equal(item.evidence.includes('do-not-copy'),false);assert.equal(item.evidence.includes('\\r\\n'),false);
@@ -346,6 +346,9 @@ test('outside workspace temporary reads stay source-bound candidates',()=>{
   assert.equal(result.taskOutcome,'unknown');
   f.operation('work_exec',{code:'print(42)'},'C:\\Users\\name\\AppData\\Local\\Temp\\tmp456\\a.env');
   assert.equal(audit().constraints.items.length,1);
+  const reused=f.operation('work_exec',{scriptRef:'event:'+(done.requestSeq+1)},'completed');
+  assert.equal(audit().constraints.items.length,2);
+  assert.equal(audit().constraints.items[1].resultSeq,reused.resultSeq);
 });
 
 test('change scope reviews retain unsupported and unknown declarations without a requirement source',()=>{
