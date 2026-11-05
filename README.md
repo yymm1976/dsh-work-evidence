@@ -36,7 +36,8 @@ mode 只查询状态。旧的 mode <名称> 和 workspace-mode 命令不再设�
 总开关同时控制质量模式和激进模式。关闭激进开关后，非 Ultra 档位停用插件自动处理。
 启用插件时，`work_status` 由工具面控制；关闭插件后保留只读状态查询。历史中仍有取回引用时保留 `work_recall`。
 
-`features` 列出保留功能的配置、依赖和当前可用条件。`feature <设置名>` 查看单项，末尾加 `on` 或 `off` 修改布尔设置。
+`features` 列出保留功能的配置、依赖和当前可用条件。每项的 `effect` 另行汇总现有专用观察计数：`not-observed` 表示没有实际效果记录，`applied` 表示已执行动作，`failed` 表示已发生失败，`mixed` 表示成功与失败并存，`not-applied` 表示有决策但未采用。没有专用计数器时也保持未观察；关闭功能不会清除此前记录。配置就绪不等于已触发，触发不等于任务质量已证明。
+`feature <设置名>` 查看单项，末尾加 `on` 或 `off` 修改布尔设置。
 `toolSurface` 接受 `compact` 或 `full`；`defaultResponseView` 接受 `full` 或 `reference-if-visible`。
 `qualityReviewEffort` 接受 `auto`、`inherit`、`low`、`medium`、`high` 或 `max`，只控制交付复核。
 `qualityReviewScope` 接受 `auto` 或 `full`，控制复核采用的源码片段范围。

@@ -2,6 +2,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import {defaults,RETIRED_SETTINGS,VERSION} from './runtime.mjs';
 import {archiveDecoderStatus} from './archive-store.mjs';
+import {featureSetting} from './effect-observer.mjs';
 
 const DEFINITIONS=[
   ['enabled','总开关','允许当前工作区使用插件'],
@@ -61,13 +62,14 @@ export function featurePatch(name,value){
 }
 
 /** Local readiness only. A saved switch and available dependencies do not prove task success. */
-export function createFeatureControl(ctx,runtime,{available,canRecall,workingSet,qualityReview,compactionHandoff,retainedCompute}){
+export function createFeatureControl(ctx,runtime,{available,canRecall,workingSet,qualityReview,compactionHandoff,retainedCompute,effects}){
   const service=name=>{try{return ctx.get(name);}catch{return null;}};
   async function snapshot(agent,only){
     const state=runtime.get(agent),config=state.config,effective=runtime.isEnabled(agent),selection=runtime.currentSelection(agent);
     const native=service('ptcRuntime'),ptc=(()=>{try{return ctx.tools.modeFor(agent)==='ptc';}catch{return false;}})();
     const nativeCompaction=compactionHandoff.metrics(agent).nativeSummarizerAttached;
     const retained=retainedCompute.summary(agent);
+    const observedFeatures=effects?.snapshot(agent,{detail:false}).features??{};
     const archiveDecoder=archiveDecoderStatus();
     let fastEditFiles=null;
     if(config.fastEditEnabled&&(!only||only==='fastEditEnabled')){
@@ -113,7 +115,15 @@ export function createFeatureControl(ctx,runtime,{available,canRecall,workingSet
         }else if(key==='stepPacing'&&state.taskSurfaceMode==='minimal'){status='waiting';reasons.push('minimal-task-needs-no-guidance');}
       }
       if(key==='enabled'&&state.sessionEnabledOverride===true&&configured===false)reasons.push('session-override-on');
+      const counters=Object.entries(observedFeatures).filter(([name])=>featureSetting(name)===key).map(([,item])=>item);
+      const count=field=>counters.reduce((sum,item)=>sum+(item[field]??0),0);
+      const effectStatus=!counters.length||count('decisions')===0?'not-observed':count('applied')&&count('failed')?'mixed':count('applied')?'applied':count('failed')?'failed':'not-applied';
+      const last=counters.findLast(item=>item.lastStatus&&item.lastStatus!=='not-observed');
       return {key,label,purpose,configured,packageDefault:PACKAGE_DEFAULTS[key],status,reasons,
+        effect:{status:effectStatus,decisions:count('decisions'),applied:count('applied'),failed:count('failed'),
+          deferred:count('deferred'),notApplicable:count('notApplicable'),unavailable:count('unavailable'),
+          lastStatus:last?.lastStatus??'not-observed',lastReason:last?.lastReason??(counters.length?'no-effect-applied':'no-dedicated-effect-counter'),
+          coverage:'recorded-dedicated-effect-counters-only; readiness and task quality are separate'},
         ...(['enabled','defaultResponseView'].includes(key)?{effectiveValue}:{}),
         entry:'/work-evidence feature '+key+' '+(choices?choices.join('|'):'on|off'),
         scope:'workspace',...(choices?{choices}:{})};

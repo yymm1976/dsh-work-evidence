@@ -55,6 +55,8 @@ test('feature readiness distinguishes required settings, runtime dependencies an
   try{
     const agent=await host.createAgent('max');
     const view=await host.command(agent,'features'),entry=key=>view.features.find(item=>item.key===key);
+    assert.ok(view.features.every(item=>item.effect&&typeof item.effect.status==='string'));
+    assert.equal(entry('enabled').effect.status,'not-observed');
     assert.equal(view.dependencies.archiveDecoder.available,true);
     assert.deepEqual(entry('swEviction').reasons,['requires-setting:swLedger']);
     assert.ok(entry('requestProjection').reasons.includes('requires-setting:projectionRestore'));
@@ -195,6 +197,9 @@ test('structured calls and program references both work after live activation in
     await host.command(agent,'config {"structuredCalls":false,"nativeProgramReuse":false}');
     const view=await host.command(agent,'features');
     assert.equal(view.features.find(item=>item.key==='structuredCalls').status,'off');
+    assert.equal(view.features.find(item=>item.key==='structuredCalls').effect.status,'applied');
+    assert.ok(view.features.find(item=>item.key==='structuredCalls').effect.applied>0);
     assert.equal(view.features.find(item=>item.key==='nativeProgramReuse').status,'off');
+    assert.equal(view.features.find(item=>item.key==='nativeProgramReuse').effect.status,'applied');
   }finally{await host.close();}
 });
