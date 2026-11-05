@@ -119,6 +119,27 @@ test('retained feature readiness follows missing dependencies, explicit retry an
   }finally{await host.close();}
 });
 
+test('dependent settings explain the switch that currently prevents their effect',async()=>{
+  const host=await startHost({workspace:{evidenceViews:false,defaultResponseView:'reference-if-visible',qualityReview:false},script:()=>[text('done')]});
+  try{
+    const agent=await host.createAgent('max');
+    let view=await host.command(agent,'features'),entry=key=>view.features.find(item=>item.key===key);
+    assert.equal(entry('defaultResponseView').status,'blocked');
+    assert.deepEqual(entry('defaultResponseView').reasons,['requires-setting:evidenceViews']);
+    for(const key of ['qualityReviewEffort','qualityReviewScope']){
+      assert.equal(entry(key).status,'blocked');
+      assert.deepEqual(entry(key).reasons,['requires-setting:qualityReview']);
+    }
+    await host.command(agent,'feature defaultResponseView full');
+    await host.command(agent,'feature qualityReview on');
+    view=await host.command(agent,'features');
+    assert.equal(entry('defaultResponseView').status,'ready');
+    assert.deepEqual(entry('defaultResponseView').reasons,[]);
+    assert.equal(entry('qualityReviewEffort').status,'ready');
+    assert.equal(entry('qualityReviewScope').status,'ready');
+  }finally{await host.close();}
+});
+
 test('readiness preserves workspace settings while reporting session overrides and the selected effort gate',async()=>{
   const host=await startHost({workspace:{enabled:false},script:()=>[text('done')]});
   try{

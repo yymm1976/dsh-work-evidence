@@ -89,6 +89,8 @@ export function createFeatureControl(ctx,runtime,{available,canRecall,workingSet
       }
       if(status==='ready'){
         for(const dependency of REQUIRES[key]??[])if(!config[dependency])reasons.push('requires-setting:'+dependency);
+        if(key==='defaultResponseView'&&effectiveValue==='reference-if-visible'&&!config.evidenceViews)reasons.push('requires-setting:evidenceViews');
+        if(['qualityReviewEffort','qualityReviewScope'].includes(key)&&!config.qualityReview)reasons.push('requires-setting:qualityReview');
         if(['swEviction','requestProjection','projectionRestore','ledgerReceipt','historyHygiene','stubSummary'].includes(key)&&canRecall(agent)!==true)reasons.push('historical-recall-not-exposed');
         if(['stubSummary','deferPressureCompaction'].includes(key)&&!nativeCompaction)reasons.push('native-compaction-not-attached');
         if(['nativeProgramReuse','structuredCalls'].includes(key)&&!ptc)reasons.push('requires-ptc-tool-mode');
