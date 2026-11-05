@@ -17,7 +17,8 @@ async function stateRun(workspace,external=false){
   try{
     await fs.writeFile(path.join(cwd,'a.txt'),'original\nline2\n');
     const agent=await host.createAgent('max');await host.send(agent,'读取后处理 a.txt');
-    return {status:await host.command(agent,'detail'),feature:(await host.command(agent,'feature stateInform')).features[0],body:host.requests.map(requestText).join('\n'),events:host.events};
+    return {status:await host.command(agent,'detail'),feature:(await host.command(agent,'feature stateInform')).features[0],
+      accountingFeature:(await host.command(agent,'feature requestAccounting')).features[0],body:host.requests.map(requestText).join('\n'),events:host.events};
   }finally{await host.close();}
 }
 test('stateLedger records reads and invalidation while its disabled form records neither',async()=>{
@@ -36,7 +37,9 @@ test('stateInform controls legacy invalidation notices when ledgerUnresolved is 
 test('requestAccounting can be disabled without disabling the task',async()=>{
   const on=await stateRun({}),off=await stateRun({requestAccounting:false});
   assert.equal(on.status.requestObservations.length,3);
+  assert.equal(on.accountingFeature.effect.status,'applied');
   assert.equal(off.status.requestObservations.length,0);
+  assert.equal(off.accountingFeature.effect.status,'not-observed');
   assert.ok(off.status.contextEconomics.mainHistory.length>0,'compression economics still observes usage');
   assert.equal(off.events.findLast(e=>e.type==='turn/end').data.reason.kind,'completed');
 });

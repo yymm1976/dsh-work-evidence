@@ -26,6 +26,7 @@ FEATURES.stubSummary='stubSummary';
 FEATURES.deferPressureCompaction='deferPressureCompaction';
 FEATURES.completionNotice='completionNotice';
 FEATURES.stateInform='stateInform';
+FEATURES.requestAccounting='requestAccounting';
 FEATURES.swLedger='swLedger';
 FEATURES.memberParsing='memberParsing';
 FEATURES.mavenSourceBinding='mavenSourceBinding';
@@ -101,6 +102,7 @@ export function createEffectObserver(ctx,runtime){
     const definitions=options.tools??[],withoutPlugin=definitions.filter(tool=>!PLUGIN_TOOLS.has(tool.name??tool.function?.name));
     const schemaOverhead=definitions.length===withoutPlugin.length?0:textTokens(JSON.stringify(definitions))-textTokens(JSON.stringify(withoutPlugin));
     const requestId=randomUUID(),native=main?nativeAttempts.get(agent):null;
+    if(main&&runtime.get(agent).config.requestAccounting)decide(agent,'requestAccounting','applied','main-request-observation-started');
     let projectionObservation=unknownProjectionObservation(main?'projection-observer-unavailable':'non-main-request');
     if(main&&typeof runtime.observeRequestProjection==='function'){
       try{projectionObservation=runtime.observeRequestProjection(agent,options.messages)??projectionObservation;}
