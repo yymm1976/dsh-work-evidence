@@ -349,6 +349,10 @@ test('outside workspace temporary reads stay source-bound candidates',()=>{
   const reused=f.operation('work_exec',{scriptRef:'event:'+(done.requestSeq+1)},'completed');
   assert.equal(audit().constraints.items.length,2);
   assert.equal(audit().constraints.items[1].resultSeq,reused.resultSeq);
+  f.operation('write',{file_path:'check_set_keys.py',content:code},'written');
+  const scripted=f.operation('work_exec',{runtime:'python',code:'import runpy\nrunpy.run_path("check_set_keys.py", run_name="__main__")'},'completed');
+  assert.equal(audit().constraints.items.length,3);
+  assert.equal(audit().constraints.items[2].resultSeq,scripted.resultSeq);
 });
 
 test('change scope reviews retain unsupported and unknown declarations without a requirement source',()=>{

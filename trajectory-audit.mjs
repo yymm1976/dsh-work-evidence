@@ -549,6 +549,14 @@ function constraintObservations(normal){
       if(normal.humans.some(next=>next.seq>human.seq&&next.seq<=call.callSeq))continue;
       let code;
       try{code=resolveInlineScript(call.arguments,{log:normal.events}).code;}catch{continue;}
+      const runpy=/\brunpy\.run_path\(\s*["']([^"']+)["']/u.exec(code);
+      if(runpy){
+        const target=runpy[1].replaceAll('\\','/').split('/').at(-1),writes=normal.calls.filter(candidate=>candidate.callSeq<call.callSeq&&
+          String(fileOf(candidate.arguments)??'').replaceAll('\\','/').split('/').at(-1)===target);
+        const latest=writes.at(-1);
+        if(!latest||latest.name!=='write'||typeof latest.arguments?.content!=='string')continue;
+        code=latest.arguments.content;
+      }
       if(!/tempfile\.(?:mkdtemp|mkstemp|TemporaryDirectory)\b/u.test(code)||!/\bopen\s*\(/u.test(code))continue;
       const text=call.resultText??'',match=/[A-Za-z]:(?:\\|\/)[^\r\n"']*?AppData(?:\\|\/)+Local(?:\\|\/)+Temp(?:\\|\/)+[^\r\n"']+/u.exec(text);
       const location=match?.[0].replace(/\\[rn].*$/su,'').replace(/[,\]}].*$/su,'');
