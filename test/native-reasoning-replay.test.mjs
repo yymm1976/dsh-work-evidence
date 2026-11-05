@@ -78,6 +78,8 @@ test('the installed native adapter emits reasoning_content at its real request b
     assert.equal(sent.reasoning_content,options.messages[1].content[0].text);assert.equal(sent.reasoning_details,undefined);
     assert.equal(wire.reasoning_effort,'max');assert.equal(JSON.stringify(options.messages),canonical);
     const status=await host.command(agent,'detail');assert.ok(status.reasoningReplay.translatedMessages>=1);
+    const feature=(await host.command(agent,'feature nativeReasoningReplay')).features[0];
+    assert.equal(feature.effect.status,'applied');assert.ok(feature.effect.applied>=1);
     await host.command(agent,'off');wire=null;
     for await(const _chunk of host.ctx.llm.stream(options)){}
     const disabled=wire.messages.find(message=>message.role==='assistant');
