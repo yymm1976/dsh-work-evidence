@@ -54,6 +54,27 @@ test('model build requires a complete exact declaration on every recorded attemp
   assert.equal(result.modelBuildCoverage.missingRoutes,1);assert.deepEqual(result.modelBuildCoverage.missingRouteSeqs,[next+1]);
 });
 
+test('response model echo stays separate from request declarations and adapter coverage',()=>{
+  const echo=(kind,value)=>{
+    const f=fixture();f.operation('read',{file_path:'a.txt'},'source');
+    f.events[0].data.header.config.model='deepseek-v4.1-flash-1017';
+    const assistant=f.events.find(event=>event.type==='assistant/message');
+    if(kind){assistant.data.message.source??={kind:'model'};assistant.data.message.source.replayState={response:{kind,responseModel:value,responseId:'sensitive-response-id',blocks:['sensitive-block']}};}
+    const result=auditDshSession(f.events);assert.equal(result.modelBuild,'declared-1017');
+    assert.equal(result.responseModelEcho.requests,1);
+    assert.equal(JSON.stringify(result).includes('sensitive-response-id'),false);
+    assert.equal(JSON.stringify(result).includes('sensitive-block'),false);
+    return result.responseModelEcho;
+  };
+  const reported=echo('pi-ai','provider/deepseek-v4.1-flash-1017');
+  assert.equal(reported.counts.reported,1);assert.deepEqual(reported.reportedValues,['provider/deepseek-v4.1-flash-1017']);
+  assert.equal(reported.reported[0].responseModel,'provider/deepseek-v4.1-flash-1017');
+  assert.equal(echo('pi-ai',undefined).counts['not-reported'],1);
+  assert.equal(echo('deepseek-messages','deepseek-flash').counts['unsupported-by-adapter'],1);
+  assert.equal(echo(null,null).counts.unknown,1);
+  assert.equal(echo('pi-ai','bad\nname').counts['not-reported'],1);
+});
+
 test('source changes, a new human requirement and incomplete reads prevent exact-repeat findings',()=>{
   for(const variation of ['write','user','truncated']){
     const f=fixture(),body=variation==='truncated'?'x... (line truncated to 2000 chars)':'same source';
@@ -312,6 +333,19 @@ test('check review rejects unrelated event pairs, duplicate operation counts and
   assessment.checks.pop();assessment.checks[0].coverage.push({...assessment.checks[0].coverage[0]});assert.throws(audit,/coverage relation/);
 });
 
+test('outside workspace temporary reads stay source-bound candidates',()=>{
+  const {f,audit}=reviewedFixture();
+  f.events.find(event=>event.type==='user/message').data.message.content=[{type:'text',text:'修复并检查，不要安装依赖、修改pyproject.toml、读取项目外文件、Git写操作或派子代理。'}];
+  const code='import tempfile\np=tempfile.mkdtemp()\nopen(p+"/a.env").read()';
+  const done=f.operation('work_exec',{code},'C:\\Users\\name\\AppData\\Local\\Temp\\tmp123\\a.env');
+  const result=audit();assert.equal(result.constraints.items.length,1);
+  const item=result.constraints.items[0];assert.equal(item.resultSeq,done.resultSeq);
+  assert.equal(item.classification,'candidate');assert.equal(item.violation,'not-inferred');
+  assert.equal(result.taskOutcome,'unknown');
+  f.operation('work_exec',{code:'print(42)'},'C:\\Users\\name\\AppData\\Local\\Temp\\tmp456\\a.env');
+  assert.equal(audit().constraints.items.length,1);
+});
+
 test('change scope reviews retain unsupported and unknown declarations without a requirement source',()=>{
   const {f,assessment,audit}=reviewedFixture(),done=f.operation('edit',{file_path:'a.txt',old_string:'old',new_string:'new'},'applied');
   assessment.throughSeq=f.events.at(-1).seq;
@@ -326,6 +360,24 @@ test('change scope reviews retain unsupported and unknown declarations without a
   assert.throws(audit,/Invalid change-scope review/);
   assessment.scopeReviews[0].declaredRelation='unknown';result=audit();
   assert.equal(result.changeScopeReviews.items[0].relation,'unknown');
+  assessment.scopeReviews[0].declaredRelation='unsupported';assessment.scopeReviews[0].requirementSeqs=[1];result=audit();
+  assert.equal(result.changeScopeReviews.items[0].declaredRelation,'unsupported');
+  assert.equal(result.changeScopeReviews.items[0].relation,'unknown');
+  assert.ok(result.changeScopeReviews.items[0].unknownReasons.includes('conflicting-support-basis'));
+});
+
+test('change scope review status becomes stale when the source advances',()=>{
+  const {f,assessment,audit}=reviewedFixture(),done=f.operation('edit',{file_path:'a.txt',old_string:'old',new_string:'new'},'applied');
+  assessment.throughSeq=done.resultSeq;
+  const call=normalizeDshEvents(f.events).calls.find(row=>row.resultSeq===done.resultSeq);
+  assessment.scopeReviews=[{id:'scoped-change',callSeq:call.callSeq,resultSeq:done.resultSeq,path:'a.txt',
+    declaredRelation:'direct-requirement',requirementSeqs:[1],dependencyEvidenceSeqs:[],reviewer:'human',
+    reason:'The user requested this file change.',counterexample:'A later operation can change its current applicability.'}];
+  assert.equal(audit().changeScopeReviews.status,'reviewed');
+  f.operation('read',{file_path:'a.txt'},'new source');
+  const result=audit().changeScopeReviews;
+  assert.equal(result.status,'stale');assert.equal(result.items[0].declaredRelation,'direct-requirement');
+  assert.equal(result.items[0].relation,'direct-requirement');
 });
 
 test('new operations and damaged source preserve declared check coverage but make effective reach unknown',()=>{
@@ -464,4 +516,59 @@ test('projection forecast and adjacent main usage stay separate from causal refi
   assert.equal(auditCacheTransitions(events).items[0].reasons.includes('multiple-rewrites-before-next-main'),true);
   const auxiliaryAccounting={requests:[{requestId:'auxiliary',requestKind:'auxiliary',sourceSeq:3,complete:true}]};
   assert.equal(auditCacheTransitions([request(1),projection,request(3,'low',500,400,50)],auxiliaryAccounting).items[0].observed,null);
+});
+
+test('projection plans must resolve to their original tool results',()=>{
+  const event=(seq,type,data)=>({seq,type,data});
+  const request=(seq,input,cacheRead,cacheWrite)=>event(seq,'assistant/message',{turn:1,step:seq,
+    usage:{inputTokens:input,cacheReadTokens:cacheRead,cacheWriteTokens:cacheWrite,outputTokens:10},
+    stream:[{type:'chunk',chunk:{type:'finish',reason:{kind:'stop'}}}]});
+  const route=seq=>event(seq,'request/header',{header:{config:{provider:'local',model:'deepseek-v4.1-flash',reasoningEffort:'low'}}});
+  const original=event(2,'tool/result',{message:{id:'result-original',role:'tool',source:{callId:'source-call'},content:[{type:'text',text:'source'}]}});
+  const projection=event(3,'user/message',{message:{id:'projection-plan',role:'user',source:{kind:'work-evidence-working-set',workingSet:{version:1,action:'project',
+    entries:[{seq:2,id:'result-original'}],decision:{route:{provider:'local',model:'deepseek-v4.1-flash',reasoningEffort:'low'}}}}}});
+  const events=[route(0),request(1,100,800,0),original,projection,route(4),request(5,500,400,50)];
+  const accounting={requests:[{requestId:'before',requestKind:'main',sourceSeq:1,complete:true},{requestId:'applied',requestKind:'main',sourceSeq:5,complete:true}],
+    mainRequestLinks:[{requestId:'before',sourceSeq:1,projectionObservation:null},{requestId:'applied',sourceSeq:5,
+      projectionObservation:{status:'matched',planSeq:3,planMessageId:'projection-plan',resultSeqs:[2],reason:null}}]};
+  const valid=auditCacheTransitions(events,accounting).items[0];
+  assert.equal(valid.resultScope,'full-plan');assert.equal(valid.observationKind,'projection-matched');assert.equal(valid.plannedResultCount,1);
+  assert.equal(valid.applicationOrder,'first-recorded-projection');assert.deepEqual(valid.reasons,[]);
+  for(const invalidate of [
+    plan=>{delete plan.version;},plan=>{plan.version=2;},plan=>{plan.entries=[];},
+    plan=>{plan.entries[0].id='different-result';},plan=>{plan.entries[0].id=null;},plan=>{plan.entries[0].seq=1;},
+  ]){
+    const invalid=structuredClone(events),plan=invalid[3].data.message.source.workingSet;invalidate(plan);
+    const item=auditCacheTransitions(invalid,accounting).items[0];
+    assert.equal(item.resultScope,'unknown');assert.equal(item.observationKind,'projection-observation-unknown');
+    assert.equal(item.projectedResultSeqs.length,0);assert.ok(item.reasons.includes('projection-plan-or-results-unmatched'));
+  }
+});
+
+test('change scope dependency evidence must precede the reviewed operation',()=>{
+  const {f,assessment,audit}=reviewedFixture(),done=f.operation('edit',{file_path:'a.txt',old_string:'old',new_string:'new'},'applied');
+  assessment.throughSeq=f.events.at(-1).seq;
+  const call=normalizeDshEvents(f.events).calls.find(row=>row.resultSeq===done.resultSeq);
+  assessment.scopeReviews=[{id:'dependency-change',callSeq:call.callSeq,resultSeq:done.resultSeq,path:'a.txt',
+    declaredRelation:'necessary-dependency',requirementSeqs:[],dependencyEvidenceSeqs:[1],reviewer:'human',
+    reason:'The earlier requirement established the dependency.',counterexample:'Another implementation might not need it.'}];
+  assert.equal(audit().changeScopeReviews.items[0].relation,'necessary-dependency');
+  assessment.scopeReviews[0].dependencyEvidenceSeqs=[];
+  const missing=audit().changeScopeReviews.items[0];
+  assert.equal(missing.relation,'unknown');assert.ok(missing.unknownReasons.includes('dependency-evidence-missing'));
+  assessment.scopeReviews[0].dependencyEvidenceSeqs=[call.callSeq];assert.throws(audit,/Invalid change-scope review/);
+  assessment.scopeReviews[0].dependencyEvidenceSeqs=[done.resultSeq];assert.throws(audit,/Invalid change-scope review/);
+});
+
+test('an unobserved file effect does not also claim a non-unique effect',()=>{
+  const {f,assessment,audit}=reviewedFixture(),done=f.operation('run_code',{code:'writeFile()'},'files written');
+  assessment.throughSeq=f.events.at(-1).seq;
+  const call=normalizeDshEvents(f.events).calls.find(row=>row.resultSeq===done.resultSeq);
+  assessment.scopeReviews=[{id:'opaque-change',callSeq:call.callSeq,resultSeq:done.resultSeq,path:'a.txt',
+    declaredRelation:'unknown',requirementSeqs:[],dependencyEvidenceSeqs:[],reviewer:'human',
+    reason:'The program did not expose its file effects.',counterexample:'The file may not have been written.'}];
+  const reasons=audit().changeScopeReviews.items[0].unknownReasons;
+  assert.ok(reasons.includes('no-recorded-file-effect'));
+  assert.equal(reasons.includes('file-effect-not-unique'),false);
+  assert.equal(reasons.includes('file-effect-unconfirmed'),false);
 });

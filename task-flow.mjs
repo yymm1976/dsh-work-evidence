@@ -300,6 +300,8 @@ export function createTaskFlow(ctx,runtime,{nativeFiles,call,executionDependenci
         scriptEditsSubmitted:call.name==='work_exec'?(payload?.scriptEditsSubmitted??call.args.edits?.length??0):0,
         scriptEditCount:call.name==='work_exec'&&payload?.scriptRef?(payload.scriptEditCount??(call.args.edits??[]).filter(edit=>edit?.before!==edit?.after).length):0,
         scriptChars:call.name==='work_exec'?payload?.scriptChars??call.args.code?.length??0:0,scriptRuntime:call.name==='work_exec'?payload?.scriptRuntime??call.args.runtime:null,
+        errorCode:call.name==='work_exec'&&typeof payload?.errorCode==='string'?payload.errorCode:
+          call.name==='work_exec'&&typeof payload?.error?.code==='string'?payload.error.code:null,
         scriptSourceRefs:call.name==='work_exec'&&Array.isArray(payload?.scriptSourceRefs)?payload.scriptSourceRefs.filter(id=>typeof id==='string'):[],
         formatRecovery:call.name==='work_exec'&&payload?.recovery?.reason==='commonjs-program-with-default-esm'?payload.recovery:null,
         failureSignature:failed?checkFailure?.signature??payload?.failureSignature??failureSignature(payload?.errorText||streamText(payload?.stderr??payload?.stderrText)||resultText(result.content)):null,
@@ -622,7 +624,12 @@ export function createTaskFlow(ctx,runtime,{nativeFiles,call,executionDependenci
     if(config.executionTriage&&user&&failedScript&&!state.scriptReuseAdvised.has(scriptAdviceKey)&&
       !failedScript.scriptSourceRefs.some(ref=>state.scriptReuseAdvised.has(JSON.stringify([user.seq,ref])))){
       state.scriptReuseAdvised.add(scriptAdviceKey);
-      return emit('scriptReuse',scriptAdviceKey,'[work-evidence] 事件'+failedScript.seq+'的完整脚本可用work_exec({runtime:'+JSON.stringify(failedScript.scriptRuntime)+',scriptRef:'+JSON.stringify(failedScript.scriptEventRef??failedScript.scriptRef)+',edits:[{before:"唯一原文",after:"替换原文"}]})复用。合并已知且独立的修正，有依赖时先处理阻塞项；保留错误及未完成要求。替换须唯一匹配，成功执行会返回新scriptEventRef。');
+      const recovery={runtime:failedScript.scriptRuntime,scriptRef:failedScript.scriptEventRef??failedScript.scriptRef,
+        ...(failedScript.errorCode==='WORK_EXEC_EXECUTABLE_NOT_FOUND'?{executable:failedScript.scriptRuntime}:{}),
+        edits:[{before:'唯一原文',after:'替换原文'}]};
+      return emit('scriptReuse',scriptAdviceKey,'[work-evidence] 事件'+failedScript.seq+'的完整脚本可用work_exec('+JSON.stringify(recovery)+')复用。'+
+        (failedScript.errorCode==='WORK_EXEC_EXECUTABLE_NOT_FOUND'?'此处显式指定PATH运行时，避免继续继承不存在的解释器路径。':'')+
+        '合并已知且独立的修正，有依赖时先处理阻塞项；保留错误及未完成要求。替换须唯一匹配，成功执行会返回新scriptEventRef。');
     }
     const editedScript=state.executions.findLast(item=>item.userSeq===user?.seq&&item.tool==='work_exec'&&Number.isInteger(item.exitCode)&&!item.partial&&item.status!=='pending'&&item.scriptEditCount>0&&item.scriptRef);
     const versionAdviceKey=scriptVersionKey(user?.seq,editedScript?.scriptRef);
@@ -958,7 +965,8 @@ export function createTaskFlow(ctx,runtime,{nativeFiles,call,executionDependenci
         ...(exec.name==='work_recall'||exec.name==='work_state'&&argsOf(exec.arguments).mode==='recall'?
           {localSourceRead:localRecallObservation(exec.agent,exec.name==='work_state'?{...argsOf(exec.arguments),kind:'output'}:argsOf(exec.arguments),result)}:{}),
         exitCode:value?.exitCode,exit_code:value?.exit_code,jobId:value?.jobId??value?.job_id,job:value?.job,
-        error:!!(value?.error||raw?.error),timedOut:value?.timedOut,aborted:value?.aborted,cancelled:value?.cancelled,
+        error:!!(value?.error||raw?.error),errorCode:typeof (value?.error??raw?.error)?.code==='string'?(value?.error??raw?.error).code:null,
+        timedOut:value?.timedOut,aborted:value?.aborted,cancelled:value?.cancelled,
         signal:value?.signal,stopped:value?.stopped,effectState:value?.effectState,cwd:value?.cwd,outputPartial,comparisonText,
         errorText:String(exec.name==='run_code'&&result.isError&&resultText(result.content)||
           (value?.error?.message??raw?.error?.message??value?.error??raw?.error??result.error?.message??(stderr||stdout||resultText(result.content)))).slice(0,1200),

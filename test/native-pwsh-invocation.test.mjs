@@ -1,6 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import path from 'node:path';
+import fs from 'node:fs/promises';
+import os from 'node:os';
 import {nativePwshInvocationDiagnostic} from '../recovery.mjs';
 import {createTaskFlow} from '../task-flow.mjs';
 import {defaults} from '../runtime.mjs';
@@ -17,6 +19,14 @@ test('a native PowerShell failure identifies only a split executable prefix from
   assert.equal(nativePwshInvocationDiagnostic({command:executable+' -c other.exe'},failed).executable,executable);
   assert.equal(nativePwshInvocationDiagnostic({command},{value:{data:failed.value}}).executable,executable);
   assert.equal(failed.value.exitCode,1);assert.equal(failed.value.stderr.text,stderr);
+});
+
+test('localized PowerShell errors use the structured command-not-found marker',()=>{
+  const prefix='C:\\Programs\\DSH';
+  const localized=prefix+' : 无法将“'+prefix+'”项识别为 cmdlet、函数、脚本文件或可运行程序的名称。\n+ FullyQualifiedErrorId : CommandNotFoundException';
+  const diagnostic=nativePwshInvocationDiagnostic({command},{value:{...failed.value,stderr:{text:localized}}});
+  assert.equal(diagnostic.executable,executable);assert.equal(diagnostic.reportedCommand,prefix);
+  assert.equal(nativePwshInvocationDiagnostic({command},{value:{...failed.value,stderr:{text:localized.replace('CommandNotFoundException','OtherError')}}}),null);
 });
 
 test('success, partial results, different errors and already quoted commands produce no invocation advice',()=>{
@@ -49,16 +59,17 @@ test('the same executable is advised once per user request and respects disabled
   assert.ok(flow.executionShellContext(exec,failed));
 });
 
-test('native PTC delivers one syntax context, preserves the failure and executes only an explicit corrected command',async()=>{
-  const exe=path.win32.normalize(process.execPath);
-  assert.match(exe,/\s/u,'the installed executable path provides the real space boundary');
+test('native PTC delivers one syntax context, preserves the failure and executes only an explicit corrected command',async t=>{
+  const directory=await fs.mkdtemp(path.join(os.tmpdir(),'we pwsh space '));
+  const exe=path.win32.join(directory,'node.exe');
+  await fs.link(process.execPath,exe).catch(()=>fs.copyFile(process.execPath,exe));
+  assert.match(exe,/\s/u,'the fixture executable path provides the real space boundary');
   const unquoted=exe+' -e "console.log(42)"',quoted="& '"+exe.replaceAll("'","''")+"' -e \"console.log(42)\"";
-  const results=[];
+  const results=[],contexts=[];
   const host=await startHost({toolMode:'ptc',extraMounts:[['dsh-ptc-runtime-node']],pluginConfig:{stepPacing:false},script:(options,n)=>{
     if(n===1)return [tool('run_code',{code:'const r=await tools.pwsh('+JSON.stringify({command:unquoted,description:'Observe the requested invocation'})+'); console.log(r.exitCode);',description:'Execute the original command'})];
     if(n===2){
-      const contexts=options.messages.filter(message=>message.source?.taskFlow?.key?.includes('pwsh-unquoted-executable'));
-      assert.equal(contexts.length,1);assert.ok(contexts[0].content[0].text.includes(JSON.stringify(exe)));
+      contexts.push(...options.messages.filter(message=>message.source?.taskFlow?.key?.includes('pwsh-unquoted-executable')));
       return [tool('run_code',{code:'const r=await tools.pwsh('+JSON.stringify({command:quoted,description:'Explicitly quote the same executable'})+'); console.log(r.exitCode,r.stdout.text);',description:'Explicitly correct the invocation prefix'})];
     }
     return [text('42')];
@@ -67,10 +78,12 @@ test('native PTC delivers one syntax context, preserves the failure and executes
   try{
     const agent=await host.createAgent('max');await host.send(agent,'运行指定命令，处理实际调用错误并返回结果。');
     assert.equal(host.requests.length,3);assert.equal(results.length,2);
+    assert.equal(contexts.length,1);assert.ok(contexts[0].content[0].text.includes(JSON.stringify(exe)));
     assert.equal(results[0].isError,false);assert.equal(results[0].value.exitCode,1);
+    assert.ok(results[0].value.stderr.text.includes(exe.split(/\s/u,1)[0]));
     assert.equal(results[1].value.exitCode,0);assert.match(results[1].value.stdout.text,/42/u);
     const calls=host.events.filter(event=>event.type==='tool/ptc-dispatch-start'&&event.data.name==='pwsh');
     assert.equal(calls.length,2);assert.equal(calls[0].data.arguments.command,unquoted);assert.equal(calls[1].data.arguments.command,quoted);
     assert.equal(host.events.filter(event=>event.type==='user/message'&&(event.data.message??event.data).source?.taskFlow?.key?.includes('pwsh-unquoted-executable')).length,1);
-  }finally{await host.close();}
+  }finally{await host.close();await fs.rm(directory,{recursive:true,force:true});}
 });

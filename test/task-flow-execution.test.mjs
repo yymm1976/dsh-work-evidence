@@ -313,6 +313,21 @@ test('successful replacement PTC programs supersede wrapper errors without resol
   }
 });
 
+test('long-script reuse only selects a PATH runtime for a missing interpreter',()=>{
+  for(const missing of [true,false]){
+    const t=timeline({stepPacing:false});
+    t.command('work_exec',{runtime:'node',code:'x'.repeat(2400)},{status:'failed',isError:true,executionOccurred:false,
+      error:{code:missing?'WORK_EXEC_EXECUTABLE_NOT_FOUND':'WORK_EXEC_SCRIPT_FAILED',message:'failed'},
+      scriptRef:'failed-script',scriptEventRef:'event:12',scriptRuntime:'node',scriptChars:2400},{isError:true});
+    assert.equal(t.flow.handoff(t.agent).executions.at(-1).errorCode,missing?'WORK_EXEC_EXECUTABLE_NOT_FOUND':'WORK_EXEC_SCRIPT_FAILED');
+    const notice=t.notices().find(message=>message.source.taskFlow.kind==='scriptReuse');
+    assert.ok(notice);const text=notice.content[0].text;
+    assert.equal(text.includes('"executable":"node"'),missing);
+    assert.equal(text.includes('避免继续继承不存在的解释器路径'),missing);
+    assert.ok(text.includes('"scriptRef":"event:12"'));
+  }
+});
+
 test('format recovery stays visible when a PTC program only prints the native error',()=>{
   const t=timeline({stepPacing:false});
   t.command('work_exec',{runtime:'node',code:'const fs=require("node:fs");'},

@@ -3,6 +3,8 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import {startHost,text,tool,requestText} from './helpers/host.mjs';
+import {readRequestAccounting} from '../experiment-consumption.mjs';
+import {auditCacheTransitions} from '../trajectory-audit.mjs';
 
 const price=[{provider:'scripted',model:'scripted-model',input:0.15,cacheRead:0.003,output:0.6,currency:'USD'}];
 const usage=o=>{const total=Math.ceil(JSON.stringify(o.messages).length/3),cached=Math.floor(total*.85);
@@ -22,12 +24,14 @@ async function run(workspace,contextWindow=200000){
     await host.send(agent,'现在改为读取 p0.txt 到 p13.txt 并总结');
     const second=await host.command(agent,'detail');
     await host.send(agent,'回到 o0.txt，读取并说明 row 31 的内容');
-    return {first,second,last:await host.command(agent,'detail'),bodies:host.requests.map(requestText),events:host.events};
+    const last=await host.command(agent,'detail'),status=await host.command(agent,'status');
+    return {first,second,last,bodies:host.requests.map(requestText),events:host.events,
+      sessionId:agent.session.id,observabilityFile:status.observability.persistence.file};
   }finally{await host.close();}
 }
 
 test('projection retains sources from the active request and rejects uneconomic historical rewrites',async()=>{
-  const observed=await run({requestProjection:true,projectionRestore:true});
+  const observed=await run({requestProjection:true,projectionRestore:true,projectionHorizonSteps:3});
   assert.equal(observed.first.detail.workingSet.projectedObservations,0);
   assert.ok(observed.first.detail.workingSet.candidateAssessment.rejected['current-task-source']>0);
   assert.equal(observed.second.detail.workingSet.projectedObservations,0);
@@ -40,6 +44,16 @@ test('projection adopts under capacity pressure and restores an old source depen
   assert.ok(observed.last.detail.workingSet.restoredObservations>0);
   assert.ok(observed.bodies.at(-1).includes('o0 row 31'));
   console.log('measurement',JSON.stringify({feature:'requestProjection',projected:observed.second.detail.workingSet.projectedObservations,restored:observed.last.detail.workingSet.restoredObservations,charsOmittedAcrossRequests:observed.second.detail.workingSet.charsOmittedAcrossRequests}));
+});
+
+test('a projected host request links its plan to matched source results',async()=>{
+  const observed=await run({requestProjection:true,projectionRestore:true},60000);
+  const accounting=await readRequestAccounting(observed.observabilityFile,observed.events,{sessionId:observed.sessionId});
+  const matched=accounting.mainRequestLinks.filter(row=>row.projectionObservation?.status==='matched');
+  assert.ok(matched.length>0,JSON.stringify(accounting.mainRequestLinks.map(row=>row.projectionObservation)));
+  assert.ok(matched.every(row=>Number.isSafeInteger(row.sourceSeq)&&row.projectionObservation.resultSeqs.length>0));
+  const audit=auditCacheTransitions(observed.events,accounting);
+  assert.ok(audit.items.some(item=>item.observationKind==='projection-matched'&&item.resultScope==='full-plan'));
 });
 
 test('projection and its restoration switch must both be enabled',async()=>{
