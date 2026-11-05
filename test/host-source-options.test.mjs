@@ -35,6 +35,26 @@ test('evidenceViews references a proven full body and sends full text after a wr
   assert.equal(off.features.find(item=>item.key==='evidenceViews').effect.status,'not-observed');
 });
 
+test('defaultResponseView independently records its actual default and explicit override',async()=>{
+  const args={mode:'read',files:[{path:'a.txt',offset:1,limit:80}]};
+  const steps=[[tool('project_evidence',args)],[tool('project_evidence',args)],
+    [tool('project_evidence',{...args,responseView:'full'})]];
+  const setup=cwd=>fs.writeFile(path.join(cwd,'a.txt'),Array.from({length:65},(_,i)=>`row ${i} `+'z'.repeat(40)).join('\n'));
+  const on=await run({ledgerReceipt:false,defaultResponseView:'reference-if-visible'},steps,setup);
+  assert.equal(on.features.find(item=>item.key==='defaultResponseView').effect.status,'applied');
+  const defaults=on.features.find(item=>item.key==='defaultResponseView').effect;
+  assert.equal(defaults.applied,1);assert.equal(defaults.notApplicable,1);
+  assert.equal(defaults.lastReason,'configured-reference-if-visible');
+  assert.equal(on.results[1].responseView.kind,'reference');
+  assert.equal(on.results[2].responseView.reason,'explicit-full-view');
+  const off=await run({ledgerReceipt:false,evidenceViews:false,defaultResponseView:'reference-if-visible'},steps,setup);
+  const offEffect=off.features.find(item=>item.key==='defaultResponseView').effect;
+  assert.equal(offEffect.status,'not-applied');
+  assert.equal(offEffect.unavailable,2);
+  assert.equal(offEffect.applied,0);
+  assert.equal(offEffect.notApplicable,0);
+});
+
 test('memberParsing finds Java method bodies with parsing on and with its lexical fallback',async()=>{
   for(const memberParsing of [true,false]){
     const observed=await run({memberParsing},[[tool('project_evidence',{mode:'source',query:'Calc',member:'add'})]],

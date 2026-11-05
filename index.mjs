@@ -383,12 +383,12 @@ export function apply(ctx,config={}){
     if(current?.surface===surface)return;
     try{current?.dispose?.();}catch{}
     toolSurfaceDisposers.delete(agent.session.id);
-    if(surface==='full')return;
     try{
       const deny=surface==='compact-read-only'?[...COMPACT_HIDDEN_TOOLS,'work_exec']:
         surface==='compact-minimal'?[...COMPACT_HIDDEN_TOOLS,'work_exec','work_recall']:COMPACT_HIDDEN_TOOLS;
-      const dispose=agent.ctx.tools.restrict({deny});
+      const dispose=surface==='full'?null:agent.ctx.tools.restrict({deny});
       toolSurfaceDisposers.set(agent.session.id,{surface,dispose});
+      effects.decide(agent,'toolSurface','applied',surface+'-surface',{configured:base,dynamic:surface!==base});
     }catch(error){runtime.problem(state(agent),'tool-surface',error.message);}
   }
   const prepareSession=agent=>{if(!agent)return;workingSet.attach(agent);return runtime.init(agent,AbortSignal.timeout(10000)).then(()=>{applyToolSurface(agent);return effects.load(agent);}).catch(error=>runtime.problem(state(agent),'session-prepare',error.message));};

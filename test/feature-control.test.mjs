@@ -33,6 +33,8 @@ test('human commands expose compact-hidden tools and immediately restore the dis
     assert.equal(view.tools.find(item=>item.name==='work_state').exposed,false);
     const changed=await host.command(agent,'feature toolSurface full');
     assert.equal(changed.scope,'workspace');assert.equal(changed.readiness.features[0].configured,'full');
+    assert.equal(changed.readiness.features[0].effect.status,'applied');
+    assert.equal(changed.readiness.features[0].effect.lastReason,'full-surface');
     view=await host.command(agent,'features');assert.equal(view.tools.find(item=>item.name==='work_state').exposed,true);
     await host.send(agent,'列出当前可用的工程工具。');
     await host.command(agent,'off');

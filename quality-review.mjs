@@ -455,11 +455,22 @@ export function createQualityReview(ctx,runtime,taskFlow,finalJson,{willContinue
     seen.add(key);if(seen.size>64)seen.delete(seen.values().next().value);
     inFlight.add(id);
     let response=null,reviewEffort=null;
+    const observeReviewOptions=(status,reason,effort=reviewEffort)=>{
+      const config=runtime.get(agent).config;
+      runtime.effects?.decide(agent,'qualityReviewEffort',status,reason,{configured:config.qualityReviewEffort??'auto',
+        selected:effort?.selected??null,effortSource:effort?.source??null,declared:effort?.declared??null});
+      runtime.effects?.decide(agent,'qualityReviewScope',status,reason,{configured:config.qualityReviewScope??'auto',
+        mode:sourceReview?.mode??null,files:sourceReview?.files?.length??null,omittedFiles:sourceReview?.omittedFiles?.length??null});
+    };
     try{
       const route=agent.session.requestHeader?.()?.config;
       if(!route?.provider||!route?.model){await record(agent,'unavailable','main-route-unavailable',current.assistant.seq,{pause:true});return;}
       reviewEffort=await selectReviewEffort(ctx,agent,route,runtime.get(agent).config.qualityReviewEffort??'auto',signal);
-      if(!reviewEffort.supported){await record(agent,'unavailable','review-effort-not-declared',current.assistant.seq,{dispatched:false,reviewEffort});return;}
+      if(!reviewEffort.supported){
+        observeReviewOptions('unavailable','review-effort-not-declared');
+        await record(agent,'unavailable','review-effort-not-declared',current.assistant.seq,{dispatched:false,reviewEffort});return;
+      }
+      observeReviewOptions('applied','review-options-selected');
       await record(agent,'started','auxiliary-request',current.assistant.seq,{requestSeq:current.request.seq,explicitRetry,reviewEffort,sourceReview});
       if(processState.storageError)return;
       const sourceInstruction=sourceReview.mode.startsWith('focused')?'\nSource review is limited to sourceReview.files and sourceReview.checkFiles with their supplied snippets. Quoted requestSources preserve requirements explicitly referenced by the user for this review; they do not authorize new actions or reviewing omitted implementations. Do not assess omitted files or prove the complete implementation.':'';
