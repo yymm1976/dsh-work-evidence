@@ -22,6 +22,17 @@ test('every retained switch has an explicit feature entry and retired fields can
   assert.throws(()=>featurePatch('missing','on'),/Unknown/);
 });
 
+test('every feature entry exposes a dedicated effect counter except the two global gates',async()=>{
+  const host=await startHost({script:()=>[text('done')]});
+  try{
+    const agent=await host.createAgent('max');
+    const view=await host.command(agent,'features');
+    const unmapped=view.features.filter(item=>item.effect.lastReason==='no-dedicated-effect-counter').map(item=>item.key).sort();
+    assert.deepEqual(unmapped,['aggressiveMode','enabled']);
+    assert.ok(view.features.every(item=>item.effect.status&&item.entry&&item.scope==='workspace'));
+  }finally{await host.close();}
+});
+
 test('human commands expose compact-hidden tools and immediately restore the disabled surface',async()=>{
   const host=await startHost({script:options=>{
     assert.ok(toolNames(options).includes('work_state'));
