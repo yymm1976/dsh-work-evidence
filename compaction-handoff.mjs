@@ -442,17 +442,17 @@ export function createCompactionHandoff(ctx,runtime,taskFlow,{canRecall=()=>fals
         let size=null;try{size=sizing(input);}catch{}
         if(size&&size.framed([{type:'text',text}])>=size.region){
           state.last.stubSkippedReason='stub-not-smaller-than-span';
-          runtime.effects?.decide(agent,'compactionHandoff','not-applicable','stub-not-smaller-than-span',{stubChars:text.length});
+          runtime.effects?.decide(agent,'stubSummary','not-applicable','stub-not-smaller-than-span',{stubChars:text.length});
         }else{
         state.stubSummaries++;state.summariesReturned++;state.last.status='prepared-awaiting-native-commit';
         state.last.method='deterministic-stub-summary';state.last.stub={events:stub.events,problemRows:stub.problemRows,rows:stub.rows,chars:text.length};
         runtime.get(agent).dirty=true;
-        runtime.effects?.decide(agent,'compactionHandoff','applied','deterministic-stub-summary',{policy:POLICY,newModelCall:false,stubChars:stub.text.length,events:stub.events,problemRows:stub.problemRows});
+        runtime.effects?.decide(agent,'stubSummary','applied','deterministic-stub-summary',{policy:POLICY,newModelCall:false,stubChars:stub.text.length,events:stub.events,problemRows:stub.problemRows});
         return {result:{summary:[{type:'text',text}],provider:'work-evidence',model:'deterministic-stub',llmStreamCall:false}};
         }
       }else if(stubPolicy){
         state.last.stubSkippedReason='historical-recall-not-exposed';
-        runtime.effects?.decide(agent,'compactionHandoff','not-applicable','historical-recall-not-exposed');
+        runtime.effects?.decide(agent,'stubSummary','not-applicable','historical-recall-not-exposed');
       }
       state.last.method='native-summary-with-stage-sources';
       let size=null;try{size=sizing(input);}catch{}

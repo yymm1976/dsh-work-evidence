@@ -145,7 +145,7 @@ export function createFinalJsonGuard(ctx,runtime){
     const kind=current.issue.kind??'syntax-repair';
     if(prior.length>=MAX_REPAIRS||kind==='observed-result-repair'&&prior.some(event=>messageOf(event).source.finalJson.kind===kind)){
       syntaxRepairing.delete(agent.session.id);
-      runtime.effects?.decide(agent,'finalJson','failed','final-json-repair-limit',{afterSeq:current.assistant.seq,kind,error:current.issue.error});
+      runtime.effects?.decide(agent,kind==='observed-result-repair'?'finalJsonResult':'finalJson','failed','final-json-repair-limit',{afterSeq:current.assistant.seq,kind,error:current.issue.error});
       await runtime.receipt?.(agent,signal,true);
       return;
     }
@@ -178,7 +178,7 @@ export function createFinalJsonGuard(ctx,runtime){
       runtime.problem?.(runtime.get(agent),'final-json-steering',String(error?.message??error));
       return;
     }
-    runtime.effects?.decide(agent,'finalJson','applied',kind==='syntax-repair'?'invalid-final-json-repair-requested':'observed-result-repair-requested',
+    runtime.effects?.decide(agent,kind==='observed-result-repair'?'finalJsonResult':'finalJson','applied',kind==='syntax-repair'?'invalid-final-json-repair-requested':'observed-result-repair-requested',
       {afterSeq:current.assistant.seq,error:current.issue.error,...(current.issue.sourceSeq===undefined?{}:{sourceSeq:current.issue.sourceSeq,fields:current.issue.fields})});
   });
   ctx.on('session/event',(session,event)=>{

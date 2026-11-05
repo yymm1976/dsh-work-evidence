@@ -87,6 +87,7 @@ test('incomplete native observations and disabled controls never trigger a resul
 test('one source-bound notice preserves the original answer and does not loop',async()=>{
   const host=harness(),original=host.events.at(-1).data.message.content[0].text;
   await host.stop();await host.stop();assert.equal(host.notices.length,1);
+  assert.equal(host.decisions[0][1],'finalJsonResult');assert.equal(host.decisions[0][2],'applied');
   assert.match(host.guard(),/without tool calls/);
   assert.equal(host.events.find(event=>event.seq===4).data.message.content[0].text,original);
   assert.match(host.notices[0].content[0].text,/'sourceSeq'|"sourceSeq":3/u);

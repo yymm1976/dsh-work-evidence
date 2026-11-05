@@ -46,6 +46,8 @@ test('folding, projection, native compaction and disabled-state recall preserve 
     await host.ctx.compaction.compactNow(agent,AbortSignal.timeout(30000));
     const compacted=(await host.command(agent,'detail')).detail.compression.nativeHandoff;
     assert.equal(compacted.committed,1);assert.equal(compacted.stubSummaries,1);
+    feature=(await host.command(agent,'feature stubSummary')).features[0];
+    assert.equal(feature.effect.status,'applied');assert.equal(feature.effect.applied,1);
     assert.equal(compacted.nativeSummaryCalls,0);assert.equal(host.auxiliaryRequests.length,0);
     await host.command(agent,'off');
     assert.ok(host.ctx.tools.get('work_recall',agent));
