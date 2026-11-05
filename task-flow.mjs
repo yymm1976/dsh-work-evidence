@@ -167,6 +167,21 @@ function pathsOf(value){
 export function textPaths(text){
   return [...new Set([...String(text).matchAll(/(?:[A-Za-z]:[\\/])?(?:[\p{L}\p{N}_@.~-]+[\\/])*[\p{L}\p{N}_@~-]+\.(?:[cm]?[jt]sx?|py|java|sql|jsonl?[,;，；:]?|ya?ml|toml|xml|gradle|kts|rs|go|c|cpp|h|glsl|md|rst|ini|csv|ndjson|txt)\b/gu)].map(match=>match[0].replace(/[,;，；:]$/u,'')))].slice(0,16);
 }
+function explicitlyCorrectedClaim(text,claim){
+  if(claim.length<12||claim.length>800)return false;
+  const at=text.indexOf(claim);
+  if(at<0||text.indexOf(claim,at+claim.length)>=0)return false;
+  const context=text.slice(Math.max(0,at-80),at)+text.slice(at+claim.length,at+claim.length+80);
+  return /(?:不对|错了|错误|不成立|不再适用|纠正|撤销|推翻|应改为)|(?:\bwrong\b|\bincorrect\b|not true|no longer valid|\bcorrecti(?:on|ng)\b|\bretract(?:ed)?\b|\bsuperseded\b)/iu.test(context);
+}
+function challengeValidity(state,claim,root){
+  const row=state.challengedClaims.get(claim);
+  if(!row)return null;
+  if(!row.scopePaths.length)return 'challenged';
+  if(!root||state.lastOpaqueSeq>row.correctionSeq)return 'unknown';
+  if([...state.calls.values()].some(call=>call.seq>row.correctionSeq&&WRITE.has(call.name)))return 'unknown';
+  return row.scopePaths.some(file=>state.artifacts.get(normalize(path.resolve(root,file)))?.seq>row.correctionSeq)?'unknown':'challenged';
+}
 function todoPhase(todos){
   const active=todos.filter(item=>item.status==='in_progress'),phases=new Set();
   for(const item of active){
@@ -186,7 +201,8 @@ export function createTaskFlow(ctx,runtime,{nativeFiles,call,executionDependenci
     if(!state){state={cursor:0,turn:null,step:0,calls:new Map(),nested:new Map(),nestedFailures:new Map(),completedNested:new Set(),live:new Map(),errors:new Map(),reads:new Map(),jobs:new Set(),pacing:newPacing(),programFailure:null,legacyInterpreterShell:null,
       todos:null,todoSeq:null,artifacts:new Map(),artifactsEvicted:0,executionsEvicted:0,turnStartSeq:null,qualityArtifacts:new Map(),qualityExecutions:[],lastQualityReviewedMutation:null,phase:{name:null,seq:null,focus:[],source:null},lastCompaction:null,report:null,lastMutation:-1,mutationVersion:0,
       lastUser:null,programEpoch:0,programOutputDiagnostics:[],readResultRoots:new Map(),readOutputIssue:null,stageReporting:{lastTextSeq:null,lastTextSteps:0,lastNoticeSteps:0,notices:0,notifiedPhases:[]},lastInlineExec:-1,inlineExecAdvised:new Set(),scriptReuseAdvised:new Set(),diagnosticAdvised:new Set(),reuseAdvised:new Set(),cleanupAdvised:new Set(),
-      probes:[],executions:[],sourceReads:[],sourceReadsEvicted:0,repeatedExecution:null,cleanup:null,transitions:[],reuseNotices:0,cleanupNotices:0};states.set(agent.session.id,state);}
+      probes:[],executions:[],sourceReads:[],sourceReadsEvicted:0,repeatedExecution:null,cleanup:null,transitions:[],reuseNotices:0,cleanupNotices:0,
+      reportClaims:new Map(),challengedClaims:new Map(),reusedJudgment:null,lastOpaqueSeq:-1};states.set(agent.session.id,state);}
     return state;
   }
   function transition(state,name,seq,focus,source){
@@ -198,6 +214,7 @@ export function createTaskFlow(ctx,runtime,{nativeFiles,call,executionDependenci
   }
   function consume(agent,state,call,result,event,{coveredFailure=false,coveredNested=false,structuredReads=[],clippedReadSeqs=[],nonemptyRead=false}={}){
     if(call.name==='work_exec')state.lastInlineExec=event.seq;
+    if(call.name==='run_code'||SHELL.includes(call.name))state.lastOpaqueSeq=event.seq;
     if(state.lastUser&&event.seq>state.lastUser.seq&&!INTERNAL.has(call.name)&&!(call.name==='run_code'&&coveredNested)){
       state.pacing.operations++;state.pacing.steps.add(state.step);
     }
@@ -356,6 +373,13 @@ export function createTaskFlow(ctx,runtime,{nativeFiles,call,executionDependenci
     if(call.name==='work_report'&&payload?.saved===true){
       state.report={seq,args:call.args,path:payload.path,argumentsSeq:['tool/ptc-dispatch','tool/code-dispatch'].includes(event.type)?seq:call.seq??null};
       if(call.args.status==='complete'&&!call.args.remaining?.length)transition(state,'deliver',seq,[],'reported-conclusion');
+      if(runtime.get(agent).config.executionTriage)for(const item of call.args.claims??[]){
+        if(!['observed','inferred'].includes(item.status))continue;
+        const challenge=challengeValidity(state,item.claim,runtime.get(agent).root);
+        if(challenge==='challenged')state.reusedJudgment={claim:item.claim,reportSeq:state.challengedClaims.get(item.claim).reportSeq,
+          correctionSeq:state.challengedClaims.get(item.claim).correctionSeq,reusedSeq:seq,source:'work_report'};
+        else if(!challenge)bounded(state.reportClaims,item.claim,{reportSeq:seq,scopePaths:textPaths(item.claim)},16);
+      }
     }
     return false;
   }
@@ -365,7 +389,7 @@ export function createTaskFlow(ctx,runtime,{nativeFiles,call,executionDependenci
       const event=log[state.cursor++],data=event.data??{},message=messageOf(event);
       if(event.type==='turn/start'){
         state.turn=data.turn;state.turnStartSeq=event.seq;state.todos=null;state.todoSeq=null;state.report=null;state.lastMutation=-1;state.errors.clear();state.calls.clear();state.nested.clear();state.nestedFailures.clear();state.reads.clear();
-        state.phase={name:null,seq:null,focus:[],source:null};state.repeatedExecution=null;state.cleanup=null;
+        state.phase={name:null,seq:null,focus:[],source:null};state.repeatedExecution=null;state.cleanup=null;state.reusedJudgment=null;
         state.pacing=newPacing();state.completedNested.clear();state.programFailure=null;state.programOutputDiagnostics=[];state.readResultRoots.clear();state.readOutputIssue=null;state.legacyInterpreterShell=null;
         state.qualityArtifacts.clear();state.qualityExecutions=[];state.lastQualityReviewedMutation=null;
       }
@@ -395,7 +419,14 @@ export function createTaskFlow(ctx,runtime,{nativeFiles,call,executionDependenci
           }
           if(advice?.kind==='mode')state.pacing.notices.add(advice.key);
         }else if(isUserRequestMessage(message)){
-          state.lastUser={id:message.id,seq:event.seq,text:resultText(message?.content)};state.report=null;state.pacing=newPacing();
+          const text=resultText(message?.content);
+          if(runtime.get(agent).config.executionTriage){
+            const matches=[...state.reportClaims].filter(([claim])=>explicitlyCorrectedClaim(text,claim));
+            if(matches.length===1){const [claim,original]=matches[0];
+              bounded(state.challengedClaims,claim,{...original,correctionSeq:event.seq},8);
+            }
+          }
+          state.lastUser={id:message.id,seq:event.seq,text};state.report=null;state.pacing=newPacing();state.reusedJudgment=null;
           state.stageReporting={lastTextSeq:null,lastTextSteps:0,lastNoticeSteps:0,notices:0,notifiedPhases:[]};
           state.programFailure=null;state.programOutputDiagnostics=[];state.readResultRoots.clear();state.readOutputIssue=null;state.legacyInterpreterShell=null;state.lastQualityReviewedMutation=null;
         }
@@ -407,15 +438,21 @@ export function createTaskFlow(ctx,runtime,{nativeFiles,call,executionDependenci
       if(event.type==='tool/call'&&data.callId){
         // Generic PTC code can write through node:fs without emitting a file-tool event.
         // Its boundary invalidates unversioned execution comparisons; no mutation is asserted.
+        if((data.name==='run_code'||SHELL.includes(data.name))&&!state.calls.has(data.callId))state.lastOpaqueSeq=event.seq;
         if(data.name==='run_code'&&!state.calls.has(data.callId)){state.programEpoch++;state.repeatedExecution=null;}
         bounded(state.calls,data.callId,{name:data.name,args:argsOf(data.arguments),seq:event.seq},256);
       }
       if(event.type==='assistant/message'){
-        if(resultText(message?.content).trim()){state.stageReporting.lastTextSeq=event.seq;state.stageReporting.lastTextSteps=state.pacing.steps.size;}
+        const text=resultText(message?.content).trim();
+        if(text){state.stageReporting.lastTextSeq=event.seq;state.stageReporting.lastTextSteps=state.pacing.steps.size;}
+        if(text&&challengeValidity(state,text,runtime.get(agent).root)==='challenged'){
+          const row=state.challengedClaims.get(text);state.reusedJudgment={claim:text,reportSeq:row.reportSeq,correctionSeq:row.correctionSeq,reusedSeq:event.seq,source:'assistant-text'};
+        }
         const outputTokens=data.usage?.outputTokens;
         if(Number.isSafeInteger(outputTokens)&&outputTokens>=0){state.pacing.outputTokens+=outputTokens;state.pacing.lastOutputTokens=outputTokens;}
         else state.pacing.missingOutputUsage++;
         for(const block of message?.content??[])if(block.type==='tool-call'&&!state.calls.has(block.id)){
+          if(block.name==='run_code'||SHELL.includes(block.name))state.lastOpaqueSeq=event.seq;
           if(block.name==='run_code'){state.programEpoch++;state.repeatedExecution=null;}
           bounded(state.calls,block.id,{name:block.name,args:argsOf(block.arguments),seq:event.seq},256);
         }
@@ -529,8 +566,19 @@ export function createTaskFlow(ctx,runtime,{nativeFiles,call,executionDependenci
       if(kind==='pacing'){notice.source.taskFlow.outputTokens=state.pacing.outputTokens;notice.source.taskFlow.stepCount=state.pacing.steps.size;}
       messages.push(notice);runtime.get(agent).dirty=true;return messages;
     };
+    const judgmentReminder=()=>{
+      const row=state.reusedJudgment;
+      if(!config.executionTriage||!row||challengeValidity(state,row.claim,runtimeState.root)!=='challenged')return null;
+      const id=JSON.stringify(['challenged-claim',row.reportSeq,row.correctionSeq,row.reusedSeq]);
+      if(state.diagnosticAdvised.has(id))return null;
+      state.diagnosticAdvised.add(id);
+      const notices=emit('diagnostic',id,'[work-evidence] 用户在事件'+row.correctionSeq+'原文纠正了报告事件'+row.reportSeq+'中登记的判断；事件'+row.reusedSeq+'再次原样采用。旧判断已标记为 challenged，不表示纠正或任何替代结论已经验证。核对纠正与原依据；没有新证据时不要恢复旧判断。没有自动修改事实、文件或任务结果。');
+      notices[0].source.taskFlow.judgment={status:'challenged',reportSeq:row.reportSeq,correctionSeq:row.correctionSeq,reusedSeq:row.reusedSeq,source:row.source};
+      return notices;
+    };
     const incoming=pendingMessages.findLast(isUserRequestMessage);
     if(incoming){
+      const judgment=judgmentReminder();if(judgment)return judgment;
       const modeKey=JSON.stringify([incoming.id,'pb001-brief']);
       if(mode==='aggressive'&&config.stepPacing&&!state.pacing.notices.has(modeKey)){
         state.pacing.notices.add(modeKey);
@@ -574,6 +622,7 @@ export function createTaskFlow(ctx,runtime,{nativeFiles,call,executionDependenci
       }
       return messages;
     }
+    const judgment=judgmentReminder();if(judgment)return judgment;
     const readIssue=state.readOutputIssue,readIssueKey=JSON.stringify([user?.seq,readIssue?.symptom==='line-text-truncated-json'?'native-read-clipped-json':'native-read-result']);
     if(config.executionTriage&&user&&readIssue?.userSeq===user.seq&&!state.diagnosticAdvised.has(readIssueKey)){
       state.diagnosticAdvised.add(readIssueKey);
@@ -784,10 +833,14 @@ export function createTaskFlow(ctx,runtime,{nativeFiles,call,executionDependenci
     }
     return messages;
   }
+  function challenges(agent,state){
+    return [...state.challengedClaims].slice(-4).map(([claim,row])=>({status:challengeValidity(state,claim,runtime.get(agent).root),
+      reportSeq:row.reportSeq,correctionSeq:row.correctionSeq,scopePaths:[...row.scopePaths],currentApplicability:'historical-events-only'}));
+  }
   function summary(agent){
     const state=sync(agent),config=runtime.get(agent).config;
     return {enabled:runtime.isEnabled(agent),mode:runtime.modeStatus(agent),stageReporting:{...state.stageReporting,enabled:runtime.isEnabled(agent)&&config.stepPacing,delivery:'assistant-text-guidance; content-not-semantically-verified'},executionTriage:config.executionTriage,stageWorkingSet:config.stageWorkingSet,
-      phase:phase(agent),pendingCalls:state.calls.size+state.nested.size,
+      judgmentChallenges:challenges(agent,state),phase:phase(agent),pendingCalls:state.calls.size+state.nested.size,
       userId:state.lastUser?.id??null,userSeq:state.lastUser?.seq??null,lastMutationSeq:state.lastMutation,mutationVersion:state.mutationVersion,
       unresolvedErrors:[...state.errors.values()].slice(-8),pendingJobs:[...state.jobs].slice(-16),
       sourceReads:state.sourceReads.map(item=>({...item})),sourceReadsOmitted:state.sourceReadsEvicted,
@@ -839,6 +892,7 @@ export function createTaskFlow(ctx,runtime,{nativeFiles,call,executionDependenci
       pendingCalls:[...new Map([...state.calls,...state.nested]).entries()].map(([callId,{name,seq}])=>({callId,tool:name,seq})),
       report:state.report?{seq:state.report.seq,argumentsSeq:state.report.argumentsSeq,path:state.report.path,claimedStatus:state.report.args.status,summary:state.report.args.summary,
         remaining:state.report.args.remaining??[],unverified:state.report.args.unverified??[]}:null,
+      judgmentChallenges:challenges(agent,state),
       lastMutationSeq:state.lastMutation,completion:'not-determined'};},
     executionReferenceContext(exec,result){
       if(!exec.agent||exec.name!=='run_code'||exec.parent||result?.isError||exec.signal?.aborted||!runtime.isEnabled(exec.agent)||!runtime.get(exec.agent).config.executionTriage)return null;
