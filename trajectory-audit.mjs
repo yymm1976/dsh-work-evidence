@@ -545,13 +545,15 @@ function constraintObservations(normal){
     const requirement=resultText(message?.content);
     if(!/(?:不得|不要|禁止|不)[^。；\n]{0,40}读取项目外文件/u.test(requirement))continue;
     for(const call of normal.calls){
-      if(call.callSeq<human.seq||call.name!=='work_exec')continue;
+      if(call.callSeq<human.seq||!['work_exec','pwsh'].includes(call.name))continue;
       if(normal.humans.some(next=>next.seq>human.seq&&next.seq<=call.callSeq))continue;
       let code;
-      try{code=resolveInlineScript(call.arguments,{log:normal.events}).code;}catch{continue;}
+      if(call.name==='pwsh')code=call.arguments.command;
+      else try{code=resolveInlineScript(call.arguments,{log:normal.events}).code;}catch{continue;}
       const runpy=/\brunpy\.run_path\(\s*["']([^"']+)["']/u.exec(code);
-      if(runpy){
-        const target=runpy[1].replaceAll('\\','/').split('/').at(-1),writes=normal.calls.filter(candidate=>candidate.callSeq<call.callSeq&&
+      const shell=call.name==='pwsh'?/\bpython(?:3(?:\.\d+)?)?(?:\.exe)?["']?\s+([^\s"']+\.py)\b/iu.exec(code):null;
+      if(runpy||shell){
+        const target=(runpy?.[1]??shell[1]).replaceAll('\\','/').split('/').at(-1),writes=normal.calls.filter(candidate=>candidate.callSeq<call.callSeq&&
           String(fileOf(candidate.arguments)??'').replaceAll('\\','/').split('/').at(-1)===target);
         const latest=writes.at(-1);
         if(!latest||latest.name!=='write'||typeof latest.arguments?.content!=='string')continue;
@@ -562,12 +564,12 @@ function constraintObservations(normal){
       const location=match?.[0].replace(/\\[rn].*$/su,'').replace(/[,\]}].*$/su,'');
       const evidence=location?.length>240?location.slice(0,120)+'…'+location.slice(-117):location;
       items.push({kind:'outside-workspace-temporary-file-read-candidate',requirementSeqs:[human.seq],callSeq:call.callSeq,resultSeq:call.resultSeq,
-        evidence:evidence??'work_exec source uses a system temporary-directory API and open()',classification:'candidate',violation:'not-inferred',
+        evidence:evidence??call.name+' source uses a system temporary-directory API and open()',classification:'candidate',violation:'not-inferred',
         reason:'The original request explicitly forbids reading files outside the project. The recorded script uses a system temporary-directory API and open(). A system Temp path is also visible in the result when present.',
         counterexample:'The path may only be printed or used for an unrelated operation. Review the original call and result before treating this as a confirmed violation.'});
     }
   }
-  return {items,status:items.length?'candidates':'no-matching-candidates',automaticCoverage:'Explicit no-outside-file-reading requirement plus work_exec tempfile/open source; a system Temp result path is retained when present but is not required',
+  return {items,status:items.length?'candidates':'no-matching-candidates',automaticCoverage:'Explicit no-outside-file-reading requirement plus work_exec/pwsh tempfile/open source or a matching complete written script; a system Temp result path is retained when present but is not required',
     meaning:'Candidates only. No command is blocked and no task outcome, complete coverage, model visibility or savings is inferred.'};
 }
 

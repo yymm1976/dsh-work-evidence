@@ -353,6 +353,12 @@ test('outside workspace temporary reads stay source-bound candidates',()=>{
   const scripted=f.operation('work_exec',{runtime:'python',code:'import runpy\nrunpy.run_path("check_set_keys.py", run_name="__main__")'},'completed');
   assert.equal(audit().constraints.items.length,3);
   assert.equal(audit().constraints.items[2].resultSeq,scripted.resultSeq);
+  const shell=f.operation('pwsh',{command:'& "C:\\runtime\\python.exe" check_set_keys.py'},'completed');
+  assert.equal(audit().constraints.items.length,4);
+  assert.equal(audit().constraints.items[3].resultSeq,shell.resultSeq);
+  f.operation('edit',{file_path:'check_set_keys.py',old_string:'tempfile',new_string:'os'},'edited');
+  f.operation('pwsh',{command:'& "C:\\runtime\\python.exe" check_set_keys.py'},'completed');
+  assert.equal(audit().constraints.items.length,4,'an edited script cannot inherit the earlier full-write evidence');
 });
 
 test('change scope reviews retain unsupported and unknown declarations without a requirement source',()=>{
