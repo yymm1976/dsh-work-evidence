@@ -27,6 +27,10 @@ test('localized PowerShell errors use the structured command-not-found marker',(
   const diagnostic=nativePwshInvocationDiagnostic({command},{value:{...failed.value,stderr:{text:localized}}});
   assert.equal(diagnostic.executable,executable);assert.equal(diagnostic.reportedCommand,prefix);
   assert.equal(nativePwshInvocationDiagnostic({command},{value:{...failed.value,stderr:{text:localized.replace('CommandNotFoundException','OtherError')}}}),null);
+  assert.equal(nativePwshInvocationDiagnostic({command},{value:{...failed.value,
+    stderr:{text:'+ FullyQualifiedErrorId : CommandNotFoundException'},stdout:{text:'“'+prefix+'”'}}}),null,'separate output streams cannot establish the same error record');
+  assert.equal(nativePwshInvocationDiagnostic({command},{value:{...failed.value,
+    stderr:{text:'unrelated output\n\n+ FullyQualifiedErrorId : CommandNotFoundException'}}}),null,'separate records cannot establish the command');
 });
 
 test('success, partial results, different errors and already quoted commands produce no invocation advice',()=>{
@@ -60,6 +64,9 @@ test('the same executable is advised once per user request and respects disabled
 });
 
 test('native PTC delivers one syntax context, preserves the failure and executes only an explicit corrected command',async t=>{
+  if(process.platform!=='win32'||os.tmpdir().startsWith('\\\\')||/['$]/u.test(os.tmpdir())){
+    t.skip('Requires a Windows pwsh fixture and a temporary root accepted by the diagnostic.');return;
+  }
   const directory=await fs.mkdtemp(path.join(os.tmpdir(),'we pwsh space '));
   const exe=path.win32.join(directory,'node.exe');
   await fs.link(process.execPath,exe).catch(()=>fs.copyFile(process.execPath,exe));

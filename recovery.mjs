@@ -20,7 +20,8 @@ export function nativePwshInvocationDiagnostic(argumentsValue,result){
   const reportedCommand=command.trimStart().split(/[ \t]/u,1)[0];
   const quoted=new RegExp('["\'“”‘’]'+reportedCommand.replace(/[.*+?^${}()|[\]\\]/gu,'\\$&')+'["\'“”‘’]','u');
   const english=output.includes("The term '"+reportedCommand+"' is not recognized as a name of a cmdlet, function, script file, or executable program.");
-  const structured=/FullyQualifiedErrorId\s*:\s*CommandNotFoundException\b/iu.test(output)&&quoted.test(output);
+  const structured=[stream(value.stderr??value.stderrText),stream(value.stdout??value.stdoutText)].some(stream=>
+    stream.split(/\r?\n\r?\n/u).some(record=>/FullyQualifiedErrorId\s*:\s*CommandNotFoundException\b/iu.test(record)&&quoted.test(record)));
   if(!english&&!structured)return null;
   return {kind:'unquoted-executable-path',executable,reportedCommand,processExitCode:exitCode,
     suggestedPrefix:"& '"+executable+"'",scope:'Invocation syntax only; original arguments and effects remain. No command was changed or retried.'};

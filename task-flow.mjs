@@ -9,6 +9,7 @@ import {nativeReadObservation} from './host-references.mjs';
 import {nativeReadOutputSymptom,nativeReadRecoveryEntries,executionFailureFrames,recordedSourceExcerpt,reportedCheckFailure,reportedExecutionChecks,nativeProgramParseLocation,nativeTemplateCallLocation,nativePwshInvocationDiagnostic} from './recovery.mjs';
 import {resolveNativeProgram,nativeProgramAddress} from './program-reference.mjs';
 import {textWindow,within} from './evidence.mjs';
+import {declaredInlineExecutable} from './inline-exec.mjs';
 
 const SOURCE='work-evidence-task-flow';
 const PHASES=['investigate','modify','execute','deliver','mixed'];
@@ -624,11 +625,12 @@ export function createTaskFlow(ctx,runtime,{nativeFiles,call,executionDependenci
     if(config.executionTriage&&user&&failedScript&&!state.scriptReuseAdvised.has(scriptAdviceKey)&&
       !failedScript.scriptSourceRefs.some(ref=>state.scriptReuseAdvised.has(JSON.stringify([user.seq,ref])))){
       state.scriptReuseAdvised.add(scriptAdviceKey);
+      const pathFallback=failedScript.errorCode==='WORK_EXEC_EXECUTABLE_NOT_FOUND'&&!declaredInlineExecutable(agent.session,failedScript.scriptRuntime);
       const recovery={runtime:failedScript.scriptRuntime,scriptRef:failedScript.scriptEventRef??failedScript.scriptRef,
-        ...(failedScript.errorCode==='WORK_EXEC_EXECUTABLE_NOT_FOUND'?{executable:failedScript.scriptRuntime}:{}),
+        ...(pathFallback?{executable:failedScript.scriptRuntime}:{}),
         edits:[{before:'唯一原文',after:'替换原文'}]};
       return emit('scriptReuse',scriptAdviceKey,'[work-evidence] 事件'+failedScript.seq+'的完整脚本可用work_exec('+JSON.stringify(recovery)+')复用。'+
-        (failedScript.errorCode==='WORK_EXEC_EXECUTABLE_NOT_FOUND'?'此处显式指定PATH运行时，避免继续继承不存在的解释器路径。':'')+
+        (pathFallback?'此处显式指定PATH运行时，避免继续继承不存在的解释器路径。':failedScript.errorCode==='WORK_EXEC_EXECUTABLE_NOT_FOUND'?'任务声明了特定解释器，保留该缺失路径为阻塞项，不改用PATH。':'')+
         '合并已知且独立的修正，有依赖时先处理阻塞项；保留错误及未完成要求。替换须唯一匹配，成功执行会返回新scriptEventRef。');
     }
     const editedScript=state.executions.findLast(item=>item.userSeq===user?.seq&&item.tool==='work_exec'&&Number.isInteger(item.exitCode)&&!item.partial&&item.status!=='pending'&&item.scriptEditCount>0&&item.scriptRef);

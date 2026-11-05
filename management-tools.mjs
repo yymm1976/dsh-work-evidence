@@ -71,7 +71,8 @@ export function registerManagementTools({ctx,runtime,state,effects,available,fea
       }
       const pathFallback=typeof args.executable==='string'&&['python','node'].includes(args.executable)&&args.executable===script.runtime;
       if(pathFallback)script={...script,executable:args.executable};
-      const declaredExecutable=script.executable===undefined?declaredInlineExecutable(exec.agent.session,script.runtime):null;
+      const requiredExecutable=declaredInlineExecutable(exec.agent.session,script.runtime);
+      const declaredExecutable=script.executable===undefined?requiredExecutable:null;
       if(declaredExecutable)script={...script,executable:declaredExecutable.executable};
       const root=await ctx.workingDirectory.ensure(exec.agent,exec.signal);
       if(script.executable!==undefined&&path.isAbsolute(script.executable)){
@@ -83,7 +84,8 @@ export function registerManagementTools({ctx,runtime,state,effects,available,fea
         if(missing)return {status:'failed',isError:true,executionOccurred:false,
           error:{code:'WORK_EXEC_EXECUTABLE_NOT_FOUND',message:'The explicit interpreter path does not identify an existing file: '+script.executable},
           scriptRef:exec.callId??null,scriptChars:script.code.length,scriptRuntime:script.runtime,scriptExecutable:script.executable,
-          retry:'No program was executed. Supply an existing absolute interpreter path, or explicitly set executable to python or node (matching the runtime) to use PATH. Omitting executable retains the recorded or declared path. Reuse the returned scriptRef to retain the complete program.'};
+          retry:requiredExecutable?'No program was executed. The task requires a specific interpreter. Supply that interpreter at an existing absolute path or report the unmet requirement; do not substitute PATH. Reuse the returned scriptRef to retain the complete program.':
+            'No program was executed. Supply an existing absolute interpreter path. If the task permits changing environments, explicitly set executable to python or node (matching the runtime) to use PATH. Omitting executable retains the recorded or declared path. Reuse the returned scriptRef to retain the complete program.'};
       }
       const command=inlineCommand(script,root);
       // Inline scripts may print source files. Their output has no native read

@@ -67,9 +67,11 @@ test('a prior pointer mismatch cannot erase the additional projection refill exp
   const pointer={id:'old-result',role:'tool',content:[{type:'text',text:'[work-evidence source event:10]'}]};
   options.messages=[system,user,pointer];
   finish(false,{inputTokens:100,cacheReadTokens:900,cacheWriteTokens:0,outputTokens:20,totalTokens:1020});
+  const current={...pointer,content:[{type:'text',text:'full original result body that differs from the previous pointer'}]};
   const changed={...pointer,content:[{type:'text',text:'[work-evidence source event:20]'}]};
+  options.messages=[system,user,current];
   const result=economics.assess(agent,{messages:options.messages,proposedMessages:[system,user,changed],tools:[],system:'system'});
-  assert.ok(result.cachedSuffixTokensEstimate>0);
+  assert.ok(result.savedTokensEstimate>0);assert.ok(result.cachedSuffixTokensEstimate>0);
   assert.notEqual(result.reason,'no-additional-previous-request-prefix-exposure');
   assert.match(result.cachedExposureMethod,/only when the current request is a complete continuation/);
 });
