@@ -359,6 +359,10 @@ test('outside workspace temporary reads stay source-bound candidates',()=>{
   f.operation('edit',{file_path:'check_set_keys.py',old_string:'tempfile',new_string:'os'},'edited');
   f.operation('pwsh',{command:'& "C:\\runtime\\python.exe" check_set_keys.py'},'completed');
   assert.equal(audit().constraints.items.length,4,'an edited script cannot inherit the earlier full-write evidence');
+  const project=reviewedFixture();
+  project.f.events.find(event=>event.type==='user/message').data.message.content=[{type:'text',text:'不要读取项目外文件。'}];
+  project.f.operation('work_exec',{runtime:'python',code:'import tempfile\ntmp=tempfile.mkdtemp(dir=".")\nopen(tmp+"/a.env").read()'},'completed');
+  assert.equal(project.audit().constraints.items.length,0,'an explicit project-local temporary directory is not an outside-read candidate');
 });
 
 test('change scope reviews retain unsupported and unknown declarations without a requirement source',()=>{

@@ -559,7 +559,8 @@ function constraintObservations(normal){
         if(!latest||latest.name!=='write'||typeof latest.arguments?.content!=='string')continue;
         code=latest.arguments.content;
       }
-      if(!/tempfile\.(?:mkdtemp|mkstemp|TemporaryDirectory)\b/u.test(code)||!/\bopen\s*\(/u.test(code))continue;
+      if(!/tempfile\.(?:mkdtemp|mkstemp|TemporaryDirectory)\b/u.test(code)||!/\bopen\s*\(/u.test(code)||
+        /tempfile\.(?:mkdtemp|mkstemp|TemporaryDirectory)\([^)]*\bdir\s*=\s*(?:["']\.["']|ROOT|PROJECT_ROOT|PROJECT_DIR|WORKSPACE)/u.test(code))continue;
       const text=call.resultText??'',match=/[A-Za-z]:(?:\\|\/)[^\r\n"']*?AppData(?:\\|\/)+Local(?:\\|\/)+Temp(?:\\|\/)+[^\r\n"']+/u.exec(text);
       const location=match?.[0].replace(/\\[rn].*$/su,'').replace(/[,\]}].*$/su,'');
       const evidence=location?.length>240?location.slice(0,120)+'…'+location.slice(-117):location;
@@ -569,7 +570,7 @@ function constraintObservations(normal){
         counterexample:'The path may only be printed or used for an unrelated operation. Review the original call and result before treating this as a confirmed violation.'});
     }
   }
-  return {items,status:items.length?'candidates':'no-matching-candidates',automaticCoverage:'Explicit no-outside-file-reading requirement plus work_exec/pwsh tempfile/open source or a matching complete written script; a system Temp result path is retained when present but is not required',
+  return {items,status:items.length?'candidates':'no-matching-candidates',automaticCoverage:'Explicit no-outside-file-reading requirement plus work_exec/pwsh tempfile/open source or a matching complete written script; explicit project-local temporary directories are excluded; a system Temp result path is retained when present but is not required',
     meaning:'Candidates only. No command is blocked and no task outcome, complete coverage, model visibility or savings is inferred.'};
 }
 
