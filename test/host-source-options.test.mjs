@@ -18,6 +18,7 @@ test('archiveReadRouting reads virtual archive paths and exposes an ordinary fil
   const on=await run({},steps,setup),off=await run({archiveReadRouting:false},steps,setup);
   assert.match(on.results[0].text,/2: public class Calc/);assert.match(on.results[0].text,/4:     return a \+ b/);
   assert.equal(on.status.metrics.archiveReadRoutes,1);
+  assert.equal(on.features.find(item=>item.key==='archiveReadRouting').effect.status,'applied');
   assert.equal(off.status.metrics.archiveReadRoutes,0);assert.ok(off.results[0].error);
 });
 
@@ -29,7 +30,9 @@ test('evidenceViews references a proven full body and sends full text after a wr
   const on=await run({ledgerReceipt:false},steps,setup),off=await run({evidenceViews:false,ledgerReceipt:false},steps,setup);
   assert.equal(on.results[0].responseView.kind,'full');assert.equal(on.results[1].responseView.kind,'reference');
   assert.equal(on.results[3].responseView.kind,'full');assert.match(JSON.stringify(on.results[3]),/changed/);
+  assert.equal(on.features.find(item=>item.key==='evidenceViews').effect.status,'applied');
   assert.ok(off.results.filter(x=>x.mode==='read').every(x=>x.responseView.kind==='full'));
+  assert.equal(off.features.find(item=>item.key==='evidenceViews').effect.status,'not-observed');
 });
 
 test('memberParsing finds Java method bodies with parsing on and with its lexical fallback',async()=>{

@@ -18,14 +18,16 @@ async function stateRun(workspace,external=false){
     await fs.writeFile(path.join(cwd,'a.txt'),'original\nline2\n');
     const agent=await host.createAgent('max');await host.send(agent,'读取后处理 a.txt');
     return {status:await host.command(agent,'detail'),feature:(await host.command(agent,'feature stateInform')).features[0],
-      accountingFeature:(await host.command(agent,'feature requestAccounting')).features[0],body:host.requests.map(requestText).join('\n'),events:host.events};
+      ledgerFeature:(await host.command(agent,'feature stateLedger')).features[0],accountingFeature:(await host.command(agent,'feature requestAccounting')).features[0],body:host.requests.map(requestText).join('\n'),events:host.events};
   }finally{await host.close();}
 }
 test('stateLedger records reads and invalidation while its disabled form records neither',async()=>{
   const on=await stateRun({}),off=await stateRun({stateLedger:false});
   assert.ok(on.status.detail.state.observations.some(x=>x.stale));
   assert.equal(on.status.detail.state.mutations.length,1);
+  assert.equal(on.ledgerFeature.effect.status,'applied');
   assert.equal(off.status.detail.state.observations.length,0);assert.equal(off.status.detail.state.mutations.length,0);
+  assert.equal(off.ledgerFeature.effect.status,'not-observed');
 });
 test('stateInform controls legacy invalidation notices when ledgerUnresolved is disabled',async()=>{
   for(const stateInform of [true,false]){

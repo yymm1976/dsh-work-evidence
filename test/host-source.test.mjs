@@ -115,6 +115,7 @@ test('native read aliases preserve line records, execute once and keep conflicts
         assert.match(message.content.map(block=>block.text??'').join(''),/2: second/);
         const status=await host.command(agent,'detail');
         assert.equal(status.metrics.readArgumentNormalizations,1);
+        assert.equal((await host.command(agent,'feature readArgumentRecovery')).features[0].effect.status,'applied');
       }
       if(args.file_path)assert.match(message.content.map(block=>block.text??'').join(''),/Conflicting read path/);
       if(guarded)assert.match(message.content.map(block=>block.text??'').join(''),/native read guard denied/);
