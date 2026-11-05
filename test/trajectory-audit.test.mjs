@@ -337,9 +337,11 @@ test('outside workspace temporary reads stay source-bound candidates',()=>{
   const {f,audit}=reviewedFixture();
   f.events.find(event=>event.type==='user/message').data.message.content=[{type:'text',text:'修复并检查，不要安装依赖、修改pyproject.toml、读取项目外文件、Git写操作或派子代理。'}];
   const code='import tempfile\np=tempfile.mkdtemp()\nopen(p+"/a.env").read()';
-  const done=f.operation('work_exec',{code},'C:\\Users\\name\\AppData\\Local\\Temp\\tmp123\\a.env');
+  const done=f.operation('work_exec',{code},'token=do-not-copy C:\\Users\\name\\AppData\\Local\\Temp\\tmp123\\a.env\\r\\n');
   const result=audit();assert.equal(result.constraints.items.length,1);
   const item=result.constraints.items[0];assert.equal(item.resultSeq,done.resultSeq);
+  assert.equal(item.evidence.includes('do-not-copy'),false);assert.equal(item.evidence.includes('\\r\\n'),false);
+  assert.ok(item.evidence.startsWith('C:'));
   assert.equal(item.classification,'candidate');assert.equal(item.violation,'not-inferred');
   assert.equal(result.taskOutcome,'unknown');
   f.operation('work_exec',{code:'print(42)'},'C:\\Users\\name\\AppData\\Local\\Temp\\tmp456\\a.env');

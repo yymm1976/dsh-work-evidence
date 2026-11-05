@@ -314,16 +314,18 @@ test('successful replacement PTC programs supersede wrapper errors without resol
 });
 
 test('long-script reuse only selects a PATH runtime for a missing interpreter',()=>{
-  for(const missing of [true,false]){
-    const t=timeline({stepPacing:false});
+  for(const variation of ['missing','ordinary','required']){
+    const missing=variation!=='ordinary',t=timeline({stepPacing:false});
+    if(variation==='required')t.agent.session.log.find(event=>event.type==='user/message').data.message.content=[{type:'text',text:'使用现有 C:\\required\\node.exe 执行程序'}];
     t.command('work_exec',{runtime:'node',code:'x'.repeat(2400)},{status:'failed',isError:true,executionOccurred:false,
       error:{code:missing?'WORK_EXEC_EXECUTABLE_NOT_FOUND':'WORK_EXEC_SCRIPT_FAILED',message:'failed'},
       scriptRef:'failed-script',scriptEventRef:'event:12',scriptRuntime:'node',scriptChars:2400},{isError:true});
     assert.equal(t.flow.handoff(t.agent).executions.at(-1).errorCode,missing?'WORK_EXEC_EXECUTABLE_NOT_FOUND':'WORK_EXEC_SCRIPT_FAILED');
     const notice=t.notices().find(message=>message.source.taskFlow.kind==='scriptReuse');
     assert.ok(notice);const text=notice.content[0].text;
-    assert.equal(text.includes('"executable":"node"'),missing);
-    assert.equal(text.includes('避免继续继承不存在的解释器路径'),missing);
+    assert.equal(text.includes('"executable":"node"'),variation==='missing');
+    assert.equal(text.includes('避免继续继承不存在的解释器路径'),variation==='missing');
+    assert.equal(text.includes('保留该缺失路径为阻塞项'),variation==='required');
     assert.ok(text.includes('"scriptRef":"event:12"'));
   }
 });

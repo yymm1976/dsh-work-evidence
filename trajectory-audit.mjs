@@ -548,9 +548,11 @@ function constraintObservations(normal){
       if(normal.humans.some(next=>next.seq>human.seq&&next.seq<=call.callSeq))continue;
       const code=call.arguments.code;
       if(!/tempfile\.(?:mkdtemp|mkstemp|TemporaryDirectory)\b/u.test(code)||!/\bopen\s*\(/u.test(code))continue;
-      const text=call.resultText??'',match=/(?:[A-Za-z]:(?:\\|\/))?[^\r\n"']*AppData(?:\\|\/)+Local(?:\\|\/)+Temp(?:\\|\/)+[^\r\n"']+/u.exec(text);
+      const text=call.resultText??'',match=/[A-Za-z]:(?:\\|\/)[^\r\n"']*?AppData(?:\\|\/)+Local(?:\\|\/)+Temp(?:\\|\/)+[^\r\n"']+/u.exec(text);
+      const location=match?.[0].replace(/\\[rn].*$/su,'').replace(/[,\]}].*$/su,'');
+      const evidence=location?.length>240?location.slice(0,120)+'…'+location.slice(-117):location;
       items.push({kind:'outside-workspace-temporary-file-read-candidate',requirementSeqs:[human.seq],callSeq:call.callSeq,resultSeq:call.resultSeq,
-        evidence:match?.[0].slice(0,240)??'work_exec source uses a system temporary-directory API and open()',classification:'candidate',violation:'not-inferred',
+        evidence:evidence??'work_exec source uses a system temporary-directory API and open()',classification:'candidate',violation:'not-inferred',
         reason:'The original request explicitly forbids reading files outside the project. The recorded script uses a system temporary-directory API and open(). A system Temp path is also visible in the result when present.',
         counterexample:'The path may only be printed or used for an unrelated operation. Review the original call and result before treating this as a confirmed violation.'});
     }
