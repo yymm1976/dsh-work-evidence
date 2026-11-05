@@ -17,7 +17,7 @@ async function stateRun(workspace,external=false){
   try{
     await fs.writeFile(path.join(cwd,'a.txt'),'original\nline2\n');
     const agent=await host.createAgent('max');await host.send(agent,'读取后处理 a.txt');
-    return {status:await host.command(agent,'detail'),body:host.requests.map(requestText).join('\n'),events:host.events};
+    return {status:await host.command(agent,'detail'),feature:(await host.command(agent,'feature stateInform')).features[0],body:host.requests.map(requestText).join('\n'),events:host.events};
   }finally{await host.close();}
 }
 test('stateLedger records reads and invalidation while its disabled form records neither',async()=>{
@@ -30,6 +30,7 @@ test('stateInform controls legacy invalidation notices when ledgerUnresolved is 
   for(const stateInform of [true,false]){
     const observed=await stateRun({stateInform,ledgerUnresolved:false});
     assert.equal(observed.body.includes('工程状态已失效'),stateInform);
+    assert.equal(observed.feature.effect.status,stateInform?'applied':'not-observed');
   }
 });
 test('requestAccounting can be disabled without disabling the task',async()=>{

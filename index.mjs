@@ -503,7 +503,10 @@ export function apply(ctx,config={}){
     if(ledgerMessages.length)messages.push(...ledgerMessages);
     if(s.config.stateLedger&&s.config.stateInform){
       const notice=runtime.consumeStateNotice(s);
-      if(notice)messages.push({role:'user',id:randomUUID(),source:{kind:'work-evidence-state'},content:[{type:'text',text:notice.text}]});
+      if(notice){
+        messages.push({role:'user',id:randomUUID(),source:{kind:'work-evidence-state'},content:[{type:'text',text:notice.text}]});
+        effects.decide(payload.agent,'stateInform','applied','recorded-state-applicability-notice');
+      }
     }
     if(s.pendingOpsAdvice.length){
       const facts=s.pendingOpsAdvice.splice(0);

@@ -25,6 +25,7 @@ FEATURES.finalJsonResult='finalJsonResultGuard';
 FEATURES.stubSummary='stubSummary';
 FEATURES.deferPressureCompaction='deferPressureCompaction';
 FEATURES.completionNotice='completionNotice';
+FEATURES.stateInform='stateInform';
 FEATURES.qualityReview='qualityReview';
 FEATURES.compactionHandoff='compressionControl';
 FEATURES.stageJudgment='stepPacing';
