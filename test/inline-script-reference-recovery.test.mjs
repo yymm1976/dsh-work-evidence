@@ -18,6 +18,16 @@ test('short event references reconstruct only the exact work_exec call and retai
   assert.throws(()=>resolveInlineScript({scriptRef:'event:4',edits:[{before:'absent',after:'x'}]},session),/match exactly once/);
 });
 
+test('script references retain the recorded interpreter until an explicit PATH runtime replaces it',()=>{
+  const args={runtime:'node',code:'console.log(42);'},executable='C:/recorded/node.exe';
+  const session={log:[user(1),call(4,'original',args),
+    {seq:5,type:'tool/ptc-dispatch',data:{subCallId:'original',name:'work_exec',arguments:args,
+      content:[{type:'text',text:JSON.stringify({scriptRef:'original',scriptRuntime:'node',scriptChars:args.code.length,scriptExecutable:executable})}]}}]};
+  assert.equal(resolveInlineScript({scriptRef:'original'},session).executable,executable);
+  assert.equal(resolveInlineScript({scriptRef:'event:4'},session).executable,executable);
+  assert.equal(resolveInlineScript({scriptRef:'original',executable:'node'},session).executable,'node');
+});
+
 test('the exact short-ref call-start event returns original arguments without inventing an execution outcome',()=>{
   const args={runtime:'python',code:'print("原文")'};
   for(const type of ['tool/ptc-dispatch-start','tool/code-dispatch-start']){

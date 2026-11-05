@@ -131,8 +131,9 @@ export function createContextEconomics(ctx,runtime){
         // A committed backend change may already expose a suffix. Charge only
         // the additional suffix this projection changes, without assuming the
         // backend event or a route change made the entire request cold.
-        cachedSuffixTokens=Math.ceil(Math.max(0,proposed.tokens-existing.tokens));
-        exposureMethod='rewritten surviving suffix plus new replacements; unchanged unsent tail excluded; existing baseline exposure subtracted';
+        const baselineAligned=existing.prefix===Math.min(old.keys.length,(messages??[]).length)&&proposed.prefix<=old.keys.length;
+        cachedSuffixTokens=Math.ceil(Math.max(0,proposed.tokens-(baselineAligned?existing.tokens:0)));
+        exposureMethod='rewritten surviving suffix plus new replacements; unchanged unsent tail excluded; existing baseline exposure subtracted only when the current request is a complete continuation of the previous request';
       }else if(proposedMessages){cachedSuffixTokens=cached;}
       else if(changedMessageId||Number.isSafeInteger(changedSeq)){
         const nodes=agent.session.surface.nodes,index=nodes.indexOf(changedSeq);

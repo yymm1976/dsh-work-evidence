@@ -492,7 +492,7 @@ export function createRequestWorkingSet(ctx,runtime,economics,taskFlow){
       try{
         const state=sync(agent),planSeq=state.epoch;
         if(!Number.isSafeInteger(planSeq))return unknown('no-current-plan');
-        const planEvent=agent.session.eventAt?.(planSeq),planMessage=planEvent?.data?.message,plan=planMessage?.source?.workingSet;
+        const planEvent=agent.session.eventAt?.(planSeq),planMessage=planEvent?.data?.message??planEvent?.data,plan=planMessage?.source?.workingSet;
         if(planEvent?.type!=='user/message'||planMessage?.source?.kind!==SOURCE||plan?.version!==VERSION||plan?.action!=='project'||
           typeof planMessage.id!=='string'||!Array.isArray(plan.entries))return unknown('invalid-current-plan',planSeq,typeof planMessage?.id==='string'?planMessage.id:null);
         const planMessageId=planMessage.id,planned=new Map();

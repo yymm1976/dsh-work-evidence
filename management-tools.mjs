@@ -83,7 +83,7 @@ export function registerManagementTools({ctx,runtime,state,effects,available,fea
         if(missing)return {status:'failed',isError:true,executionOccurred:false,
           error:{code:'WORK_EXEC_EXECUTABLE_NOT_FOUND',message:'The explicit interpreter path does not identify an existing file: '+script.executable},
           scriptRef:exec.callId??null,scriptChars:script.code.length,scriptRuntime:script.runtime,scriptExecutable:script.executable,
-          retry:'No program was executed. Supply an existing absolute interpreter path, or omit executable to use the runtime on PATH. Reuse the returned scriptRef to retain the complete program.'};
+          retry:'No program was executed. Supply an existing absolute interpreter path, or explicitly set executable to python or node (matching the runtime) to use PATH. Omitting executable retains the recorded or declared path. Reuse the returned scriptRef to retain the complete program.'};
       }
       const command=inlineCommand(script,root);
       // Inline scripts may print source files. Their output has no native read

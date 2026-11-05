@@ -166,6 +166,26 @@ test('work_exec rejects a missing explicit interpreter without starting PowerShe
   }finally{await host.close();}
 });
 
+test('work_exec missing-interpreter retries inherit the path until an explicit PATH runtime replaces it',async()=>{
+  const missing='C:/definitely-missing-work-evidence/node.exe';
+  const host=await startHost({script:(o,n)=>n===1?
+    [tool('work_exec',{runtime:'node',executable:missing,code:'console.log(42);'})]:
+    n<=3?[tool('work_exec',{scriptRef:lastValue(o).scriptRef})]:
+    n===4?[tool('work_exec',{runtime:'node',scriptRef:lastValue(o).scriptRef,executable:'node'})]:[text('完成。')]});
+  try{
+    const agent=await host.createAgent('max');await host.send(agent,'按返回的程序引用修正解释器路径');
+    const results=outputs(host);assert.equal(results.length,4);
+    for(const failed of results.slice(0,3)){
+      assert.equal(failed.status,'failed');assert.equal(failed.executionOccurred,false);
+      assert.equal(failed.error.code,'WORK_EXEC_EXECUTABLE_NOT_FOUND');assert.equal(failed.scriptExecutable,missing);
+      assert.match(failed.retry,/explicitly set executable/);assert.doesNotMatch(failed.retry,/omit executable to use the runtime on PATH/);
+    }
+    const recovered=results[3];assert.equal(recovered.exitCode,0);assert.match(recovered.stdout.text,/42/);
+    assert.equal(recovered.scriptReused,true);assert.equal(recovered.scriptExecutable,'node');
+    assert.equal(host.events.filter(event=>event.type==='tool/result').length,4);
+  }finally{await host.close();}
+});
+
 test('work_exec leaves PATH names and directories that cannot execute to native handling',async()=>{
   const host=await startHost({script:(_o,n)=>n===1?
     [tool('work_exec',{runtime:'node',executable:'node',code:'console.log(7);'})]:[text('完成。')]});
