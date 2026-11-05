@@ -53,6 +53,7 @@ test('defaultResponseView independently records its actual default and explicit 
   assert.equal(offEffect.unavailable,2);
   assert.equal(offEffect.applied,0);
   assert.equal(offEffect.notApplicable,0);
+  assert.equal(offEffect.lastReason,'evidence-views-disabled');
 });
 
 test('full tool surface and default reference work together and each setting closes independently',async()=>{

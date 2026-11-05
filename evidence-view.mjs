@@ -95,7 +95,7 @@ export function createEvidenceViews(ctx,runtime){
       if(defaulted)runtime.effects?.decide(exec.agent,'defaultResponseView',status,reason,{configured,...details});
     };
     if(!state){
-      observeDefault('unavailable','context-generation-unavailable');
+      observeDefault('unavailable',!runtime.isEnabled(exec.agent)?'plugin-disabled':!s.config.evidenceViews?'evidence-views-disabled':'context-generation-unavailable');
       return args.responseView?{...facts,responseView:{kind:'full',bodyEmbedded:!!bodyEmbedded(facts),requestedBodiesComplete:facts.sources.length>0&&facts.sources.every(completeSource),reason:'disabled-or-context-generation-unavailable'}}:facts;
     }
     const eligible=facts.sources.length>0&&facts.sources.every(completeSource)&&!facts.budgetTruncated&&!facts.references?.truncated;
