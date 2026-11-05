@@ -57,6 +57,38 @@ test('a projected host request links its plan to matched source results',async()
   assert.ok(!audit.items.some(item=>item.reasons.includes('restored-result-still-projected')),'restored entries do not invalidate remaining projections');
 });
 
+test('restoration preserves distinct tool observations even when their file bytes match',async()=>{
+  const plan=[...Array.from({length:8},(_,i)=>[tool('read',{file_path:`o${i}.txt`})]),[text('第一部分完成。')],
+    ...Array.from({length:14},(_,i)=>[tool('read',{file_path:`p${i}.txt`})]),[text('第二部分完成。')],
+    [tool('read',{file_path:'o0.txt'})],[text('shared row 31 已恢复。')]];
+  const host=await startHost({workspace:{contextProtocol:false,requestProjection:true,projectionRestore:true,projectionPricing:price,projectionMinChars:16000},contextWindow:60000,usage,
+    script:(_o,n)=>plan[n-1]??[text('完成。')]});
+  try{
+    const shared=big('shared',120);
+    for(let i=0;i<8;i++)await fs.writeFile(path.join(host.cwd,`o${i}.txt`),i<2?shared:big(`o${i}`,120));
+    for(let i=0;i<14;i++)await fs.writeFile(path.join(host.cwd,`p${i}.txt`),big(`p${i}`,40));
+    const agent=await host.createAgent('max');await host.send(agent,'读取 o0.txt 到 o7.txt 并总结');
+    await host.send(agent,'现在改为读取 p0.txt 到 p13.txt 并总结');
+    const before=(await host.command(agent,'detail')).detail.workingSet;
+    assert.ok(before.projectedObservations>0);
+    const o1Call=host.events.find(event=>event.type==='tool/call'&&event.data.name==='read'&&JSON.parse(event.data.arguments).file_path==='o1.txt');
+    const o1Result=host.events.find(event=>event.type==='tool/result'&&event.data.message.source.callId===o1Call.data.callId);
+    assert.ok(before.entries.some(entry=>entry.seq===o1Result.seq),'the shared historical source must actually be projected');
+    await host.send(agent,'读取 o0.txt，并说明 o1.txt 的 row 31；不要重新读取 o1.txt。');
+    const last=await host.command(agent,'detail');
+    const restored=host.events.find(event=>event.type==='user/message'&&event.data.source?.workingSet?.action==='restore'&&event.data.source.workingSet.seqs.includes(o1Result.seq));
+    assert.ok(restored,'the requested historical observation must be recovered rather than aliased to another file with the same bytes');
+    const restoredMessage=host.requests.at(-1).messages.find(message=>message.source?.workingSet?.action==='restore'&&message.source.workingSet.seqs.includes(o1Result.seq));
+    const restoredText=(restoredMessage?.content??[]).map(block=>block.text??'').join('\n');
+    assert.ok(restoredText.includes('o1.txt')&&restoredText.includes('shared row 31'));
+    assert.equal(last.detail.workingSet.entries.find(entry=>entry.seq===o1Result.seq)?.restoredAt,restored.seq);
+    assert.equal(last.detail.workingSet.restoredObservations,2);
+    assert.equal(last.detail.observability.features.restoration.lastReason,'observable-dependency-returned');
+    assert.ok(last.detail.observability.features.restoration.applied>0);
+    assert.equal(host.events.filter(event=>event.type==='tool/call'&&event.data.name==='read'&&JSON.parse(event.data.arguments).file_path==='o1.txt').length,1);
+  }finally{await host.close();}
+});
+
 test('projection and its restoration switch must both be enabled',async()=>{
   for(const workspace of [{requestProjection:false,projectionRestore:true},{requestProjection:true,projectionRestore:false}]){
     const observed=await run(workspace,60000);
