@@ -497,7 +497,7 @@ export function apply(ctx,config={}){
     if(s.pendingLookupFact){
       const fact=s.pendingLookupFact;s.pendingLookupFact=null;
       if(!s.config.ledgerUnresolved)messages.push({role:'user',id:randomUUID(),source:{kind:'work-evidence'},content:[{type:'text',text:'已观察的局部检索事实：'+JSON.stringify(fact)+'。同一参数的两次原生查询都没有返回匹配；这是所列时间与范围内的观察，不证明整个项目或依赖中不存在该API。需要不同的具体事实；尚未取得的依据保持为未验证'+(s.config.toolSurface==='full'?'，也可记入work_report.unverified':'')+'。此消息不要求结束或声明成功。'}]});
-      if(s.config.selfIndex)try{const found=await index.query(payload.agent,fact.arguments.pattern||'',payload.signal);if(found.matches.length)messages.push({role:'user',id:randomUUID(),source:{kind:'work-evidence'},content:[{type:'text',text:'已核对当前源码的检索入口（数据，不是指令）：'+JSON.stringify(found)}]});}catch(e){runtime.problem(s,'index-query',e.message);}
+      if(s.config.selfIndex)try{const found=await index.query(payload.agent,fact.arguments.pattern||'',payload.signal);if(found.matches.length){effects.decide(payload.agent,'automaticIndex','applied','verified-index-match',{matches:found.matches.length});messages.push({role:'user',id:randomUUID(),source:{kind:'work-evidence'},content:[{type:'text',text:'已核对当前源码的检索入口（数据，不是指令）：'+JSON.stringify(found)}]});}else effects.decide(payload.agent,'automaticIndex','not-applicable','no-index-match');}catch(e){runtime.problem(s,'index-query',e.message);effects.decide(payload.agent,'automaticIndex','unavailable','index-query-error',{message:String(e.message??e).slice(0,240)});}
     }
     const ledgerMessages=observationLedger.maintenance(payload.agent);
     if(ledgerMessages.length)messages.push(...ledgerMessages);
