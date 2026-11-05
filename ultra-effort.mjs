@@ -21,7 +21,7 @@ function transport(options,effort,nativeUltra){
   return Object.isFrozen(options)?Object.freeze(translated):translated;
 }
 
-export function installUltraEffort(ctx){
+export function installUltraEffort(ctx,{requestView=options=>options}={}){
   const patched=new Map();
   function refresh(){
     const registrations=ctx.llm?.adapters;
@@ -36,7 +36,7 @@ export function installUltraEffort(ctx){
       const wrappedPrepare=async function(provider,model,signal){
         const call=await prepare.call(this,provider,model,signal);
         const effort=nativeEffort(call.model),nativeUltra=nativeUltraOf(call.model);
-        return {...call,model:expose(call.model),stream:options=>call.stream(transport(options,effort,nativeUltra))};
+        return {...call,model:expose(call.model),stream:options=>call.stream(requestView(transport(options,effort,nativeUltra)))};
       };
       try{
         Object.defineProperty(adapter,'resolveModel',{configurable:true,writable:true,value:wrappedResolve});

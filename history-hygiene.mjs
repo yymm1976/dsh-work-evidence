@@ -16,10 +16,10 @@ const fileKey=(root,file)=>{
 export function recallCall(agent,{seq,offset=0,maxChars=16000}={}){
   if(!Number.isSafeInteger(seq)||seq<0||!Number.isSafeInteger(offset)||offset<0||!Number.isSafeInteger(maxChars)||maxChars<256||maxChars>64000)throw new Error('Invalid historical call window');
   const event=agent.session.eventAt(seq),data=event?.data;
-  if(!['tool/call','tool/ptc-dispatch','tool/code-dispatch'].includes(event?.type))return {status:'unavailable',seq,reason:'This event is not a recorded tool call.'};
+  if(!['tool/call','tool/ptc-dispatch-start','tool/ptc-dispatch','tool/code-dispatch-start','tool/code-dispatch'].includes(event?.type))return {status:'unavailable',seq,reason:'This event is not a recorded tool call.'};
   const text=typeof data.arguments==='string'?data.arguments:JSON.stringify(data.arguments??{}),end=Math.min(text.length,offset+maxChars);
   return {status:'observed',historical:true,kind:'call',seq,tool:data.name,offset,totalChars:text.length,text:text.slice(offset,end),nextOffset:end<text.length?end:null,
-    complete:end>=text.length,note:'Original recorded arguments. The operation was not rerun.'};
+    complete:end>=text.length,...(event.type.endsWith('-start')?{executionOutcome:'not-observed-from-call-start'}:{}),note:'Original recorded arguments. The operation was not rerun.'};
 }
 
 /** A request view only; canonical events and reasoning remain complete. */

@@ -5,12 +5,37 @@ import {pathToFileURL} from 'node:url';
 import {randomUUID} from 'node:crypto';
 import {VERSION,newSummary,applyRow,cleanUsage,writeJson} from './experiment-store.mjs';
 import {summarizeAttempts} from './experiment-attempts.mjs';
+import {accountSessionRequests,readRequestAccounting} from './experiment-consumption.mjs';
+import os from 'node:os';
 
-export async function importSession({directory,sessionId,variant,home,app,file}) {
+export function nativeChildInventory(events,{inherited=0,source='engineering-artifact'}={}){
+  if(!Array.isArray(events)||!Number.isSafeInteger(inherited)||inherited<0||inherited>events.length)throw Error('Invalid native event range for child inventory.');
+  const children=new Map(),problems=[];let throughSeq=null;
+  for(const event of events.slice(inherited)){
+    if(Number.isSafeInteger(event.seq))throughSeq=throughSeq===null?event.seq:Math.max(throughSeq,event.seq);
+    if(event.type!=='subagent/catalog')continue;
+    const value=event.data,local=value&&(value.version===0&&['one-shot','continuable'].includes(value.mode)||
+      value.version===1&&['one-shot','continuable','unknown'].includes(value.mode)),external=value?.version===2&&value.mode==='external';
+    if(!Number.isSafeInteger(event.seq)||!value||!local&&!external||typeof value.childId!=='string'||!value.childId||value.childId.length>512||
+      !Number.isFinite(value.childCreatedAt)||value.childCreatedAt<0||
+      value.mode==='continuable'&&typeof value.label!=='string'||value.label!==undefined&&typeof value.label!=='string'){
+      problems.push({seq:event.seq??null,reason:'invalid-child-catalog'});continue;
+    }
+    const child={childId:value.childId,mode:value.mode,version:value.version,childCreatedAt:value.childCreatedAt,sourceSeq:event.seq};
+    const prior=children.get(child.childId);
+    if(prior&&(prior.mode!==child.mode||prior.childCreatedAt!==child.childCreatedAt))problems.push({seq:event.seq,reason:'conflicting-child-catalog',childId:child.childId});
+    else if(!prior)children.set(child.childId,child);
+  }
+  return {schema:'work-evidence.native-child-inventory.v1',source,complete:source==='native-session-readonly'&&throughSeq!==null&&!problems.length,
+    throughSeq,children:[...children.values()],problems,
+    scope:'Recorded own parent catalog only, inherited prefix excluded. Child identities do not authorize reading another session or establish model consumption. External entries have no local child session.'};
+}
+
+export async function importSession({directory,sessionId,variant,home,app,file,observations}) {
   if(!['work-evidence','recorder-only'].includes(variant))throw new Error('Import requires --variant work-evidence or recorder-only');
   const require=createRequire(path.join(app,'package.json'));
   const {assistantStreamFirstTokenTime,lastAssistantStreamChunk}=require('@deepseek-ai/dsh-llm');
-  let events,header={},inherited=0,ctx,handle;
+  let events,header={},inherited=0,ctx,handle,observationsFile=observations?path.resolve(observations):null;
   if(file){const data=JSON.parse(await fs.readFile(file,'utf8'));events=data.events;header={id:data.sessionId,cwd:data.workspace};if(sessionId&&sessionId!==data.sessionId)throw new Error('Session id does not match the supplied engineering artifact');sessionId=data.sessionId;}
   else{
     if(!sessionId)throw new Error('Import requires --session');
@@ -23,6 +48,15 @@ export async function importSession({directory,sessionId,variant,home,app,file})
       fiber=await ctx.plugin(Persistence.default||Persistence,{root:path.join(home,'sessions')});await fiber.ready;
       handle=await ctx.sessionPersistence.open(sessionId,'read');header=handle.header;inherited=handle.inheritedEventCount||0;
       events=(await handle.read()).events;
+      if(!observationsFile){
+        const location=ctx.sessionPersistence.locate?.({...header,id:sessionId}),root=header.cwd;
+        const outside=target=>typeof root==='string'&&path.isAbsolute(root)&&
+          (path.relative(root,target)==='..'||path.relative(root,target).startsWith('..'+path.sep)||path.isAbsolute(path.relative(root,target)));
+        const hosted=typeof location?.path==='string'&&path.isAbsolute(location.path)?path.join(path.dirname(location.path),'work-evidence'):null;
+        const fallback=path.join(os.homedir(),'.dsh','work-evidence','sessions',sessionId);
+        const telemetry=hosted&&outside(hosted)?hosted:outside(fallback)?fallback:null;
+        if(telemetry)observationsFile=path.join(telemetry,sessionId+'.observability.jsonl');
+      }
     }finally{await handle?.close();await ctx.fiber.dispose();}
   }
   if(!Array.isArray(events)||!sessionId)throw new Error('No native session events found');
@@ -47,19 +81,25 @@ export async function importSession({directory,sessionId,variant,home,app,file})
       if(mountedVersion)pluginVersions.add(mountedVersion);
       // Host mounting makes the preset name insufficient to identify the arm.
       // A visible plugin marker proves availability, not successful automation.
-      requestVariants.add(mountedVersion||selectedPreset==='work-evidence-ptc'?'work-evidence':selectedPreset==='ptc'?'recorder-only':'unknown');
+      // The shared PTC preset can host this plugin in either arm. Its name alone cannot prove absence.
+      requestVariants.add(mountedVersion||selectedPreset==='work-evidence-ptc'?'work-evidence':'unknown');
     }
   }
   const usedPresets=[...requestPresets];
   if(usedPresets.length>1)throw new Error('This snapshot contains requests under multiple presets; do not aggregate it into one experiment arm');
   const preset=usedPresets.length?usedPresets[0]:selectedPreset;
-  if(requestVariants.size>1)throw new Error('This snapshot spans different plugin availability states; do not aggregate it into one experiment arm');
+  const knownVariants=new Set([...requestVariants].filter(value=>value!=='unknown'));
+  if(knownVariants.size>1)throw new Error('This snapshot spans different plugin availability states; do not aggregate it into one experiment arm');
   const recordedVariant=requestVariants.size===1&&!requestVariants.has('unknown')?[...requestVariants][0]:null;
-  if(!file&&recordedVariant&&recordedVariant!==variant)throw new Error('The requested experiment arm disagrees with recorded plugin availability: '+recordedVariant);
+  if(!file&&knownVariants.has('work-evidence')&&variant==='recorder-only')throw new Error('The requested experiment arm disagrees with recorded plugin availability: work-evidence');
   const meta={runId:randomUUID(),sessionId,parentSession:header.parentSession||null,origin:header.origin||'main',
     preset,initialPreset:header.agentPreset||null,presetSelections,presetSource:file?'engineering-artifact':usedPresets.length?'request-preset-event-fold':'selected-preset-event-fold',toolDefinitionsObserved:[...toolDefinitionsObserved].sort(),
     workspace:header.cwd||null,turn:null,startedAt:null,firstSourceSeq:null,partialStart:false,
-    pluginVersion:pluginVersions.size===1?[...pluginVersions][0]:null,collectorVersion:VERSION,variant,variantSource:!file&&recordedVariant?'recorded-request-plugin-presence':'operator-label',source:file?'engineering-artifact':'native-session-readonly',importedAt:new Date().toISOString()};
+    pluginVersion:pluginVersions.size===1?[...pluginVersions][0]:null,collectorVersion:VERSION,variant,recordedPluginAvailability:recordedVariant,
+    variantSource:!file&&recordedVariant?'recorded-request-plugin-presence':'operator-label',source:file?'engineering-artifact':'native-session-readonly',importedAt:new Date().toISOString()};
+  meta.childInventory=nativeChildInventory(events,{inherited,source:meta.source});
+  meta.requestAccounting=observationsFile?await readRequestAccounting(observationsFile,events,{sessionId,inherited}):
+    accountSessionRequests(events,[],{sessionId,inherited,problems:[{reason:'observation-source-not-supplied'}]});
   // Automatic writes need not have a model tool-call event. Observe the two
   // exact report paths separately; file presence never substitutes for a call.
   meta.workspaceArtifacts={};
@@ -83,7 +123,10 @@ export async function importSession({directory,sessionId,variant,home,app,file})
   const add=row=>{applyRow(summary,row);rows.push(JSON.stringify(row));};
   for(let index=inherited;index<events.length;index++){
     const event=events[index],data=event.data||{},at=typeof event.time==='number'?event.time:null,seq=event.seq??null;
-    if(event.type==='user/message'){
+    if(event.type==='subagent/catalog'){
+      const child=meta.childInventory.children.find(item=>item.sourceSeq===seq);
+      if(child)add({kind:'child-identity',at,sourceSeq:seq,...child});
+    }else if(event.type==='user/message'){
       const message=data.message||data;
       if(message.source?.kind==='work-evidence')for(const block of message.content||[]){
         if(block.type!=='text')continue;

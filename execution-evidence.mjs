@@ -16,6 +16,27 @@ const stream=value=>typeof value==='string'?{text:value,truncated:false}:value&&
 const payloadOf=value=>value?.data&&typeof value.data==='object'?value.data:value;
 const statusOf=value=>value===undefined||value===null?'':String(value).toLowerCase();
 
+export function recordedProcessCompletion(events,execution,beforeSeq){
+  const event=events.find(item=>item.seq===execution.seq),data=event?.data,message=data?.message??data;
+  const callId=data?.subCallId??data?.callId??message?.source?.callId??message?.toolCallId;
+  if(!callId)return null;
+  const rootCallId=data?.rootCallId??callId;
+  const matches=events.filter(item=>item.type==='job/registered'&&item.seq<=execution.seq&&
+    item.data?.toolCall?.callId===callId&&item.data?.toolCall?.rootCallId===rootCallId);
+  if(matches.length!==1)return null;
+  const registered=matches[0],job=registered.data;
+  if([job.jobId,job.owner,job.kind].some(value=>typeof value!=='string'||!value))return null;
+  const settled=events.filter(item=>item.type==='job/settled'&&item.seq>registered.seq&&item.seq<beforeSeq&&item.data?.jobId===job.jobId);
+  if(settled.length!==1)return null;
+  const result=settled[0],value=result.data,code=/^exit code: (-?\d+)$/u.exec(value.detail??'');
+  if(value.owner!==job.owner||value.kind!==job.kind||value.toolCall?.callId!==callId||value.toolCall?.rootCallId!==rootCallId||
+    value.producerReported!==true||value.cause!=='producer'||!['completed','failed'].includes(value.status)||!code)return null;
+  const exitCode=Number(code[1]);
+  if(!Number.isSafeInteger(exitCode)||value.status==='failed'&&exitCode===0)return null;
+  return {seq:result.seq,registrationSeq:registered.seq,jobId:job.jobId,callId,rootCallId,status:value.status,exitCode,processCompleted:true,
+    meaning:'Recorded producer completion for this exact native call. This does not establish output completeness, file applicability or task correctness.'};
+}
+
 function atPointer(value,pointer){
   if(pointer==='')return {found:true,value};
   if(!pointer.startsWith('/')||/\~(?:[^01]|$)/.test(pointer))return {found:false,reason:'invalid-json-pointer'};

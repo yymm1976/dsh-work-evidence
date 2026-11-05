@@ -4,8 +4,8 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import {startHost,text,tool,requestText} from './helpers/host.mjs';
 
-async function scenario(workspace,request,steps,{setup,extraMounts=[]}={}){
-  const host=await startHost({workspace,extraMounts,script:(_o,n)=>steps[n-1]??[text('完成。')]});
+async function scenario(workspace,request,steps,{setup,extraMounts=[],usage}={}){
+  const host=await startHost({workspace,extraMounts,usage,script:(_o,n)=>steps[n-1]??[text('完成。')]});
   try{
     if(setup)await setup(host.cwd);
     const agent=await host.createAgent('max');await host.send(agent,request);
@@ -20,18 +20,22 @@ test('executionTriage identifies repeated failures and repeated successful calls
   const good=tool('pwsh',{command:'echo same-output',description:'echo'});
   for(const executionTriage of [true,false]){
     const failed=await scenario({executionTriage},'运行程序并处理错误',[[bad],[bad],[bad]]);
-    assert.equal(failed.body.includes('执行连续因同一错误中断'),executionTriage);
+    assert.equal(failed.body.includes('提取到的失败摘要相同'),executionTriage);
+    assert.equal(failed.body.includes('相同摘要不证明根因或外部输入相同'),executionTriage);
     const repeated=await scenario({executionTriage},'检查输出',[[good],[good],[good]]);
     assert.equal(repeated.body.includes('返回了相同的完整短输出'),executionTriage);
   }
 });
 
-test('stepPacing can disable automatic progress guidance',async()=>{
+test('stepPacing controls actual output-usage guidance',async()=>{
   const steps=Array.from({length:4},()=>[tool('pwsh',{command:'echo ok',description:'observe'})]);
-  const on=await scenario({},'观察结果',steps),off=await scenario({stepPacing:false},'观察结果',steps);
+  const usage=()=>({inputTokens:1000,outputTokens:6500,cacheReadTokens:0,totalTokens:7500});
+  const on=await scenario({},'修改项目并观察结果',steps,{usage}),off=await scenario({stepPacing:false},'修改项目并观察结果',steps,{usage});
   assert.ok(on.status.detail.observability.features.stepPacing.applied>0);
   assert.equal(off.status.detail.observability.features.stepPacing.applied,0);
   assert.ok(!off.body.includes('本次使用激进优化'));
+  assert.ok(on.body.includes('上一响应较长'));
+  assert.ok(!off.body.includes('上一响应较长'));
 });
 
 test('retainedCompute keeps bindings, clears them after writes and respects its switch',async()=>{
@@ -51,5 +55,28 @@ test('stageWorkingSet disables explicit stage declarations without claiming a st
     const run=await scenario({stageWorkingSet,toolSurface:'full'},'记录当前阶段',[[tool('work_state',{mode:'stage',phase:'investigate',focus:['a.txt']})]]);
     const value=JSON.parse(resultTexts(run)[0]);
     if(stageWorkingSet)assert.notEqual(value.status,'disabled');else assert.equal(value.feature,'stageWorkingSet');
+  }
+});
+
+test('the real native line cap produces a scoped JSON recovery hint only when enabled',async()=>{
+  const input=JSON.stringify(Array.from({length:480},(_,id)=>({id,amount:100+id,archived:id%5===0})));
+  for(const config of [{executionTriage:true},{executionTriage:false},{enabled:false}]){
+    const host=await startHost({toolMode:'ptc',extraMounts:[['dsh-ptc-runtime-node']],
+      workspace:{stepPacing:false,qualityReview:false,completionNotice:false,...config},script:(_options,n)=>n===1?
+        [tool('run_code',{code:'const r=await tools.read({file_path:"orders.json"});const txt=r.lines.map(l=>l.text).join("\\n");return JSON.parse(txt);',description:'Read and parse the supplied orders'})]:[text('已保留读取失败。')]});
+    try{
+      await fs.writeFile(path.join(host.cwd,'orders.json'),input);
+      const agent=await host.createAgent();await host.send(agent,'读取 orders.json 并解析；保护输入文件。');
+      assert.equal(host.requests.length,2);
+      const reads=host.events.filter(event=>event.type==='tool/ptc-dispatch'&&event.data.name==='read');
+      assert.equal(reads.length,1,'no automatic reread');
+      assert.ok(reads[0].data.content.some(block=>block.text?.includes('(line truncated to 2000 chars)')));
+      assert.ok(host.events.some(event=>event.type==='tool/result'&&event.data.message?.isError&&event.data.message.content.some(block=>block.text?.includes('at JSON.parse'))));
+      const notices=host.events.filter(event=>event.type==='user/message'&&event.data?.source?.taskFlow?.key?.includes('native-read-clipped-json'));
+      const expected=config.executionTriage===true;
+      assert.equal(requestText(host.requests[1]).includes('扩大 limit 或取回同一历史事件不能补回'),expected);
+      assert.equal(notices.length,expected?1:0);
+      assert.equal(await fs.readFile(path.join(host.cwd,'orders.json'),'utf8'),input);
+    }finally{await host.close();}
   }
 });

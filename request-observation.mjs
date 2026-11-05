@@ -21,6 +21,7 @@ export function observeRequests(ctx,runtime){
     const s=runtime.sync(agent),started=performance.now();
     const requestKind=requestKindOf({purpose:options.purpose,auxiliary:s.auxiliarySignals.has(options.signal)}),auxiliary=requestKind==='auxiliary',main=requestKind==='main';
     const effectRecord=runtime.effects?.begin(agent,options,{auxiliary,requestKind});
+    if(effectRecord)await runtime.effects?.start?.(agent,effectRecord);
     const record={ordinal:main?++s.metrics.contextRequests:null,at:new Date().toISOString(),sourceSeq:agent.session.seq,preset:s.selectedPreset||null,mode:runtime.modeStatus(agent),requestKind,auxiliary,purpose:options.purpose??(auxiliary?'work-evidence-auxiliary':null),
       provider:options.provider,model:options.model,reasoningEffort:options.reasoningEffort??null,maxTokens:options.maxTokens??null,
       parameterScope:'assembled-llm-options; provider transport mapping not observed',

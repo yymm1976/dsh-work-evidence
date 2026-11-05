@@ -100,7 +100,7 @@ export async function modelJson(ctx,runtime,agent,signal,system,payload,{maxToke
   const input=JSON.stringify(payload),outputLimit=maxTokens||s.config.modelMaxTokens;
   const reservation=await reserveBudget(runtime,agent,textTokens(system)+textTokens(input)+outputLimit+64,tokenLimit,budgetScope,budgetCalls);
   const joined=AbortSignal.any([signal,AbortSignal.timeout(timeoutMs||s.config.modelTimeoutMs)]);
-  let text='',usage=null,finish=null,failed=false;
+  let text='',usage=null,reportedUsage=null,finish=null,failed=false;
   const began=performance.now();
   s.auxiliarySignals.add(joined);
   s.metrics.auxiliaryCalls++;s.dirty=true;
@@ -123,8 +123,11 @@ export async function modelJson(ctx,runtime,agent,signal,system,payload,{maxToke
     return {value,usage,jsonRecovery:recoveries,route:{provider:route.provider,model:route.model},id:randomUUID()};
   }catch(cause){
     const e=cause instanceof Error?cause:new Error(String(cause));
+    // The native adapter emits initialized zero counters even for an HTTP error
+    // whose body contains no usage. Keep those values as diagnostics, not payment facts.
+    if(finish?.kind!=='stop'&&usage&&Object.values(usage).every(value=>value===0)){reportedUsage=usage;usage=null;}
     failed=true;s.metrics.auxiliaryFailures++;runtime.problem(s,'auxiliary-model',e.message);
-    e.auxiliaryUsage=usage;e.auxiliaryFinish=finish;e.auxiliaryTextChars=text.length;e.auxiliaryDispatched=true;
+    e.auxiliaryUsage=usage;e.auxiliaryReportedUsage=reportedUsage;e.auxiliaryFinish=finish;e.auxiliaryTextChars=text.length;e.auxiliaryDispatched=true;
     e.auxiliaryElapsedMs=Math.round(performance.now()-began);throw e;
   }
   finally{

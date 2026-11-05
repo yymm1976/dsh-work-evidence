@@ -11,7 +11,7 @@ const gap=(payload,detail)=>({issues:[{kind:'requirement',detail,evidence:[paylo
 
 // One session with the review feature enabled: the adapter answers review calls, the scripted
 // assistant answers the requests, and the state file lives in a temporary session directory.
-async function harness({review=()=>({issues:[]}),finish=()=>'stop',abortOn=0}={}){
+async function harness({review=()=>({issues:[]}),finish=()=>'stop',abortOn=0,usage=USAGE,executions=[],pendingJobs=[]}={}){
   const dir=await fs.mkdtemp(path.join(os.tmpdir(),'we-quality-review-'));
   const id='quality-review-session',stateFile=path.join(dir,id+'.quality-review.json');
   const hooks=new Map(),dispatched=[],events=[],steered=[];
@@ -28,7 +28,7 @@ async function harness({review=()=>({issues:[]}),finish=()=>'stop',abortOn=0}={}
       const call=dispatched.push(request);
       if(call===abortOn){control.abort();throw Object.assign(new Error('The operation was aborted'),{name:'AbortError'});}
       yield {type:'block-end',block:{type:'text',text:JSON.stringify(review(payloadOf(request),call))}};
-      yield {type:'usage',usage:USAGE};
+      yield {type:'usage',usage};
       yield {type:'finish',reason:{kind:finish(call)}};
     }}};
   const runtime={get:()=>state,init:async()=>state,sync:()=>state,isEnabled:()=>true,activeMode:()=>'quality',
@@ -39,10 +39,11 @@ async function harness({review=()=>({issues:[]}),finish=()=>'stop',abortOn=0}={}
   const finalJson={inspect:inspected};
   const taskFlow={reviewState:()=>{const {request,assistant}=inspected();
     return {request:request?{seq:request.seq}:null,assistant:assistant?{seq:assistant.seq}:null,
-      mutation:{seq,version:seq},artifacts:[],executions:[],unresolvedErrors:[],pendingJobs:[],todos:[],
+      mutation:{seq,version:seq},artifacts:[],executions,unresolvedErrors:[],pendingJobs,todos:[],
       evidenceHighWater:{seq:seq+1}};}};
   const created=createQualityReview(ctx,runtime,taskFlow,finalJson);
   return {agent,state,stateFile,dispatched,steered,review:created,
+    event(type,data){const event={seq:++seq,type,data};events.push(event);return event;},
     request(text){const event={seq:++seq,type:'user/message',
       data:{message:{id:'request-'+seq,role:'user',source:{kind:'user'},content:[{type:'text',text}]}}};
       events.push(event);return event;},
@@ -55,6 +56,165 @@ async function harness({review=()=>({issues:[]}),finish=()=>'stop',abortOn=0}={}
     text:()=>fs.readFile(stateFile,'utf8'),
     close:()=>fs.rm(dir,{recursive:true,force:true,maxRetries:3})};
 }
+
+test('quality review links producer completion to the exact nested call without upgrading task or file validity',async()=>{
+  const executions=[];let payload;
+  const h=await harness({executions,review:value=>{payload=value;return {issues:[]};}});
+  try{
+    h.request('运行检查并说明实际结果。');
+    const label='NATIVE_JOB_LABEL_NOT_NEEDED_IN_REVIEW'.repeat(100);
+    const job={jobId:'job-1',owner:'quality-review-session',kind:'pwsh',label,toolCall:{callId:'root:ptc:1',rootCallId:'root'}};
+    const registered=h.event('job/registered',job);
+    const settled=h.event('job/settled',{...job,status:'completed',cause:'producer',producerReported:true,detail:'exit code: 0'});
+    const result=h.event('tool/ptc-dispatch',{...job.toolCall,subCallId:job.toolCall.callId,name:'pwsh',arguments:{command:'check'},content:[{type:'text',text:'OK'}],isError:false});
+    executions.push({seq:result.seq,tool:'pwsh',status:'partial',exitCode:null,executionCompleted:false,evidenceValidity:'unknown'});
+    h.answer('检查输出 OK，进程以 0 退出。');await h.run();
+    const execution=payload.observed.executions[0];assert.equal(execution.status,'partial');assert.equal(execution.evidenceValidity,'unknown');
+    assert.equal(execution.completionObservation.exitCode,0);assert.equal(execution.completionObservation.seq,settled.seq);
+    assert.equal(execution.completionObservation.registrationSeq,registered.seq);
+    assert.ok(payload.evidence.some(item=>item.seq===settled.seq));
+    assert.ok(payload.evidence.some(item=>item.seq===registered.seq));
+    const registration=payload.evidence.find(item=>item.seq===registered.seq),completion=payload.evidence.find(item=>item.seq===settled.seq);
+    assert.deepEqual(JSON.parse(registration.data),{executionSeq:result.seq,jobId:job.jobId});
+    assert.deepEqual(JSON.parse(completion.data),{executionSeq:result.seq,jobId:job.jobId,status:'completed',exitCode:0});
+    assert.equal(registration.projection,'verified-process-facts');assert.equal(completion.projection,'verified-process-facts');
+    assert.equal(execution.completionObservation.callId,job.toolCall.callId);
+    assert.equal(execution.completionObservation.rootCallId,job.toolCall.rootCallId);
+    assert.ok(!JSON.stringify(payload).includes('NATIVE_JOB_LABEL_NOT_NEEDED_IN_REVIEW'));
+    assert.equal(h.agent.session.log.find(event=>event.seq===registered.seq).data.label,label,'Original job data remains unchanged.');
+  }finally{await h.close();}
+});
+
+test('a cached completion cannot survive contradictory or later source evidence at review time',async()=>{
+  const executions=[];let payload;
+  const h=await harness({executions,review:value=>{payload=value;return {issues:[]};}});
+  try{
+    h.request('说明实际结果。');
+    const job={jobId:'cached-job',owner:'quality-review-session',kind:'pwsh',toolCall:{callId:'root:ptc:1',rootCallId:'root'}};
+    const registration=h.event('job/registered',job);
+    const value={...job,status:'completed',cause:'producer',producerReported:true,detail:'exit code: 0'};
+    const settlement=h.event('job/settled',value);
+    const result=h.event('tool/ptc-dispatch',{...job.toolCall,subCallId:job.toolCall.callId,name:'pwsh',arguments:{command:'check'},content:[{type:'text',text:'OK'}],isError:false});
+    executions.push({seq:result.seq,tool:'pwsh',status:'partial',completionObservation:{seq:settlement.seq,registrationSeq:registration.seq,
+      jobId:job.jobId,exitCode:0,processCompleted:true}});
+    h.event('job/settled',{...value,detail:'exit code: 1'});
+    h.answer('命令已经结束。');await h.run();
+    assert.equal(payload.observed.executions[0].completionObservation,undefined);
+    assert.ok(!payload.evidence.some(item=>item.projection==='verified-process-facts'));
+  }finally{await h.close();}
+});
+
+test('pending jobs retain their original registration data rather than using a completed-process projection',async()=>{
+  let payload;
+  const h=await harness({pendingJobs:['live-job'],review:value=>{payload=value;return {issues:[]};}});
+  try{
+    h.request('说明任务当前状态。');
+    const job={jobId:'live-job',owner:'quality-review-session',kind:'pwsh',label:'A job still waiting on output',toolCall:{callId:'live',rootCallId:'live'}};
+    const registered=h.event('job/registered',job);
+    h.answer('后台任务仍在等待。');await h.run();
+    const evidence=payload.evidence.find(item=>item.seq===registered.seq);
+    assert.deepEqual(JSON.parse(evidence.data),job);assert.equal(evidence.projection,undefined);
+    assert.deepEqual(payload.observed.pendingJobs,['live-job']);
+  }finally{await h.close();}
+});
+
+test('a report contradiction requires an exact answer claim and an exact supplied counterexample quote',async()=>{
+  const h=await harness({review:payload=>{
+    const source=payload.evidence.find(item=>item.data.includes('async def generate():'));
+    return {issues:[{kind:'unsupported-success',detail:'An async generator does not run its body at construction.',
+      claim:'构造时同步抛出 ValueError',counterEvidence:{seq:source.seq,quote:'async def generate():'},evidence:[payload.answer.seq,source.seq]}]};}});
+  try{
+    h.request('说明这个生成器何时校验参数。');
+    h.event('tool/call',{turn:1,step:1,callId:'read-code',name:'read',arguments:{file_path:'generate.py'}});
+    h.event('tool/result',{turn:1,step:1,message:{role:'tool',source:{callId:'read-code'},content:[{type:'text',text:'async def generate():\n    raise ValueError()\n    yield 1'}],isError:false}});
+    h.answer('构造时同步抛出 ValueError。');await h.run();
+    assert.equal(h.steered.length,1);assert.equal((await h.saved()).last.status,'applied');
+  }finally{await h.close();}
+});
+
+test('absent observations, invented claims and quotes outside the cited event cannot support a report contradiction',async()=>{
+  for(const variation of ['missing-quotes','invented-claim','invented-quote','wrong-event','uncited-event']){
+    const h=await harness({review:payload=>{
+      const source=payload.evidence.find(item=>item.data.includes('recorded value is 1'));
+      const issue={kind:'unsupported-success',detail:'The claim contradicts a recorded value.',claim:'结果为 0',
+        counterEvidence:{seq:source.seq,quote:'recorded value is 1'},evidence:[payload.answer.seq,source.seq]};
+      if(variation==='missing-quotes'){delete issue.claim;delete issue.counterEvidence;issue.detail='No execution evidence was supplied.';}
+      if(variation==='invented-claim')issue.claim='从未出现的声明';
+      if(variation==='invented-quote')issue.counterEvidence.quote='no execution records supplied';
+      if(variation==='wrong-event'){issue.counterEvidence.seq=payload.request.seq;issue.evidence.push(payload.request.seq);}
+      if(variation==='uncited-event')issue.evidence=[payload.answer.seq,payload.evidence.find(item=>item.seq!==source.seq).seq];
+      return {issues:[issue]};}});
+    try{
+      h.request('说明实际结果。');
+      h.event('tool/call',{turn:1,step:1,callId:'read-value',name:'read',arguments:{file_path:'value.txt'}});
+      h.event('tool/result',{turn:1,step:1,message:{role:'tool',source:{callId:'read-value'},content:[{type:'text',text:'recorded value is 1'}],isError:false}});
+      h.answer('结果为 0。');await h.run();
+      assert.equal(h.steered.length,0,variation);assert.equal((await h.saved()).last.reason,'invalid-review-result',variation);
+    }finally{await h.close();}
+  }
+});
+
+test('ambiguous, unrelated and non-producer job settlements cannot prove an execution result',async()=>{
+  for(const variation of ['different-call','different-owner','not-producer','conflict','duplicate','later']){
+    const executions=[];let payload;
+    const h=await harness({executions,review:value=>{payload=value;return {issues:[]};}});
+    try{
+      h.request('运行检查。');
+      const job={jobId:'job-1',owner:'quality-review-session',kind:'pwsh',toolCall:{callId:'root:ptc:1',rootCallId:'root'}};
+      h.event('job/registered',job);
+      const settled={...job,status:'completed',cause:'producer',producerReported:true,detail:'exit code: 0'};
+      if(variation==='different-call')settled.toolCall={callId:'another',rootCallId:'root'};
+      if(variation==='different-owner')settled.owner='another-session';
+      if(variation==='not-producer')settled.producerReported=false;
+      if(variation==='conflict')settled.status='failed';
+      if(variation!=='later')h.event('job/settled',settled);
+      if(variation==='duplicate')h.event('job/settled',settled);
+      const result=h.event('tool/ptc-dispatch',{...job.toolCall,subCallId:job.toolCall.callId,name:'pwsh',arguments:{command:'check'},content:[{type:'text',text:'OK'}],isError:false});
+      executions.push({seq:result.seq,tool:'pwsh',status:'partial',exitCode:null,executionCompleted:false});
+      h.answer('检查输出 OK。');if(variation==='later')h.event('job/settled',settled);
+      await h.run();assert.ok(payload);assert.equal(payload.observed.executions[0].completionObservation,undefined,variation);
+    }finally{await h.close();}
+  }
+});
+
+test('native completed status with nonzero exit is retained as process completion without proving success',async()=>{
+  const executions=[];let payload;
+  const h=await harness({executions,review:value=>{payload=value;const item=value.observed.executions[0];
+    return {issues:[{kind:'execution-failure',detail:'命令以 1 退出，最终答复仍称检查通过。',evidence:[value.answer.seq,item.seq,item.completionObservation.seq]}]};}});
+  try{
+    h.request('说明命令实际退出结果。');
+    const job={jobId:'job-nonzero',owner:'quality-review-session',kind:'pwsh',toolCall:{callId:'root:ptc:1',rootCallId:'root'}};
+    h.event('job/registered',job);
+    h.event('job/settled',{...job,status:'completed',cause:'producer',producerReported:true,detail:'exit code: 1'});
+    const result=h.event('tool/ptc-dispatch',{...job.toolCall,subCallId:job.toolCall.callId,name:'pwsh',arguments:{command:'check'},content:[{type:'text',text:'check did not pass'}],isError:false});
+    executions.push({seq:result.seq,tool:'pwsh',status:'partial',exitCode:null,executionCompleted:false,evidenceValidity:'unknown'});
+    h.answer('检查已经通过。');await h.run();
+    const execution=payload.observed.executions[0];assert.equal(execution.completionObservation.status,'completed');
+    assert.equal(execution.completionObservation.exitCode,1);assert.equal(execution.status,'partial');
+    assert.equal(execution.evidenceValidity,'unknown');assert.equal(execution.exitCode,null);
+    assert.equal(h.steered.length,1);assert.equal((await h.saved()).last.status,'applied');
+  }finally{await h.close();}
+});
+
+test('execution failure based on completion facts requires both exact events and an observed nonzero exit',async()=>{
+  for(const variation of ['missing-completion','only-completion','zero-exit']){
+    const executions=[],h=await harness({executions,review:payload=>{
+      const item=payload.observed.executions[0],refs=[payload.answer.seq];
+      if(variation!=='only-completion')refs.push(item.seq);
+      if(variation!=='missing-completion')refs.push(item.completionObservation.seq);
+      return {issues:[{kind:'execution-failure',detail:'The command did not pass.',evidence:refs}]};}});
+    try{
+      h.request('说明命令结果。');
+      const job={jobId:'job-scope',owner:'quality-review-session',kind:'pwsh',toolCall:{callId:'root:ptc:1',rootCallId:'root'}};
+      h.event('job/registered',job);
+      h.event('job/settled',{...job,status:'completed',cause:'producer',producerReported:true,detail:'exit code: '+(variation==='zero-exit'?0:1)});
+      const result=h.event('tool/ptc-dispatch',{...job.toolCall,subCallId:job.toolCall.callId,name:'pwsh',arguments:{command:'check'},content:[{type:'text',text:'result'}],isError:false});
+      executions.push({seq:result.seq,tool:'pwsh',status:'partial',exitCode:null,executionCompleted:false});
+      h.answer('命令已经结束。');await h.run();
+      assert.equal(h.steered.length,0,variation);assert.equal((await h.saved()).last.reason,'invalid-review-result',variation);
+    }finally{await h.close();}
+  }
+});
 
 test('one explicit retry allowance stops only its own request and keeps later requests reviewable',async()=>{
   const h=await harness({review:(payload,call)=>call===1?gap(payload,'b.txt 未修改'):{issues:[]}});
@@ -132,6 +292,17 @@ for(const kind of ['length','max-tokens'])test(`a truncated review is recorded a
     assert.equal(summary.process.last.finish.kind,kind);
     assert.equal(summary.process.last.dispatched,true);
     assert.ok(summary.paused,'a call that went out and failed still pauses the route');
+  }finally{await h.close();}
+});
+
+test('a failed review preserves raw zero counters separately from unknown consumption',async()=>{
+  const zero={inputTokens:0,outputTokens:0,totalTokens:0},h=await harness({finish:()=>'error',usage:zero});
+  try{
+    h.request('修改 a.txt 并说明结果');h.answer('已完成。');await h.run();
+    const summary=h.review.summary(h.agent);
+    assert.equal(summary.verdict,'unavailable');assert.equal(summary.process.last.usage,null);
+    assert.deepEqual(summary.process.last.reportedUsage,zero);assert.equal(h.state.metrics.auxiliaryUnknownCalls,1);
+    const saved=await h.saved();assert.equal(saved.last.usage,null);assert.deepEqual(saved.last.reportedUsage,zero);
   }finally{await h.close();}
 });
 

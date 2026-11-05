@@ -6,7 +6,12 @@ import {operationKey} from './task-flow.mjs';
 import {resultText,parseResult,resultHasProblem,resultIdentity,resultReference,contentReferences,surfaceReferences,compactionActive,rewriteSpacingReady} from './visible-results.mjs';
 
 const SOURCE='work-evidence-working-set',VERSION=1,MAX_ENTRIES=128,MAX_BATCH=24;
+const MAX_REVIEWED=32,MAX_REVIEWED_DEPS=6,MAX_RESTORE_REASONS=32;
+const REVIEWED_SEMANTICS='Rows are the tool results this build examined; an absent row means not examined here, not that the result is absent. A null seq, tool, dependencies or dependencyCounts field means this observation did not establish the value; it may exist in the original events. Command and URL sources are not copied into these rows; their kinds remain listed and the original events may be available through the recorded seq and call lineage. chars counts the joined text blocks of that result, not the full request, tokens, savings, cache effect, model reading or task quality. builtAtSeq names the build these rows describe.';
+const DEPENDENCY_LADDER='total is the merged unique dependencies this result recorded before the 32-item retention cap; retained is the number kept in the working-set record; listed is the number shown in this row (cap '+MAX_REVIEWED_DEPS+'); retentionOmitted and listedOmitted name the two separate drops; sourceOmitted counts entries each dependency extraction dropped at its own 32-item cap before merging, so whether any would have been duplicates is not known; scanIncomplete appears only when a recorded walk stopped at its node, depth or array bound. At most 64 nested calls are retained; earlier nested calls may be missing. These limits can make total a lower bound.';
+const RESTORE_REASON_SEMANTICS='Listed reasons are the recorded signals that matched each observation before this restore decision. They do not show that the model read a body, that later requests needed it, or any cache and cost effect.';
 const ADAPTER_OWNER=Symbol.for('@local/dsh-work-evidence/request-adapter');
+const diagnosticDependency=({kind,display})=>kind==='command'||kind==='url'?{kind,source:null,sourceOmission:'not-copied'}:{kind,source:display};
 const READ=/^(?:read|ops_read_files|ops_inspect_local_file|ops_stat|ops_grep|ops_glob|grep|glob|project_evidence|fastedit_java|web_fetch|web_search|fetch|search|browse|bash|pwsh|ops_bash)$/;
 const WRITE=/^(?:write|edit|str_replace_editor|ops_write_file|ops_edit_file|verified_exec|fastedit_java)$/;
 const INTERNAL=new Set(['work_status','work_state','work_report','work_probe','compress','decompress','search_context','acp_status','acp_cache','acp_rule']);
@@ -15,6 +20,7 @@ const normalizeText=text=>String(text??'').replaceAll('\\','/').toLowerCase();
 const touchesFile=(dependency,changed)=>dependency===changed||dependency.startsWith(changed+'!/');
 const messageText=message=>(message.content??[]).filter(block=>block.type==='text'||block.type==='tool-call')
   .map(block=>block.type==='text'?block.text:typeof block.arguments==='string'?block.arguments:JSON.stringify(block.arguments??{})).join('\n');
+const sameJson=(left,right)=>JSON.stringify(left??null)===JSON.stringify(right??null);
 const requestChars=messages=>messages.reduce((sum,message)=>sum+(message.content??[]).reduce((chars,block)=>chars+
   (block.type==='text'||block.type==='reasoning'?String(block.text??'').length:
     block.type==='tool-call'?JSON.stringify({name:block.name,arguments:block.arguments}).length:0),0),0);
@@ -40,13 +46,16 @@ function resource(root,value,kind='file'){
   const display=relative.replaceAll('\\','/')+(parts.length>1?'!/'+parts.slice(1).join('!/').replaceAll('\\','/'):'');
   return {kind:'file',key:normalizeText(display),display,absolute:normalizeText(absolute)+(parts.length>1?'!/'+parts.slice(1).join('!/').replaceAll('\\','/').toLowerCase():'')};
 }
-function dependencies(root,value){
+function dependencies(root,value,stats=null){
   const out=new Map(),seen=new WeakSet();let budget=1024;
   const add=(raw,kind)=>{const item=resource(root,raw,kind);if(item)out.set(item.kind+':'+item.key,item);};
+  const stop=()=>{if(stats)stats.scanIncomplete=true;};
   const visit=(node,depth=0)=>{
-    if(--budget<0||depth>10||!node||typeof node!=='object'||seen.has(node))return;
+    if(--budget<0){stop();return;}
+    if(!node||typeof node!=='object'||seen.has(node))return;
+    if(depth>10){stop();return;}
     seen.add(node);
-    if(Array.isArray(node)){for(const item of node.slice(0,128))if(typeof item==='object')visit(item,depth+1);return;}
+    if(Array.isArray(node)){if(node.length>128)stop();for(const item of node.slice(0,128))if(typeof item==='object')visit(item,depth+1);return;}
     if(typeof node.archive==='string'&&typeof node.entry==='string')add(node.archive+'!/'+node.entry);
     for(const [key,item] of Object.entries(node)){
       if(['path','file_path','file','url','uri'].includes(key))add(item);
@@ -56,7 +65,9 @@ function dependencies(root,value){
       else if(!['text','content','code','summary','arguments','workEvidenceReference'].includes(key)&&item&&typeof item==='object')visit(item,depth+1);
     }
   };
-  visit(value);return [...out.values()].slice(0,32);
+  visit(value);
+  if(stats&&out.size>32)stats.sourceOmitted+=out.size-32;
+  return [...out.values()].slice(0,32);
 }
 function mentions(text,dependency){
   if(dependency.kind==='command')return String(text).includes(dependency.key);
@@ -136,8 +147,8 @@ export function createRequestWorkingSet(ctx,runtime,economics,taskFlow){
         state.nested.delete(callId);
         if(call&&!liveNodes.has(event.seq)&&!WRITE.test(call.name)){state.calls.delete(callId);continue;}
         if(call){
-          const text=resultText(message.content),parsed=parseResult(text),deps=new Map();
-          for(const dep of [...dependencies(root,call.args),...dependencies(root,parsed),...nested.flatMap(item=>dependencies(root,item.args))])deps.set(dep.kind+':'+dep.key,dep);
+          const text=resultText(message.content),parsed=parseResult(text),deps=new Map(),depStats={sourceOmitted:0,scanIncomplete:false};
+          for(const dep of [...dependencies(root,call.args,depStats),...dependencies(root,parsed,depStats),...nested.flatMap(item=>dependencies(root,item.args,depStats))])deps.set(dep.kind+':'+dep.key,dep);
           // Nested arguments describe dependencies of the whole outer observation,
           // never proof that the mixed output is the body of any one input file.
           const ownMutation=appliedMutation(call.name,call.args,parsed,!!message.isError),write=ownMutation||nested.some(item=>item.mutation),
@@ -146,7 +157,8 @@ export function createRequestWorkingSet(ctx,runtime,economics,taskFlow){
           if(problem){if(message.isError||!nested.some(item=>item.problem&&item.problemText&&item.problemText===resultIdentity(message.content)))state.errors.set(key,[...deps.values()]);}else state.errors.delete(key);
           if(ownMutation)for(const dep of dependencies(root,call.args))if(dep.kind==='file')state.mutations.set(dep.key,{seq:event.seq,step:state.step});
           state.results.set(event.seq,{seq:event.seq,id:message.id,tool:call.name,args:call.args,step:state.step,
-            dependencies:[...deps.values()].slice(0,32),problem,write,
+            dependencies:[...deps.values()].slice(0,32),dependencyTotal:deps.size,
+            dependencySourceOmitted:depStats.sourceOmitted,dependencyScanIncomplete:depStats.scanIncomplete,problem,write,
             observable:!INTERNAL.has(call.name)&&(READ.test(call.name)||call.name==='run_code'&&(nested.length>0||collectReadWindows(parsed).length>0)),
             mixed:call.name==='run_code',unknownNested:nested.some(item=>!READ.test(item.name)),observedAt:event.time});
           state.resultIds.set(message.id,event.seq);
@@ -233,18 +245,24 @@ export function createRequestWorkingSet(ctx,runtime,economics,taskFlow){
     // Each hidden entry has its own restore anchor; a new user message can need
     // another entry before the host emits the next step/start event.
     const visible=new Set(messages.filter(message=>message.role==='tool'&&!state.hidden.has(state.resultIds.get(message.id))&&!message.isError).map(message=>resultText(message.content)));
+    const reasonsBySeq=new Map();
     const seqs=[...state.hidden.values()].filter(entry=>{
       if(state.restored.has(entry.seq)||!needed(state,entry))return false;
       const reasons=needReasons(state,entry),body=resultText(agent.session.eventAt(entry.seq)?.data?.message?.content);
       if(!reasons.includes('explicit-event-reference')&&visible.has(body)){
         runtime.effects?.decide(agent,'restoration','not-applicable','equivalent-body-already-visible',{seq:entry.seq});return false;
       }
+      reasonsBySeq.set(entry.seq,reasons);
       return true;
     }).map(entry=>entry.seq);
     if(!seqs.length)return false;
     appendNote(agent,{version:VERSION,action:'restore',seqs},'[work-evidence working set] 本步骤的主请求恢复所列历史观察：'+seqs.join(', ')+'. 原始证据继续保存在原事件；恢复位置在后续请求中固定。');
     state.lastRestoreStep=state.step;
-    runtime.effects?.decide(agent,'restoration','applied','observable-dependency-returned',{seqs});
+    // The reasons were already computed for this restore; recording them adds no
+    // new decision, no new call and no claim beyond the matched recorded signals.
+    const attached=seqs.slice(0,MAX_RESTORE_REASONS).map(seq=>({seq,reasons:reasonsBySeq.get(seq)??[]})),details={seqs,needReasons:attached,needReasonsLimit:MAX_RESTORE_REASONS,needReasonsSemantics:RESTORE_REASON_SEMANTICS};
+    if(seqs.length>attached.length)details.needReasonsOmitted=seqs.length-attached.length;
+    runtime.effects?.decide(agent,'restoration','applied','observable-dependency-returned',details);
     sync(agent);runtime.get(agent).dirty=true;return true;
   }
   function beforeBuild(agent,context,originalDerive,{pressureOnly=false,nativePressure=false}={}){
@@ -272,28 +290,53 @@ export function createRequestWorkingSet(ctx,runtime,economics,taskFlow){
     if(chars<config.projectionMinChars&&!pressure.emergency){skip(state,'small-working-set',{requestChars:chars,minChars:config.projectionMinChars});return;}
     const pins=surfaceReferences(agent.session);if(pins.opaque){skip(state,'opaque-existing-references');return;}
     const available=MAX_ENTRIES-state.hidden.size;if(available<=0){skip(state,'working-set-plan-capacity');return;}
-    const candidates=[],assessment={step:state.step,toolResults:0,eligible:0,rejected:{},rejectedChars:{},largestRejected:[]};
-    const reject=(reason,message,info)=>{
+    const candidates=[],assessment={step:state.step,toolResults:0,eligible:0,rejected:{},rejectedChars:{},largestRejected:[],
+      reviewed:[],reviewedLimit:MAX_REVIEWED,reviewedOmitted:0,reviewedSemantics:REVIEWED_SEMANTICS,
+      dependencySemantics:DEPENDENCY_LADDER,builtAtSeq:agent.session.seq};
+    const reject=(reason,chars,info)=>{
       assessment.rejected[reason]=(assessment.rejected[reason]??0)+1;
-      const chars=resultText(message.content).length;assessment.rejectedChars[reason]=(assessment.rejectedChars[reason]??0)+chars;
-      if(info)assessment.largestRejected.push({seq:info.seq,chars,reason,dependencies:info.dependencies.map(dep=>({kind:dep.kind,source:dep.display}))});
+      assessment.rejectedChars[reason]=(assessment.rejectedChars[reason]??0)+chars;
+      if(info)assessment.largestRejected.push({seq:info.seq,chars,reason,dependencies:info.dependencies.map(diagnosticDependency)});
+    };
+    // One row per examined result: the source event already recorded these values.
+    // Nothing here reads the body again, re-decides a strategy or predicts a consumer.
+    const review=(info,status,reasons,chars)=>{
+      if(assessment.reviewed.length>=MAX_REVIEWED){assessment.reviewedOmitted++;return;}
+      const deps=info?.dependencies,listed=deps?deps.slice(0,MAX_REVIEWED_DEPS):[],retained=deps?deps.length:0,
+        total=Number.isSafeInteger(info?.dependencyTotal)?info.dependencyTotal:null,
+        counts=deps?{total,retained,listed:listed.length,
+          retentionOmitted:total===null?null:Math.max(0,total-retained),
+          listedOmitted:retained-listed.length,
+          sourceOmitted:Number.isSafeInteger(info?.dependencySourceOmitted)?info.dependencySourceOmitted:null}:null;
+      if(counts&&info?.dependencyScanIncomplete===true)counts.scanIncomplete=true;
+      const row={seq:info?.seq??null,tool:info?.tool??null,chars,status,reasons,dependencyCounts:counts,
+        dependencies:deps?listed.map(diagnosticDependency):null};
+      if(info?.mixed)row.mixed=true;
+      if(info?.unknownNested)row.unknownNested=true;
+      assessment.reviewed.push(row);
     };
     for(const message of base){
       if(message.role!=='tool')continue;
       assessment.toolResults++;
+      const text=resultText(message.content),bodyChars=text.length;
       const info=state.results.get(state.resultIds.get(message.id));
       const reasons=!info?['untracked-result']:state.hidden.has(info.seq)?['already-managed']:!info.observable?['unrecognized-observation']:info.problem?['problem-result']:info.write?['write-result']:
         info.seq>(state.lastUser?.seq??Infinity)&&info.dependencies.some(dep=>dep.kind==='file')?['current-task-source']:
         state.step-info.step<=config.projectionRecentSteps?['recent-exchange']:pins.targets.has(info.seq)?['referenced-body']:needReasons(state,info);
-      if(reasons.length){for(const reason of reasons)reject(reason,message,info);continue;}
-      const original=agent.session.eventAt(info.seq),text=resultText(message.content);
+      if(reasons.length){for(const reason of reasons)reject(reason,bodyChars,info);review(info,'rejected',reasons,bodyChars);continue;}
+      const original=agent.session.eventAt(info.seq);
       if(original?.surfaceOp?.op==='replace'||text!==resultText(original?.data?.message?.content)||(message.content??[]).some(block=>block.type!=='text')||
-        text.length<2048||text.length>512*1024||contentReferences(text).hasReferences||resultHasProblem(parseResult(text)??text)){reject(text.length<2048?'small-result':'unsupported-or-problem-body',message,info);continue;}
-      if(!info.dependencies.length&&info.mixed){skip(state,'unattributed-mixed-output');continue;}
-      if(text.length-pointerText(info,original).length<512){skip(state,'pointer-not-smaller');continue;}
-      candidates.push({...info,chars:text.length});
+        text.length<2048||text.length>512*1024||contentReferences(text).hasReferences||resultHasProblem(parseResult(text)??text)){
+        const reason=text.length<2048?'small-result':'unsupported-or-problem-body';reject(reason,bodyChars,info);review(info,'rejected',[reason],bodyChars);continue;}
+      if(!info.dependencies.length&&info.mixed){skip(state,'unattributed-mixed-output');review(info,'skipped',['unattributed-mixed-output'],bodyChars);continue;}
+      if(text.length-pointerText(info,original).length<512){skip(state,'pointer-not-smaller');review(info,'skipped',['pointer-not-smaller'],bodyChars);continue;}
+      review(info,'candidate',[],bodyChars);
+      candidates.push({...info,chars:bodyChars});
     }
-    assessment.eligible=candidates.length;assessment.largestRejected.sort((a,b)=>b.chars-a.chars);assessment.largestRejected=assessment.largestRejected.slice(0,12);state.candidateAssessment=assessment;
+    assessment.eligible=candidates.length;assessment.largestRejected.sort((a,b)=>b.chars-a.chars);assessment.largestRejected=assessment.largestRejected.slice(0,12);
+    assessment.reviewedCount=assessment.reviewed.length;
+    assessment.reviewedCoverage=assessment.reviewedOmitted?'limited-by-reviewedLimit':'all-visited-in-build';
+    state.candidateAssessment=assessment;
     if(!candidates.length){skip(state,'no-inactive-observations',{candidateAssessment:assessment});return;}
     const planText='[work-evidence working set] 主请求按固定计划携带旧观察的指针；原始事件保留。重新出现的来源依赖会在后续请求前恢复历史正文。';
     // A small early removal can invalidate a large retained suffix. Compare
@@ -408,6 +451,9 @@ export function createRequestWorkingSet(ctx,runtime,economics,taskFlow){
       restoredObservations:state.restored.size,projectionChanges:state.projectionCount,restorations:state.restoreCount,requests:state.requests,
       charsOmittedAcrossRequests:state.charsOmittedAcrossRequests,policy:'stable-request-only-plan; stage-boundaries; anchored-historical-restoration',
       stage:state.stage??null,planBoundary:state.boundaryKey??null,assessedRequestChars:state.assessedRequestChars??null,
+      step:state.step,currentEventSeq:agent.session.seq,
+      candidateAssessmentScope:'last completed candidate scan, not the current request outcome; a build that returned before the scan leaves the previous scan in place, so compare candidateAssessment.step with step',
+      candidateAssessmentFromCurrentStep:!!(state.candidateAssessment&&state.candidateAssessment.step===state.step),
       skips:{...state.skips},candidateAssessment:state.candidateAssessment??null,lastDecision:state.lastDecision,problems:state.problems.slice()};
   }
   function detail(agent){const state=sync(agent);return {...metrics(agent),entries:[...state.hidden.values()].map(entry=>({...entry,restoredAt:state.restored.get(entry.seq)??null}))};}
@@ -438,6 +484,51 @@ export function createRequestWorkingSet(ctx,runtime,economics,taskFlow){
       const original=attachment.derive.call(agent.session);
       const projected=active(agent)&&sync(agent).hidden.size?render(agent,original,get(agent).hidden,{record:false}):original;
       return runtime.rewriteRequestHistory?.(agent,projected,{record:false})??projected;
+    },
+    // Link only exact pointer projections from the current plan. Pinned or
+    // restored bodies stay unlinked, and every ambiguous identity is unknown.
+    observeRequest(agent,messages){
+      const unknown=(reason,planSeq=null,planMessageId=null)=>({status:'unknown',planSeq,planMessageId,resultSeqs:[],reason});
+      try{
+        const state=sync(agent),planSeq=state.epoch;
+        if(!Number.isSafeInteger(planSeq))return unknown('no-current-plan');
+        const planEvent=agent.session.eventAt?.(planSeq),planMessage=planEvent?.data?.message,plan=planMessage?.source?.workingSet;
+        if(planEvent?.type!=='user/message'||planMessage?.source?.kind!==SOURCE||plan?.version!==VERSION||plan?.action!=='project'||
+          typeof planMessage.id!=='string'||!Array.isArray(plan.entries))return unknown('invalid-current-plan',planSeq,typeof planMessage?.id==='string'?planMessage.id:null);
+        const planMessageId=planMessage.id,planned=new Map();
+        for(const entry of plan.entries){
+          if(!Number.isSafeInteger(entry?.seq)||typeof entry.id!=='string'||planned.has(entry.seq))return unknown('invalid-current-plan',planSeq,planMessageId);
+          planned.set(entry.seq,entry);
+        }
+        if(planned.size!==state.hidden.size||[...planned.values()].some(entry=>{
+          const current=state.hidden.get(entry.seq);
+          return !current||current.id!==entry.id||current.tool!==entry.tool||!sameJson(current.dependencies,entry.dependencies)||current.mixed!==entry.mixed;
+        }))return unknown('current-plan-state-mismatch',planSeq,planMessageId);
+        const planMessages=(messages??[]).filter(message=>message?.id===planMessageId);
+        if(planMessages.length!==1)return unknown(planMessages.length?'duplicate-current-plan-message':'current-plan-message-missing',planSeq,planMessageId);
+        const assembledPlan=planMessages[0];
+        if(assembledPlan.role!==planMessage.role||!sameJson(assembledPlan.content,planMessage.content)||
+          assembledPlan.source?.kind!==SOURCE||!sameJson(assembledPlan.source?.workingSet,plan))return unknown('current-plan-message-mismatch',planSeq,planMessageId);
+        const resultSeqs=[];
+        for(const entry of state.hidden.values()){
+          const matches=(messages??[]).filter(message=>message?.id===entry.id);
+          if(!matches.length)continue;
+          if(matches.length>1)return unknown('duplicate-replaced-result',planSeq,planMessageId);
+          const original=agent.session.eventAt?.(entry.seq),originalMessage=original?.data?.message;
+          if(original?.type!=='tool/result'||originalMessage?.id!==entry.id)return unknown('original-result-mismatch',planSeq,planMessageId);
+          const assembled=matches[0];
+          if(assembled.role!=='tool'||(assembled.content??[]).some(block=>block.type!=='text'))return unknown('replaced-result-shape-mismatch',planSeq,planMessageId);
+          const expected=[{type:'text',text:pointerText(entry,original)}];
+          if(sameJson(assembled.content,expected)){
+            if(state.restored.has(entry.seq))return unknown('restored-result-still-projected',planSeq,planMessageId);
+            resultSeqs.push(entry.seq);
+          }else if(!sameJson(assembled.content,originalMessage.content)){
+            return unknown('replaced-result-content-mismatch',planSeq,planMessageId);
+          }
+        }
+        if(!resultSeqs.length)return unknown('no-replaced-result',planSeq,planMessageId);
+        return {status:'matched',planSeq,planMessageId,resultSeqs:resultSeqs.sort((left,right)=>left-right),reason:null};
+      }catch{return unknown('projection-observation-error');}
     },
     disposeAgent(agent){detach(agent);states.delete(agent.session.id);},
     bodyVisible(agent,seq){if(!active(agent))return true;const state=sync(agent),pins=surfaceReferences(agent.session);return pins.opaque||pins.targets.has(seq)||!state.hidden.has(seq)||state.restored.has(seq);},

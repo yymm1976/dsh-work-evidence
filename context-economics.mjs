@@ -66,6 +66,8 @@ const sameRoute=(a,b)=>a?.provider===b?.provider&&a?.model===b?.model;
 const effortKey=value=>value===undefined||value===null?null:value;
 const sameObservedRoute=(a,b)=>Boolean(a&&b)&&sameRoute(a,b)&&
   effortKey(a.reasoningEffort)===effortKey(b.reasoningEffort);
+const forecastRoute=route=>Object.fromEntries(['provider','model','reasoningEffort'].map(key=>
+  [key,typeof route?.[key]==='string'&&route[key].trim()?route[key]:null]));
 const successfulFinish=new Set(['stop','tool-calls','max-tokens','length']);
 
 export function createContextEconomics(ctx,runtime){
@@ -172,7 +174,7 @@ export function createContextEconomics(ctx,runtime){
       auxiliaryCostEstimate:auxiliaryCost,auxiliaryMargin:auxiliaryUsage?auxiliaryMargin:null,
       currency:price?.currency??null,pricingSource:price?'explicit-exact-route-setting':'unavailable',
       tokenMethod:firstReplayAssistant?'text-density calibrated to previous generated output':same?'text-density calibrated to previous adapter usage':'text-density estimate',
-      forecast:true,emergency};
+      forecast:true,emergency,route:forecastRoute(route)};
   }
   function remember(agent,decision,kind){
     const state=get(agent);state.decisions.push({kind,...decision});if(state.decisions.length>16)state.decisions.shift();

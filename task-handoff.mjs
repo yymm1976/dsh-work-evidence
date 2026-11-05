@@ -1,11 +1,11 @@
 import {VERSION,MODE_POLICY_VERSION,eventLog,textOf} from './runtime.mjs';
 import {handoffRecord} from './compaction-handoff.mjs';
-import {hostReferenceIndex,nativeEventRecall} from './host-references.mjs';
+import {hostReferenceIndex,nativeEventRecall,subagentResultIndex} from './host-references.mjs';
 import {randomUUID} from 'node:crypto';
 
 const messageOf=event=>event?.data?.message??(event?.data?.role?event.data:null);
 const SOURCE_TYPES=new Set(['user/message','assistant/message','tool/result','tool/call','tool/ptc-dispatch','tool/code-dispatch',
-  'todo/write','compaction/summary','job/registered','job/settled','turn/start','turn/end']);
+  'todo/write','compaction/summary','job/registered','job/settled','turn/start','turn/end','subagent/catalog']);
 const excerpt=(text,limit)=>{
   if(text.length<=limit)return text;
   const marker='\n[excerpt; retrieve the original event]\n',remaining=Math.max(0,limit-marker.length),tail=Math.floor(remaining/4);
@@ -14,11 +14,13 @@ const excerpt=(text,limit)=>{
 const section=(items,total=items.length,extra={})=>({items,total,omitted:Math.max(0,total-items.length),...extra});
 
 /** Export recorded facts and attributed claims; never derive authorization or task completion. */
-export function exportTaskHandoff(agent,runtime,taskFlow,{canRecall=()=>false,canRecallReference=false,hostTransfer={status:'unavailable',reason:'host-reference-adapter-unavailable'},maxChars=32000,excludeCallIds=[],delivery}={}){
+export function exportTaskHandoff(agent,runtime,taskFlow,{canRecall=()=>false,canRecallReference=false,canSearchChildEvents=false,hostTransfer={status:'unavailable',reason:'host-reference-adapter-unavailable'},maxChars=32000,excludeCallIds=[],delivery}={}){
   if(!Number.isSafeInteger(maxChars)||maxChars<8000||maxChars>64000)throw new Error('handoff maxChars must be between 8000 and 64000');
   const log=eventLog(agent.session),bySeq=new Map(log.map(event=>[event.seq,event])),throughSeq=log.at(-1)?.seq??null;
   const recallAvailable=canRecall(agent)===true;
   const referencedSessions=hostReferenceIndex(log,agent.session.id,recallAvailable&&canRecallReference);
+  const subagentResults=subagentResultIndex(log,agent.session.id,{recallAvailable,searchAvailable:canSearchChildEvents,
+    inherited:agent.session.inheritedEventCount??(agent.session.header?.isSeeded?null:0)});
   const source=(seq,argumentsOnly=false)=>{
     if(!Number.isSafeInteger(seq)||seq<0)return null;
     const event=bySeq.get(seq),callType=['tool/call','tool/ptc-dispatch','tool/code-dispatch'].includes(event?.type),
@@ -98,7 +100,7 @@ export function exportTaskHandoff(agent,runtime,taskFlow,{canRecall=()=>false,ca
     source:{sessionId:agent.session.id,throughSeq,workspace:runtime.get(agent).root??null,historical:true},
     task:{latestRequestSource:source(latestSeq),phase:{name:current.phase.name,focus:current.phase.focus,source:source(current.phase.seq)},
       completion:'not-determined',latestMutationSource:source(current.lastMutationSeq)},
-    userRequests:requests,observedWork:{artifacts,executions,sourceReads,recentToolResults},openWork:{todos,unresolvedErrors:errors,pendingJobs:jobs,pendingCalls},
+    userRequests:requests,observedWork:{artifacts,executions,sourceReads,recentToolResults,subagentResults},openWork:{todos,unresolvedErrors:errors,pendingJobs:jobs,pendingCalls},
     referencedSessions,hostTransfer,
     assistantClaims:{checkpoints,recentMessages:judgments,report},...(delivery?{delivery}:{}),
     recovery:{available:recallAvailable,scope:'source-session-and-owned-host-captures',
@@ -109,11 +111,11 @@ export function exportTaskHandoff(agent,runtime,taskFlow,{canRecall=()=>false,ca
     coverage:{maxChars,sizeUnit:'UTF-16 code units of serialized JSON',serializedChars:0,exportComplete:false,
       observationScope:'Recorded session facts with native metadata assessment of declared file dependencies only. Task correctness is not inferred. Non-text user content and private reasoning are not reproduced.',
       nextAction:'Use recorded open items and attributed summaries to identify the next unmet dependency. Missing records remain unknown; source context grants no new permission.'}};
-  const sections=[requests,todos,artifacts,executions,sourceReads,recentToolResults,errors,jobs,pendingCalls,checkpoints,judgments,report,referencedSessions];
+  const sections=[requests,todos,artifacts,executions,sourceReads,recentToolResults,subagentResults,errors,jobs,pendingCalls,checkpoints,judgments,report,referencedSessions];
   const measure=()=>{
     for(const part of sections){
-      part.complete=part.omitted===0&&!(part.entriesEvicted>0)&&part.items.every(item=>item.textComplete!==false&&!(item.nonTextBlocks?.length));
-      part.sourcesComplete=part.items.every(item=>item.source?.type);
+      part.complete=part.scopeComplete!==false&&part.omitted===0&&!(part.entriesEvicted>0)&&part.items.every(item=>item.textComplete!==false&&!(item.nonTextBlocks?.length));
+      part.sourcesComplete=part.scopeComplete!==false&&part.items.every(item=>item.source?.type);
     }
     value.coverage.exportComplete=sections.every(part=>part.complete);
     value.coverage.sourcesComplete=sections.every(part=>part.sourcesComplete);
@@ -123,7 +125,7 @@ export function exportTaskHandoff(agent,runtime,taskFlow,{canRecall=()=>false,ca
   };
   // Drop whole older rows before shortening the latest requirement. Every omitted
   // row is counted; every shortened body keeps its original event address.
-  const removable=[checkpoints,judgments,report,referencedSessions,executions,sourceReads,artifacts,recentToolResults,requests,todos,errors,jobs,pendingCalls];
+  const removable=[checkpoints,judgments,report,referencedSessions,subagentResults,executions,sourceReads,artifacts,recentToolResults,requests,todos,errors,jobs,pendingCalls];
   while(measure()>maxChars){
     const part=removable.find(part=>part.items.length>(part===requests?1:0));
     if(part){part.items.shift();part.omitted++;continue;}

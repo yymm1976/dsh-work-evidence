@@ -1,0 +1,467 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import fs from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
+import {execFile} from 'node:child_process';
+import {promisify} from 'node:util';
+import {auditDshSession,normalizeDshEvents,readAuditInput,fullSuccessAtBudget,ASSESSMENT_SCHEMA,auditCacheTransitions} from '../trajectory-audit.mjs';
+import {canonicalUsage} from '../context-economics.mjs';
+
+const usage={inputTokens:5,cacheReadTokens:2,cacheWriteTokens:0,outputTokens:3,totalTokens:10};
+function fixture(){
+  const events=[];
+  const add=(type,data)=>{const event={seq:events.length,type,data};events.push(event);return event;};
+  add('request/header',{header:{config:{provider:'local',model:'deepseek-v4.1-flash',reasoningEffort:'max'}}});
+  add('user/message',{message:{role:'user',source:{kind:'user'},content:[{type:'text',text:'Read and explain the source.'}]}});
+  const operation=(name,args,body,{failed=false,nested=false}={})=>{
+    const id='call-'+events.length;
+    const assistant=add('assistant/message',{turn:1,step:events.length,usage,message:{role:'assistant',content:[{type:'reasoning',text:'private reasoning must not be copied'}]}});
+    add('tool/call',{callId:id,name:nested?'run_code':name,arguments:nested?{code:'return await tools.read({file_path:"a.txt"});'}:args});
+    if(nested)add('tool/ptc-dispatch',{rootCallId:id,subCallId:id+'-inner',name,arguments:args,content:[{type:'text',text:body}],isError:failed});
+    const result=add('tool/result',{message:{role:'tool',source:{callId:id},content:[{type:'text',text:body}],isError:failed}});
+    return {requestSeq:assistant.seq,resultSeq:nested?result.seq-1:result.seq};
+  };
+  return {events,add,operation};
+}
+
+test('native wrappers and nested actions are distinct and derived findings preserve raw source',()=>{
+  const f=fixture();f.operation('read',{file_path:'a.txt'},'same source',{nested:true});f.operation('read',{file_path:'a.txt'},'same source',{nested:true});
+  const before=JSON.stringify(f.events),audit=auditDshSession({events:f.events,quality:{everything:true}});
+  assert.equal(JSON.stringify(f.events),before);assert.equal(audit.coverage.rootCalls,2);assert.equal(audit.coverage.nestedCalls,2);
+  assert.equal(audit.findings.length,1);assert.deepEqual(audit.findings[0].labels,['W2','W5']);
+  assert.equal(audit.taskOutcome,'unknown');assert.equal(audit.modelBuild,'unconfirmed');
+  assert.equal(audit.associatedConsumption.knownTokens,20,'one request is counted once across the two labels');
+  assert.equal(audit.associatedConsumption.realizableSaving,null);
+  assert.ok(!JSON.stringify(audit).includes('private reasoning must not be copied'));
+});
+
+test('model build requires a complete exact declaration on every recorded attempt',()=>{
+  const f=fixture();f.operation('read',{file_path:'a.txt'},'source');
+  f.events[0].data.header.config.model='provider/path/DeepSeek-V4.1-Flash-1017';
+  assert.equal(auditDshSession(f.events).modelBuild,'declared-1017');
+  f.events[0].data.header.config.model='deepseek-v4.1-flash-1017-preview';
+  assert.equal(auditDshSession(f.events).modelBuild,'unconfirmed');
+  f.events[0].data.header.config.model='deepseek-v4.1-flash-1017';
+  f.events.splice(1,0,{seq:.5,type:'request/header',data:{header:{config:{provider:'local',model:'deepseek-v4.1-flash-1017'}}}});
+  assert.equal(auditDshSession(f.events).modelBuild,'declared-1017');
+  const first=f.events.find(event=>event.type==='assistant/message'),next=Math.max(...f.events.map(event=>event.seq))+1;
+  first.data.turn=100;first.data.step=10;
+  f.events.push({seq:next,type:'request/header',data:{header:{config:{provider:'local'}}}},
+    {seq:next+1,type:'assistant/message',data:{turn:200,step:20,usage,stream:[{type:'chunk',chunk:{type:'finish',reason:{kind:'stop'}}}]}});
+  const result=auditDshSession(f.events);
+  assert.equal(result.modelBuild,'unconfirmed');assert.equal(result.modelBuildCoverage.requests,2);
+  assert.equal(result.modelBuildCoverage.missingRoutes,1);assert.deepEqual(result.modelBuildCoverage.missingRouteSeqs,[next+1]);
+});
+
+test('source changes, a new human requirement and incomplete reads prevent exact-repeat findings',()=>{
+  for(const variation of ['write','user','truncated']){
+    const f=fixture(),body=variation==='truncated'?'x... (line truncated to 2000 chars)':'same source';
+    f.operation('read',{file_path:'a.txt'},body);
+    if(variation==='write')f.operation('write',{file_path:'a.txt',content:'same source'},'ok');
+    if(variation==='user')f.add('user/message',{message:{role:'user',source:{kind:'user'},content:[{type:'text',text:'Read again for a new question.'}]}});
+    f.operation('read',{file_path:'a.txt'},body);
+    assert.equal(auditDshSession(f.events).findings.length,0,variation);
+  }
+});
+
+test('same failures are candidates and a successful edit separates retry observations',()=>{
+  const f=fixture();f.operation('pwsh',{command:'node task.mjs'},'Error: bad value',{failed:true});
+  f.operation('pwsh',{command:'node task.mjs'},'Error: bad value',{failed:true});
+  f.operation('edit',{file_path:'a.mjs',old_string:'bad',new_string:'good'},'edited');
+  f.operation('pwsh',{command:'node task.mjs'},'Error: bad value',{failed:true});
+  const audit=auditDshSession(f.events);assert.equal(audit.findings.length,1);
+  assert.deepEqual(audit.findings[0].labels,['W3','W8']);assert.equal(audit.findings[0].classification,'candidate');
+});
+
+test('failed zero and absent counters stay unknown and reference currencies remain separate',()=>{
+  const f=fixture();f.operation('read',{file_path:'a'},'one');
+  const audit=auditDshSession({events:f.events,requests:[
+    {provider:'a',model:'m',usage,finish:{kind:'stop'},purpose:'main'},
+    {provider:'b',model:'m',usage,finish:{kind:'stop'},purpose:'compaction'},
+    {provider:'a',model:'m',usage:{inputTokens:0,outputTokens:0,totalTokens:0},finish:{kind:'error'},purpose:'auxiliary'},
+  ]},{pricing:[{provider:'a',model:'m',input:1,cacheRead:1,output:1,currency:'USD'},
+    {provider:'b',model:'m',input:2,cacheRead:2,output:2,currency:'CNY'}]});
+  assert.equal(audit.usage.knownTokens,20);assert.equal(audit.usage.totalTokens,null);assert.equal(audit.usage.unknownRequests,1);
+  assert.deepEqual(audit.usage.knownReferenceCostByCurrency,{USD:.00001,CNY:.00002});assert.equal(audit.usage.costComplete,false);
+});
+
+test('an exported rejected usage verdict cannot become a successful budget result after normalization',()=>{
+  const {f,done,assessment}=reviewedFixture();
+  assessment.consumption={scope:'all-task-requests',complete:true,eventSeqs:[done.requestSeq]};
+  const rejected=canonicalUsage({inputTokens:5,cacheReadTokens:-1,cacheWriteTokens:0,outputTokens:3,totalTokens:8});
+  assert.equal(rejected.complete,false);
+  const input={events:f.events,requests:[{provider:'local',model:'deepseek-v4.1-flash',finish:{kind:'stop'},
+    usage:rejected.usage,usageComplete:rejected.complete,usageConsistent:rejected.consistent,usageSources:rejected.sources}]};
+  const before=JSON.stringify(input);
+  const audit=auditDshSession(input,{sourceId:assessment.sourceId,assessment,tokenBudget:8,
+    pricing:[{provider:'local',model:'deepseek-v4.1-flash',input:1,cacheRead:1,output:1,currency:'USD'}]});
+  assert.equal(audit.usage.unknownRequests,1);assert.equal(audit.usage.totalTokens,null);
+  assert.equal(audit.usage.requests[0].usage.cacheReadTokens,null,'A rejected cache counter must not be exposed as a known zero.');
+  assert.equal(audit.usage.costComplete,false);assert.equal(audit.usage.requests[0].referenceCost,null);
+  assert.equal(audit.usage.requests[0].incompleteReason,'source-record-consumption-unknown');
+  assert.equal(audit.fullSuccessAtBudget.success,0);assert.equal(audit.fullSuccessAtBudget.unknown,1);
+  assert.equal(JSON.stringify(input),before);
+});
+
+test('a recorded unsettled consumption stays unknown while an unqualified raw omitted-zero usage stays usable',()=>{
+  const f=fixture();f.operation('read',{file_path:'a'},'one');
+  const row={provider:'a',model:'m',usage:{inputTokens:5,outputTokens:3,totalTokens:8},finish:{kind:'stop'}};
+  const raw=auditDshSession({events:f.events,requests:[row]});
+  assert.equal(raw.usage.totalTokens,8);assert.equal(raw.usage.requests[0].usage.cacheReadTokens,0);
+  const unknown=auditDshSession({events:f.events,requests:[{...row,unknownConsumption:true}]});
+  assert.equal(unknown.usage.totalTokens,null);assert.equal(unknown.usage.unknownRequests,1);
+});
+
+test('reviewed annotations require actual event addresses and source-based judgments',()=>{
+  const f=fixture();const call=f.operation('read',{file_path:'a'},'one');
+  const annotation={eventSeqs:[call.resultSeq],labels:['Q1'],classification:'unknown',reason:'The report lacks current source coverage.'};
+  assert.throws(()=>auditDshSession(f.events,{annotations:[annotation]}),/reviewer and counterexample/);
+  assert.throws(()=>auditDshSession(f.events,{annotations:[{...annotation,classification:'candidate',eventSeqs:[999]}]}),/unavailable source event/);
+  const audit=auditDshSession(f.events,{annotations:[{...annotation,reviewer:'human',counterexample:'A later result may resolve this claim.'}]});
+  assert.equal(audit.findings[0].classification,'unknown');assert.equal(audit.taskOutcome,'unknown');
+});
+
+test('malformed JSONL and unmatched results remain visible rather than disappearing',async()=>{
+  const directory=await fs.mkdtemp(path.join(os.tmpdir(),'we-audit-'));
+  try{
+    const file=path.join(directory,'events.jsonl');await fs.writeFile(file,'{"seq":0,"type":"turn/start","data":{}}\ninvalid-row\n');
+    const {input,problems}=await readAuditInput(file);assert.deepEqual(problems,[{line:2,reason:'invalid-json-row'}]);
+    assert.equal(auditDshSession(input,{problems}).problems.length,1);
+    assert.equal(normalizeDshEvents([{seq:0,type:'tool/result',data:{message:{content:[]}}}]).problems[0].reason,'unmatched-tool-result');
+  }finally{await fs.rm(directory,{recursive:true,force:true});}
+});
+
+test('FullSuccess at budget requires complete reviewed acceptance, known total usage and all criteria',()=>{
+  const assessment={allExplicitRequirementsCovered:true,reviewer:'human',criteria:[{outcome:'pass',evidence:['event:4']}]};
+  const rows=[{assessment,usage:{totalTokens:10}},{assessment,usage:{totalTokens:null}},
+    {assessment:{...assessment,criteria:[{outcome:'fail',evidence:['event:6']}]},usage:{totalTokens:8}},
+    {assessment:{...assessment,criteria:[{outcome:'pass',evidence:[]}]},usage:{totalTokens:8}}];
+  const result=fullSuccessAtBudget(rows,{tokenBudget:10});
+  assert.deepEqual({success:result.success,failed:result.failed,unknown:result.unknown,rate:result.rate},{success:1,failed:1,unknown:2,rate:null});
+  assert.equal(result.lowerBound,.25);assert.equal(result.upperBound,.75);
+});
+
+test('duplicate native call identifiers remain separate observations with explicit ambiguity',()=>{
+  const f=fixture();f.operation('read',{file_path:'a'},'first');f.operation('read',{file_path:'b'},'second');
+  const callEvents=f.events.filter(event=>event.type==='tool/call');callEvents[1].data.callId=callEvents[0].data.callId;
+  const results=f.events.filter(event=>event.type==='tool/result');results[1].data.message.source.callId=callEvents[0].data.callId;
+  const normalized=normalizeDshEvents(f.events);
+  assert.equal(normalized.calls.length,2);assert.equal(normalized.calls[0].resultText,'first');assert.equal(normalized.calls[1].resultText,'second');
+  assert.ok(normalized.problems.some(problem=>problem.reason==='duplicate-tool-call-id'));
+});
+
+test('invalid budget usage, incomplete source and unsupported assessment claims remain unknown',()=>{
+  const assessment={allExplicitRequirementsCovered:true,reviewer:'human',criteria:[{outcome:'pass',evidence:['event:4']}]};
+  for(const row of [{assessment,usage:{totalTokens:-1}},{assessment,usage:{}},{assessment,usage:{totalTokens:1},problems:[{reason:'invalid-json-row'}]},
+    {assessment:{...assessment,allExplicitRequirementsCovered:'true'},usage:{totalTokens:1}},
+    {assessment:{...assessment,criteria:[{outcome:'fail',evidence:[]}]},usage:{totalTokens:1}}])
+    assert.equal(fullSuccessAtBudget([row],{tokenBudget:10}).unknown,1);
+});
+
+test('dynamic running-job queries are excluded and nested reads retain outer-delivery uncertainty',()=>{
+  const f=fixture();f.operation('job_output',{job_id:'running',wait:false},'(no new output)\n[status: running]');
+  f.operation('job_output',{job_id:'running',wait:false},'(no new output)\n[status: running]');
+  assert.equal(auditDshSession(f.events).findings.length,0);
+  f.operation('read',{file_path:'a'},'source',{nested:true});
+  const call=normalizeDshEvents(f.events).calls.find(call=>call.nested);
+  assert.equal(call.deliveryVisibility,'not-inferred-from-inner-return');assert.equal(call.enclosingOutcome,'succeeded');
+});
+
+test('source-based rejection replaces a candidate judgment without counting it twice or keeping its associated cost',()=>{
+  const f=fixture();f.operation('read',{file_path:'a'},'same');f.operation('read',{file_path:'a'},'same');
+  const initial=auditDshSession(f.events),candidate=initial.findings[0];
+  const annotation={...candidate,classification:'rejected',reviewer:'main agent',reason:'The second read answers a different necessary question.',counterexample:'Same text need not answer the same decision.'};
+  const reviewed=auditDshSession(f.events,{annotations:[annotation]});
+  assert.equal(reviewed.findings.length,1);assert.equal(reviewed.findings[0].classification,'rejected');
+  assert.equal(reviewed.associatedConsumption.knownTokens,0);assert.equal(reviewed.labels.W2,1);
+  assert.equal(reviewed.detectionCounts.remainingCandidates,0);
+  assert.throws(()=>auditDshSession(f.events,{annotations:[{...annotation,eventSeqs:[candidate.eventSeqs[0]]}]}),/retain its original event addresses/);
+});
+
+test('the packaged audit command creates derived output and refuses an input hard link as output',async()=>{
+  const directory=await fs.mkdtemp(path.join(os.tmpdir(),'we-audit-cli-'));
+  try{
+    const file=path.join(directory,'events.json'),out=path.join(directory,'audit.json'),linked=path.join(directory,'same-input.json');
+    const f=fixture(),done=f.operation('read',{file_path:'a.txt'},'observed source');
+    const original=JSON.stringify({events:f.events});await fs.writeFile(file,original);await fs.link(file,linked);
+    const cli=path.resolve(import.meta.dirname,'../experiment-cli.mjs'),run=promisify(execFile);
+    await run(process.execPath,[cli,'audit','--file',file,'--out',out]);
+    assert.equal(JSON.parse(await fs.readFile(out,'utf8')).taskOutcome,'unknown');
+    await assert.rejects(run(process.execPath,[cli,'audit','--file',file,'--out',linked]),/must not overwrite/);
+    assert.equal(await fs.readFile(file,'utf8'),original);
+    const assessmentFile=path.join(directory,'assessment.json'),assessmentLink=path.join(directory,'same-assessment.json');
+    const assessment={schema:ASSESSMENT_SCHEMA,sourceId:file,throughSeq:f.events.at(-1).seq,reviewer:'human',allExplicitRequirementsCovered:true,
+      criteria:[{id:'source',requirementSeqs:[1],eventSeqs:[done.resultSeq],outcome:'pass'}],
+      consumption:{scope:'all-task-requests',complete:true,eventSeqs:[done.requestSeq]}};
+    assessment.checks=[recordedCheck(f,done,'source','addresses')];
+    const reviewText=JSON.stringify(assessment);await fs.writeFile(assessmentFile,reviewText);await fs.link(assessmentFile,assessmentLink);
+    const {stdout}=await run(process.execPath,[cli,'audit','--file',file,'--assessment',assessmentFile,'--budget','10','--out',out]);
+    assert.equal(JSON.parse(stdout).taskOutcome,'pass');assert.equal(JSON.parse(stdout).fullSuccessAtBudget.success,1);
+    assert.equal(JSON.parse(stdout).verification.addressedCriteria,1);
+    await assert.rejects(run(process.execPath,[cli,'audit','--file',file,'--assessment',assessmentFile,'--out',assessmentLink]),/must not overwrite/);
+    await assert.rejects(run(process.execPath,[cli,'audit','--file',file,'--assessment',assessmentFile,'--budget','1e3']),/positive safe integer/);
+    assert.equal(await fs.readFile(assessmentFile,'utf8'),reviewText);assert.equal(await fs.readFile(file,'utf8'),original);
+  }finally{
+    assert.ok(path.resolve(directory).startsWith(path.resolve(os.tmpdir())+path.sep));
+    await fs.rm(directory,{recursive:true,force:true});
+  }
+});
+
+function reviewedFixture(){
+  const f=fixture(),done=f.operation('read',{file_path:'a.txt'},'observed source');
+  const assessment={schema:ASSESSMENT_SCHEMA,sourceId:'recorded-session',throughSeq:f.events.at(-1).seq,reviewer:'human',allExplicitRequirementsCovered:true,
+    criteria:[{id:'source',requirementSeqs:[1],eventSeqs:[done.resultSeq],outcome:'pass'}]};
+  const audit=()=>auditDshSession(f.events,{sourceId:'recorded-session',assessment,tokenBudget:10});
+  return {f,done,assessment,audit};
+}
+
+test('source-linked judgment and complete consumption are separate requirements for budget success',()=>{
+  const {assessment,done,audit}=reviewedFixture();
+  const partial=audit();assert.equal(partial.taskOutcome,'pass');assert.equal(partial.fullSuccessAtBudget.unknown,1);
+  assessment.consumption={scope:'all-task-requests',complete:true,eventSeqs:[done.requestSeq]};
+  const complete=audit();assert.equal(complete.fullSuccessAtBudget.success,1);assert.equal(complete.fullSuccessAtBudget.rate,1);
+  assert.ok(!JSON.stringify(complete).includes('private reasoning must not be copied'));
+  assert.ok(!JSON.stringify(complete).includes('Read and explain the source.'));
+});
+
+test('missing result evidence and a later human requirement keep claimed completion unknown',()=>{
+  const {f,assessment,audit}=reviewedFixture();
+  assessment.criteria[0].eventSeqs=[];assessment.criteria[0].artifactRefs=[path.resolve(import.meta.filename)];let result=audit();
+  assert.equal(result.taskOutcome,'unknown');assert.equal(result.assessment.criteria[0].declaredOutcome,'pass');
+  assert.equal(result.assessment.criteria[0].reason,'missing-outcome-evidence');
+  assert.deepEqual(result.assessment.criteria[0].artifactRefs,[path.resolve(import.meta.filename)]);
+  assessment.criteria[0].eventSeqs=[f.events.at(-1).seq];
+  const added=f.add('user/message',{message:{role:'user',source:{kind:'user'},content:[{type:'text',text:'Also deliver a JSON answer.'}]}});
+  result=audit();assert.deepEqual(result.assessment.unassessedRequirementSeqs,[added.seq]);
+  assert.equal(result.assessment.allExplicitRequirementsCovered,false);assert.equal(result.taskOutcome,'unknown');
+});
+
+test('review rejects another session, nonexistent evidence, repeated ids and a plugin message as a requirement',()=>{
+  const {f,assessment,audit}=reviewedFixture();
+  assessment.sourceId='another-session';assert.throws(audit,/matching sourceId/);assessment.sourceId='recorded-session';
+  assessment.criteria[0].eventSeqs=[999];assert.throws(audit,/Unavailable assessment event/);
+  assessment.criteria[0].eventSeqs=[f.events.at(-1).seq];assessment.criteria.push({...assessment.criteria[0]});
+  assert.throws(audit,/Invalid assessment criterion/);assessment.criteria.pop();
+  const plugin=f.add('user/message',{message:{role:'user',source:{kind:'work-evidence-task-flow'},content:[{type:'text',text:'A plugin hint.'}]}});
+  assessment.criteria[0].requirementSeqs=[plugin.seq];assert.throws(audit,/human requirement/);
+});
+
+test('one source-backed explicit failure disproves full success even when other requirements or usage remain unknown',()=>{
+  const {assessment,audit}=reviewedFixture();assessment.allExplicitRequirementsCovered=false;
+  assessment.criteria[0].outcome='fail';assessment.criteria.push({id:'unresolved',requirementSeqs:[1],eventSeqs:[],outcome:'unknown'});
+  const result=audit();assert.equal(result.taskOutcome,'fail');assert.equal(result.fullSuccessAtBudget.failed,1);
+  assert.equal(result.fullSuccessAtBudget.unknown,0);assert.equal(result.usage.totalTokens,10);
+});
+
+test('a damaged source keeps a supplied failure judgment unknown and native-only consumption cannot claim a full budget result',()=>{
+  const {f,assessment,done,audit}=reviewedFixture();
+  assessment.consumption={scope:'recorded-native-attempts',complete:true,eventSeqs:[done.requestSeq]};
+  assert.throws(audit,/all-task-requests/);delete assessment.consumption;
+  assessment.criteria[0].outcome='fail';
+  const result=auditDshSession(f.events,{sourceId:assessment.sourceId,assessment,tokenBudget:10,problems:[{line:2,reason:'invalid-json-row'}]});
+  assert.equal(result.taskOutcome,'unknown');assert.equal(result.fullSuccessAtBudget.unknown,1);
+});
+
+test('a later operation invalidates an older review even without another human message',()=>{
+  const {f,done,assessment,audit}=reviewedFixture();
+  assessment.consumption={scope:'all-task-requests',complete:true,eventSeqs:[done.requestSeq]};
+  assert.equal(audit().fullSuccessAtBudget.success,1);
+  f.operation('write',{file_path:'a.txt',content:'changed after review'},'written');
+  const result=audit();assert.equal(result.assessment.sourceCurrent,false);assert.equal(result.taskOutcome,'unknown');
+  assert.equal(result.fullSuccessAtBudget.unknown,1);assert.equal(result.assessment.criteria[0].reason,'events-after-review');
+  assert.equal(result.assessment.consumption.complete,false);assert.equal(result.sourceThroughSeq,f.events.at(-1).seq);
+});
+
+function recordedCheck(f,done,criterionId,reach){
+  const call=normalizeDshEvents(f.events).calls.find(row=>row.resultSeq===done.resultSeq);
+  return {id:'recorded-check-'+done.resultSeq,callSeq:call.callSeq,resultSeq:done.resultSeq,
+    coverage:[{criterionId,reach,reason:'Reviewed the recorded operation against this explicit requirement.'}]};
+}
+
+test('a successful recorded check that misses a requirement cannot turn a reviewed failure into success',()=>{
+  const {f,assessment,audit}=reviewedFixture();
+  const check=f.operation('pwsh',{command:'node check_regex.js'},JSON.stringify({exitCode:0,stdout:'16/16'}));
+  assessment.throughSeq=f.events.at(-1).seq;assessment.criteria[0].outcome='fail';
+  assessment.checks=[recordedCheck(f,check,'source','misses')];
+  const original=JSON.stringify(f.events),result=audit();
+  assert.equal(result.verification.checks[0].toolOutcome,'succeeded');
+  assert.equal(result.verification.missedCriteria,1);assert.equal(result.verification.allListedCriteriaAddressed,false);
+  assert.equal(result.taskOutcome,'fail');assert.equal(result.fullSuccessAtBudget.failed,1);
+  assert.equal(JSON.stringify(f.events),original);assert.equal(result.verification.criteria[0].outcome,'fail');
+});
+
+test('a failing check can address a risk without proving that its requirement was satisfied',()=>{
+  const {f,assessment,audit}=reviewedFixture();
+  const check=f.operation('pwsh',{command:'node regression.js'},JSON.stringify({exitCode:1,stdout:'wrong newline'}),{failed:true});
+  assessment.throughSeq=f.events.at(-1).seq;assessment.criteria[0].outcome='unknown';
+  assessment.checks=[recordedCheck(f,check,'source','addresses')];
+  const result=audit();assert.equal(result.verification.checks[0].toolOutcome,'failed');
+  assert.equal(result.verification.allListedCriteriaAddressed,true);assert.equal(result.taskOutcome,'unknown');
+  assert.equal(result.fullSuccessAtBudget.success,0);assert.equal(result.fullSuccessAtBudget.unknown,1);
+});
+
+test('check review rejects unrelated event pairs, duplicate operation counts and unknown criteria',()=>{
+  const {f,done,assessment,audit}=reviewedFixture();
+  const other=f.operation('read',{file_path:'another.txt'},'another source');assessment.throughSeq=f.events.at(-1).seq;
+  assessment.checks=[recordedCheck(f,done,'source','addresses')];
+  assessment.checks[0].resultSeq=other.resultSeq;assert.throws(audit,/exact result/);
+  assessment.checks=[recordedCheck(f,done,'missing-criterion','addresses')];assert.throws(audit,/coverage relation/);
+  assessment.checks=[recordedCheck(f,done,'source','addresses')];
+  assessment.checks.push({...assessment.checks[0],id:'count-again'});assert.throws(audit,/counted twice/);
+  assessment.checks.pop();assessment.checks[0].coverage.push({...assessment.checks[0].coverage[0]});assert.throws(audit,/coverage relation/);
+});
+
+test('change scope reviews retain unsupported and unknown declarations without a requirement source',()=>{
+  const {f,assessment,audit}=reviewedFixture(),done=f.operation('edit',{file_path:'a.txt',old_string:'old',new_string:'new'},'applied');
+  assessment.throughSeq=f.events.at(-1).seq;
+  const call=normalizeDshEvents(f.events).calls.find(row=>row.resultSeq===done.resultSeq);
+  assessment.scopeReviews=[{id:'unsupported-change',callSeq:call.callSeq,resultSeq:done.resultSeq,path:'a.txt',
+    declaredRelation:'unsupported',requirementSeqs:[],dependencyEvidenceSeqs:[],reviewer:'human',
+    reason:'No requirement or dependency basis was supplied.',counterexample:'A later source could establish a necessary dependency.'}];
+  let result=audit();
+  assert.equal(result.changeScopeReviews.items[0].relation,'unsupported');
+  assert.equal(result.changeScopeReviews.items[0].violation,'not-inferred');
+  assessment.scopeReviews[0].declaredRelation='direct-requirement';
+  assert.throws(audit,/Invalid change-scope review/);
+  assessment.scopeReviews[0].declaredRelation='unknown';result=audit();
+  assert.equal(result.changeScopeReviews.items[0].relation,'unknown');
+});
+
+test('new operations and damaged source preserve declared check coverage but make effective reach unknown',()=>{
+  const {f,done,assessment,audit}=reviewedFixture();assessment.checks=[recordedCheck(f,done,'source','addresses')];
+  let result=auditDshSession(f.events,{sourceId:assessment.sourceId,assessment,problems:[{line:4,reason:'invalid-json-row'}]});
+  assert.equal(result.verification.status,'incomplete-source');assert.equal(result.verification.unknownCriteria,1);
+  assert.equal(result.verification.checks[0].coverage[0].unavailableReason,'incomplete-source');
+  f.operation('write',{file_path:'a.txt',content:'later source'},'written');result=audit();
+  assert.equal(result.verification.status,'stale');assert.equal(result.verification.allListedCriteriaAddressed,false);
+  assert.equal(result.verification.checks[0].coverage[0].declaredReach,'addresses');
+  assert.equal(result.verification.checks[0].coverage[0].unavailableReason,'events-after-review');
+});
+
+test('a scoped source change after a check downgrades only that coverage relation',()=>{
+  const {f,assessment,audit}=reviewedFixture();
+  const check=f.operation('pwsh',{command:'node check.js'},JSON.stringify({exitCode:0}));
+  f.operation('write',{file_path:'src/main.py',content:'changed'},'written');
+  assessment.throughSeq=f.events.at(-1).seq;
+  assessment.checks=[recordedCheck(f,check,'source','addresses')];
+  assessment.checks[0].coverage[0].scopePaths=['src/main.py'];
+  let result=audit();
+  assert.equal(result.verification.checks[0].coverage[0].reach,'unknown');
+  assert.equal(result.verification.checks[0].coverage[0].declaredReach,'addresses');
+  assert.equal(result.verification.checks[0].coverage[0].unavailableReason,'file-changed-after-check');
+  assert.equal(result.verification.allListedCriteriaAddressed,false);
+  assessment.checks[0].coverage[0].scopePaths=['src/other.py'];
+  result=audit();assert.equal(result.verification.checks[0].coverage[0].reach,'addresses');
+});
+
+test('later opaque execution and unscoped changes cannot preserve a current scoped coverage claim',()=>{
+  const {f,assessment,audit}=reviewedFixture();
+  const check=f.operation('pwsh',{command:'node check.js'},JSON.stringify({exitCode:0}));
+  f.add('tool/call',{callId:'later',name:'write',arguments:{file_path:'src/main.py',content:'changed'}});
+  assessment.throughSeq=f.events.at(-1).seq;assessment.checks=[recordedCheck(f,check,'source','addresses')];
+  assessment.checks[0].coverage[0].scopePaths=['src/main.py'];
+  assert.equal(audit().verification.checks[0].coverage[0].unavailableReason,'unsettled-mutation');
+  assessment.checks[0].coverage[0].scopePaths=[];
+  assert.equal(audit().verification.checks[0].coverage[0].unavailableReason,'file-scope-unresolved');
+  assessment.checks[0].coverage[0].scopePaths=['src/main.py'];f.operation('run_code',{code:'modifyProject()'},'done');
+  assessment.throughSeq=f.events.at(-1).seq;
+  assert.deepEqual(audit().verification.checks[0].coverage[0].unavailableReasons,['opaque-execution-after-check','unsettled-mutation']);
+});
+
+test('partial check output and a later requirement cannot inherit a complete check coverage claim',()=>{
+  const {f,done,assessment,audit}=reviewedFixture();
+  const check=f.operation('pwsh',{command:'node partial.js'},JSON.stringify({exitCode:0,stdout:'ok',truncated:true}));
+  assessment.throughSeq=f.events.at(-1).seq;assessment.checks=[recordedCheck(f,check,'source','addresses')];
+  let result=audit();assert.equal(result.verification.checks[0].coverage[0].unavailableReason,'incomplete-check-result');
+  const added=f.add('user/message',{message:{role:'user',source:{kind:'user'},content:[{type:'text',text:'Now also support Windows.'}]}});
+  assessment.throughSeq=added.seq;assessment.criteria[0].requirementSeqs.push(added.seq);
+  assessment.checks=[recordedCheck(f,done,'source','addresses')];result=audit();
+  assert.equal(result.verification.checks[0].coverage[0].unavailableReason,'check-before-linked-requirement');
+  assert.equal(result.verification.unknownCriteria,1);
+});
+
+test('nested check review preserves delivery uncertainty and unreviewed requirements remain unknown',()=>{
+  const {f,assessment,audit}=reviewedFixture();
+  const check=f.operation('read',{file_path:'a.txt'},'source',{nested:true});
+  assessment.throughSeq=f.events.at(-1).seq;assessment.checks=[recordedCheck(f,check,'source','addresses')];
+  assessment.criteria.push({id:'another-requirement',requirementSeqs:[1],eventSeqs:[],outcome:'unknown'});
+  const result=audit(),observed=result.verification.checks[0];
+  assert.equal(observed.nested,true);assert.equal(observed.deliveryVisibility,'not-inferred-from-inner-return');
+  assert.equal(observed.enclosingOutcome,'succeeded');assert.equal(result.verification.addressedCriteria,1);
+  assert.equal(result.verification.unknownCriteria,1);assert.equal(result.verification.allListedCriteriaAddressed,false);
+  delete assessment.checks;const unreviewed=audit();assert.equal(unreviewed.verification.status,'not-reviewed');
+  assert.equal(unreviewed.verification.unknownCriteria,2);assert.equal(unreviewed.taskOutcome,'unknown');
+});
+
+function processFixture({variation=null,body='[exit code: 1]'}={}){
+  const f=fixture(),call=f.add('tool/call',{callId:'native-call',name:'pwsh',arguments:{command:'node check.js'}});
+  const job={jobId:'native-job',owner:'session-a',kind:'pwsh',toolCall:{callId:'native-call',rootCallId:'native-call'}};
+  const registered=f.add('job/registered',job),end={...job,status:'completed',cause:'producer',producerReported:true,detail:'exit code: 1'};
+  if(variation==='owner')end.owner='session-b';
+  if(variation==='caller')end.toolCall={...end.toolCall,callId:'different-call'};
+  if(variation==='producer')end.producerReported=false;
+  if(variation==='status'){end.status='failed';end.detail='exit code: 0';}
+  const settled=f.add('job/settled',end);
+  if(variation==='duplicate')f.add('job/settled',end);
+  const result=f.add('tool/result',{message:{role:'tool',source:{callId:'native-call'},content:[{type:'text',text:body}],isError:false}});
+  return {f,call,registered,settled,result};
+}
+
+test('producer completion separates a successful tool return from a failed command',()=>{
+  const {f,registered,settled}=processFixture(),call=normalizeDshEvents(f.events).calls[0];
+  assert.equal(call.toolOutcome,'succeeded');assert.equal(call.outcome,'failed');assert.equal(call.processOutcome,'exited-nonzero');
+  assert.equal(call.exitCode,1);assert.equal(call.completionObservation.registrationSeq,registered.seq);
+  assert.equal(call.completionObservation.seq,settled.seq);
+});
+
+test('process outcome does not come from printable exit text or unrelated or inconsistent producer events',()=>{
+  for(const variation of ['owner','caller','producer','status','duplicate']){
+    const {f}=processFixture({variation}),call=normalizeDshEvents(f.events).calls[0];
+    assert.equal(call.processOutcome,'unknown',variation);assert.equal(call.exitCode,null,variation);
+    assert.equal(call.completionObservation,undefined,variation);
+  }
+});
+
+test('contradictory structured and producer exit codes invalidate a supplied coverage claim',()=>{
+  const {f,call,result}=processFixture({body:JSON.stringify({exitCode:0,stdout:'OK'})});
+  const assessment={schema:ASSESSMENT_SCHEMA,sourceId:'process-source',throughSeq:result.seq,reviewer:'human',allExplicitRequirementsCovered:true,
+    criteria:[{id:'source',requirementSeqs:[1],eventSeqs:[result.seq],outcome:'pass'}],
+    checks:[{id:'process-check',callSeq:call.seq,resultSeq:result.seq,coverage:[{criterionId:'source',reach:'addresses',reason:'The declared result was reviewed.'}]}]};
+  const audited=auditDshSession(f.events,{sourceId:assessment.sourceId,assessment});
+  assert.ok(audited.problems.some(item=>item.reason==='contradictory-process-exit-code'));
+  assert.equal(audited.taskOutcome,'unknown');assert.equal(audited.verification.unknownCriteria,1);
+  assert.equal(audited.verification.checks[0].processOutcome,'unknown');
+});
+
+test('projection forecast and adjacent main usage stay separate from causal refill attribution',()=>{
+  const event=(seq,type,data)=>({seq,type,data});
+  const request=(seq,effort='low',input=100,cacheRead=800,cacheWrite=0)=>event(seq,'assistant/message',{turn:1,step:seq,
+    usage:{inputTokens:input,cacheReadTokens:cacheRead,cacheWriteTokens:cacheWrite,outputTokens:10,totalTokens:input+cacheRead+cacheWrite+10},
+    stream:[{type:'chunk',chunk:{type:'finish',reason:{kind:'stop'}}}]});
+  const route=(seq,effort='low')=>event(seq,'request/header',{header:{config:{provider:'local',model:'deepseek-v4.1-flash',reasoningEffort:effort}}});
+  const projection=event(2,'user/message',{message:{role:'user',source:{kind:'work-evidence-working-set',workingSet:{action:'project',
+    decision:{savedTokensEstimate:300,cachedSuffixTokensEstimate:200,refillCostEstimate:0.0001,currency:'USD',cachedExposureMethod:'recorded forecast',
+      route:{provider:'local',model:'deepseek-v4.1-flash',reasoningEffort:'low'}},candidateAssessment:{eligible:2,plansEvaluated:1}}}}});
+  const events=[route(.5),request(1),projection,route(2.5),request(3,'low',500,400,50)];
+  events[1].data.turn=1;events[4].data.turn=1;
+  const accounting={schema:'work-evidence.session-request-accounting.v1',sessionId:null,throughSeq:3,nativeRequests:2,
+    requests:[{requestId:'before',requestKind:'main',sourceSeq:1,complete:true},{requestId:'applied',requestKind:'main',sourceSeq:3,complete:true}],
+    mainRequestLinks:[{requestId:'before',sourceSeq:1,projectionObservation:null},{requestId:'applied',sourceSeq:3,
+      projectionObservation:{status:'matched',planSeq:2,planMessageId:null,resultSeqs:[1],reason:null}}]};
+  events[2].data.message.id='projection-plan';
+  accounting.mainRequestLinks[1].projectionObservation.planMessageId='projection-plan';
+  const result=auditCacheTransitions(events);
+  assert.equal(result.compared,0);assert.equal(result.unknown,1);assert.equal(result.items[0].predicted.refillTokens,200);
+  assert.equal(result.items[0].reasons.includes('applied-request-identity-unrecorded'),true);
+  assert.equal(result.items[0].observed,null);
+  assert.equal(result.items[0].attribution,'not-established');
+  events[3]=route(2.5,'max');
+  events[4]=request(3,'max',500,400,50);
+  assert.equal(auditCacheTransitions(events,accounting).items[0].reasons.includes('route-or-effort-changed'),true);
+  events.splice(3,1,event(2.5,'user/message',{message:{role:'user',source:{kind:'work-evidence-working-set',workingSet:{action:'project'}}}}));
+  events[4]=request(3,'low',500,400,50);
+  assert.equal(auditCacheTransitions(events).items[0].reasons.includes('multiple-rewrites-before-next-main'),true);
+  const auxiliaryAccounting={requests:[{requestId:'auxiliary',requestKind:'auxiliary',sourceSeq:3,complete:true}]};
+  assert.equal(auditCacheTransitions([request(1),projection,request(3,'low',500,400,50)],auxiliaryAccounting).items[0].observed,null);
+});

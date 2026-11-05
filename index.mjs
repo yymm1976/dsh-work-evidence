@@ -1,6 +1,7 @@
 import {registerManagementTools} from './management-tools.mjs';
 import {registerSourceTools} from './source-tools.mjs';
 import {registerPluginCommand} from './plugin-command.mjs';
+import {createFeatureControl} from './feature-control.mjs';
 import path from 'node:path';
 import fs from 'node:fs/promises';
 import {randomUUID} from 'node:crypto';
@@ -14,7 +15,7 @@ import {createVerifiedExec} from './verified-exec.mjs';
 import {createFastEditJava} from './fastedit-java.mjs';
 
 import {createReadRouting} from './read-routing.mjs';
-import {correctedReadArguments,recoveryFor,withRecovery,recoveredResult,normalizedReadResult,installExecutionDescriptionCompatibility} from "./recovery.mjs";
+import {correctedReadArguments,recoveryFor,withRecovery,recoveredResult,normalizedReadResult,installExecutionDescriptionCompatibility,installNativeReadArgumentRecovery} from "./recovery.mjs";
 import {observeRequests} from './request-observation.mjs';
 import {createContextWindow} from './context-window.mjs';
 import {createObservationLedger} from './observation-ledger.mjs';
@@ -25,6 +26,7 @@ import {createCompressionControl} from './compression-control.mjs';
 import {createTaskFlow,taskFlowGuidance,textPaths} from './task-flow.mjs';
 import {exportTaskHandoff,createTaskHandoffDelivery} from './task-handoff.mjs';
 import {installUltraEffort} from './ultra-effort.mjs';
+import {nativeReasoningReplayRequest} from './native-reasoning-replay.mjs';
 import {createCompactionHandoff} from "./compaction-handoff.mjs";
 import {createExecutionEvidence} from './execution-evidence.mjs';
 import {createExecutionDependencies} from './execution-dependencies.mjs';
@@ -40,6 +42,8 @@ import {createRetainedCompute} from './retained-compute.mjs';
 import {createFinalJsonGuard} from './final-json.mjs';
 import {createQualityReview} from './quality-review.mjs';
 import {createCompletionNotice} from './completion-notice.mjs';
+import {installNativeProgramReferences} from './program-reference.mjs';
+import {installStructuredCalls} from './structured-calls.mjs';
 import {surfaceReferences,compactionActive,hasHistoricalReferences} from './visible-results.mjs';
 
 export const name='work-evidence-local';
@@ -108,10 +112,13 @@ export function apply(ctx,config={}){
   const pendingSaves=new Set();
   const runtime=createRuntime(ctx,call,config),state=runtime.get;
   installExecutionDescriptionCompatibility(ctx,runtime);
-  const disposeUltra=installUltraEffort(ctx);
+  installNativeReadArgumentRecovery(ctx,runtime);
+  const disposeUltra=installUltraEffort(ctx,{requestView:options=>nativeReasoningReplayRequest(ctx,runtime,options)});
   ctx.effect(()=>disposeUltra);
   const toolSurfaceDisposers=new Map(),taskSurfaceModes=new Map();
   const effects=createEffectObserver(ctx,runtime);runtime.effects=effects;
+  installNativeProgramReferences(ctx,runtime,effects);
+  installStructuredCalls(ctx,runtime,effects);
   const available=(agent,name)=>{try{return Boolean(ctx.tools.get(name,agent));}catch{return false;}};
   function capabilityDiagnostic(agent){
     const nativeReadTools=['read','glob','grep'].every(name=>available(agent,name));
@@ -133,12 +140,14 @@ export function apply(ctx,config={}){
   const taskHandoff=async(agent,{signal,incremental,baseDeliveryId,...options}={})=>{
     const [hostTransfer]=await Promise.all([hostReferences.transfer(agent,signal),refreshExecutionEvidence(agent,signal)]);
     return handoffDelivery.deliver(agent,{incremental,baseDeliveryId,maxChars:options.maxChars,messages:()=>runtime.projectedMessages?.(agent),
-      build:delivery=>exportTaskHandoff(agent,runtime,taskFlow,{canRecall,canRecallReference:hostReferences.capabilities(agent).capturedSnapshotRecall,hostTransfer,...options,delivery})});
+      build:delivery=>exportTaskHandoff(agent,runtime,taskFlow,{canRecall,canRecallReference:hostReferences.capabilities(agent).capturedSnapshotRecall,
+        canSearchChildEvents:available(agent,'session_event_search'),hostTransfer,...options,delivery})});
   };
   const retainedCompute=createRetainedCompute(ctx,runtime,taskFlow,call);
   const finalJson=createFinalJsonGuard(ctx,runtime);
-  const qualityReview=createQualityReview(ctx,runtime,taskFlow,finalJson);
-  createCompletionNotice(ctx,runtime,finalJson);
+  let completionNotice;
+  const qualityReview=createQualityReview(ctx,runtime,taskFlow,finalJson,{willContinue:(agent,current)=>completionNotice?.willContinue(agent,current)===true});
+  completionNotice=createCompletionNotice(ctx,runtime,finalJson);
   const executionEvidence=createExecutionEvidence(ctx,runtime,call,{executionDependencies});
   async function refreshExecutionEvidence(agent,signal){
     const cache=new Map();
@@ -146,6 +155,7 @@ export function apply(ctx,config={}){
   }
   const workingSet=createRequestWorkingSet(ctx,runtime,contextEconomics,taskFlow);
   runtime.noteProjectionDispatch=workingSet.noteDispatch;
+  runtime.observeRequestProjection=(agent,messages)=>workingSet.observeRequest(agent,messages);
   runtime.isBodyVisible=(agent,seq)=>workingSet.bodyVisible(agent,seq)&&historyHygiene.bodyVisible(agent,seq);
   runtime.isProjectionManaged=(agent,seq)=>workingSet.manages(agent,seq)||historyHygiene.manages(agent,seq);
   runtime.projectedMessages=agent=>workingSet.budgetMessages(agent);
@@ -160,8 +170,8 @@ export function apply(ctx,config={}){
       workingSet.dispose();historyHygiene.dispose();await compactionHandoff.dispose();compressionControl.dispose();contextEconomics.dispose();taskFlow.dispose();executionEvidence.dispose();
     }
   });
-  runtime.setContextSnapshot(id=>{
-    const agent=ctx.agents.get(id);return agent?{observability:effects.snapshot(agent),coordination:historyCoordinator.summary(agent),workingSet:workingSet.metrics(agent),historyHygiene:historyHygiene.summary(agent),contextEconomics:contextEconomics.summary(agent),compression:{...compressionControl.metrics(agent),nativeHandoff:compactionHandoff.metrics(agent)},taskFlow:taskFlow.summary(agent),retainedCompute:retainedCompute.summary(agent),finalJson:finalJson.summary(agent),qualityReview:qualityReview.summary(agent),effortPolicy:{enabled:false,configuredEffort:agent.options?.reasoningEffort??null,selectedEffort:null,reason:'automatic-effort-disabled',classifierModelCalls:0},nativeExecution:executionEvidence.summary(agent)}:{};
+  runtime.setContextSnapshot((id,{detail=true}={})=>{
+    const agent=ctx.agents.get(id);return agent?{observability:effects.snapshot(agent,{detail}),coordination:historyCoordinator.summary(agent),workingSet:workingSet.metrics(agent),historyHygiene:historyHygiene.summary(agent),contextEconomics:contextEconomics.summary(agent),compression:{...compressionControl.metrics(agent),nativeHandoff:compactionHandoff.metrics(agent)},taskFlow:taskFlow.summary(agent),retainedCompute:retainedCompute.summary(agent),finalJson:finalJson.summary(agent),qualityReview:qualityReview.summary(agent),effortPolicy:{enabled:false,configuredEffort:agent.options?.reasoningEffort??null,selectedEffort:null,reason:'automatic-effort-disabled',classifierModelCalls:0},nativeExecution:executionEvidence.summary(agent)}:{};
   });
   observeRequests(ctx,runtime);
   const evidenceViews=createEvidenceViews(ctx,runtime);
@@ -381,9 +391,9 @@ export function apply(ctx,config={}){
       toolSurfaceDisposers.set(agent.session.id,{surface,dispose});
     }catch(error){runtime.problem(state(agent),'tool-surface',error.message);}
   }
-  const prepareSession=agent=>{if(!agent)return;workingSet.attach(agent);void runtime.init(agent,AbortSignal.timeout(10000)).then(()=>{applyToolSurface(agent);return effects.load(agent);}).catch(error=>runtime.problem(state(agent),'session-prepare',error.message));};
+  const prepareSession=agent=>{if(!agent)return;workingSet.attach(agent);return runtime.init(agent,AbortSignal.timeout(10000)).then(()=>{applyToolSurface(agent);return effects.load(agent);}).catch(error=>runtime.problem(state(agent),'session-prepare',error.message));};
   ctx.on('agent/created',({agent})=>prepareSession(agent));
-  ctx.on('agent/inbox/claimed',({agent,message})=>{if(isUserRequestMessage(message)){classifyTaskSurface(agent,message);state(agent).claimedRequest=message;}});
+  ctx.on('agent/inbox/claimed',({agent,message})=>{if(isUserRequestMessage(message)){classifyTaskSurface(agent,message);state(agent).claimedRequest=message;applyToolSurface(agent);}});
   for(const agent of ctx.agents?.list?.()??[])prepareSession(agent);
   ctx.on('system-prompt/assemble',async(_assembly,context,next)=>{
     if(context?.agent){
@@ -398,7 +408,8 @@ export function apply(ctx,config={}){
       _assembly.tools=_assembly.tools.filter(tool=>tool?.name!=='work_exec');
     return next();
   },{prepend:true});
-  registerPluginCommand({ctx,runtime,state,effects,available,capabilityDiagnostic,contextEconomics,taskFlow,taskHandoff,finalJson,qualityReview,executionEvidence,refreshExecutionEvidence,workingSet,compressionControl,compactionHandoff,contextWindow,observationLedger,historyCoordinator,clearPluginState,applyToolSurface});
+  const featureControl=createFeatureControl(ctx,runtime,{available,canRecall,workingSet,qualityReview,compactionHandoff,retainedCompute});
+  registerPluginCommand({ctx,runtime,state,effects,available,featureControl,capabilityDiagnostic,contextEconomics,taskFlow,taskHandoff,finalJson,qualityReview,executionEvidence,refreshExecutionEvidence,workingSet,compressionControl,compactionHandoff,contextWindow,observationLedger,historyCoordinator,clearPluginState,applyToolSurface});
   const nested=new Set();
   async function call(name,args,exec){
     exec.signal.throwIfAborted();
@@ -465,7 +476,7 @@ export function apply(ctx,config={}){
       note:'The plugin is disabled for this session. A user can enable it with /work-evidence on; tool results do not authorize changing that choice.'};
   }
   registerSourceTools({ctx,nativeFiles,runtime,state,effects,evidenceViews,index,candidates,call,read,search,snippets,sourceReferences,disabledResult,output,parameters});
-  registerManagementTools({ctx,runtime,state,effects,available,capabilityDiagnostic,contextEconomics,taskFlow,taskHandoff,retainedCompute,finalJson,qualityReview,executionEvidence,executionDependencies,refreshExecutionEvidence,hostReferences,workingSet,compressionControl,compactionHandoff,contextWindow,observationLedger,historyCoordinator,clearPluginState,index,candidates,ptcPatterns,ptcFastpath,verifiedExec,fastEditJava,preserveContextResult,retainRecalledSources,hasHistoricalReferences,applyToolSurface,call,disabledResult,output,COMPACT_HIDDEN_TOOLS,assertParameterBounds,parameters});
+  registerManagementTools({ctx,runtime,state,effects,available,featureControl,capabilityDiagnostic,contextEconomics,taskFlow,taskHandoff,retainedCompute,finalJson,qualityReview,executionEvidence,executionDependencies,refreshExecutionEvidence,hostReferences,workingSet,compressionControl,compactionHandoff,contextWindow,observationLedger,historyCoordinator,clearPluginState,index,candidates,ptcPatterns,ptcFastpath,verifiedExec,fastEditJava,preserveContextResult,retainRecalledSources,hasHistoricalReferences,applyToolSurface,call,disabledResult,output,COMPACT_HIDDEN_TOOLS,assertParameterBounds,parameters});
   ctx.on('tools/result',(exec,result)=>{
     taskFlow.observe(exec,result);
     historyHygiene.observe(exec,result);
@@ -554,12 +565,26 @@ export function apply(ctx,config={}){
       try{
         const messages=await maintenance({agent:exec.agent,signal:exec.signal}),s=state(exec.agent);
         s.queuedMessages=[...(s.queuedMessages||[]),...messages];
-        // Preserve the Host's canonical result identity and PTC Plus presentation metadata.
         return result;
       }
       catch(e){runtime.problem(state(exec.agent),'transport-maintenance',e.message);return result;}
     });
   });
+  ctx.on('tools/post-execute',async(exec,result,next)=>{
+    const decision=await next();
+    if(decision.kind!=='accept'||Object.hasOwn(decision,'content')||Object.hasOwn(decision,'value')||nested.has(exec.callId))return decision;
+    const recovered=exec.parent?result:taskFlow.recoverReadOutput(exec,result);
+    const sourceContext=taskFlow.executionSourceContext(exec,result);
+    const reportContext=taskFlow.executionReportContext(exec,result);
+    const parseContext=taskFlow.executionParseContext(exec,result);
+    const scriptReferenceContext=taskFlow.executionReferenceContext(exec,result);
+    const shellContext=taskFlow.executionShellContext(exec,result);
+    // The native post-execution seam preserves the validated value and outcome.
+    // Around-dispatch content edits would be regenerated from the value.
+    if(recovered===result&&!sourceContext&&!reportContext&&!parseContext&&!scriptReferenceContext&&!shellContext)return decision;
+    return {...decision,...(recovered===result?{}:{content:recovered.content}),
+      ...(sourceContext||reportContext||parseContext||scriptReferenceContext||shellContext?{additionalContexts:[...(decision.additionalContexts??[]),...[sourceContext,reportContext,parseContext,scriptReferenceContext,shellContext].filter(Boolean)]}:{})};
+  },{prepend:true});
   ctx.on('agent/pre-step',async(payload,next)=>{
     await runtime.init(payload.agent,payload.signal);
     applyToolSurface(payload.agent);

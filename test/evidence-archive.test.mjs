@@ -5,6 +5,8 @@ import os from 'node:os';
 import path from 'node:path';
 import {deflateRawSync, crc32} from 'node:zlib';
 import {randomUUID} from 'node:crypto';
+import {createRequire} from 'node:module';
+import {pathToFileURL} from 'node:url';
 import {
   assertExistingFileWithin,
   boundEvidence,
@@ -341,6 +343,23 @@ test('archive listing reads stored and deflated entries and manifest text', asyn
     'pkg/Widget.java'
   ]);
   assert.equal(listed.manifestText, 'Manifest-Version: 1.0\n');
+});
+
+test('missing archive dependency is named and the same module becomes usable after dependency repair',async t=>{
+  const fixture=await makeArchive(t,[{name:'source.txt',data:'exact archive source\n',method:8}]);
+  const isolated=await temporaryDirectory(t),modulePath=path.join(isolated,'archive-store.mjs');
+  await fs.writeFile(modulePath,await fs.readFile(new URL('../archive-store.mjs',import.meta.url)));
+  const isolatedArchive=await import(pathToFileURL(modulePath).href);
+  const missing=isolatedArchive.archiveDecoderStatus();
+  assert.equal(missing.available,false);assert.equal(missing.code,'ARCHIVE_DECODER_UNAVAILABLE');assert.match(missing.message,/fflate/);
+  const unavailable=await isolatedArchive.readArchiveEntry(fixture.directory,fixture.archive,'source.txt',fixture.exec);
+  assert.equal(unavailable.code,'ARCHIVE_DECODER_UNAVAILABLE');
+  const installed=path.dirname(path.dirname(createRequire(import.meta.url).resolve('fflate')));
+  await fs.mkdir(path.join(isolated,'node_modules'));
+  await fs.symlink(installed,path.join(isolated,'node_modules','fflate'),'junction');
+  assert.equal(isolatedArchive.archiveDecoderStatus().available,true);
+  const available=await isolatedArchive.readArchiveEntry(fixture.directory,fixture.archive,'source.txt',fixture.exec);
+  assert.equal(available.state,'observed');assert.equal(available.text,'exact archive source\n');
 });
 
 test('archive entry reading supports stored and deflate compression', async t => {

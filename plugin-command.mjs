@@ -1,16 +1,38 @@
 import path from 'node:path';
 import {VERSION} from "./runtime.mjs";
+import {featureDefinition,featurePatch} from './feature-control.mjs';
 
-export function registerPluginCommand({ctx,runtime,state,effects,available,capabilityDiagnostic,contextEconomics,taskFlow,taskHandoff,finalJson,qualityReview,executionEvidence,refreshExecutionEvidence,workingSet,compressionControl,compactionHandoff,contextWindow,observationLedger,historyCoordinator,clearPluginState,applyToolSurface}){
+export function registerPluginCommand({ctx,runtime,state,effects,available,featureControl,capabilityDiagnostic,contextEconomics,taskFlow,taskHandoff,finalJson,qualityReview,executionEvidence,refreshExecutionEvidence,workingSet,compressionControl,compactionHandoff,contextWindow,observationLedger,historyCoordinator,clearPluginState,applyToolSurface}){
   ctx.commands.register({name:'work-evidence',
-    description:'Inspect plugin status, export task handoff JSON and control the session switch. Mode follows the selected reasoning effort.',
-    input:{hint:'status | detail | handoff | on | off | inherit | mode | aggressive on|off'},
+    description:'Inspect feature readiness, change workspace settings, export task handoff JSON and control the session switch.',
+    input:{hint:'status | detail | features | feature <name> [on|off|value] | config <JSON> | handoff | on | off | inherit | mode | aggressive on|off'},
     handler:async({agent,rawInput,signal})=>{
       if(!agent)return {kind:'error',text:'No active session is available.'};
       try{
         await runtime.init(agent,signal);
-        const action=String(rawInput||'').trim().toLowerCase()||'status';
+        const input=String(rawInput||'').trim(),action=input.toLowerCase()||'status';
         if(action==='handoff')return {kind:'success',text:JSON.stringify(await taskHandoff(agent,{signal}))};
+        if(action==='config')return {kind:'success',text:JSON.stringify({version:VERSION,scope:'workspace',path:path.join(state(agent).dir,'config.json'),
+          config:state(agent).config,effective:runtime.isEnabled(agent),sessionEnabledOverride:state(agent).sessionEnabledOverride})};
+        if(action==='features')return {kind:'success',text:JSON.stringify(await featureControl.snapshot(agent))};
+        if(action.startsWith('feature ')||action.startsWith('config ')){
+          const feature=/^feature\s+(\S+)(?:\s+(\S+))?$/iu.exec(input);
+          let patch,only;
+          if(action.startsWith('feature ')){
+            if(!feature)throw new Error('Usage: /work-evidence feature <name> [on|off|value]');
+            const definition=featureDefinition(feature[1]);
+            if(!definition)featurePatch(feature[1],feature[2]);
+            only=definition[0];
+            if(feature[2]===undefined)return {kind:'success',text:JSON.stringify(await featureControl.snapshot(agent,only))};
+            patch=featurePatch(only,feature[2].toLowerCase());
+          }else{
+            try{patch=JSON.parse(input.slice(input.indexOf(' ')+1));}catch{throw new Error('config requires a JSON object.');}
+          }
+          const before=runtime.isEnabled(agent),change=await runtime.setWorkspaceConfig(agent,patch,signal);
+          if(before!==runtime.isEnabled(agent))clearPluginState(agent);
+          applyToolSurface(agent);
+          return {kind:'success',text:JSON.stringify({...change,readiness:await featureControl.snapshot(agent,only)})};
+        }
         const contextWindowMetrics=contextWindow.metrics(agent);
         const before=runtime.isEnabled(agent);
         let sessionChange=null;
@@ -26,8 +48,9 @@ export function registerPluginCommand({ctx,runtime,state,effects,available,capab
         else if(action==='mode'){}
         else if(/^mode\s+\S+$/u.test(action)){const mode=action.split(/\s+/u)[1];sessionChange=await runtime.setSessionMode(agent,mode==='inherit'?null:mode,signal);}
         else if(/^workspace-mode\s+\S+$/u.test(action))sessionChange=await runtime.setWorkspaceMode(agent,action.split(/\s+/u)[1],signal);
-        else if(!['status','detail'].includes(action))return {kind:'error',text:'Usage: /work-evidence status | detail | handoff | on | off | inherit | mode | aggressive on|off'};
+        else if(!['status','detail'].includes(action))return {kind:'error',text:'Usage: /work-evidence status | detail | features | feature <name> [on|off|value] | config <JSON> | handoff | on | off | inherit | mode | aggressive on|off'};
         if(before!==runtime.isEnabled(agent))clearPluginState(agent);
+        applyToolSurface(agent);
         if(action==='mode'||action.startsWith('mode ')||action.startsWith('workspace-mode '))return {kind:'success',text:JSON.stringify({
           loaded:true,version:VERSION,sessionId:agent.session.id,effective:runtime.isEnabled(agent),mode:runtime.modeStatus(agent),
           policyPath:action.startsWith('workspace-mode ')?path.join(state(agent).dir,'config.json'):state(agent).sessionPolicyPath,
@@ -39,6 +62,7 @@ export function registerPluginCommand({ctx,runtime,state,effects,available,capab
           effective:runtime.isEnabled(agent),workspaceDefaultEnabled:s.config.enabled,sessionEnabledOverride:s.sessionEnabledOverride,
           policyPath:s.sessionPolicyPath,sessionChange,features:snapshot.features,sw:contextWindowMetrics,ledger:observationLedger.metrics(agent),metrics:s.metrics,problems:s.problems,
           diagnostic:capabilityDiagnostic(agent),
+          featureReadiness:await featureControl.summary(agent),
           executionTools:executionEvidence.available(agent),workProbeAvailable:!!ctx.tools.get('work_probe',agent),
           note:'This command proves the module loaded and reports the effective session gate. It does not claim task correctness.'};
         if(action==='detail')value.detail={
@@ -54,6 +78,7 @@ export function registerPluginCommand({ctx,runtime,state,effects,available,capab
           nativeExecution:executionEvidence.summary(agent),
           sw:{...contextWindowMetrics,...contextWindow.detail(agent)},
         };
+        if(action==='detail')value.detail.featureReadiness=await featureControl.snapshot(agent);
         return {kind:'success',text:JSON.stringify(value)};
       }catch(error){
         return {kind:'error',text:'work-evidence command failed: '+error.message};

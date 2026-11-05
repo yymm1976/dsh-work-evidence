@@ -12,10 +12,10 @@ async function start({usage=OBSERVED,finishKind='stop',answer='{"ok":true}',effe
   const dir=await fs.mkdtemp(path.join(os.tmpdir(),'we-aux-budget-'));
   const id='session-aux';
   const file=path.join(dir,id+'.auxiliary-budget.json');
-  const dispatched=[],control={usage,finishKind};
+  const dispatched=[],control={usage,finishKind,answer};
   const ctx={llm:{async *stream(request){
     dispatched.push(request);
-    yield {type:'block-end',block:{type:'text',text:answer}};
+    yield {type:'block-end',block:{type:'text',text:control.answer}};
     if(control.usage!==null)yield {type:'usage',usage:control.usage};
     yield {type:'finish',reason:{kind:control.finishKind}};
   }}};
@@ -101,6 +101,34 @@ test('unknown consumption is retained inside its own budget',async()=>{
     assert.match(state.problems.at(-1).message,/for quality-review:12/);
     assert.equal((await budget()).scopes['quality-review:12'].failed,true);
   }finally{await close();}
+});
+
+test('zero adapter counters on a failed response retain unknown consumption and its reservation',async()=>{
+  const zero={inputTokens:0,outputTokens:0,totalTokens:0};
+  const h=await start({usage:zero,finishKind:'error',answer:''});
+  try{
+    await assert.rejects(()=>h.run('quality-review:failed-zero'),error=>{
+      assert.equal(error.auxiliaryUsage,null);assert.deepEqual(error.auxiliaryReportedUsage,zero);
+      return error.auxiliaryDispatched===true&&error.auxiliaryFinish.kind==='error';
+    });
+    assert.equal(h.state.metrics.auxiliaryUnknownCalls,1);
+    const entry=(await h.budget()).scopes['quality-review:failed-zero'];assert.ok(entry.tokens>0);assert.equal(entry.failed,true);
+    await assert.rejects(()=>h.run('quality-review:failed-zero'),/stopped after a prior failure/);
+    h.control.usage=SMALL;h.control.finishKind='stop';h.control.answer='{"ok":true}';
+    assert.equal((await h.run('quality-review:later')).usage.totalTokens,25);
+    assert.deepEqual((await h.budget()).scopes['quality-review:later'],{calls:1,tokens:25,failed:false});
+  }finally{await h.close();}
+});
+
+test('positive complete usage remains accounted after a failed response',async()=>{
+  const h=await start({usage:SMALL,finishKind:'error',answer:''});
+  try{
+    await assert.rejects(()=>h.run('quality-review:known-failure'),error=>{
+      assert.deepEqual(error.auxiliaryUsage,SMALL);assert.equal(error.auxiliaryReportedUsage,null);return true;
+    });
+    assert.equal(h.state.metrics.auxiliaryUnknownCalls,0);
+    assert.deepEqual((await h.budget()).scopes['quality-review:known-failure'],{calls:1,tokens:25,failed:true});
+  }finally{await h.close();}
 });
 
 test('invalid adapter values cannot be turned into omitted zero cache usage in a budget',async()=>{

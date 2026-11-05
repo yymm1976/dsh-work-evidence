@@ -74,7 +74,7 @@ export async function readRun(directory) {
   const summary=newSummary(meta);let malformed=0;
   let raw='';try{raw=await fs.readFile(path.join(directory,'events.jsonl'),'utf8');}catch(error){if(error.code!=='ENOENT')throw error;}
   for(const line of raw.split('\n')) {if(!line.trim())continue;try{applyRow(summary,JSON.parse(line));}catch{malformed++;}}
-  try{const saved=JSON.parse(await fs.readFile(path.join(directory,'summary.json'),'utf8'));summary.capture=saved.capture||summary.capture;summary.coverage=saved.coverage||summary.coverage;if(saved.attemptAccounting)summary.attemptAccounting=saved.attemptAccounting;}catch(error){if(error.code!=='ENOENT'&&!(error instanceof SyntaxError))throw error;}
+  try{const saved=JSON.parse(await fs.readFile(path.join(directory,'summary.json'),'utf8'));summary.capture=saved.capture||summary.capture;summary.coverage=saved.coverage||summary.coverage;if(saved.attemptAccounting)summary.attemptAccounting=saved.attemptAccounting;if(saved.requestAccounting)summary.requestAccounting=saved.requestAccounting;}catch(error){if(error.code!=='ENOENT'&&!(error instanceof SyntaxError))throw error;}
   summary.capture.malformedRows=malformed;
   // An absent end stays unfinished; neither CLI nor model may turn it into success.
   summary.wallMs=summary.endReason!==null&&!summary.timingIncomplete&&summary.turnIntervals>0?summary.activeWallMs:null;

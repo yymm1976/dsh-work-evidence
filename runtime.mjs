@@ -5,9 +5,10 @@ import {randomUUID} from 'node:crypto';
 import {within,references,assertExistingFileWithin,readUtf8File} from './evidence.mjs';
 import {recoveryFor,recoveryOf} from './recovery.mjs';
 
-export const VERSION='1.0.0';
+export const VERSION='1.0.1-dev.93';
+export const RETIRED_SETTINGS=Object.freeze(['taskEffort','nativeReadView','nativeExecutionEvidence','reasoningHistory','cacheOrderedStub','archiveEntries','ledgerFoldPlan','ledgerFoldWrite','programHistory','executionAdvice','finishAdvice']);
 export const MODES=Object.freeze(['default','aggressive','quality']);
-export const MODE_POLICY_VERSION='pb001-v24';
+export const MODE_POLICY_VERSION='pb001-v39';
 export function checkedMode(mode){if(!MODES.includes(mode))throw new Error('mode must be default, aggressive or quality');return mode;}
 export const SESSION_POLICY_SCHEMA='work-evidence.session-policy.v1';
 export const textOf=value=>(value?.content||[]).filter(b=>b.type==='text').map(b=>b.text).join('\n');
@@ -40,7 +41,7 @@ export function defaults(raw={}){
     requestProjection:false,projectionRestore:false,compressionControl:true,compactionTiming:'native',
     deferPressureCompaction:process.env.DSH_EXPERIMENT_DEFER_COMPACTION==='1'||process.env.DSH_EXPERIMENT_DEFER_COMPACTION==='true',
     stubSummary:process.env.DSH_EXPERIMENT_STUB_SUMMARY==='1'||process.env.DSH_EXPERIMENT_STUB_SUMMARY==='true',
-    executionTriage:true,stageWorkingSet:true,stepPacing:true,retainedCompute:true,finalJsonGuard:true,qualityReview:false,
+    executionTriage:true,nativeProgramReuse:false,structuredCalls:false,nativeReasoningReplay:false,stageWorkingSet:true,stepPacing:true,retainedCompute:true,finalJsonGuard:true,finalJsonResultGuard:false,qualityReview:false,qualityReviewEffort:'auto',qualityReviewScope:'auto',
     projectionMinChars:64000,projectionRecentSteps:6,projectionStableSteps:8,projectionHorizonSteps:16,projectionPricing:[],
     toolSurface:'compact',
     defaultResponseView:'reference-if-visible',...raw};
@@ -49,11 +50,11 @@ export function defaults(raw={}){
   if(config.mode==='default'&&raw.aggressiveMode===undefined)config.aggressiveMode=false;
   const known=new Set(['enabled','aggressiveMode','mode','selfIndex','modelTimeoutMs','modelMaxTokens','modelRoute','fastEditEnabled','fastEditPython','stateLedger','stateInform','archiveReadRouting','readArgumentRecovery','requestAccounting','evidenceViews','memberParsing','mavenSourceBinding',
     'contextProtocol','contextPruningPolicy','historyHygiene','programHistory','reasoningHistory','retainedCompute','contextPruneMinChars','contextPruneHeadChars','contextPruneTailChars','completionNotice',
-    'ledgerReceipt','ledgerUnresolved','ledgerFoldPlan','ledgerFoldWrite','defaultResponseView','swLedger','swEviction','swEvictionSteps',
-    'requestProjection','projectionRestore','compressionControl','compactionTiming','deferPressureCompaction','stubSummary','cacheOrderedStub','archiveEntries','executionTriage','executionAdvice','stageWorkingSet','finishAdvice','stepPacing','taskEffort','finalJsonGuard','qualityReview','nativeReadView','nativeExecutionEvidence','projectionMinChars','projectionRecentSteps','projectionStableSteps','projectionHorizonSteps','projectionPricing','toolSurface']);
+    'ledgerReceipt','ledgerUnresolved','ledgerFoldPlan','ledgerFoldWrite','defaultResponseView','swLedger','swEviction','swEvictionSteps','nativeProgramReuse','structuredCalls','nativeReasoningReplay',
+    'requestProjection','projectionRestore','compressionControl','compactionTiming','deferPressureCompaction','stubSummary','cacheOrderedStub','archiveEntries','executionTriage','executionAdvice','stageWorkingSet','finishAdvice','stepPacing','taskEffort','finalJsonGuard','finalJsonResultGuard','qualityReview','qualityReviewEffort','qualityReviewScope','nativeReadView','nativeExecutionEvidence','projectionMinChars','projectionRecentSteps','projectionStableSteps','projectionHorizonSteps','projectionPricing','toolSurface']);
   if(!raw||typeof raw!=='object'||Array.isArray(raw)||Object.keys(raw).some(k=>!known.has(k)))throw new Error('Unknown work-evidence setting');
   // Accept old workspaces without loading removed modules or re-enabling their hooks.
-  for(const key of ['taskEffort','nativeReadView','nativeExecutionEvidence','reasoningHistory','cacheOrderedStub','archiveEntries','ledgerFoldPlan','ledgerFoldWrite','programHistory','executionAdvice','finishAdvice']){
+  for(const key of RETIRED_SETTINGS){
     if(raw[key]!==undefined&&typeof raw[key]!=='boolean')throw new Error('Invalid '+key);
     config[key]=false;
   }
@@ -63,7 +64,7 @@ export function defaults(raw={}){
   if(!['native','adaptive'].includes(config.compactionTiming))throw new Error('Invalid compactionTiming');
   config.compactionTiming='native';
   for(const key of ['enabled','aggressiveMode','selfIndex','fastEditEnabled','stateLedger','stateInform','archiveReadRouting','readArgumentRecovery','requestAccounting','evidenceViews','memberParsing','mavenSourceBinding','contextProtocol','historyHygiene','programHistory','reasoningHistory',
-    'ledgerReceipt','ledgerUnresolved','ledgerFoldPlan','ledgerFoldWrite','swLedger','swEviction','requestProjection','projectionRestore','compressionControl','deferPressureCompaction','stubSummary','cacheOrderedStub','archiveEntries','executionTriage','executionAdvice','stageWorkingSet','finishAdvice','stepPacing','retainedCompute','taskEffort','finalJsonGuard','qualityReview','nativeReadView','nativeExecutionEvidence','completionNotice'])if(typeof config[key]!=='boolean')throw new Error('Invalid '+key);
+    'ledgerReceipt','ledgerUnresolved','ledgerFoldPlan','ledgerFoldWrite','swLedger','swEviction','requestProjection','projectionRestore','compressionControl','deferPressureCompaction','stubSummary','cacheOrderedStub','archiveEntries','executionTriage','nativeProgramReuse','structuredCalls','nativeReasoningReplay','executionAdvice','stageWorkingSet','finishAdvice','stepPacing','retainedCompute','taskEffort','finalJsonGuard','finalJsonResultGuard','qualityReview','nativeReadView','nativeExecutionEvidence','completionNotice'])if(typeof config[key]!=='boolean')throw new Error('Invalid '+key);
   if(!Number.isInteger(config.swEvictionSteps)||config.swEvictionSteps<3||config.swEvictionSteps>50)throw new Error('Invalid swEvictionSteps');
   for(const [key,min,max] of [['projectionMinChars',16000,2000000],['projectionRecentSteps',3,50],['projectionStableSteps',4,100],['projectionHorizonSteps',1,64]])
     if(!Number.isInteger(config[key])||config[key]<min||config[key]>max)throw new Error('Invalid '+key);
@@ -82,13 +83,15 @@ export function defaults(raw={}){
     const key=JSON.stringify([row.provider,row.model]);if(priceRoutes.has(key))throw new Error('Duplicate projection price route');priceRoutes.add(key);
   }
   if(!['full','reference-if-visible'].includes(config.defaultResponseView))throw new Error('Invalid defaultResponseView');
+  if(!['auto','inherit','low','medium','high','max'].includes(config.qualityReviewEffort))throw new Error('Invalid qualityReviewEffort');
+  if(!['auto','full'].includes(config.qualityReviewScope))throw new Error('Invalid qualityReviewScope');
   for(const [key,min,max] of [['modelTimeoutMs',1000,60000],['modelMaxTokens',128,4096]])if(!Number.isInteger(config[key])||config[key]<min||config[key]>max)throw new Error('Invalid '+key);
   if(typeof config.fastEditPython!=='string'||!path.isAbsolute(config.fastEditPython)||config.fastEditPython.length>1000)throw new Error('Invalid fastEditPython');
   if(config.modelRoute!==null&&(!config.modelRoute||typeof config.modelRoute.provider!=='string'||typeof config.modelRoute.model!=='string'||!config.modelRoute.provider.trim()||!config.modelRoute.model.trim()||config.modelRoute.provider.length>200||config.modelRoute.model.length>300||Object.keys(config.modelRoute).some(k=>!['provider','model','reasoningEffort'].includes(k))||(config.modelRoute.reasoningEffort!==undefined&&(typeof config.modelRoute.reasoningEffort!=='string'||config.modelRoute.reasoningEffort.length>64))))throw new Error('Invalid model route');
   return config;
 }
 export function createRuntime(ctx,call,initial={}){
-  const states=new Map();
+  const states=new Map(),workspaceQueues=new Map();
   function workspaceConfig(value){
     if(!value||typeof value!=='object'||Array.isArray(value))throw new Error('Workspace settings must be an object');
     const merged={...defaults(initial),...value};
@@ -260,11 +263,28 @@ export function createRuntime(ctx,call,initial={}){
     throw new Error('Mode follows the selected reasoning effort: Ultra uses quality; other efforts use aggressive.');
   }
   async function setAggressiveMode(agent,enabled,signal){
-    const s=await init(agent,signal);
-    if(!s.workspaceConfigValid)throw new Error('Workspace configuration is unavailable or invalid');
-    const next=defaults({...s.config,aggressiveMode:enabled});
-    await save(agent,path.join(s.dir,'config.json'),next,signal);s.config=next;s.workspaceFileSeen=true;s.workspaceFileMissing=false;s.dirty=true;
+    await setWorkspaceConfig(agent,{aggressiveMode:enabled},signal);
     return modeStatus(agent);
+  }
+  async function setWorkspaceConfig(agent,patch,signal){
+    if(!patch||typeof patch!=='object'||Array.isArray(patch))throw new Error('Workspace settings must be an object');
+    if(Object.hasOwn(patch,'mode'))throw new Error('Mode follows the selected reasoning effort.');
+    for(const key of RETIRED_SETTINGS)if(patch[key]===true)throw new Error('Setting '+key+' is retired and has no active implementation.');
+    if(patch.contextPruningPolicy!==undefined&&patch.contextPruningPolicy!=='forecast')throw new Error('Only forecast context pruning is supported.');
+    if(patch.compactionTiming!==undefined&&patch.compactionTiming!=='native')throw new Error('Only native compaction timing is supported.');
+    const s=await init(agent,signal),key=path.join(s.dir,'config.json');
+    const operation=(workspaceQueues.get(key)??Promise.resolve()).catch(()=>{}).then(async()=>{
+      signal?.throwIfAborted();
+      await init(agent,signal);
+      if(!s.workspaceConfigValid)throw new Error('Workspace configuration is unavailable or invalid');
+      const before=isEnabled(agent),next=defaults({...s.config,...patch});
+      await save(agent,key,next,signal);
+      s.config=next;s.workspaceFileSeen=true;s.workspaceFileMissing=false;s.dirty=true;
+      if(before!==isEnabled(agent))clearSessionState(agent);
+      return {path:key,scope:'workspace',settings:{...patch},effectiveFrom:'next-model-request'};
+    });
+    workspaceQueues.set(key,operation);
+    try{return await operation;}finally{if(workspaceQueues.get(key)===operation)workspaceQueues.delete(key);}
   }
   async function beginRequest(agent,signal){
     const s=get(agent);
@@ -540,7 +560,7 @@ export function createRuntime(ctx,call,initial={}){
     }
   }
   function sync(agent){const s=get(agent),log=eventLog(agent.session);while(s.cursor<log.length){const event=log[s.cursor++];record(agent,event);}return s;}
-  function snapshot(agentOrState){
+  function snapshot(agentOrState,{detail=true}={}){
     const agent=agentOrState.session?agentOrState:agentOrState.agentRef;
     const s=agent?get(agent):agentOrState;
     const effective=agent?isEnabled(agent):(s.sessionPolicyLoaded&&s.workspaceConfigValid&&(s.sessionEnabledOverride===null?s.config.enabled:s.sessionEnabledOverride)&&(s.config.aggressiveMode||s.selectedMode==='quality'));
@@ -554,16 +574,18 @@ export function createRuntime(ctx,call,initial={}){
       ledgerReceipt:s.config.ledgerReceipt,ledgerUnresolved:s.config.ledgerUnresolved,
       swLedger:s.config.swLedger,swEviction:s.config.swEviction,swEvictionSteps:s.config.swEvictionSteps,defaultResponseView:s.sessionDefaultResponseView??s.config.defaultResponseView,
       requestProjection:s.config.requestProjection,projectionRestore:s.config.projectionRestore,compressionControl:s.config.compressionControl,compactionTiming:s.config.compactionTiming,deferPressureCompaction:s.config.deferPressureCompaction,stubSummary:s.config.stubSummary,
-      executionTriage:s.config.executionTriage,stageWorkingSet:s.config.stageWorkingSet,stepPacing:s.config.stepPacing,retainedCompute:s.config.retainedCompute,
-      qualityReview:s.config.qualityReview},
+      executionTriage:s.config.executionTriage,nativeProgramReuse:s.config.nativeProgramReuse,structuredCalls:s.config.structuredCalls,nativeReasoningReplay:s.config.nativeReasoningReplay,stageWorkingSet:s.config.stageWorkingSet,stepPacing:s.config.stepPacing,retainedCompute:s.config.retainedCompute,
+      qualityReview:s.config.qualityReview,qualityReviewEffort:s.config.qualityReviewEffort,qualityReviewScope:s.config.qualityReviewScope},
     contextSettings:{requestProjection:s.config.requestProjection,projectionRestore:s.config.projectionRestore,compressionControl:s.config.compressionControl,compactionTiming:s.config.compactionTiming,deferPressureCompaction:s.config.deferPressureCompaction,stubSummary:s.config.stubSummary,
       projectionMinChars:s.config.projectionMinChars,projectionRecentSteps:s.config.projectionRecentSteps,projectionStableSteps:s.config.projectionStableSteps,
       projectionHorizonSteps:s.config.projectionHorizonSteps,projectionPricing:s.config.projectionPricing,toolSurface:s.config.toolSurface,
       contextProtocol:s.config.contextProtocol,contextPruningPolicy:s.config.contextPruningPolicy,contextPruneMinChars:s.config.contextPruneMinChars,
       contextPruneHeadChars:s.config.contextPruneHeadChars,contextPruneTailChars:s.config.contextPruneTailChars},
-    requestObservations:s.requestObservations.map(record=>({...record})),
+    ...(detail?{requestObservations:s.requestObservations.map(record=>({...record}))}:
+      {requestObservationWindow:{count:s.requestObservations.length,details:{tool:'work_status',arguments:{detail:true}}}}),
+    reasoningReplay:{enabled:effective&&s.config.nativeReasoningReplay,requests:s.reasoningReplay?.requests??0,translatedMessages:s.reasoningReplay?.translatedMessages??0,scope:'Readable DeepSeek history field mapping; original reasoning text and canonical history are retained.'},
     evidenceViewReasons:{...s.evidenceViewReasons},
-    ...(runtimeContextSnapshot?.(s.id)??{}),
+    ...(runtimeContextSnapshot?.(s.id,{detail})??{}),
     metrics:{...s.metrics},problems:[...s.problems],reportedCurrentTurn:!!s.reportedCurrentTurn,taskCompletion:'unknown',
     state:stateSnapshot(s,false),
     note:'Counters describe plugin activity, not task correctness or causal savings.'};}
@@ -584,7 +606,7 @@ export function createRuntime(ctx,call,initial={}){
       problem(s,'receipt-write',message);ctx.logger.warn('work-evidence: activity record unavailable: '+message);
     }}
   let runtimeContextSnapshot=null;
-  return {get,init,isEnabled,currentSelection:effortSelection,clearSessionState,setSessionEnabled,setSessionMode,setWorkspaceMode,setAggressiveMode,modeStatus,activeMode,beginRequest,sync,observe,save,loadJson,problem,snapshot,stateSnapshot,consumeStateNotice,recordMutation,recordReadObservation,
+  return {get,init,isEnabled,currentSelection:effortSelection,clearSessionState,setSessionEnabled,setSessionMode,setWorkspaceMode,setAggressiveMode,setWorkspaceConfig,modeStatus,activeMode,beginRequest,sync,observe,save,loadJson,problem,snapshot,stateSnapshot,consumeStateNotice,recordMutation,recordReadObservation,
     setContextSnapshot:reader=>{runtimeContextSnapshot=reader;},
     receipt,execFor,withExecution,dispose:id=>states.delete(id)};
 }

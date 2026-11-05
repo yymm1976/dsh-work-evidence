@@ -277,6 +277,6 @@ for (const [key, envName] of ENV_FEATURES) {
 
 test('exported modes and policy version match the current policy format', () => {
   assert.deepEqual(MODES, ['default', 'aggressive', 'quality']);
-  assert.equal(MODE_POLICY_VERSION, 'pb001-v24');
+  assert.equal(MODE_POLICY_VERSION, 'pb001-v39');
   assert.match(MODE_POLICY_VERSION, /^pb001-v\d+$/);
 });

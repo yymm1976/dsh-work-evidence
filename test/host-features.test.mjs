@@ -73,6 +73,30 @@ test('quality review runs only under Ultra, steers on a gap and re-reviews the r
   }finally{await host.close();}
 });
 
+for(const [efforts,choice,expected]of [
+  [['low','high','max'],'auto','low'],[['max'],'auto','max'],[['low','high','max'],'inherit','max'],
+  [['low','high','max'],'high','high'],[['max'],'low',null],
+])test(`review effort ${choice} uses declared ${efforts.join('/')} without changing the main request`,async()=>{
+  const host=await startHost({efforts,workspace:{qualityReview:true,qualityReviewEffort:choice},
+    script:()=>[text('当前交付已完成。')],auxiliary:()=>[text('{"issues":[]}')]});
+  try{
+    const agent=await host.createAgent('ultra');await host.send(agent,'修改 a.txt 并报告交付内容。');
+    assert.ok(host.requests.every(request=>request.reasoningEffort==='max'));
+    const detail=(await host.command(agent,'detail')).detail.qualityReview;
+    assert.equal(detail.effort.configured,choice);
+    if(expected){
+      assert.equal(host.auxiliaryRequests.length,1);assert.equal(host.auxiliaryRequests[0].reasoningEffort,expected);
+      assert.equal(detail.effort.last.selected,choice==='inherit'?'ultra':expected);assert.equal(detail.verdict,'no-supported-gap');
+    }else{
+      assert.equal(host.auxiliaryRequests.length,0);assert.equal(detail.status,'unavailable');
+      assert.equal(detail.process.last.reason,'review-effort-not-declared');assert.equal(detail.process.last.dispatched,false);
+      assert.equal(detail.paused,null);
+      const feature=(await host.command(agent,'feature qualityReview')).features[0];
+      assert.equal(feature.status,'blocked');assert.ok(feature.reasons.includes('review-effort-not-declared'));
+    }
+  }finally{await host.close();}
+});
+
 test('a write after a read marks the old observation stale without prompting a reread', async()=>{
   const host=await startHost({script:(_o,n)=>n===1?[tool('read',{file_path:'a.txt'})]:n===2?[tool('write',{file_path:'a.txt',content:'new\n'})]:[text('完成。')]});
   try{

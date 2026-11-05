@@ -6,8 +6,16 @@ let unzip;
 function unzipper(){
   if(unzip)return unzip;
   try{unzip=require('fflate').unzipSync;}
-  catch{unzip=createRequire(require.resolve('@deepseek-ai/dsh-tools'))('fflate').unzipSync;}
+  catch(cause){
+    try{unzip=createRequire(require.resolve('@deepseek-ai/dsh-tools'))('fflate').unzipSync;}
+    catch{throw Object.assign(new Error('Archive decoding requires the fflate dependency declared by Work Evidence; it could not be loaded from the plugin or host.'),{code:'ARCHIVE_DECODER_UNAVAILABLE',cause});}
+  }
+  if(typeof unzip!=='function'){unzip=undefined;throw Object.assign(new Error('The loaded fflate package has no unzipSync decoder.'),{code:'ARCHIVE_DECODER_UNAVAILABLE'});}
   return unzip;
+}
+export function archiveDecoderStatus(){
+  try{unzipper();return {available:true,package:'fflate'};}
+  catch(error){return {available:false,package:'fflate',code:error.code,message:error.message};}
 }
 const MAX_ARCHIVE=128*1024*1024,MAX_ENTRY=8*1024*1024,MAX_SESSION=128*1024*1024,MAX_TOTAL=256*1024*1024;
 const sessions=new Map();

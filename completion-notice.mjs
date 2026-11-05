@@ -14,6 +14,10 @@ const withoutNegatedStop=text=>String(text??'')
   .replace(/(?:无需|不需要|不需|不必|不用|不要|不得|别)(?:暂停|停下|停止|结束)/gu,'')
   .replace(/(?:无|没有|不存在)(?:实际)?阻碍/gu,'');
 
+const continuationText=text=>withoutNegatedStop(String(text??'').replace(
+  /```[\s\S]*?```|`[^`\n]*`|“[^”\n]*”|「[^」\n]*」|"[^"\n]*"|'[^'\n]*'/gu,' '));
+export const requestPausesContinuation=text=>REQUEST_PAUSE.test(continuationText(text));
+
 function actionableNextStep(value){
   const text=String(value??'').trim().replace(/^[\s>*_`~]+|[\s*_`~]+$/gu,'');
   if(!text)return false;
@@ -24,13 +28,13 @@ function actionableNextStep(value){
 
 function hasCompletionCandidate(current,requestText){
   const answer=textOf(messageOf(current.assistant)).trim();
-  if(!answer||!requestText.trim()||REQUEST_PAUSE.test(withoutNegatedStop(requestText)))return false;
+  if(!answer||!requestText.trim()||requestPausesContinuation(requestText))return false;
   const headings=[...answer.matchAll(SUMMARY_HEADING)];
   if(!headings.length)return false;
   const summary=answer.slice(headings.at(-1).index);
   const next=[...summary.matchAll(NEXT_STEP)].at(-1)?.[1]??'';
-  const status=withoutNegatedStop(summary);
-  return actionableNextStep(next)&&!PAUSED_OR_NEEDS_USER.test(withoutNegatedStop(next))&&!PAUSED_OR_NEEDS_USER.test(status);
+  const status=continuationText(summary);
+  return actionableNextStep(next)&&!PAUSED_OR_NEEDS_USER.test(continuationText(next))&&!PAUSED_OR_NEEDS_USER.test(status);
 }
 
 /**
@@ -40,20 +44,23 @@ function hasCompletionCandidate(current,requestText){
  */
 export function createCompletionNotice(ctx,runtime,finalJson){
   const sent=new Map();
-  ctx.on('agent/turn-stopping',({agent,turn,signal})=>{
-    if(signal.aborted||!runtime.isEnabled(agent)||pending(agent)||typeof agent.steer!=='function')return;
+  const willContinue=(agent,current=finalJson.inspect(agent))=>{
+    if(!runtime.isEnabled(agent)||pending(agent)||typeof agent.steer!=='function')return false;
     const config=runtime.get(agent).config;
-    if(config.completionNotice===false)return;
-    const current=finalJson.inspect(agent,turn);
-    if(!current.request||!current.assistant||current.issue)return;
-    if((messageOf(current.assistant)?.content??[]).some(block=>block.type==='tool-call'))return;
+    if(config.completionNotice===false||!current.request||!current.assistant||current.issue)return false;
+    if((messageOf(current.assistant)?.content??[]).some(block=>block.type==='tool-call'))return false;
     const id=agent.session.id;
     const requestSeq=current.request.seq;
-    if(sent.get(id)===requestSeq)return;
+    if(sent.get(id)===requestSeq)return false;
     const alreadySent=current.events.some(event=>event.type==='user/message'&&messageOf(event)?.source?.kind===SOURCE&&
       messageOf(event).source.completionNotice?.requestSeq===requestSeq);
-    if(alreadySent)return;
-    if(!hasCompletionCandidate(current,textOf(messageOf(current.request))))return;
+    return !alreadySent&&hasCompletionCandidate(current,textOf(messageOf(current.request)));
+  };
+  ctx.on('agent/turn-stopping',({agent,turn,signal})=>{
+    if(signal.aborted)return;
+    const current=finalJson.inspect(agent,turn);
+    if(!willContinue(agent,current))return;
+    const id=agent.session.id,requestSeq=current.request.seq;
     try{
       agent.steer({id:randomUUID(),role:'user',source:{kind:SOURCE,completionNotice:{version:VERSION,
         requestSeq,afterSeq:current.assistant.seq}},content:[{type:'text',text:
@@ -65,7 +72,7 @@ export function createCompletionNotice(ctx,runtime,finalJson){
     }
   });
   ctx.on('agent/disposed',({agent})=>sent.delete(agent.session.id));
-  return {summary(agent){
+  return {willContinue,summary(agent){
     const current=finalJson.inspect(agent);
     return {enabled:runtime.isEnabled(agent)&&runtime.get(agent).config.completionNotice!==false,version:VERSION,
       notices:current.events.filter(event=>event.type==='user/message'&&messageOf(event)?.source?.kind===SOURCE).length,

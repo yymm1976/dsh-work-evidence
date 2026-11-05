@@ -127,6 +127,29 @@ test('oversized native summaries retain human sources when possible and report a
 });
 function textOfMessage(message){return (message?.content??[]).map(block=>block.text??'').join('');}
 
+test('stub eligibility and overhead agree when recall is unavailable or the checkpoint cannot shrink the span',async()=>{
+  for(const [recall,region,expected]of [[false,20000,'historical-recall-not-exposed'],[true,3000,'stub-not-smaller-than-span'],[true,20000,null]]){
+    let cleanup,calls=0;
+    const agent=eventLogAgent([userMessage(1,'Read a.txt, preserving the exact original line.')]);
+    agent.session.seq=2;agent.session.requestHeader=()=>({config:{provider:'p',model:'m'}});
+    const meter={estimateMessage:message=>textOfMessage(message).length};
+    const service={regionDependencies:()=>({meter}),summarize:async()=>{calls++;return {summary:[{type:'text',text:'Native summary keeps the original requirement.'}]};}};
+    const ctx={on(){},inject(_names,callback){callback({compaction:service,effect:fn=>{cleanup=fn();}});return {dispose:async()=>cleanup()};}};
+    const state={config:{compressionControl:true,stubSummary:true}};
+    const runtime={init:async()=>{},get:()=>state,isEnabled:()=>true,activeMode:()=>'aggressive',problem:()=>assert.fail('preparation failed')};
+    const taskFlow={handoff:()=>({artifacts:[],unresolvedErrors:[],pendingJobs:[],executions:[]})};
+    const handoff=createCompactionHandoff(ctx,runtime,taskFlow,{canRecall:()=>recall});
+    try{
+      const result=await service.summarize({messages:[{role:'tool',content:[{type:'text',text:'s'.repeat(region)}]}]},agent);
+      const metrics=handoff.metrics(agent);
+      assert.equal(metrics.last.stubSkippedReason??null,expected);
+      assert.equal(calls,expected?1:0);assert.equal(metrics.stubSummaries,expected?0:1);
+      assert.ok(result.summary.some(block=>block.text.includes(expected?'Native summary':'work-evidence stub checkpoint')));
+      if(!recall)assert.equal(handoff.summaryOverheadTokens(agent,meter).stub,false);
+    }finally{await handoff.dispose();}
+  }
+});
+
 test('pressure deferral leaves normal thresholds and exact model overrides to the host',async()=>{
   let window=1000000,hostCalls=0,meterCalls=0,cleanup;
   const service={config:{thresholdRatio:.8,headroomTokens:65536,modelPolicies:[]},
@@ -250,7 +273,7 @@ test('stub continuation path keeps short human text once and links bounded long 
       artifactsEvicted: 0,
     }),
   };
-  const handoff = createCompactionHandoff(ctx, runtime, taskFlow);
+  const handoff = createCompactionHandoff(ctx, runtime, taskFlow, {canRecall: () => true});
   try {
     const result = await service.summarize({messages: []}, agent);
     const combined = result.summary.map(block => block.text).join('\n');

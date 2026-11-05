@@ -11,6 +11,9 @@ const profile=path.join(desktopHome,'profiles','web');
 const link=path.join(profile,'node_modules','@local','dsh-work-evidence');
 const manifest=JSON.parse(await fs.readFile(path.join(source,'package.json'),'utf8'));
 if(path.resolve(source)===path.resolve(release))throw new Error('Run from the development directory');
+const archiveDependency=await fs.realpath(path.join(source,'node_modules','fflate'));
+const archiveManifest=JSON.parse(await fs.readFile(path.join(archiveDependency,'package.json'),'utf8'));
+if(archiveManifest.name!=='fflate')throw new Error('The existing archive decoder is not fflate');
 const previous=await fs.lstat(link);
 if(!previous.isSymbolicLink())throw new Error('Expected the desktop plugin path to be a directory junction');
 const current=await fs.realpath(link);
@@ -25,6 +28,14 @@ if([...lockText.matchAll(lockPattern)].length!==1)throw new Error('Expected one 
 const repairedLock=lockText.replace(lockPattern,(_all,indent,eol)=>indent+"'@local/dsh-work-evidence':"+eol+
   indent+'  specifier: link:'+normalized(release)+eol+indent+'  version: link:'+normalized(path.relative(profile,release)));
 await fs.mkdir(release,{recursive:true});
+await fs.mkdir(path.join(release,'node_modules'),{recursive:true});
+const archiveLink=path.join(release,'node_modules','fflate');
+let archivePresent=false;
+try{await fs.lstat(archiveLink);archivePresent=true;}catch(error){if(error.code!=='ENOENT')throw error;}
+if(archivePresent){
+  const installed=JSON.parse(await fs.readFile(path.join(archiveLink,'package.json'),'utf8'));
+  if(installed.name!=='fflate')throw new Error('Desktop archive dependency belongs to another package');
+}else await fs.symlink(archiveDependency,archiveLink,'junction');
 for(const entry of ['package.json',...manifest.files]){
   if(entry.includes('*')){
     if(entry!=='locale/*.json')throw new Error('Unsupported package file pattern: '+entry);
@@ -59,4 +70,4 @@ if(path.resolve(current)!==path.resolve(release)){
   await fs.rmdir(link);
   await fs.symlink(release,link,'junction');
 }
-console.log(JSON.stringify({source,release,desktopLink:await fs.realpath(link),version:manifest.version,codeOnly}));
+console.log(JSON.stringify({source,release,desktopLink:await fs.realpath(link),version:manifest.version,codeOnly,archiveDecoder:archiveManifest.version}));

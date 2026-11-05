@@ -1,10 +1,12 @@
 import {parseResult,resultText} from './visible-results.mjs';
 
 const READ_TOOLS=new Set(['read','glob','grep','work_recall','ops_read_files','ops_inspect_local_file','ops_glob','ops_grep']);
+const NATIVE_DEPENDENCIES=['fs','subprocess','sandbox','sandboxPolicy'];
 
 /** Reuse the kernel's owner-isolated REPL without replacing its run_code provider. */
 export function createRetainedCompute(ctx,runtime,taskFlow,call){
   const owners=new Map();let providerPromise=null,provider=null,providerFiber=null,loadFailure=null,closed=false;
+  const missingDependencies=()=>NATIVE_DEPENDENCIES.filter(name=>!ctx.get(name));
   const invalidate=(state,reason)=>{
     state.invalidated=reason;
     state.controller?.abort(new Error(reason));
@@ -29,20 +31,31 @@ export function createRetainedCompute(ctx,runtime,taskFlow,call){
   });
   async function ensureProvider(){
     if(closed)throw new Error('Retained computation is disposed');
-    if(!providerPromise)providerPromise=(async()=>{
-      for(const name of ['fs','subprocess','sandbox','sandboxPolicy'])if(!ctx.get(name))throw new Error('Native '+name+' is unavailable');
-      const {NodePtcRuntime}=await import('@deepseek-ai/dsh-ptc-runtime-node');
-      if(closed)throw new Error('Retained computation is disposed');
-      class WorkEvidenceComputeRuntime extends NodePtcRuntime{}
-      const scope=ctx.isolate('ptcRuntime');
-      const fiber=scope.plugin(WorkEvidenceComputeRuntime,{executionMode:'persistent-in-memory',launch:{kind:'node-script',executable:process.execPath}});
-      // Cordis fibers are thenable; .ready is not a loading-completion API.
-      await fiber;
-      const loaded=scope.get('ptcRuntime');
-      if(!loaded||loaded.programFormat!=='repl'){await fiber.dispose();throw new Error('Native retained Node runtime did not load');}
-      if(closed){await fiber.dispose();throw new Error('Retained computation is disposed');}
-      providerFiber=fiber;provider=loaded;return loaded;
-    })().catch(error=>{loadFailure=String(error.message??error);throw error;});
+    if(!providerPromise){
+      const attempt=(async()=>{
+        const missing=missingDependencies();
+        if(missing.length)throw new Error('Native '+missing[0]+' is unavailable');
+        const {NodePtcRuntime}=await import('@deepseek-ai/dsh-ptc-runtime-node');
+        if(closed)throw new Error('Retained computation is disposed');
+        class WorkEvidenceComputeRuntime extends NodePtcRuntime{}
+        const scope=ctx.isolate('ptcRuntime');
+        let fiber=null;
+        try{
+          fiber=scope.plugin(WorkEvidenceComputeRuntime,{executionMode:'persistent-in-memory',launch:{kind:'node-script',executable:process.execPath}});
+          // Cordis fibers are thenable; .ready is not a loading-completion API.
+          await fiber;
+          const loaded=scope.get('ptcRuntime');
+          if(!loaded||loaded.programFormat!=='repl')throw new Error('Native retained Node runtime did not load');
+          if(closed)throw new Error('Retained computation is disposed');
+          providerFiber=fiber;provider=loaded;loadFailure=null;return loaded;
+        }catch(error){
+          if(fiber){try{await fiber.dispose();}catch{}}
+          throw error;
+        }
+      })();
+      providerPromise=attempt;
+      attempt.catch(error=>{loadFailure=String(error.message??error);if(providerPromise===attempt)providerPromise=null;});
+    }
     return providerPromise;
   }
   async function release(agent){
@@ -106,8 +119,8 @@ export function createRetainedCompute(ctx,runtime,taskFlow,call){
         logs:result.logs??[],...(result.value!==undefined?{value:result.value}:{}),...(result.error?{error:result.error}:{}),
         ...(result.sandbox?{sandbox:result.sandbox}:{})};
     },
-    summary(agent){const state=owners.get(agent?.session?.id);return {configured:runtime.get(agent).config.retainedCompute,loaded:!!provider,
-      available:loadFailure?false:provider?true:null,loadFailure,resetCount:state?.resets??0,memory:'best-effort',filesystemMode:'read-only'};},
+    summary(agent){const state=owners.get(agent?.session?.id),missing=missingDependencies();return {configured:runtime.get(agent).config.retainedCompute,loaded:!!provider,
+      missingDependencies:missing,available:missing.length?false:loadFailure?false:provider?true:null,loadFailure,resetCount:state?.resets??0,memory:'best-effort',filesystemMode:'read-only'};},
     async prepare(agent){if(owners.has(agent?.session?.id)&&(!runtime.isEnabled(agent)||!runtime.get(agent).config.retainedCompute))await release(agent);},
     disposeAgent:release,
     async dispose(){closed=true;const results=await Promise.allSettled([...owners.values()].map(releaseState));

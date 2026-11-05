@@ -7,11 +7,16 @@ const contentKey=message=>JSON.stringify({role:message.role,content:message.cont
 const chars=messages=>messages.reduce((sum,message)=>sum+(message.content??[]).reduce((n,block)=>n+String(block.text??(block.type==='tool-call'?JSON.stringify(block.arguments??{}):'')).length,0),0);
 const tokens=messages=>messages.reduce((sum,message)=>sum+messageTokens(message),0);
 const FEATURES={historyOutput:'historyHygiene',receipt:'ledgerReceipt',evidenceView:'evidenceViews',contextPrune:'contextProtocol',swFold:'swEviction',projection:'requestProjection',restoration:'projectionRestore',state:'stateLedger',unresolved:'ledgerUnresolved',reuseAdvice:'executionTriage',cleanupAdvice:'executionTriage',stepPacing:'stepPacing',contextRecall:'contextProtocol',argumentRecovery:'readArgumentRecovery',archive:'archiveReadRouting',stage:'stageWorkingSet',automaticIndex:'selfIndex',index:null,candidate:null,patterns:null,fastpath:null,verifiedEdit:null,probe:'executionTriage',report:null,fastEdit:'fastEditEnabled'};
+const unknownProjectionObservation=reason=>({status:'unknown',planSeq:null,planMessageId:null,resultSeqs:[],reason});
 FEATURES.inlineExec=null;
 FEATURES.inlineExecAdvice='executionTriage';
 FEATURES.failureAdvice='executionTriage';
 FEATURES.scriptReuseAdvice='executionTriage';
 FEATURES.inlineScriptReuse=null;
+FEATURES.nativeProgramReuse='nativeProgramReuse';
+FEATURES.nativeProgramReference='nativeProgramReuse';
+FEATURES.structuredCalls='structuredCalls';
+FEATURES.nativeReasoningReplay='nativeReasoningReplay';
 FEATURES.inlineArgumentRecovery=null;
 FEATURES.retainedCompute='retainedCompute';
 FEATURES.retainedComputeAdvice='retainedCompute';
@@ -21,11 +26,12 @@ FEATURES.compactionHandoff='compressionControl';
 FEATURES.stageJudgment='stepPacing';
 FEATURES.referenceContext='historyHygiene';
 const PLUGIN_TOOLS=new Set(['project_evidence','work_report','work_status','work_state','work_recall','work_exec','work_compute','work_probe','evidence_index','candidate_select','ptc_patterns','ptc_fastpath','verified_exec','fastedit_java']);
-const RETIRED_FEATURES=new Set(['programHistory','ledgerFold','foldPlan','reasoningHistory','executionAdvice','finishAdvice','presentationAdvice']);
+const RETIRED_FEATURES=new Set(['programHistory','ledgerFold','foldPlan','reasoningHistory','executionAdvice','finishAdvice','presentationAdvice','nativeProgramReference']);
 
 /** Measures changes on the same task trajectory. Provider usage is never attributed by subtraction. */
 export function createEffectObserver(ctx,runtime){
   const states=new Map();
+  const nativeAttempts=new WeakMap();
   const storageFor=agent=>{const s=runtime.get(agent);return s.telemetryDir===undefined?s.dir:s.telemetryDir;};
   const get=agent=>{let state=states.get(agent.session.id);if(!state){state={features:{},effects:new Map(),decisions:[],pendingDecisions:[],recentRequests:[],requests:0,mainRequests:0,auxiliaryRequests:0,compactionRequests:0,completeUsageRequests:0,missingUsage:0,unknownConsumption:0,reported:{inputTokens:0,cacheReadTokens:0,cacheWriteTokens:0,outputTokens:0,totalTokens:0},rawReported:{inputTokens:0,cacheReadTokens:0,cacheWriteTokens:0,outputTokens:0,totalTokens:0},totals:{directTokensEstimate:0,directChars:0,instructionTokensEstimate:0,systemTokensEstimate:0,messageTokensEstimate:0,toolSchemaTokensEstimate:0,requestReconstructionMisses:0},queue:Promise.resolve(),writeErrors:[],effectBytes:0,loaded:false,snippets:new Map(),needsLeadingNewline:new Set()};states.set(agent.session.id,state);}return state;};
   function feature(state,name){return state.features[name]??=( {decisions:0,applied:0,deferred:0,notApplicable:0,unavailable:0,failed:0,requestsAffected:0,directTokensEstimate:0,directChars:0,reasons:{}} );}
@@ -48,8 +54,8 @@ export function createEffectObserver(ctx,runtime){
     return true;
   }
   function queue(state,agent,row,kind='observability'){
-    const dir=storageFor(agent);if(!dir){state.writeErrors.push('Observability storage outside the workspace is unavailable');state.writeErrors=state.writeErrors.slice(-8);return;}
-    if(!/^[-a-zA-Z0-9_][-.a-zA-Z0-9_]{0,127}$/.test(agent.session.id)){state.writeErrors.push('Invalid session ID for observability record');return;}
+    const dir=storageFor(agent);if(!dir){state.writeErrors.push('Observability storage outside the workspace is unavailable');state.writeErrors=state.writeErrors.slice(-8);return Promise.resolve(false);}
+    if(!/^[-a-zA-Z0-9_][-.a-zA-Z0-9_]{0,127}$/.test(agent.session.id)){state.writeErrors.push('Invalid session ID for observability record');return Promise.resolve(false);}
     const file=path.join(dir,agent.session.id+'.'+kind+'.jsonl');
     // After a failed trailing-newline repair the file is known to end mid-line, so the next
     // append for that file starts with its own newline instead of merging two rows.
@@ -57,7 +63,8 @@ export function createEffectObserver(ctx,runtime){
       await fs.appendFile(file,(state.needsLeadingNewline.has(kind)?'\n':'')+JSON.stringify(row)+'\n','utf8');
       // Clear the marker only once a row actually landed: an append that failed wrote nothing,
       // so the file still ends mid-line and the following row must keep its own leading newline.
-      state.needsLeadingNewline.delete(kind);}).catch(error=>{state.writeErrors.push(String(error.message).slice(0,240));state.writeErrors=state.writeErrors.slice(-8);});
+      state.needsLeadingNewline.delete(kind);return true;}).catch(error=>{state.writeErrors.push(String(error.message).slice(0,240));state.writeErrors=state.writeErrors.slice(-8);return false;});
+    return state.queue;
   }
   function begin(agent,options,{auxiliary=false,requestKind}={}){
     requestKind=requestKindOf({purpose:options.purpose,auxiliary,requestKind});
@@ -70,7 +77,7 @@ export function createEffectObserver(ctx,runtime){
       if(source.startsWith('work-evidence')&&source!=='work-evidence-working-set'){
         const kind=message.source?.taskFlow?.kind;
         const name=source==='work-evidence-final-json'?'finalJson':source==='work-evidence-quality-review'?'qualityReview':
-          kind?({judgment:'stageJudgment',reuse:'reuseAdvice',cleanup:'cleanupAdvice',pacing:'stepPacing',compute:'retainedComputeAdvice',validation:'stepPacing',inlineExec:'inlineExecAdvice',diagnostic:'failureAdvice',scriptReuse:'scriptReuseAdvice'}[kind]??'guidance'):'guidance';
+          kind?({judgment:'stageJudgment',reuse:'reuseAdvice',cleanup:'cleanupAdvice',pacing:'stepPacing',compute:'retainedComputeAdvice',validation:'stepPacing',inlineExec:'inlineExecAdvice',diagnostic:'failureAdvice',scriptReuse:'scriptReuseAdvice',scriptSource:'scriptReuseAdvice'}[kind]??'guidance'):'guidance';
         const value=byFeature[name]??={tokensEstimate:0,chars:0,effects:0};value.tokensEstimate-=tokens([message]);value.chars-=chars([message]);value.effects++;return [];
       }
       return [message];
@@ -84,7 +91,16 @@ export function createEffectObserver(ctx,runtime){
     const instruction=instructionPresent?textTokens(instructionText):0;
     const definitions=options.tools??[],withoutPlugin=definitions.filter(tool=>!PLUGIN_TOOLS.has(tool.name??tool.function?.name));
     const schemaOverhead=definitions.length===withoutPlugin.length?0:textTokens(JSON.stringify(definitions))-textTokens(JSON.stringify(withoutPlugin));
-    return {schema:'work-evidence.request-effects.v1',requestId:randomUUID(),at:new Date().toISOString(),provider:options.provider,model:options.model,reasoningEffort:options.reasoningEffort??null,requestKind,auxiliary:requestKind==='auxiliary',
+    const requestId=randomUUID(),native=main?nativeAttempts.get(agent):null;
+    let projectionObservation=unknownProjectionObservation(main?'projection-observer-unavailable':'non-main-request');
+    if(main&&typeof runtime.observeRequestProjection==='function'){
+      try{projectionObservation=runtime.observeRequestProjection(agent,options.messages)??projectionObservation;}
+      catch{projectionObservation=unknownProjectionObservation('projection-observation-error');}
+    }
+    const nativeAttempt=native&&!native.requestId?{attemptId:native.attemptId,turn:native.turn,step:native.step}:null;
+    if(nativeAttempt)native.requestId=requestId;
+    return {schema:'work-evidence.request-effects.v1',sessionId:agent.session.id,requestId,nativeAttempt,at:new Date().toISOString(),provider:options.provider,model:options.model,reasoningEffort:options.reasoningEffort??null,requestKind,auxiliary:requestKind==='auxiliary',
+      projectionObservation,
       usage:null,usageChunks:0,usageAggregation:'last-non-null-adapter-value-per-field',settled:false,failureCode:null,finishReason:null,
       toolSurface:runtime.get(agent).config.toolSurface??null,mode:runtime.modeStatus(agent),purpose:options.purpose??null,
       effects:{directTokensEstimate:delta-instruction-schemaOverhead,directChars:charDelta,instructionTokensEstimate:instruction,schemaTokensEstimate:schemaOverhead,
@@ -93,6 +109,11 @@ export function createEffectObserver(ctx,runtime){
         method:'same-trajectory message reconstruction; local text-density estimate; provider tokenization not observed',causalTaskSaving:false},
       localRequestTokensEstimate:tokens(options.messages)+textTokens(JSON.stringify({system:options.system??null,tools:options.tools??[]})),
       decisions:main?state.pendingDecisions.splice(0):[],sourceSeq:agent.session.seq,step:runtime.get(agent).step};
+  }
+  async function start(agent,row){
+    row.startRecorded=await queue(get(agent),agent,{schema:'work-evidence.request-start.v1',sessionId:agent.session.id,
+      requestId:row.requestId,at:row.at,sourceSeq:row.sourceSeq,requestKind:row.requestKind,purpose:row.purpose,
+      provider:row.provider,model:row.model,reasoningEffort:row.reasoningEffort,nativeAttempt:row.nativeAttempt});
   }
   function normalizeRow(row){
     row.requestKind=requestKindOf(row);row.auxiliary=row.requestKind==='auxiliary';
@@ -147,7 +168,10 @@ export function createEffectObserver(ctx,runtime){
           if((await fs.stat(file)).size>64*1024*1024)throw new Error('Observability file exceeds 64 MiB load limit');raw=await fs.readFile(file,'utf8');
         }catch(error){if(error.code!=='ENOENT')state.writeErrors.push('load: '+error.message);continue;}
         const seen=new Set();for(const line of raw.split('\n').filter(Boolean))try{
-          const item=JSON.parse(line),id=kind==='observability'?item.requestId:item.id;if(seen.has(id))continue;seen.add(id);
+          const item=JSON.parse(line);
+          if(kind==='observability'&&item.schema!=='work-evidence.request-effects.v1')continue;
+          if(item.sessionId!==undefined&&item.sessionId!==agent.session.id)throw new Error('Observability row belongs to another session');
+          const id=kind==='observability'?item.requestId:item.id;if(seen.has(id))continue;seen.add(id);
           if(kind==='attribution'&&item.schema==='work-evidence.attribution.v1'&&typeof item.messageId==='string'&&Array.isArray(item.before)){
             if(state.effectBytes+(item.bytes??0)>16*1024*1024){state.writeErrors.push('attribution restore exceeds memory limit');break;}
             const list=state.effects.get(item.messageId)??[];if(!list.some(effect=>effect.id===item.id)){list.push(item);state.effects.set(item.messageId,list);state.effectBytes+=item.bytes??0;}
@@ -170,11 +194,18 @@ export function createEffectObserver(ctx,runtime){
     catch(error){state.writeErrors.push('load: '+String(error.message??error).slice(0,200));}
     finally{state.loading=null;}
   }
-  function snapshot(agent){const state=get(agent),config=runtime.get(agent).config,features={};for(const name of new Set([...Object.keys(FEATURES),...Object.keys(state.features)])){const item=state.features[name];const setting=FEATURES[name],retired=RETIRED_FEATURES.has(name);features[name]={enabled:!retired&&runtime.isEnabled(agent)&&(setting?!!config[setting]:true),...(retired?{retired:true}:{}),...(item??{decisions:0,applied:0,lastStatus:'not-observed',lastReason:'no-opportunity-observed'} )};}
-    return {version:1,schema:'work-evidence.observability.v1',requests:{count:state.requests,main:state.mainRequests,compaction:state.compactionRequests,auxiliary:state.auxiliaryRequests,missingUsage:state.missingUsage,unknownConsumption:state.unknownConsumption,completeUsageRequests:state.completeUsageRequests,providerReported:{...state.reported},providerReportedRaw:{...state.rawReported}},
+  function snapshot(agent,options={}){const state=get(agent),config=runtime.get(agent).config,features={};for(const name of new Set([...Object.keys(FEATURES),...Object.keys(state.features)])){const item=state.features[name];const setting=FEATURES[name],retired=RETIRED_FEATURES.has(name);features[name]={enabled:!retired&&runtime.isEnabled(agent)&&(setting?!!config[setting]:true),...(retired?{retired:true}:{}),...(item??{decisions:0,applied:0,lastStatus:'not-observed',lastReason:'no-opportunity-observed'} )};}
+    const full={version:1,schema:'work-evidence.observability.v1',requests:{count:state.requests,main:state.mainRequests,compaction:state.compactionRequests,auxiliary:state.auxiliaryRequests,missingUsage:state.missingUsage,unknownConsumption:state.unknownConsumption,completeUsageRequests:state.completeUsageRequests,providerReported:{...state.reported},providerReportedRaw:{...state.rawReported}},
       totals:{...state.totals},features,recentRequests:state.recentRequests.slice(),decisions:state.decisions.slice(-24),
-      persistence:{file:storageFor(agent)?path.join(storageFor(agent),agent.session.id+'.observability.jsonl'):null,writeErrors:state.writeErrors.slice(),scope:'session-local automatic records outside workspace discovery; one settled row per dispatched stream; no prompt bodies; survives rolling status window'},
-      interpretation:'providerReported totals include only complete, internally consistent adapter counts; providerReportedRaw retains finite fields from all rows for diagnosis and does not establish complete consumption. Main, compaction and auxiliary requests are separate. Direct feature token deltas are local estimates on the same trajectory, including visible guidance overhead; they are not measured task savings. Unmapped or evicted attribution remains unavailable.'};}
+      persistence:{file:storageFor(agent)?path.join(storageFor(agent),agent.session.id+'.observability.jsonl'):null,writeErrors:state.writeErrors.slice(),scope:'session-local start/settlement records and native event links outside workspace discovery; no prompt bodies; survives rolling status window'},
+      interpretation:'providerReported totals include only complete, internally consistent adapter counts; providerReportedRaw retains finite fields from all rows for diagnosis and does not establish complete consumption. Main, compaction and auxiliary requests are separate. Direct feature token deltas are local estimates on the same trajectory, including visible guidance overhead; they are not measured task savings. Unmapped or evicted attribution remains unavailable.'};
+    if(options.detail!==false)return full;
+    const summaryFeatures={};for(const [name,item]of Object.entries(features)){const {reasons,...summary}=item;summaryFeatures[name]=summary;}
+    const {recentRequests,decisions,...summary}=full;
+    const requestDiagnostics=recentRequests.filter(row=>row.failureCode!==null&&row.failureCode!==undefined||row.aborted||row.unknownConsumption||row.settled!==true||!['stop','tool-calls'].includes(row.finishReason)).map(row=>({
+      requestId:row.requestId??null,sessionId:row.sessionId??null,sourceSeq:row.sourceSeq??null,requestKind:row.requestKind??null,provider:row.provider??null,model:row.model??null,
+      settled:row.settled??null,finishReason:row.finishReason??null,failureCode:row.failureCode??null,aborted:row.aborted??null,usageComplete:row.usageComplete??null,unknownConsumption:row.unknownConsumption??null}));
+    return {...summary,features:summaryFeatures,requestDiagnostics,view:'summary',details:{tool:'work_status',arguments:{detail:true},recentRequests:recentRequests.length,decisions:decisions.length,featureReasons:'detail-only'}};}
   function snippet(agent,{callIds,feature,beforeText,afterText}){const state=get(agent);for(const id of new Set(callIds.filter(Boolean))){const list=state.snippets.get(id)??[];list.push({feature,beforeText,afterText});state.snippets.set(id,list.slice(-8));}if(state.snippets.size>128)state.snippets.delete(state.snippets.keys().next().value);}
   const unsubscribe=ctx.on('session/event',(session,event)=>{
     if(event.type!=='tool/result'||event.surfaceOp?.op==='replace')return;const agent=ctx.agents?.get?.(session.id);if(!agent)return;const message=event.data?.message,state=get(agent),id=message?.source?.callId??message?.toolCallId,list=state.snippets.get(id);if(!list)return;state.snippets.delete(id);
@@ -182,6 +213,22 @@ export function createEffectObserver(ctx,runtime){
     for(const name of new Set(list.map(item=>item.feature))){let before=after;for(const item of list.filter(item=>item.feature===name)){const offset=before.indexOf(item.afterText);if(offset<0||before.indexOf(item.afterText,offset+1)>=0)continue;before=before.slice(0,offset)+item.beforeText+before.slice(offset+item.afterText.length);}
       if(before!==after)rewrite(agent,{feature:name,seq:event.seq,afterMessage:message,beforeMessages:[{...message,content:[{type:'text',text:before}]}]});}
   });
-  return {decide,rewrite,benefit,begin,finish,load,snippet,snapshot,instructions:(agent,text)=>{get(agent).instructionText=text;},flush:agent=>get(agent).queue,
-    async disposeAgent(agent){await get(agent).queue;states.delete(agent.session.id);},async dispose(){if(typeof unsubscribe==='function')unsubscribe();await Promise.allSettled([...states.values()].map(state=>state.queue));states.clear();}};
+  const unsubscribeStreams=ctx.on('agent/assistant-stream',({agent,frame})=>{
+    if(!agent||!frame)return;
+    if(frame.type==='start'){
+      nativeAttempts.set(agent,{attemptId:frame.attemptId,turn:frame.turn,step:frame.step,requestId:null});return;
+    }
+    if(frame.type!=='end')return;
+    const active=nativeAttempts.get(agent);
+    if(!active||active.attemptId!==frame.attemptId)return;
+    nativeAttempts.delete(agent);
+    if(!active.requestId)return;
+    queue(get(agent),agent,{schema:'work-evidence.request-link.v1',sessionId:agent.session.id,requestId:active.requestId,
+      nativeAttempt:{attemptId:active.attemptId,turn:active.turn,step:active.step},at:new Date().toISOString(),
+      outcome:frame.outcome?.kind??'unknown',eventType:frame.outcome?.eventType??null,sourceSeq:frame.outcome?.seq??null});
+  });
+  return {decide,rewrite,benefit,begin,start,finish,load,snippet,snapshot,instructions:(agent,text)=>{get(agent).instructionText=text;},flush:agent=>get(agent).queue,
+    async disposeAgent(agent){await get(agent).queue;nativeAttempts.delete(agent);states.delete(agent.session.id);},async dispose(){
+      for(const stop of [unsubscribe,unsubscribeStreams])if(typeof stop==='function')stop();
+      await Promise.allSettled([...states.values()].map(state=>state.queue));states.clear();}};
 }

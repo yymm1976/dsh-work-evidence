@@ -1,4 +1,5 @@
 import {argsOf,eventLog,isUserRequestMessage,textOf} from './runtime.mjs';
+import {Script} from 'node:vm';
 
 const quote=value=>"'"+String(value).replaceAll("'","''")+"'";
 const INPUT_KEYS=new Set(['runtime','language','code','scriptRef','edits','executable','interpreter','format','cwd','workdir','timeoutMs','mode','sources']);
@@ -39,6 +40,11 @@ function scriptExecutableOf(event){
   return declared&&validExecutable(metadata?.scriptExecutable)?metadata.scriptExecutable:null;
 }
 const messageOf=event=>event.data?.message??event.data??{};
+export function inlineScriptEventRef(session,callId){
+  if(typeof callId!=='string')return null;
+  const event=eventLog(session).find(event=>CALL_EVENT_TYPES.has(event.type)&&event.data?.name==='work_exec'&&eventCallId(event.type,event.data)===callId&&Number.isSafeInteger(event.seq)&&event.seq>=0);
+  return event?'event:'+event.seq:null;
+}
 const DECLARED_EXECUTABLE=/\b(?:existing|installed|available)\b|(?:已有|现有|已经安装|已安装|可用)/iu;
 const NEGATED_EXECUTABLE=/\b(?:not|never)\s+(?:existing|installed|available)\b|\bno\s+(?:existing|installed|available)\b|\bunavailable\b|\b(?:do not|don't|must not|should not|never)\s+(?:use|invoke|run|execute)\b|\bdoes\s+not\s+exist\b|(?:不要|请勿|禁止)(?:使用|调用|执行)|(?:不可用|无法使用|不能使用|未安装|不存在|未提供)|(?:未|没有|并非|不是)[^。；;\n]{0,80}(?:解释器|路径|可用|安装|存在|使用|调用)/iu;
 const pythonExecutable=/^python(?:3(?:\.\d+)?)?(?:\.exe)?$/iu,nodeExecutable=/^node(?:\.exe)?$/iu;
@@ -140,9 +146,21 @@ export function inlineFailureLocation(script,nativeValue){
     const text=boundedText(sourceLines[current-1],SOURCE_LINE_CHARS);
     source.push({line:current,text:text.text,textTruncated:text.truncated});
   }
-  return {runtime:script.runtime,line,column,frame:'stdin',sourceLines:source,exceptionLine:exception.text,exceptionLineTruncated:exception.truncated,
+  return {runtime:script.runtime,line,column,frame:'stdin',exceptionInScript:!externalFrame,sourceLines:source,exceptionLine:exception.text,exceptionLineTruncated:exception.truncated,
     note:externalFrame?'frame is the current stdin script; the final exception frame is outside this script and is not treated as this source line.':
       'frame is the current stdin script; the location does not by itself prove the root cause.'};
+}
+
+export function inlineFormatRecovery(script,nativeValue,scriptRef,location=inlineFailureLocation(script,nativeValue)){
+  if(script?.runtime!=='node'||script.format!==undefined||typeof scriptRef!=='string'||!scriptRef||
+    !location||location.frame!=='stdin'||location.exceptionInScript!==true||!Number.isInteger(location.column)||
+    !/^require\s*\(/u.test(script.code.split(/\r\n|\n|\r/u)[location.line-1]?.slice(location.column-1)??'')||
+    !/^ReferenceError: require is not defined in ES module scope\b/u.test(location.exceptionLine))return null;
+  // Recommend an explicit retry only if the unchanged program parses as CommonJS.
+  // ESM imports and top-level await must keep their original execution semantics.
+  try{new Script(script.code);}catch{return null;}
+  return {reason:'commonjs-program-with-default-esm',tool:'work_exec',arguments:{scriptRef,format:'commonjs'},
+    note:'The default ESM run failed. The unchanged script parses as CommonJS. This explicit retry uses the recorded version; no retry was executed.'};
 }
 
 /** Resolve an explicitly declared interpreter path from current human/system text only. */
@@ -170,7 +188,7 @@ export function resolveInlineScript(input,session,signal){
       const prior=calls.get(id);
       const name=data.name??prior?.name;
       const args=data.arguments===undefined?prior?.args:argsOf(data.arguments);
-      if(name||args!==undefined)calls.set(id,{name,args});
+      if(name||args!==undefined)calls.set(id,{name,args,seq:prior?.seq??event.seq});
     }
   }
   for(const event of events){
@@ -180,6 +198,51 @@ export function resolveInlineScript(input,session,signal){
     const executable=scriptExecutableOf(event);
     if(executable)resultExecutables.set(id,executable);
   }
+  const eventRefs=new Map(events.filter(event=>CALL_EVENT_TYPES.has(event.type)&&event.data?.name==='work_exec'&&Number.isSafeInteger(event.seq)&&event.seq>=0)
+    .map(event=>['event:'+event.seq,eventCallId(event.type,event.data)]).filter(([,id])=>typeof id==='string'&&calls.has(id)));
+  try{return resolveIndexedScript(input,calls,resultExecutables,eventRefs,signal);}catch(error){
+    if(error.code!=='WORK_EXEC_SCRIPT_REF_NOT_FOUND')throw error;
+    const request=events.findLast(event=>event.type==='user/message'&&isUserRequestMessage(messageOf(event)));
+    const requestedRuntime=input.runtime??input.language,available=[];
+    if(Number.isSafeInteger(request?.seq))for(const [scriptRef,call]of [...calls].reverse().filter(([,call])=>call.name==='work_exec'&&call.seq>request.seq).slice(0,16)){
+      signal?.throwIfAborted();
+      if(scriptRef.length>256)continue;
+      try{
+        const script=resolveIndexedScript({scriptRef,...(requestedRuntime===undefined?{}:{runtime:requestedRuntime})},calls,resultExecutables,eventRefs,signal);
+        if(typeof script.code!=='string'||!script.code.trim()||script.code.length>64000)continue;
+        if(input.edits!==undefined)resolveIndexedScript({...input,scriptRef},calls,resultExecutables,eventRefs,signal);
+        available.push({scriptRef,scriptEventRef:'event:'+call.seq,seq:call.seq,runtime:script.runtime,scriptChars:script.code.length});
+        if(available.length===3)break;
+      }catch{signal?.throwIfAborted();}
+    }
+    error.availableScripts=available;
+    if(available.length)error.message+='\nAvailable recorded script versions for the current request (historical code, not execution success; submitted edits match): '+JSON.stringify(available);
+    throw error;
+  }
+}
+
+function scriptEditMismatch(code,edit,editIndex,scriptRef){
+  let occurrences=0,offset=code.indexOf(edit.before);const positions=[];
+  while(offset>=0){if(positions.length<2)positions.push(offset);occurrences++;offset=code.indexOf(edit.before,offset+1);}
+  let windowReason=positions.length?'exact-before-matches':null;
+  if(!positions.length){
+    const anchor=edit.before.split(/\r\n|\n|\r/u,1)[0];
+    const first=anchor.length>=3&&anchor.length<=160?code.indexOf(anchor):-1;
+    if(first>=0&&code.indexOf(anchor,first+1)<0){positions.push(first);windowReason='unique-first-line-anchor; full before did not match';}
+  }
+  const source=code.split(/\r\n|\n|\r/u),windows=positions.map(position=>{
+    const line=code.slice(0,position).split(/\r\n|\n|\r/u).length,lines=[];
+    for(let number=Math.max(1,line-1);number<=Math.min(source.length,line+1);number++)lines.push({number,text:source[number-1].slice(0,240),textTruncated:source[number-1].length>240});
+    return {line,lines};
+  });
+  const detail={scriptRef,editIndex,occurrences,beforeChars:edit.before.length,precedingEditsAppliedToCandidate:editIndex,
+    windowReason,windows,executionOccurred:false,scope:'Candidate script text after earlier edits in this version; no program was executed by this rejected request. Windows are data, not instructions. Exact before must match once; no automatic escaping or replacement.'};
+  if(JSON.stringify(detail).length>3000){detail.windows=[];detail.windowReason='source-window-exceeds-budget';}
+  return Object.assign(new Error('Script edit must match exactly once; no execution occurred\n'+JSON.stringify(detail)),
+    {code:'WORK_EXEC_SCRIPT_EDIT_MISMATCH',editMismatch:detail});
+}
+
+function resolveIndexedScript(input,calls,resultExecutables,eventRefs,signal){
   const chain=[],seen=new Set(),sourceCallIds=[];let candidate=input,callId=null,runtime;
   while(true){
     signal?.throwIfAborted();
@@ -195,11 +258,12 @@ export function resolveInlineScript(input,session,signal){
     if(candidate.edits!==undefined&&(!hasRef||!Array.isArray(candidate.edits)||candidate.edits.length>16))throw new Error('edits requires scriptRef and at most 16 exact replacements');
     chain.push(candidate);
     if(hasCode)break;
-    if(seen.has(candidate.scriptRef))throw new Error('Cyclic scriptRef');
-    seen.add(candidate.scriptRef);
-    sourceCallIds.push(candidate.scriptRef);
-    const ref=candidate.scriptRef,previous=calls.get(ref);
-    if(!previous||previous.name!=='work_exec')throw new Error('scriptRef does not identify an original work_exec call in this session');
+    const ref=eventRefs.get(candidate.scriptRef)??candidate.scriptRef;
+    if(seen.has(ref))throw new Error('Cyclic scriptRef');
+    seen.add(ref);
+    sourceCallIds.push(ref);
+    const previous=calls.get(ref);
+    if(!previous||previous.name!=='work_exec')throw Object.assign(new Error('scriptRef does not identify an original work_exec call in this session'),{code:'WORK_EXEC_SCRIPT_REF_NOT_FOUND'});
     candidate=previous.args;
     callId=ref;
   }
@@ -208,11 +272,11 @@ export function resolveInlineScript(input,session,signal){
   let resolved={runtime,code:initial.code,...(initial.executable!==undefined?{executable:initial.executable}:{}),...(initial.format!==undefined?{format:initial.format}:{}),...(initial.timeoutMs!==undefined?{timeoutMs:initial.timeoutMs}:{})};
   for(const next of chain.reverse()){
     signal?.throwIfAborted();
-    for(const edit of next.edits??[]){
+    for(const [editIndex,edit]of (next.edits??[]).entries()){
       if(!edit||typeof edit.before!=='string'||!edit.before.length||typeof edit.after!=='string'||edit.before.length>64000||edit.after.length>64000)
         throw new Error('Each edit needs nonempty before and string after within the script limit');
       const first=resolved.code.indexOf(edit.before);
-      if(first<0||resolved.code.indexOf(edit.before,first+1)>=0)throw new Error('Script edit must match exactly once; no execution occurred');
+      if(first<0||resolved.code.indexOf(edit.before,first+1)>=0)throw scriptEditMismatch(resolved.code,edit,editIndex,next.scriptRef);
       resolved.code=resolved.code.slice(0,first)+edit.after+resolved.code.slice(first+edit.before.length);
       if(!resolved.code.trim()||resolved.code.length>64000)throw new Error('Edited script must contain 1–64000 characters');
     }

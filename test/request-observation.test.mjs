@@ -34,7 +34,8 @@ test('raw invalid usage keeps its provenance across request accounting, economic
       assert.equal(observation.usageSources.cacheReadTokens,'invalid-adapter-value');
       assert.equal(effect.usageSources.cacheReadTokens,'invalid-adapter-value');
     }
-    const persisted=JSON.parse((await fs.readFile(path.join(state.telemetryDir,item.label+'.observability.jsonl'),'utf8')).trim());
+    const persisted=(await fs.readFile(path.join(state.telemetryDir,item.label+'.observability.jsonl'),'utf8')).trim().split('\n')
+      .map(line=>JSON.parse(line)).find(row=>row.schema==='work-evidence.request-effects.v1');
     assert.equal(persisted.usageComplete,item.valid,item.label);assert.equal(persisted.usageConsistent,item.valid,item.label);
     await runtime.effects.dispose();
   }
