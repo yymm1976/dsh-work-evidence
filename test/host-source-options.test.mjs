@@ -55,6 +55,37 @@ test('defaultResponseView independently records its actual default and explicit 
   assert.equal(offEffect.notApplicable,0);
 });
 
+test('full tool surface and default reference work together and each setting closes independently',async()=>{
+  const args={mode:'read',files:[{path:'a.txt',offset:1,limit:80}]};
+  const small=[tool('project_evidence',args)];
+  const host=await startHost({workspace:{toolSurface:'full',defaultResponseView:'reference-if-visible',evidenceViews:true},
+    script:(_o,n)=>n===1||n===2||n===4?small:n===3?[text('前两次读取完成。')]:[text('第三次读取完成。')]});
+  try{
+    await fs.writeFile(path.join(host.cwd,'a.txt'),Array.from({length:65},(_,i)=>`row ${i} `+'z'.repeat(40)).join('\n'));
+    const agent=await host.createAgent('max');
+    await host.send(agent,'连续读取两次源码。');
+    let view=await host.command(agent,'features');
+    assert.equal(view.tools.find(item=>item.name==='work_status').exposed,true);
+    assert.equal(view.features.find(item=>item.key==='toolSurface').effect.lastReason,'full-surface');
+    assert.equal(view.features.find(item=>item.key==='defaultResponseView').effect.applied,1);
+    await host.command(agent,'feature defaultResponseView full');
+    await host.send(agent,'再读取一次源码。');
+    view=await host.command(agent,'features');
+    const reads=output(host).filter(item=>item.mode==='read');
+    assert.equal(reads.at(-1).responseView.kind,'full');
+    assert.equal(reads.at(-1).responseView.reason,'default-full-view');
+    await host.command(agent,'feature toolSurface compact');
+    view=await host.command(agent,'features');
+    assert.equal(view.tools.find(item=>item.name==='work_status').exposed,false);
+    assert.equal(view.tools.find(item=>item.name==='project_evidence').exposed,false);
+    assert.equal(view.features.find(item=>item.key==='toolSurface').effect.lastReason,'compact-surface');
+    await host.command(agent,'feature toolSurface full');
+    view=await host.command(agent,'features');
+    assert.equal(view.tools.find(item=>item.name==='work_status').exposed,true);
+    assert.equal(view.features.find(item=>item.key==='toolSurface').effect.lastReason,'full-surface');
+  }finally{await host.close();}
+});
+
 test('memberParsing finds Java method bodies with parsing on and with its lexical fallback',async()=>{
   for(const memberParsing of [true,false]){
     const observed=await run({memberParsing},[[tool('project_evidence',{mode:'source',query:'Calc',member:'add'})]],
