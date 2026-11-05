@@ -727,7 +727,8 @@ export function auditDshSession(input,{sourceId=null,annotations=[],pricing=[],p
     meaning:'Route values are name declarations only and do not prove the provider’s actual model build.'};
   const eventBySeq=new Map(normal.events.map(event=>[event.seq,event]));
   const echoRows=normal.requests.map(request=>{
-    const source=messageOf(eventBySeq.get(request.sourceSeq))?.source,replay=source?.replayState,response=replay?.response??replay;
+    const event=eventBySeq.get(request.sourceSeq),source=messageOf(event)?.source;
+    const replay=source?.replayState??event?.data?.stream?.findLast(chunk=>chunk.chunk?.type==='finish')?.chunk?.replayState,response=replay?.response??replay;
     const reported=typeof response?.responseModel==='string'?response.responseModel.trim():'';
     const status=response?.kind==='deepseek-messages'?'unsupported-by-adapter':
       reported&&reported.length<=200&&!/[\x00-\x1f\x7f]/u.test(reported)?'reported':response?'not-reported':'unknown';
@@ -739,7 +740,7 @@ export function auditDshSession(input,{sourceId=null,annotations=[],pricing=[],p
     counts:Object.fromEntries(['reported','not-reported','unsupported-by-adapter','unknown'].map(status=>[status,echoRows.filter(row=>row.status===status).length])),
     reported:reportedEchoes.slice(0,32),reportedOmitted:Math.max(0,reportedEchoes.length-32),
     reportedValues:echoValues.slice(0,16),reportedValuesOmitted:Math.max(0,echoValues.length-16),
-    source:'assistant/message source.replayState.response.responseModel, with flat replayState accepted for older records; only scalar model names are read',
+    source:'assistant/message source.replayState or the same attempt finish chunk replayState, with flat replayState accepted for older records; only scalar model names are read',
     meaning:'A reported value is a provider-declared response name that differed from the requested identity. Not reported can mean equal or unrecorded; adapter support varies. No value or name proves actual model weights.'};
   if(requestAccounting&&(requestAccounting.schema!=='work-evidence.session-request-accounting.v1'||
     requestAccounting.throughSeq!==normal.throughSeq||requestAccounting.nativeRequests!==normal.requests.length||

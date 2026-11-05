@@ -75,6 +75,15 @@ test('response model echo stays separate from request declarations and adapter c
   assert.equal(echo('pi-ai','bad\nname').counts['not-reported'],1);
 });
 
+test('an assistant attempt can report its own finish replay model without a message source',()=>{
+  const f=fixture();f.events[0].data.header.config.model='deepseek-v4.1-flash-1017';
+  f.events.push({seq:99,type:'assistant/attempt',data:{turn:2,step:2,stream:[{type:'chunk',chunk:{type:'finish',reason:{kind:'stop'},
+    replayState:{response:{kind:'pi-ai',responseModel:'deepseek/deepseek-v4.1-flash-1017'}}}}]}});
+  const echo=auditDshSession(f.events).responseModelEcho;
+  assert.equal(echo.counts.reported,1);assert.equal(echo.counts.unknown,0);
+  assert.equal(echo.reported[0].seq,99);assert.equal(echo.reported[0].responseModel,'deepseek/deepseek-v4.1-flash-1017');
+});
+
 test('source changes, a new human requirement and incomplete reads prevent exact-repeat findings',()=>{
   for(const variation of ['write','user','truncated']){
     const f=fixture(),body=variation==='truncated'?'x... (line truncated to 2000 chars)':'same source';
