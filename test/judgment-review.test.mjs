@@ -151,10 +151,12 @@ test('nested tool counters, appended events and damaged sources remain explicit 
   delete f.review.replacementSeq;delete f.review.replacementQuote;
   assert.equal(audit(f).judgmentReviews.items[0].status,'challenged');
   const g=fixture();g.add('assistant/message',{turn:2,message:{role:'assistant',content:[{type:'text',text:'Later unrelated event.'}]}});
-  let result=audit(g);assert.equal(result.judgmentReviews.items[0].status,'unknown');
+  let result=audit(g);assert.equal(result.judgmentReviews.status,'stale');
+  assert.equal(result.judgmentReviews.items[0].status,'unknown');
   assert.ok(result.judgmentReviews.items[0].reasons.includes('events-after-review'));
   const h=fixture();result=auditDshSession(h.events,{sourceId:h.assessment.sourceId,
     assessment:{...h.assessment,judgmentReviews:[h.review]},problems:[{line:2,reason:'invalid-json-row'}]});
+  assert.equal(result.judgmentReviews.status,'incomplete-source');
   assert.equal(result.judgmentReviews.items[0].status,'unknown');
   assert.ok(result.judgmentReviews.items[0].reasons.includes('incomplete-source'));
 });

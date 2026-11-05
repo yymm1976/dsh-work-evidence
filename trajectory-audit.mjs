@@ -362,7 +362,7 @@ function checkedJudgmentReviews(input,normal,sourceId,throughSeq,sourceCurrent,s
       claim,counter,...(replacement?{replacement}:{}),scopePaths:row.scopePaths.map(file=>normalizeFile(file).value),
       ...(reasons.length?{reasons:[...new Set(reasons)]}:{}),reason:row.reason,authority:'reviewer-judgment',currentApplicability:'historical-events-only'};
   });
-  return {status:'reviewed',items,authority:'reviewer-judgment',currentApplicability:'historical-events-only',
+  return {status:!items.length?'not-reviewed':sourceProblems.length?'incomplete-source':!sourceCurrent?'stale':'reviewed',items,authority:'reviewer-judgment',currentApplicability:'historical-events-only',
     meaning:'Literal quote matching confirms only recorded source text, not semantic correctness or current disk applicability.'};
 }
 
