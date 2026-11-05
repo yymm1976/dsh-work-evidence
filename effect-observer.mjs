@@ -26,6 +26,7 @@ FEATURES.stubSummary='stubSummary';
 FEATURES.deferPressureCompaction='deferPressureCompaction';
 FEATURES.completionNotice='completionNotice';
 FEATURES.stateInform='stateInform';
+FEATURES.swLedger='swLedger';
 FEATURES.memberParsing='memberParsing';
 FEATURES.mavenSourceBinding='mavenSourceBinding';
 FEATURES.qualityReview='qualityReview';

@@ -31,6 +31,8 @@ test('folding, projection, native compaction and disabled-state recall preserve 
     const before=(await host.command(agent,'detail')).detail;
     assert.ok(before.sw.evicted>0||before.workingSet.projectedObservations>0||before.observability.historyHygiene?.charsRemovedAcrossViews>0,
       JSON.stringify({sw:before.sw,projection:before.workingSet}));
+    const ledger=(await host.command(agent,'feature swLedger')).features[0];
+    assert.equal(ledger.effect.status,'applied');assert.ok(ledger.effect.applied>0);
     const target=before.workingSet.entries[0];assert.ok(target);
     const restoredMarker=/o\d+ row 31/.exec(JSON.stringify(host.events.find(event=>event.seq===target.seq).data))[0];
     plan.push([text('已恢复旧来源。')]);

@@ -33,7 +33,9 @@ export function createContextWindow(ctx,runtime){
     if(['work_state','work_status','work_report'].includes(callInfo.name))return;
     if(text.length>1024*1024)return skip(state,'large-result');
     const observation={seq:event.seq,tool:callInfo.name,text,chars:text.length,step:state.step,evicted:false};
+    const duplicateBodies=state.duplicateBodies;
     state.observations.push(observation);state.observedChars+=text.length;countBody(state,observation,1);
+    if(state.duplicateBodies>duplicateBodies)runtime.effects?.decide(agent,'swLedger','applied','duplicate-result-recorded',{tool:observation.tool,chars:observation.chars});
     while(state.observations.length>MAX_OBSERVATIONS||state.observedChars>8*1024*1024){
       const removed=state.observations.shift();state.observedChars-=removed.chars;
       if(!removed.evicted)countBody(state,removed,-1);
