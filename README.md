@@ -1,6 +1,6 @@
 # DSH 工程证据插件
 
-当前开发版本为 1.0.1-dev.98，模式策略为 pb001-v39。原 1.0.0 用于真实任务对照。
+当前开发版本为 1.0.1-dev.99，模式策略为 pb001-v39。原 1.0.0 用于真实任务对照。
 桌面加载目录独立维护。运行中的会话采用哪个版本，取决于宿主加载时间。
 插件提供任务指引、观察账本、历史取回和按需工程工具。
 插件直接使用原生 DSH，不依赖 PTC Plus。
@@ -36,7 +36,7 @@ mode 只查询状态。旧的 mode <名称> 和 workspace-mode 命令不再设�
 总开关同时控制质量模式和激进模式。关闭激进开关后，非 Ultra 档位停用插件自动处理。
 启用插件时，`work_status` 由工具面控制；关闭插件后保留只读状态查询。历史中仍有取回引用时保留 `work_recall`。
 
-`features` 列出保留功能的配置、依赖和当前可用条件。每项的 `effect` 另行汇总现有专用观察计数：`not-observed` 表示没有实际效果记录，`applied` 表示已执行动作，`failed` 表示已发生失败，`mixed` 表示成功与失败并存，`not-applicable` 表示已明确判断当前条件不适用，`not-applied` 表示有其他决策但未采用。没有专用计数器时也保持未观察；关闭功能不会清除此前记录。配置就绪不等于已触发，触发不等于任务质量已证明。
+`features` 列出保留功能的配置、依赖和当前可用条件。每项的 `effect` 另行汇总现有专用观察计数：`not-observed` 表示没有实际效果记录，`applied` 表示已执行动作，`failed` 表示已发生失败，`mixed` 表示成功与失败并存，`not-applicable` 表示已明确判断当前条件不适用，`not-applied` 表示有其他决策但未采用。`lastStatus` 和 `lastReason` 取最近一次决定；同一设置对应多个计数器时按决定时间和步骤选择，不按定义顺序。没有专用计数器时也保持未观察；关闭功能不会清除此前记录。配置就绪不等于已触发，触发不等于任务质量已证明。
 `feature <设置名>` 查看单项，末尾加 `on` 或 `off` 修改布尔设置。
 `toolSurface` 接受 `compact` 或 `full`；`defaultResponseView` 接受 `full` 或 `reference-if-visible`。
 `qualityReviewEffort` 接受 `auto`、`inherit`、`low`、`medium`、`high` 或 `max`，只控制交付复核。

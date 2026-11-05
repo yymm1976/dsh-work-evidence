@@ -61,6 +61,20 @@ export function featurePatch(name,value){
   return {[key]:value==='on'};
 }
 
+/** A setting can own several effect counters; the latest one is chosen by decision time, not definition order. */
+export function latestObservedEffect(counters){
+  return counters.filter(item=>item.lastStatus&&item.lastStatus!=='not-observed').reduce((last,item)=>{
+    if(!last)return item;
+    const at=String(item.lastAt??''),previous=String(last.lastAt??'');
+    if(at!==previous){
+      if(!at)return last;
+      if(!previous)return item;
+      return at>previous?item:last;
+    }
+    return (item.lastStep??-1)>=(last.lastStep??-1)?item:last;
+  },null);
+}
+
 /** Local readiness only. A saved switch and available dependencies do not prove task success. */
 export function createFeatureControl(ctx,runtime,{available,canRecall,workingSet,qualityReview,compactionHandoff,retainedCompute,effects}){
   const service=name=>{try{return ctx.get(name);}catch{return null;}};
@@ -121,7 +135,7 @@ export function createFeatureControl(ctx,runtime,{available,canRecall,workingSet
       const count=field=>counters.reduce((sum,item)=>sum+(item[field]??0),0);
       const effectStatus=!counters.length||count('decisions')===0?'not-observed':count('applied')&&count('failed')?'mixed':
         count('applied')?'applied':count('failed')?'failed':count('notApplicable')?'not-applicable':'not-applied';
-      const last=counters.findLast(item=>item.lastStatus&&item.lastStatus!=='not-observed');
+      const last=latestObservedEffect(counters);
       return {key,label,purpose,configured,packageDefault:PACKAGE_DEFAULTS[key],status,reasons,
         effect:{status:effectStatus,decisions:count('decisions'),applied:count('applied'),failed:count('failed'),
           deferred:count('deferred'),notApplicable:count('notApplicable'),unavailable:count('unavailable'),

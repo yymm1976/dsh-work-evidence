@@ -3,8 +3,22 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import {defaults,RETIRED_SETTINGS} from '../runtime.mjs';
-import {featureDefinition,featurePatch} from '../feature-control.mjs';
+import {featureDefinition,featurePatch,latestObservedEffect} from '../feature-control.mjs';
 import {startHost,load,text,tool,toolNames} from './helpers/host.mjs';
+
+test('latest observed effect follows decision time rather than definition order',()=>{
+  const older={lastStatus:'applied',lastReason:'older',lastAt:'2026-11-06T00:00:00.000Z',lastStep:1};
+  const newer={lastStatus:'applied',lastReason:'newer',lastAt:'2026-11-06T00:00:01.000Z',lastStep:2};
+  assert.equal(latestObservedEffect([newer,older]).lastReason,'newer');
+  assert.equal(latestObservedEffect([older,newer]).lastReason,'newer');
+  const step2={...older,lastAt:'2026-11-06T00:00:02.000Z',lastStep:2,lastReason:'step-2'};
+  const step3={...older,lastAt:'2026-11-06T00:00:02.000Z',lastStep:3,lastReason:'step-3'};
+  assert.equal(latestObservedEffect([step3,step2]).lastReason,'step-3');
+  assert.equal(latestObservedEffect([older,{lastStatus:'not-observed'}]).lastReason,'older');
+  assert.equal(latestObservedEffect([]),null);
+  const legacy=[{lastStatus:'applied',lastReason:'first'},{lastStatus:'applied',lastReason:'second'}];
+  assert.equal(latestObservedEffect(legacy).lastReason,'second');
+});
 
 test('every retained switch has an explicit feature entry and retired fields cannot claim activation',()=>{
   for(const [key,value]of Object.entries(defaults()))if(typeof value==='boolean'&&!RETIRED_SETTINGS.includes(key)){
