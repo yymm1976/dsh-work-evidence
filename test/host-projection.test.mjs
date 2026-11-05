@@ -54,6 +54,7 @@ test('a projected host request links its plan to matched source results',async()
   assert.ok(matched.every(row=>Number.isSafeInteger(row.sourceSeq)&&row.projectionObservation.resultSeqs.length>0));
   const audit=auditCacheTransitions(observed.events,accounting);
   assert.ok(audit.items.some(item=>item.observationKind==='projection-matched'&&item.resultScope==='full-plan'));
+  assert.ok(!audit.items.some(item=>item.reasons.includes('restored-result-still-projected')),'restored entries do not invalidate remaining projections');
 });
 
 test('projection and its restoration switch must both be enabled',async()=>{

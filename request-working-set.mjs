@@ -520,8 +520,7 @@ export function createRequestWorkingSet(ctx,runtime,economics,taskFlow){
           if(assembled.role!=='tool'||(assembled.content??[]).some(block=>block.type!=='text'))return unknown('replaced-result-shape-mismatch',planSeq,planMessageId);
           const expected=[{type:'text',text:pointerText(entry,original)}];
           if(sameJson(assembled.content,expected)){
-            if(state.restored.has(entry.seq))return unknown('restored-result-still-projected',planSeq,planMessageId);
-            resultSeqs.push(entry.seq);
+            if(!state.restored.has(entry.seq))resultSeqs.push(entry.seq);
           }else if(!sameJson(assembled.content,originalMessage.content)){
             return unknown('replaced-result-content-mismatch',planSeq,planMessageId);
           }
