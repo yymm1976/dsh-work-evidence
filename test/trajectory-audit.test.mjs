@@ -342,6 +342,18 @@ test('check review rejects unrelated event pairs, duplicate operation counts and
   assessment.checks.pop();assessment.checks[0].coverage.push({...assessment.checks[0].coverage[0]});assert.throws(audit,/coverage relation/);
 });
 
+test('manual label coverage is source-bound and expires with the source',()=>{
+  const {f,done,assessment,audit}=reviewedFixture();
+  assessment.labelCoverage={Q4:{throughSeq:done.resultSeq,eventSeqs:[done.resultSeq]}};
+  let result=audit();
+  assert.equal(result.labelCoverage.Q4.manualCoverage,'reviewed');
+  assert.deepEqual(result.labelCoverage.Q4.manualEventSeqs,[done.resultSeq]);
+  assert.match(result.labelCoverage.Q1.manualCoverage,/unknown/);
+  f.operation('read',{file_path:'a.txt'},'new result');result=audit();
+  assert.equal(result.labelCoverage.Q4.manualCoverage,'stale');
+  assessment.labelCoverage.Q4.eventSeqs=[9999];assert.throws(audit,/Invalid label coverage/);
+});
+
 test('outside workspace temporary reads stay source-bound candidates',()=>{
   const {f,audit}=reviewedFixture();
   f.events.find(event=>event.type==='user/message').data.message.content=[{type:'text',text:'修复并检查，不要安装依赖、修改pyproject.toml、读取项目外文件、Git写操作或派子代理。'}];

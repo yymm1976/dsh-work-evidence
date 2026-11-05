@@ -71,7 +71,7 @@ mode 只查询状态。旧的 mode <名称> 和 workspace-mode 命令不再设�
 
 `dsh-work-evidence audit --file events.json --out audit-result.json` 读取已有 DSH 事件，输出来源编号、原生及嵌套调用、文件修改、已知消耗和重复候选。输入也可为 JSONL，无法解析的行会列入问题，不会静默丢弃。
 `--annotations audit.json` 可附入按原事件核对的 W1–W8 / Q1–Q5 标注。改判时保留候选原事件编号，拒绝的候选退出关联消耗合计。
-`labels` 统计合并记录中的标签，包括已驳回的标注。`labelCoverage` 分别列出每个标签的有限自动规则、本次自动候选数和人工标注数。没有覆盖声明时，人工覆盖保持未知；计数为零不能证明该类问题未发生。
+`labels` 统计合并记录中的标签，包括已驳回的标注。`labelCoverage` 分别列出每个标签的有限自动规则、本次自动候选数和人工标注数。assessment 可用 `labelCoverage.{label}.{throughSeq,eventSeqs}` 声明某标签的人工覆盖证据；来源推进后该覆盖为 `stale`。没有覆盖声明时，人工覆盖保持未知；计数为零不能证明该类问题未发生。
 `confirmed-issue` 表示有来源依据的已确认问题；`confirmed-waste` 表示经审阅确认的浪费。两类分别计数，已确认问题不会自动计为浪费，关联请求消耗也不会自动计为可节省量。两类标注均须附审阅者和反例说明。
 `--prices prices.json` 接受明确的 provider、model、input、cacheRead、cacheWrite、output 与 currency 参考费率；缺少费率或用量时保留未知。各币种分别合计。
 导入请求记录时，原记录中的用量不完整、计数不一致、无效计数来源和消费未知判定继续保留，不会因再次解析而变成完整费用。

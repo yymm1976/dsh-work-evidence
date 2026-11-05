@@ -397,6 +397,20 @@ function auditedUsage(input,normalized,pricing,requestAccounting){
       requestAccounting.status:'native agent attempts only; auxiliary consumption not established'};
 }
 
+function manualLabelCoverage(input,normal){
+  if(input===undefined)return {};
+  if(!input||typeof input!=='object'||Array.isArray(input))throw Error('Assessment labelCoverage must be an object keyed by audit label');
+  const result={};
+  for(const [label,row] of Object.entries(input)){
+    if(!AUDIT_LABELS.includes(label)||!row||!integer(row.throughSeq)||row.throughSeq>normal.throughSeq||
+      !Array.isArray(row.eventSeqs)||!row.eventSeqs.length||row.eventSeqs.some(seq=>!normal.seqs.has(seq)||seq>row.throughSeq))
+      throw Error('Invalid label coverage at '+label);
+    result[label]={status:row.throughSeq===normal.throughSeq?'reviewed':'stale',throughSeq:row.throughSeq,
+      eventSeqs:[...new Set(row.eventSeqs)].slice(0,32),eventSeqsOmitted:Math.max(0,new Set(row.eventSeqs).size-32)};
+  }
+  return result;
+}
+
 function checkedAnnotations(input,seqs,requestSeqs){
   if(!Array.isArray(input)||input.length>10000)throw Error('annotations must be an array of at most 10000 entries');
   return input.map((row,index)=>{
@@ -700,12 +714,15 @@ export function auditDshSession(input,{sourceId=null,annotations=[],pricing=[],p
     W3:'repeated failures with the same user request, tool, arguments, mutation epoch and first non-empty result line',
     W8:'repeated failures with the same user request, tool, arguments, mutation epoch and first non-empty result line'
   };
+  const manualCoverage=manualLabelCoverage(assessment?.labelCoverage,normal);
   const labelCoverage=Object.fromEntries(AUDIT_LABELS.map(label=>[label,{
     automatic:automaticScopes[label]??'none',
     automaticCandidates:candidates.filter(row=>row.labels.includes(label)).length,
     explicitAnnotations:reviewed.filter(row=>row.labels.includes(label)).length,
     reviewedAnnotations:reviewed.filter(row=>row.labels.includes(label)&&row.classification!=='candidate').length,
-    manualCoverage:'unknown; no source-bound coverage declaration is available',
+    manualCoverage:manualCoverage[label]?.status??'unknown; no source-bound coverage declaration is available',
+    ...(manualCoverage[label]?{manualThroughSeq:manualCoverage[label].throughSeq,manualEventSeqs:manualCoverage[label].eventSeqs,
+      manualEventSeqsOmitted:manualCoverage[label].eventSeqsOmitted}:{}),
     zeroMeaning:'A zero count means no matching merged record, not zero occurrences. Unreviewed or unobserved occurrences remain unknown.',
     associatedTokens:'not-savings'
   }]));
