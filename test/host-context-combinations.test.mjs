@@ -43,6 +43,8 @@ test('folding, projection, native compaction and disabled-state recall preserve 
     await host.ctx.compaction.compactIfNeeded(agent,'pressure',AbortSignal.timeout(30000));
     const pressure=(await host.command(agent,'detail')).detail.compression.nativeHandoff;
     assert.ok(pressure.deferredPressure>0,JSON.stringify(pressure));
+    const deferral=(await host.command(agent,'feature deferPressureCompaction')).features[0];
+    assert.equal(deferral.effect.status,'applied');assert.ok(deferral.effect.applied>0);
     await host.ctx.compaction.compactNow(agent,AbortSignal.timeout(30000));
     const compacted=(await host.command(agent,'detail')).detail.compression.nativeHandoff;
     assert.equal(compacted.committed,1);assert.equal(compacted.stubSummaries,1);

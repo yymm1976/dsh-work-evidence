@@ -24,6 +24,8 @@ test('JSON repair precedes authorized continuation and only the completed delive
     assert.equal(await fs.readFile(path.join(host.cwd,'a.txt'),'utf8'),'first\n');
     assert.equal(await fs.readFile(path.join(host.cwd,'b.txt'),'utf8'),'second\n');
     assert.deepEqual(notices(host).map(event=>event.data.source.kind),['work-evidence-final-json','work-evidence-completion']);
+    const completion=(await host.command(agent,'feature completionNotice')).features[0];
+    assert.equal(completion.effect.status,'applied');assert.equal(completion.effect.applied,1);
     assert.equal(payloads.length,1,'The intermediate stage does not consume a paid review.');
     assert.match(payloads[0].answer.text,/"b.txt"/);
     assert.ok(payloads[0].observed.artifacts.some(item=>item.path.endsWith('b.txt')));

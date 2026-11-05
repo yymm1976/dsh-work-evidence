@@ -400,6 +400,7 @@ export function createCompactionHandoff(ctx,runtime,taskFlow,{canRecall=()=>fals
         state.deferredPressure=(state.deferredPressure??0)+1;
         state.lastDeferral={canonicalPromptTokens:total,effectivePromptTokens:effective,nativeThresholdTokens:nativeThreshold,
           method:'observed request usage plus effective-view growth; native threshold retained with 5% estimation margin'};
+        runtime.effects?.decide(agent,'deferPressureCompaction','applied','effective-view-below-native-threshold',{effectivePromptTokens:effective,nativeThresholdTokens:nativeThreshold});
         return null;
       }
       return originalCompact.call(this,agent,trigger,signal);
