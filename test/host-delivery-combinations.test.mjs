@@ -30,6 +30,8 @@ test('JSON repair precedes authorized continuation and only the completed delive
     assert.match(payloads[0].answer.text,/"b.txt"/);
     assert.ok(payloads[0].observed.artifacts.some(item=>item.path.endsWith('b.txt')));
     const status=await host.command(agent,'detail');assert.equal(status.qualityReview.status,'clean');
+    const review=(await host.command(agent,'feature qualityReview')).features[0];
+    assert.equal(review.effect.status,'applied');assert.equal(review.effect.lastReason,'review-completed-no-supported-gap');
     assert.equal(status.finalJson?.unresolvedSyntax??null,null);
     console.log('delivery',JSON.stringify({syntaxNotices:1,continuationNotices:1,reviewCalls:payloads.length,
       writes:2,completed:true}));

@@ -479,7 +479,10 @@ export function createQualityReview(ctx,runtime,taskFlow,finalJson,{willContinue
         latest.events.some(event=>feedback(event)&&messageOf(event).source.qualityReview?.afterSeq===current.assistant.seq)){
         await record(agent,'unavailable','context-changed',current.assistant.seq,{usage:result.usage,reviewEffort,sourceReview});return;
       }
-      if(!issues.length){await record(agent,'clean','no-supported-gap',current.assistant.seq,{usage:result.usage,reviewEffort,sourceReview});return;}
+      if(!issues.length){
+        runtime.effects?.decide(agent,'qualityReview','applied','review-completed-no-supported-gap',{afterSeq:current.assistant.seq,issueCount:0});
+        await record(agent,'clean','no-supported-gap',current.assistant.seq,{usage:result.usage,reviewEffort,sourceReview});return;
+      }
       agent.steer({id:randomUUID(),role:'user',source:{kind:SOURCE,qualityReview:{version:VERSION,key,
         requestSeq:current.request.seq,afterSeq:current.assistant.seq,mutationVersion:review.mutation.version,
         evidenceHighWater:review.evidenceHighWater.seq,sourceReview}},content:[{type:'text',text:
