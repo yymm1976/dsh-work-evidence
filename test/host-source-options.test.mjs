@@ -8,7 +8,7 @@ const JAVA='package demo;\npublic class Calc {\n  public int add(int a, int b) {
 const output=host=>host.events.filter(e=>e.type==='tool/result').map(e=>{const body=e.data.message.content.map(b=>b.text??'').join('');try{return JSON.parse(body);}catch{return {error:e.data.message.isError,text:body};}});
 async function run(workspace,steps,setup){
   const host=await startHost({workspace:{toolSurface:'full',...workspace},script:(_o,n)=>steps[n-1]??[text('完成。')]});
-  try{await setup(host.cwd);const agent=await host.createAgent('max');await host.send(agent,'按指定范围读取源码');return {results:output(host),status:await host.command(agent,'detail')};}
+  try{await setup(host.cwd);const agent=await host.createAgent('max');await host.send(agent,'按指定范围读取源码');return {results:output(host),status:await host.command(agent,'detail'),features:(await host.command(agent,'features')).features};}
   finally{await host.close();}
 }
 
@@ -38,6 +38,8 @@ test('memberParsing finds Java method bodies with parsing on and with its lexica
       async cwd=>{await fs.mkdir(path.join(cwd,'src'));await fs.writeFile(path.join(cwd,'src','Calc.java'),JAVA);});
     const body=JSON.stringify(observed.results[0]);
     assert.equal(observed.results[0].sources[0].parser.mode,memberParsing?'tree-sitter':'lexical');
+    const effect=observed.features.find(item=>item.key==='memberParsing').effect;
+    assert.equal(effect.status,memberParsing?'applied':'not-applicable');
     assert.ok(body.includes('return a + b;'));
     assert.ok(!body.includes('return a - b;'),'the unrelated method body is not included');
   }
@@ -52,8 +54,10 @@ test('mavenSourceBinding requires coordinates and selects a matching sources jar
   }
   const on=await run({},steps,setup),off=await run({mavenSourceBinding:false},steps,setup);
   assert.equal(on.results[0].selected.mavenBinding.state,'matched');
+  assert.equal(on.features.find(item=>item.key==='mavenSourceBinding').effect.status,'applied');
   assert.match(JSON.stringify(on.results[0]),/return a \+ b/);
   assert.equal(off.results[0].selected?.mavenBinding,undefined);
+  assert.equal(off.features.find(item=>item.key==='mavenSourceBinding').effect.status,'not-observed');
   const mismatch=await run({},steps,async cwd=>{
     await setup(cwd);
     await fs.writeFile(path.join(cwd,'math-1.0-sources.jar'),buildZip([{name:'demo/Calc.java',data:JAVA},

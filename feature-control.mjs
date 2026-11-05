@@ -117,7 +117,8 @@ export function createFeatureControl(ctx,runtime,{available,canRecall,workingSet
       if(key==='enabled'&&state.sessionEnabledOverride===true&&configured===false)reasons.push('session-override-on');
       const counters=Object.entries(observedFeatures).filter(([name])=>featureSetting(name)===key).map(([,item])=>item);
       const count=field=>counters.reduce((sum,item)=>sum+(item[field]??0),0);
-      const effectStatus=!counters.length||count('decisions')===0?'not-observed':count('applied')&&count('failed')?'mixed':count('applied')?'applied':count('failed')?'failed':'not-applied';
+      const effectStatus=!counters.length||count('decisions')===0?'not-observed':count('applied')&&count('failed')?'mixed':
+        count('applied')?'applied':count('failed')?'failed':count('notApplicable')?'not-applicable':'not-applied';
       const last=counters.findLast(item=>item.lastStatus&&item.lastStatus!=='not-observed');
       return {key,label,purpose,configured,packageDefault:PACKAGE_DEFAULTS[key],status,reasons,
         effect:{status:effectStatus,decisions:count('decisions'),applied:count('applied'),failed:count('failed'),

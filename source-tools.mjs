@@ -5,6 +5,12 @@ import {dependencySource} from './dependency-source.mjs';
 import {evidenceArgumentError} from "./recovery.mjs";
 
 export function registerSourceTools({ctx,nativeFiles,runtime,state,effects,evidenceViews,index,candidates,call,read,search,snippets,sourceReferences,disabledResult,output,parameters}){
+  const observeSourceResolution=(exec,resolution)=>{
+    const parser=resolution.source?.parser;
+    if(parser)effects.decide(exec.agent,'memberParsing',parser.mode==='tree-sitter'?'applied':'not-applicable',parser.fallbackReason??parser.mode);
+    if(resolution.selected?.mavenBinding&&resolution.source?.state==='observed')
+      effects.decide(exec.agent,'mavenSourceBinding','applied','selected-archive-coordinate-binding');
+  };
   ctx.tools.register({name:'project_evidence',description:'取得真实源码：entry读工程入口，locate按query定位，failure回看实际失败；read按files读取1至4个范围；archive读取指定的工作区jar/zip条目；source按类名在当前工作区或匹配当前工程版本的源码归档中选择真实来源，并可按member返回成员窗口。归档仅在内存读取，不解压；版本冲突或成员未命中保留为未解决，不判根因或宣告业务覆盖。',
     parameters:{...parameters({lineTextLimit:{type:'integer',minimum:1,maximum:12000,description:'source/archive/read: maximum characters per source line. A larger explicit value can recover a previously clipped line; native read or total budget limits remain explicit.'},responseView:{type:'string',enum:['full','reference-if-visible'],description:'source/archive/read: default full unless the workspace sets defaultResponseView. A reference is returned only when this exact complete body is proven visible in the current model request; request full to re-read current source.'},maxChars:{type:'integer',minimum:2000,maximum:64000,description:'Serialized evidence string budget, not tokens. Omitted items retain locators and completeness limits.'},mode:{type:'string',enum:['entry','locate','failure','read','archive','source']},query:{type:'string'},queries:{type:'array',minItems:1,maxItems:4,description:'Only mode source, standalone: batch up to 4 independent class lookups in one call. Each item {query, member|members, entryKind?}.',items:{type:'object',additionalProperties:false,properties:{query:{type:'string'},member:{type:'string'},members:{type:'array',minItems:1,maxItems:8,items:{type:'string'}},entryKind:{type:'string',enum:['types','runtime']}},required:['query']}},member:{type:'string',description:'source (with query) or archive (with archive+entry): return this member\'s window inside the selected source.'},members:{type:'array',minItems:1,maxItems:8,items:{type:'string'},description:'source (with query) or archive (with archive+entry): return windows for these members inside the selected source.'},scope:{type:'string'},includeReferences:{type:'boolean',description:'Only mode source: opt in to bounded project textual references; no automatic caller expansion.'},referenceScope:{type:'string',description:'Workspace scope for optional references; defaults to scope or src.'},entryKind:{type:'string',enum:['types','runtime'],description:'Only mode source: select npm type declarations or runtime entry; ambiguous conditional exports remain unresolved.'},error_text:{type:'string'},archive:{type:'string',description:'Only mode archive: required workspace jar/zip path; also requires entry. For class lookup use mode source and query without archive.'},entry:{type:'string',description:'Only mode archive: required exact relative path inside archive, e.g. net/example/ClassName.java. mode archive does not list entries.'},offset:{type:'integer',minimum:1},limit:{type:'integer',minimum:1,maximum:160},files:{type:'array',minItems:1,maxItems:4,items:{type:'object',additionalProperties:false,properties:{path:{type:'string'},offset:{type:'integer',minimum:1},limit:{type:'integer',minimum:1,maximum:160}},required:['path']}}}),required:['mode']},output,isConcurrencySafe:args=>args?.mode!=='archive'&&args?.mode!=='source',
     async execute(args,exec){
@@ -68,13 +74,14 @@ export function registerSourceTools({ctx,nativeFiles,runtime,state,effects,evide
           // declaration context; per-item states stay separate so one miss never hides another hit.
           // Sequential on purpose: the first lookup warms the archive-location cache the rest reuse.
           const resolutions=[];
-          for(const q of args.queries){const {queries:_drop,...rest}=args;resolutions.push(await dependencySource(root,{...rest,query:q.query,member:q.member,members:q.members,entryKind:q.entryKind},exec,call));}
+          for(const q of args.queries){const {queries:_drop,...rest}=args;const resolution=await dependencySource(root,{...rest,query:q.query,member:q.member,members:q.members,entryKind:q.entryKind},exec,call);observeSourceResolution(exec,resolution);resolutions.push(resolution);}
           facts.queries=resolutions.map((resolution,index)=>({query:args.queries[index].query,selectionState:resolution.selectionState,selected:resolution.selected??null}));
           facts.selectionState=resolutions.every(r=>r.selectionState==='selected')?'selected':resolutions.some(r=>r.selectionState==='selected')?'mixed':'unselected';
           facts.sources=resolutions.map(r=>r.source).filter(source=>source);
           facts.coverage='每次查询独立选择来源；命中窗口仅证明所列成员，未命中查询保留未解决，不证明其它版本不存在。';
         }else{
           const resolution=await dependencySource(root,args,exec,call);
+          observeSourceResolution(exec,resolution);
           const {source,selected,selectionState,candidates,...summary}=resolution;
           facts.sourceResolution={...summary,...(selectionState!=='selected'||candidates?.length>1?{candidates}: {})};
           facts.selectionState=resolution.selectionState;
