@@ -405,3 +405,20 @@ test('a user-named missing interpreter is not replaced by PATH in the retry hint
     await host.close();
   }
 });
+
+test('a mixed interpreter declaration keeps the required path instead of falling back to PATH', async () => {
+  const missing = 'C:/definitely-missing-work-evidence/node.exe';
+  const host = await startHost({script: (options, n) => n === 1
+    ? [tool('work_exec', {runtime: 'node', executable: missing, code: 'console.log(1);'})]
+    : [text('完成。')]});
+  try {
+    const agent = await host.createAgent('max');
+    await host.send(agent, '不要使用 C:/definitely-missing-work-evidence/old/node.exe；使用 ' + missing + ' 运行程序。');
+    const [failed] = outputs(host);
+    assert.equal(failed.error.code, 'WORK_EXEC_EXECUTABLE_NOT_FOUND');
+    assert.match(failed.retry, /names a specific interpreter path/);
+    assert.doesNotMatch(failed.retry, /explicitly set executable/);
+  } finally {
+    await host.close();
+  }
+});

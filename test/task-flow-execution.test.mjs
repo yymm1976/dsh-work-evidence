@@ -506,7 +506,11 @@ test('the next user request and successful program clear a prior clipped-read is
 
 test('a user-named interpreter path is not replaced by PATH unless fallback is allowed', () => {
   for (const [text, fallback] of [['使用 C:\\named\\node.exe 执行程序', false],
-    ['不要使用 C:\\named\\node.exe，改用 PATH 中的 node', true]]) {
+    ['不要使用 C:\\named\\node.exe，改用 PATH 中的 node', true],
+    ['不要使用 C:\\old\\node.exe；使用 C:\\named\\node.exe 执行程序', false],
+    ['Do not use C:\\old\\node.exe; use C:\\named\\node.exe', false],
+    ['The old Node is unavailable; use C:\\named\\node.exe', false],
+    ['不要使用 PATH 中的 node，使用 C:\\named\\node.exe', false]]) {
     const t = timeline({stepPacing: false});
     t.agent.session.log.find(event => event.type === 'user/message').data.message.content = [{type: 'text', text}];
     t.command('work_exec', {runtime: 'node', code: 'x'.repeat(2400)}, {status: 'failed', isError: true, executionOccurred: false,
