@@ -526,6 +526,19 @@ test('malformed recorded tool arguments cannot crash an audit or support a requi
   }
 });
 
+test('settled writes with malformed arguments leave source validity unknown',()=>{
+  for(const args of ['null','[]','1','"text"','{bad',null]){
+    const {f,done,assessment,audit}=reviewedFixture();
+    f.operation('write',args,'written');
+    assessment.throughSeq=f.events.at(-1).seq;
+    assessment.checks=[recordedCheck(f,done,'source','addresses')];
+    assessment.checks[0].coverage[0].scopePaths=['a.txt'];
+    const result=audit();
+    assert.ok(result.problems.some(problem=>problem.reason==='invalid-tool-call-arguments'),String(args));
+    assert.equal(result.requirements.requirements[0].status,'unknown',String(args));
+  }
+});
+
 test('a repeated check is identified independently of argument property order',()=>{
   const {f,assessment,audit}=reviewedFixture();
   const failed=f.operation('read',{file_path:'a.txt',offset:1},'failed',{failed:true});
