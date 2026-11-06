@@ -124,6 +124,8 @@ test('stepPacing controls actual output-usage guidance',async()=>{
   const steps=Array.from({length:4},()=>[tool('pwsh',{command:'echo ok',description:'observe'})]);
   const usage=()=>({inputTokens:1000,outputTokens:6500,cacheReadTokens:0,totalTokens:7500});
   const on=await scenario({},'修改项目并观察结果',steps,{usage}),off=await scenario({stepPacing:false},'修改项目并观察结果',steps,{usage});
+  assert.ok(on.status.detail.observability.features.stageJudgment.applied>0);
+  assert.equal(off.status.detail.observability.features.stageJudgment?.applied??0,0);
   assert.ok(on.status.detail.observability.features.stepPacing.applied>0);
   assert.equal(off.status.detail.observability.features.stepPacing.applied,0);
   assert.ok(!off.body.includes('本次使用激进优化'));
