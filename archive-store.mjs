@@ -19,6 +19,28 @@ export function archiveDecoderStatus(){
 }
 const MAX_ARCHIVE=128*1024*1024,MAX_ENTRY=8*1024*1024,MAX_SESSION=128*1024*1024,MAX_TOTAL=256*1024*1024;
 const sessions=new Map();
+let activeArchives=0;
+const archiveWaiters=[];
+async function withArchiveSlot(signal,operation){
+  signal?.throwIfAborted();
+  if(activeArchives<2)activeArchives++;
+  else await new Promise((resolve,reject)=>{
+    const waiter={resolve,signal,abort:null};
+    waiter.abort=()=>{
+      const index=archiveWaiters.indexOf(waiter);
+      if(index>=0)archiveWaiters.splice(index,1);
+      reject(signal.reason);
+    };
+    archiveWaiters.push(waiter);
+    signal?.addEventListener('abort',waiter.abort,{once:true});
+  });
+  try{signal?.throwIfAborted();return await operation();}
+  finally{
+    const next=archiveWaiters.shift();
+    if(next){next.signal?.removeEventListener('abort',next.abort);next.resolve();}
+    else activeArchives--;
+  }
+}
 const normalize=name=>name.replaceAll('\\','/');
 const unavailable=(archive,error)=>({state:'unavailable',archive,code:error.code||'ARCHIVE_READ_UNAVAILABLE',message:String(error.message).slice(0,1200)});
 function fail(code,message){const error=new Error(message);error.code=code;throw error;}
@@ -118,15 +140,17 @@ function mavenDescriptors(record){
 }
 export async function listArchiveEntries(root,archive,exec,{mavenMetadata=false}={}){
   try{
-    const {record,cache}=await openArchive(root,archive,exec);let manifestText='',manifestError=null;
-    if(record.byName.has('META-INF/MANIFEST.MF'))try{manifestText=entryText(record,'META-INF/MANIFEST.MF',65536).text;}catch(error){manifestError={code:error.code,message:error.message};}
-    return {state:'observed',archive:record.file,entries:record.entries.map(entry=>entry.name),manifestText,manifestError,cache,
-      ...(mavenMetadata?{mavenMetadata:mavenDescriptors(record)}:{})};
+    return await withArchiveSlot(exec.signal,async()=>{
+      const {record,cache}=await openArchive(root,archive,exec);let manifestText='',manifestError=null;
+      if(record.byName.has('META-INF/MANIFEST.MF'))try{manifestText=entryText(record,'META-INF/MANIFEST.MF',65536).text;}catch(error){manifestError={code:error.code,message:error.message};}
+      return {state:'observed',archive:record.file,entries:record.entries.map(entry=>entry.name),manifestText,manifestError,cache,
+        ...(mavenMetadata?{mavenMetadata:mavenDescriptors(record)}:{})};
+    });
   }catch(error){if(exec.signal?.aborted)throw error;return unavailable(archive,error);}
 }
 export async function readArchiveEntry(root,archive,entry,exec){
   const name=typeof entry==='string'?normalize(entry):'';
   if(!name||name.length>2000||name.includes('\0')||name.startsWith('/')||/^[A-Za-z]:/.test(name)||name.split('/').includes('..'))return unavailable(archive,{code:'ARCHIVE_ENTRY_INVALID',message:'Entry must be a relative archive path.'});
-  try{const {record,cache}=await openArchive(root,archive,exec);const value=entryText(record,name);return {state:'observed',archive:record.file,entry:name,...value,cache};}
+  try{return await withArchiveSlot(exec.signal,async()=>{const {record,cache}=await openArchive(root,archive,exec);const value=entryText(record,name);return {state:'observed',archive:record.file,entry:name,...value,cache};});}
   catch(error){if(exec.signal?.aborted)throw error;return {...unavailable(archive,error),entry:name};}
 }

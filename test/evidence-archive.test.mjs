@@ -435,6 +435,50 @@ test('concurrent unversioned archive reads do not share a pending read', async t
   assert.deepEqual(results.map(result => result.text), ['before', 'before']);
 });
 
+test('archive operations limit concurrent buffers and release slots after failure or cancellation', async t => {
+  const fixture = await makeArchive(t, [{name: 'source.txt', data: 'before'}]);
+  const stat = fixture.exec.nativeFiles.stat;
+  fixture.exec.nativeFiles.stat = async (...args) => ({...await stat(...args), version: null});
+  const readBytes = fixture.exec.nativeFiles.readBytes;
+  let active = 0;
+  let peak = 0;
+  let started = 0;
+  let signalStarted;
+  const twoStarted = new Promise(resolve => { signalStarted = resolve; });
+  let releaseReads;
+  const gate = new Promise(resolve => { releaseReads = resolve; });
+  t.after(() => releaseReads());
+  fixture.exec.nativeFiles.readBytes = async (...args) => {
+    active++;
+    peak = Math.max(peak, active);
+    const readNumber = ++started;
+    if (readNumber === 2) signalStarted();
+    try {
+      await gate;
+      if (readNumber === 1) throw Object.assign(new Error('read failed'), {code: 'READ_FAILED'});
+      return await readBytes(...args);
+    } finally {
+      active--;
+    }
+  };
+  const first = readArchiveEntry(fixture.directory, fixture.archive, 'source.txt', fixture.exec);
+  const second = readArchiveEntry(fixture.directory, fixture.archive, 'source.txt', fixture.exec);
+  await twoStarted;
+  const controller = new AbortController();
+  const cancelled = readArchiveEntry(fixture.directory, fixture.archive, 'source.txt', {...fixture.exec, signal: controller.signal});
+  const last = readArchiveEntry(fixture.directory, fixture.archive, 'source.txt', fixture.exec);
+  await new Promise(resolve => setTimeout(resolve, 40));
+  assert.equal(started, 2);
+  controller.abort();
+  await assert.rejects(cancelled, {name: 'AbortError'});
+  releaseReads();
+  const results = await Promise.all([first, second, last]);
+  assert.equal(results[0].code, 'READ_FAILED');
+  assert.equal(results[2].text, 'before');
+  assert.equal(started, 3);
+  assert.equal(peak, 2);
+});
+
 test('a versioned archive reuses its cached contents while its version is unchanged', async t => {
   const fixture = await makeArchive(t, [{name: 'source.txt', data: 'unchanged'}]);
   const first = await readArchiveEntry(fixture.directory, fixture.archive, 'source.txt', fixture.exec);
