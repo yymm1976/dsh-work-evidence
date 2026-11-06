@@ -161,6 +161,33 @@ function entryText(record,name,maxBytes=MAX_ENTRY){
   if(!Number.isSafeInteger(end)||end>archive.length||!archive.subarray(offset+30,offset+30+nameLength).equals(entry.nameBytes)||
     archive.readUInt16LE(offset+6)!==entry.flags||archive.readUInt16LE(offset+8)!==entry.compression)
     fail('ARCHIVE_ENTRY_UNAVAILABLE','Entry local header differs from its directory.');
+  if(!(entry.flags&8)){
+    let size=archive.readUInt32LE(offset+18),originalSize=archive.readUInt32LE(offset+22);
+    if(size===0xffffffff||originalSize===0xffffffff){
+      let cursor=offset+30+nameLength,found=false;
+      const extraEnd=cursor+extraLength;
+      while(cursor+4<=extraEnd){
+        const kind=archive.readUInt16LE(cursor),length=archive.readUInt16LE(cursor+2),payload=cursor+4;
+        if(payload+length>extraEnd)break;
+        if(kind===1){
+          let position=payload;
+          const field=()=>{
+            if(position+8>payload+length)fail('ARCHIVE_ENTRY_UNAVAILABLE','Entry ZIP64 local header is incomplete.');
+            const value=archive.readBigUInt64LE(position);position+=8;
+            if(value>BigInt(Number.MAX_SAFE_INTEGER))fail('ARCHIVE_ENTRY_UNAVAILABLE','Entry ZIP64 local header is invalid.');
+            return Number(value);
+          };
+          if(originalSize===0xffffffff)originalSize=field();
+          if(size===0xffffffff)size=field();
+          found=true;break;
+        }
+        cursor=payload+length;
+      }
+      if(!found)fail('ARCHIVE_ENTRY_UNAVAILABLE','Entry ZIP64 local header is missing.');
+    }
+    if(archive.readUInt32LE(offset+14)!==entry.crc||size!==entry.size||originalSize!==entry.originalSize)
+      fail('ARCHIVE_ENTRY_UNAVAILABLE','Entry local header differs from its directory.');
+  }
   let buffer;
   if(entry.compression===0)buffer=archive.subarray(start,end);
   else try{

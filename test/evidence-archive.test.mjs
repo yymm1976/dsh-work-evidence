@@ -411,11 +411,29 @@ test('archive entry reads reject an incorrect checksum', async t => {
     const archive = `checksum-${method}.zip`;
     const zip = buildZip([{name: 'source.txt', data: 'intact', method}]);
     const central = zip.indexOf(Buffer.from([0x50, 0x4b, 0x01, 0x02]));
+    zip.writeUInt32LE(0, 14);
     zip.writeUInt32LE(0, central + 16);
     await fs.writeFile(path.join(directory, archive), zip);
     const result = await readArchiveEntry(directory, archive, 'source.txt', archiveExec(directory));
     assert.equal(result.state, 'unavailable');
     assert.equal(result.code, 'ARCHIVE_ENTRY_CHECKSUM_MISMATCH');
+  }
+});
+
+test('archive entry reads reject local sizes or checksum that conflict with the directory', async t => {
+  const directory = await temporaryDirectory(t);
+  const cases = [
+    {name: 'checksum', offset: 14},
+    {name: 'compressed-size', offset: 18},
+    {name: 'original-size', offset: 22}
+  ];
+  for (const item of cases) {
+    const archive = `${item.name}.zip`;
+    const zip = buildZip([{name: 'source.txt', data: 'intact', method: 8}]);
+    zip.writeUInt32LE(zip.readUInt32LE(item.offset) + 1, item.offset);
+    await fs.writeFile(path.join(directory, archive), zip);
+    const result = await readArchiveEntry(directory, archive, 'source.txt', archiveExec(directory));
+    assert.equal(result.state, 'unavailable', item.name);
   }
 });
 
@@ -484,6 +502,33 @@ test('archive entry reads support ZIP64 directory sizes and offsets', async t =>
   const result = await readArchiveEntry(directory, archive, 'source.txt', archiveExec(directory));
   assert.equal(result.state, 'observed');
   assert.equal(result.text, 'zip64 content');
+});
+
+test('archive entry reads validate ZIP64 sizes in the local header', async t => {
+  const directory = await temporaryDirectory(t);
+  const zip = buildZip([{name: 'source.txt', data: 'zip64 local content', method: 8}]);
+  const centralOffset = zip.indexOf(Buffer.from([0x50, 0x4b, 0x01, 0x02]));
+  const localNameEnd = 30 + zip.readUInt16LE(26);
+  const extra = Buffer.alloc(20);
+  extra.writeUInt16LE(1, 0);
+  extra.writeUInt16LE(16, 2);
+  extra.writeBigUInt64LE(BigInt(zip.readUInt32LE(22)), 4);
+  extra.writeBigUInt64LE(BigInt(zip.readUInt32LE(18)), 12);
+  const local = Buffer.from(zip.subarray(0, localNameEnd));
+  local.writeUInt32LE(0xffffffff, 18);
+  local.writeUInt32LE(0xffffffff, 22);
+  local.writeUInt16LE(extra.length, 28);
+  const end = Buffer.from(zip.subarray(zip.length - 22));
+  end.writeUInt32LE(centralOffset + extra.length, 16);
+  const contents = Buffer.concat([local, extra, zip.subarray(localNameEnd, zip.length - 22), end]);
+  for (const [archive, mismatch] of [['local-zip64.zip', false], ['mismatch-zip64.zip', true]]) {
+    const fixture = Buffer.from(contents);
+    if (mismatch) fixture.writeBigUInt64LE(1n, localNameEnd + 4);
+    await fs.writeFile(path.join(directory, archive), fixture);
+    const result = await readArchiveEntry(directory, archive, 'source.txt', archiveExec(directory));
+    assert.equal(result.state, mismatch ? 'unavailable' : 'observed');
+    if (!mismatch) assert.equal(result.text, 'zip64 local content');
+  }
 });
 
 test('legacy ZIP directories can contain 65535 entries without a ZIP64 locator', async t => {
