@@ -11,13 +11,15 @@
     "./icon": "./icon.svg"
   },
   "scripts": {
-    "check": "node --check runtime.mjs && node --check task-flow.mjs"
+    "check": "node scripts/check-syntax.mjs",
+    "test": "node --test"
   },
   "engines": {
     "node": ">=22.19",
-    "dsh": "0.2.1-rc.2 || 0.2.1-rc.3 || 0.2.1-rc.4 || 0.2.1-rc.5"
+    "dsh": "0.2.1-rc.2 || 0.2.1-rc.3 || 0.2.1-rc.4 || 0.2.1-rc.5 || 0.2.2-rc.1"
   },
   "files": [
+    "scripts/check-syntax.mjs",
     "index.mjs",
     "tool-execution.mjs",
     "ultra-effort.mjs",
@@ -94,7 +96,7 @@
     "fflate": "^0.8.3"
   },
   "peerDependencies": {
-    "@deepseek-ai/dsh-session-reference": "0.2.1-rc.2 || 0.2.1-rc.3 || 0.2.1-rc.4 || 0.2.1-rc.5"
+    "@deepseek-ai/dsh-session-reference": "0.2.1-rc.2 || 0.2.1-rc.3 || 0.2.1-rc.4 || 0.2.1-rc.5 || 0.2.2-rc.1"
   },
   "peerDependenciesMeta": {
     "@deepseek-ai/dsh-session-reference": {
