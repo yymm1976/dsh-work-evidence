@@ -46,8 +46,16 @@ export function inlineScriptEventRef(session,callId){
   return event?'event:'+event.seq:null;
 }
 const DECLARED_EXECUTABLE=/\b(?:existing|installed|available)\b|(?:已有|现有|已经安装|已安装|可用)/iu;
-const PATH_FALLBACK_USE=/(?:改用|切换到|回退到|使用|采用|用)\s*PATH\b|(?:use|fall\s*back\s+to|switch\s+to)\s+(?:the\s+)?PATH\b/iu;
-const PATH_FALLBACK_REJECT=/(?:不要|请勿|禁止|do not|don't|must not|never)[^。；;\n]{0,24}(?:use|使用|用|fall\s*back\s+to|switch\s+to|切换到)[^。；;\n]{0,24}PATH\b/iu;
+const PATH_PERMISSION=/(?:改用|切换到|回退到|使用|采用|用)\s*PATH\b|(?:use|fall\s*back\s+to|switch\s+to)\s+(?:the\s+)?PATH\b|\bor\s+(?:the\s+)?PATH\b/giu;
+const PATH_PROHIBITION=/(?:不要|请勿|禁止|do not|don't|must not|never)[^。；;\n]{0,24}$/iu;
+const PATH_CONTRAST=/(?:\bbut\b|\binstead\b|\brather\b|而是|但是|不过|却|转而)/iu;
+function pathFallbackAllowedIn(clause){
+  for(const match of clause.matchAll(PATH_PERMISSION)){
+    const segment=clause.slice(0,match.index).split(PATH_CONTRAST).at(-1);
+    if(!PATH_PROHIBITION.test(segment))return true;
+  }
+  return false;
+}
 const NEGATED_EXECUTABLE=/\b(?:not|never)\s+(?:existing|installed|available)\b|\bno\s+(?:existing|installed|available)\b|\bunavailable\b|\b(?:do not|don't|must not|should not|never)\s+(?:use|invoke|run|execute)\b|\bdoes\s+not\s+exist\b|(?:不要|请勿|禁止)(?:使用|调用|执行)|(?:不可用|无法使用|不能使用|未安装|不存在|未提供)|(?:未|没有|并非|不是)[^。；;\n]{0,80}(?:解释器|路径|可用|安装|存在|使用|调用)/iu;
 const pythonExecutable=/^python(?:3(?:\.\d+)?)?(?:\.exe)?$/iu,nodeExecutable=/^node(?:\.exe)?$/iu;
 function executablePath(value,runtime){
@@ -69,7 +77,7 @@ function declaredPathFacts(text,runtime){
     const views=quotedPaths.length?[]:[windows,posix];
     const paths=quotedPaths.concat(views.flatMap(view=>[...clause.matchAll(view)].map(match=>executablePath(match[0],runtime))).filter(Boolean));
     const denied=NEGATED_EXECUTABLE.test(clause);
-    if(PATH_FALLBACK_USE.test(clause)&&!PATH_FALLBACK_REJECT.test(clause))pathFallbackAllowed=true;
+    if(pathFallbackAllowedIn(clause))pathFallbackAllowed=true;
     if(!paths.length)continue;
     for(const candidate of paths){
       const key=/^[A-Za-z]:/u.test(candidate)?candidate.replaceAll('/','\\').toLowerCase():candidate;
