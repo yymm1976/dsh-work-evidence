@@ -55,7 +55,7 @@ mode 只查询状态。旧的 mode <名称> 和 workspace-mode 命令不再设�
 
 功能状态含义：`off` 表示有效开关关闭；`blocked` 表示缺少配套设置、依赖或插件未启用；`waiting` 表示等待适用档位或任务；`ready` 表示当前可检查的条件已满足。
 例如质量复核须选 Ultra；结构化调用须用原生 TypeScript 函数体运行时；PTC 程序引用须同时开启执行恢复。
-归档读取和 Maven 归档来源还需 `fflate`。`dependencies.archiveDecoder` 显示加载状态，缺失时功能显示 `archive-decoder-unavailable:fflate`，实际读取返回 `ARCHIVE_DECODER_UNAVAILABLE`。
+归档读取和 Maven 归档来源还需 `fflate`。`dependencies.archiveDecoder` 显示加载状态，缺失时功能显示 `archive-decoder-unavailable:fflate`，实际读取返回 `ARCHIVE_DECODER_UNAVAILABLE`。读取成员时会核对目录与本地头的文件名、标志位、压缩方式，以及解压长度和 CRC；不一致时返回不可用，不将截断正文当作完整来源。支持存储、deflate、数据描述符和 ZIP64 目录。
 `fastEditPython` 指向带有所需包的现有 Python 环境，包版本见 `requirements-fastedit.txt`。状态确认运行文件可访问，桥接调用确认包能导入。
 这些状态说明本地可用条件。实际触发、任务质量和资源效果仍按各功能记录判断。
 
