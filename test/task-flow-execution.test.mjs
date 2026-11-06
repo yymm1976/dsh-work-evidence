@@ -514,7 +514,8 @@ test('a user-named interpreter path is not replaced by PATH unless fallback is a
     ['Do not switch to PATH; use C:\\named\\node.exe', false],
     ['不要切换到 PATH，使用 C:\\named\\node.exe 执行程序', false],
     ['Use C:\\named\\node.exe or PATH if it is missing', true],
-    ['Use C:\\named\\node.exe; do not switch to node14 but switch to PATH if it is missing', true]]) {
+    ['Use C:\\named\\node.exe; do not switch to node14 but switch to PATH if it is missing', true],
+    ['Use the path C:\\named\\node.exe to run this', false]]) {
     const t = timeline({stepPacing: false});
     t.agent.session.log.find(event => event.type === 'user/message').data.message.content = [{type: 'text', text}];
     t.command('work_exec', {runtime: 'node', code: 'x'.repeat(2400)}, {status: 'failed', isError: true, executionOccurred: false,
