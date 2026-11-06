@@ -59,6 +59,23 @@ test('cache exposure stays in its configured currency and USD compatibility fiel
   assert.equal(summary.resetTaxByCurrency.CNY,.004);assert.equal(summary.effortResetExposureByCurrency.CNY,.004);
   assert.equal(summary.currency,'CNY');assert.equal(summary.compactionRequests,0);
 });
+test('a prior pointer mismatch cannot erase the additional projection refill exposure',()=>{
+  const {agent,economics,finish,state,options}=harness();
+  state.config.projectionPricing=[{provider:'p',model:'m',currency:'USD',input:.15,cacheRead:.003,cacheWrite:.15,output:.6}];
+  options.tools=[];options.system='system';
+  const system={id:'system',role:'system',content:[{type:'text',text:'rules'}]},user={id:'user',role:'user',content:[{type:'text',text:'request'}]};
+  const pointer={id:'old-result',role:'tool',content:[{type:'text',text:'[work-evidence source event:10]'}]};
+  options.messages=[system,user,pointer];
+  finish(false,{inputTokens:100,cacheReadTokens:900,cacheWriteTokens:0,outputTokens:20,totalTokens:1020});
+  const current={...pointer,content:[{type:'text',text:'full original result body that differs from the previous pointer'}]};
+  const changed={...pointer,content:[{type:'text',text:'[work-evidence source event:20]'}]};
+  options.messages=[system,user,current];
+  const result=economics.assess(agent,{messages:options.messages,proposedMessages:[system,user,changed],tools:[],system:'system'});
+  assert.ok(result.savedTokensEstimate>0);assert.ok(result.cachedSuffixTokensEstimate>0);
+  assert.notEqual(result.reason,'no-additional-previous-request-prefix-exposure');
+  assert.match(result.cachedExposureMethod,/only when the current request is a complete continuation/);
+});
+
 test('capacity pressure uses the optional service getter when direct property access requires inject',()=>{
   const {agent}=harness(),state={config:{projectionPricing:[],projectionHorizonSteps:16}};
   const ctx={get:name=>name==='tokenMeter'?{measure:()=>({totalTokens:9500})}:undefined,

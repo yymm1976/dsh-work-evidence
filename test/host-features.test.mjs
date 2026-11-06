@@ -87,12 +87,17 @@ for(const [efforts,choice,expected]of [
     if(expected){
       assert.equal(host.auxiliaryRequests.length,1);assert.equal(host.auxiliaryRequests[0].reasoningEffort,expected);
       assert.equal(detail.effort.last.selected,choice==='inherit'?'ultra':expected);assert.equal(detail.verdict,'no-supported-gap');
+      const feature=(await host.command(agent,'feature qualityReviewEffort')).features[0];
+      assert.equal(feature.effect.status,'applied');assert.equal(feature.effect.lastReason,'review-options-selected');
     }else{
       assert.equal(host.auxiliaryRequests.length,0);assert.equal(detail.status,'unavailable');
       assert.equal(detail.process.last.reason,'review-effort-not-declared');assert.equal(detail.process.last.dispatched,false);
       assert.equal(detail.paused,null);
       const feature=(await host.command(agent,'feature qualityReview')).features[0];
       assert.equal(feature.status,'blocked');assert.ok(feature.reasons.includes('review-effort-not-declared'));
+      const effort=(await host.command(agent,'feature qualityReviewEffort')).features[0];
+      assert.equal(effort.effect.status,'not-applied');assert.equal(effort.effect.unavailable,1);
+      assert.equal(effort.effect.lastReason,'review-effort-not-declared');
     }
   }finally{await host.close();}
 });

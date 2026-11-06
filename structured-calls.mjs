@@ -1,5 +1,7 @@
+import {toolModeFor,isBatchToolHost,patchSystemPromptTools} from './tool-execution.mjs';
 const MAX_CALLS=16,MAX_CHARS=64000;
 const SDK_ARGUMENTS=/^`run_code` takes two required arguments: `code`, ([^\n]+?), and `description`, a short summary of what the program does\./mu;
+const SDK_DECLARED=/`run_code` accepts exactly one of `code` or `calls`/u;
 const LITERAL_CALL_EXAMPLE=JSON.stringify({calls:[{name:'write',arguments:{file_path:'template.txt',content:'${name}\n\\bword\\b\n'}}],description:'Save the supplied literal text'});
 
 function compileCalls(input,ctx,exec){
@@ -31,12 +33,50 @@ function compileCalls(input,ctx,exec){
   return declaration+body+projection+'console.log(JSON.stringify(shown.length===1?shown[0]:shown));';
 }
 
+function declareStructuredCalls(assembly,context,enabled,declaredAgents){
+  const agent=context?.agent;
+  if(agent)declaredAgents.delete(agent);
+  if(!enabled(agent)||!Array.isArray(assembly.tools))return;
+  const sdk=assembly.sections?.find(section=>section.name==='tools:sdk');
+  if(!sdk||(!SDK_ARGUMENTS.test(sdk.text)&&!SDK_DECLARED.test(sdk.text)))return;
+  const textDeclared=SDK_DECLARED.test(sdk.text);
+  let declared=false;
+  assembly.tools=assembly.tools.map(tool=>{
+    if(tool.name!=='run_code')return tool;
+    const schema=tool.parameters;
+    if(schema?.type!=='object'||schema.properties?.code?.type!=='string')return tool;
+    if(schema.properties.calls||schema.properties.parallel||schema.properties.resultView){declared=true;return tool;}
+    declared=true;
+    return {...tool,description:'Provide JavaScript code, or calls containing native tool names and their existing SDK arguments. '+
+      'Use calls for literal file writes/edits and complete work_exec programs without JavaScript string wrappers. '+
+      'When reading data to filter, parse, count or calculate, use code and return only the needed result instead of forwarding complete read values. '+
+      'Calls run in order and stop on error; parallel:true is for independent calls. Results use compact JSON. File edits omit before/after full text with explicit character counts; resultView:"full" keeps it. '+
+      'The existing tool permissions and error behavior apply. '+tool.description.replace('Takes two required arguments: `code`,','Takes `code` or `calls`,'),
+      parameters:{...schema,required:(schema.required??[]).filter(key=>key!=='code'),properties:{...schema.properties,
+        calls:{type:'array',minItems:1,maxItems:MAX_CALLS,description:'Instead of code. Native tools and argument names are declared in the current tools SDK. At most 64000 serialized characters.',
+          items:{type:'object',additionalProperties:false,properties:{name:{type:'string',minLength:1},arguments:{type:'object',additionalProperties:true}},required:['name','arguments']}},
+        parallel:{type:'boolean',description:'With calls only. Default false: execute in order and stop at the first failure. True: independent calls use native concurrency; a failed call does not cancel others already dispatched.'},
+        resultView:{type:'string',enum:['compact','full'],description:'With calls only; default compact omits native write/edit before/after file bodies and reports their exact lengths. Full keeps all native values. Other tool results and all errors keep their data.'}}}};
+  });
+  if(declared){
+    declaredAgents.add(agent);
+    if(textDeclared)return;
+    assembly.sections=assembly.sections.map(section=>section!==sdk?section:{...section,text:section.text.replace(SDK_ARGUMENTS,
+    '`run_code` accepts exactly one of `code` or `calls`, with `description` summarizing the operation. '+
+    'For literal file writes/edits or a complete work_exec program, use `calls:[{name,arguments}]` directly as JSON without a JavaScript string wrapper. '+
+    'Example run_code tool arguments: '+LITERAL_CALL_EXAMPLE+'. Put supplied text directly in arguments.content; JSON escaping preserves placeholders and backslashes without String.raw or placeholder replacement programs. '+
+    'Calls run sequentially; use parallel:true only for independent calls. File edits omit before/after text with explicit character counts; resultView:"full" keeps it. '+
+    'A successful compact write reports submittedContentMatchesAfter when the native tool returns after text. This confirms the submitted text at that write, not compliance with the requested text or later file state. Reuse that write observation; reread only for an unresolved need. A mismatch keeps the actual after text. '+
+    'For data reading, filtering, parsing, calculation, conditions or dependent results, use `code`, $1, and return only the needed result. Do not forward complete read values merely to calculate from them in another model step.')});
+  }
+}
+
 /** Fixed SDK forwarding; native dispatch still owns validation, guards and outcomes. */
 export function installStructuredCalls(ctx,runtime,effects){
   const declaredAgents=new WeakSet();
   const enabled=agent=>{
     const native=ctx.get('ptcRuntime');
-    return !!agent&&runtime.isEnabled(agent)&&runtime.get(agent).config.structuredCalls&&ctx.tools.modeFor(agent)==='ptc'&&
+    return !!agent&&runtime.isEnabled(agent)&&runtime.get(agent).config.structuredCalls&&toolModeFor(ctx,agent)==='ptc'&&
       native?.language==='typescript'&&native.programFormat==='function-body';
   };
   ctx.on('tools/pre-execute',(exec,next)=>{
@@ -48,40 +88,8 @@ export function installStructuredCalls(ctx,runtime,effects){
       callCount:calls.length,parallel:parallel??false,resultView:resultView??'compact',submittedChars:JSON.stringify(input).length,generatedProgramChars:code.length});
     return next();
   },{prepend:true});
-  ctx.on('system-prompt/assemble',async(assembly,context,next)=>{
-    const result=await next();
-    if(context?.agent)declaredAgents.delete(context.agent);
-    if(!enabled(context?.agent)||!Array.isArray(assembly.tools))return result;
-    const sdk=assembly.sections?.find(section=>section.name==='tools:sdk');
-    if(!sdk||!SDK_ARGUMENTS.test(sdk.text))return result;
-    let declared=false;
-    assembly.tools=assembly.tools.map(tool=>{
-      if(tool.name!=='run_code')return tool;
-      const schema=tool.parameters;
-      if(schema?.type!=='object'||schema.properties?.code?.type!=='string')return tool;
-      if(schema.properties.calls||schema.properties.parallel||schema.properties.resultView)throw new Error('run_code structured-call fields are already declared by another provider');
-      declared=true;
-      return {...tool,description:'Provide JavaScript code, or calls containing native tool names and their existing SDK arguments. '+
-        'Use calls for literal file writes/edits and complete work_exec programs without JavaScript string wrappers. '+
-        'When reading data to filter, parse, count or calculate, use code and return only the needed result instead of forwarding complete read values. '+
-        'Calls run in order and stop on error; parallel:true is for independent calls. Results use compact JSON. File edits omit before/after full text with explicit character counts; resultView:"full" keeps it. '+
-        'The existing tool permissions and error behavior apply. '+tool.description.replace('Takes two required arguments: `code`,','Takes `code` or `calls`,'),
-        parameters:{...schema,required:(schema.required??[]).filter(key=>key!=='code'),properties:{...schema.properties,
-          calls:{type:'array',minItems:1,maxItems:MAX_CALLS,description:'Instead of code. Native tools and argument names are declared in the current tools SDK. At most 64000 serialized characters.',
-            items:{type:'object',additionalProperties:false,properties:{name:{type:'string',minLength:1},arguments:{type:'object',additionalProperties:true}},required:['name','arguments']}},
-          parallel:{type:'boolean',description:'With calls only. Default false: execute in order and stop at the first failure. True: independent calls use native concurrency; a failed call does not cancel others already dispatched.'},
-          resultView:{type:'string',enum:['compact','full'],description:'With calls only; default compact omits native write/edit before/after file bodies and reports their exact lengths. Full keeps all native values. Other tool results and all errors keep their data.'}}}};
-    });
-    if(declared){
-      declaredAgents.add(context.agent);
-      assembly.sections=assembly.sections.map(section=>section!==sdk?section:{...section,text:section.text.replace(SDK_ARGUMENTS,
-      '`run_code` accepts exactly one of `code` or `calls`, with `description` summarizing the operation. '+
-      'For literal file writes/edits or a complete work_exec program, use `calls:[{name,arguments}]` directly as JSON without a JavaScript string wrapper. '+
-      'Example run_code tool arguments: '+LITERAL_CALL_EXAMPLE+'. Put supplied text directly in arguments.content; JSON escaping preserves placeholders and backslashes without String.raw or placeholder replacement programs. '+
-      'Calls run sequentially; use parallel:true only for independent calls. File edits omit before/after text with explicit character counts; resultView:"full" keeps it. '+
-      'A successful compact write reports submittedContentMatchesAfter when the native tool returns after text. This confirms the submitted text at that write, not compliance with the requested text or later file state. Reuse that write observation; reread only for an unresolved need. A mismatch keeps the actual after text. '+
-      'For data reading, filtering, parsing, calculation, conditions or dependent results, use `code`, $1, and return only the needed result. Do not forward complete read values merely to calculate from them in another model step.')});
-    }
-    return result;
+  if(isBatchToolHost(ctx))patchSystemPromptTools(ctx,(assembly,context)=>declareStructuredCalls(assembly,context,enabled,declaredAgents));
+  else ctx.on('system-prompt/assemble',async(assembly,context,next)=>{
+    const result=await next();declareStructuredCalls(assembly,context,enabled,declaredAgents);return result;
   },{prepend:true});
 }

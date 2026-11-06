@@ -130,7 +130,8 @@ export function createHistoryHygiene(runtime,taskFlow,{isProtected=()=>false,ret
         state.outputPlans.set(entry.seq,planned);
         for(const range of planned.ranges)if(range.path)state.omittedSources.add(fileKey(root,range.path));
         runtime.effects?.rewrite(agent,{feature:'historyOutput',afterMessage:after,beforeMessages:[message],sourceSeqs:[entry.seq]});
-        if(planned.dedupStats?.length)runtime.effects?.decide(agent,'blockDedup','applied','history-output-segments',{seq:entry.seq,segments:planned.dedupStats});
+        runtime.effects?.decide(agent,'historyOutput','applied','message-rewrite-recorded',{seq:entry.seq});
+        if(planned.dedupStats?.length)runtime.effects?.decide(agent,'historyBlockDedup','applied','history-output-segments',{seq:entry.seq,segments:planned.dedupStats});
       }
       return after;
     });

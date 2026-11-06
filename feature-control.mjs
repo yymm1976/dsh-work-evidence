@@ -1,7 +1,9 @@
 import fs from 'node:fs/promises';
+import {toolModeFor} from './tool-execution.mjs';
 import path from 'node:path';
 import {defaults,RETIRED_SETTINGS,VERSION} from './runtime.mjs';
 import {archiveDecoderStatus} from './archive-store.mjs';
+import {featureSetting} from './effect-observer.mjs';
 
 const DEFINITIONS=[
   ['enabled','总开关','允许当前工作区使用插件'],
@@ -60,14 +62,31 @@ export function featurePatch(name,value){
   return {[key]:value==='on'};
 }
 
+/** A setting can own several effect counters; the latest one is chosen by decision time, not definition order. */
+export function latestObservedEffect(counters){
+  return counters.filter(item=>item.lastStatus&&item.lastStatus!=='not-observed').reduce((last,item)=>{
+    if(!last)return item;
+    const seq=Number.isSafeInteger(item.lastSeq)?item.lastSeq:null,previousSeq=Number.isSafeInteger(last.lastSeq)?last.lastSeq:null;
+    if(seq!==null&&previousSeq!==null&&seq!==previousSeq)return seq>previousSeq?item:last;
+    const at=String(item.lastAt??''),previous=String(last.lastAt??'');
+    if(at!==previous){
+      if(!at)return last;
+      if(!previous)return item;
+      return at>previous?item:last;
+    }
+    return (item.lastStep??-1)>=(last.lastStep??-1)?item:last;
+  },null);
+}
+
 /** Local readiness only. A saved switch and available dependencies do not prove task success. */
-export function createFeatureControl(ctx,runtime,{available,canRecall,workingSet,qualityReview,compactionHandoff,retainedCompute}){
+export function createFeatureControl(ctx,runtime,{available,canRecall,workingSet,qualityReview,compactionHandoff,retainedCompute,effects}){
   const service=name=>{try{return ctx.get(name);}catch{return null;}};
   async function snapshot(agent,only){
     const state=runtime.get(agent),config=state.config,effective=runtime.isEnabled(agent),selection=runtime.currentSelection(agent);
-    const native=service('ptcRuntime'),ptc=(()=>{try{return ctx.tools.modeFor(agent)==='ptc';}catch{return false;}})();
+    const native=service('ptcRuntime'),ptc=(()=>{try{return toolModeFor(ctx,agent)==='ptc';}catch{return false;}})();
     const nativeCompaction=compactionHandoff.metrics(agent).nativeSummarizerAttached;
     const retained=retainedCompute.summary(agent);
+    const observedFeatures=effects?.snapshot(agent,{detail:false}).features??{};
     const archiveDecoder=archiveDecoderStatus();
     let fastEditFiles=null;
     if(config.fastEditEnabled&&(!only||only==='fastEditEnabled')){
@@ -87,6 +106,8 @@ export function createFeatureControl(ctx,runtime,{available,canRecall,workingSet
       }
       if(status==='ready'){
         for(const dependency of REQUIRES[key]??[])if(!config[dependency])reasons.push('requires-setting:'+dependency);
+        if(key==='defaultResponseView'&&effectiveValue==='reference-if-visible'&&!config.evidenceViews)reasons.push('requires-setting:evidenceViews');
+        if(['qualityReviewEffort','qualityReviewScope'].includes(key)&&!config.qualityReview)reasons.push('requires-setting:qualityReview');
         if(['swEviction','requestProjection','projectionRestore','ledgerReceipt','historyHygiene','stubSummary'].includes(key)&&canRecall(agent)!==true)reasons.push('historical-recall-not-exposed');
         if(['stubSummary','deferPressureCompaction'].includes(key)&&!nativeCompaction)reasons.push('native-compaction-not-attached');
         if(['nativeProgramReuse','structuredCalls'].includes(key)&&!ptc)reasons.push('requires-ptc-tool-mode');
@@ -113,7 +134,16 @@ export function createFeatureControl(ctx,runtime,{available,canRecall,workingSet
         }else if(key==='stepPacing'&&state.taskSurfaceMode==='minimal'){status='waiting';reasons.push('minimal-task-needs-no-guidance');}
       }
       if(key==='enabled'&&state.sessionEnabledOverride===true&&configured===false)reasons.push('session-override-on');
+      const counters=Object.entries(observedFeatures).filter(([name])=>featureSetting(name)===key).map(([,item])=>item);
+      const count=field=>counters.reduce((sum,item)=>sum+(item[field]??0),0);
+      const effectStatus=!counters.length||count('decisions')===0?'not-observed':count('applied')&&count('failed')?'mixed':
+        count('applied')?'applied':count('failed')?'failed':count('notApplicable')?'not-applicable':'not-applied';
+      const last=latestObservedEffect(counters);
       return {key,label,purpose,configured,packageDefault:PACKAGE_DEFAULTS[key],status,reasons,
+        effect:{status:effectStatus,decisions:count('decisions'),applied:count('applied'),failed:count('failed'),
+          deferred:count('deferred'),notApplicable:count('notApplicable'),unavailable:count('unavailable'),
+          lastStatus:last?.lastStatus??'not-observed',lastReason:last?.lastReason??(counters.length?'no-effect-applied':'no-dedicated-effect-counter'),
+          coverage:'recorded-dedicated-effect-counters-only; readiness and task quality are separate'},
         ...(['enabled','defaultResponseView'].includes(key)?{effectiveValue}:{}),
         entry:'/work-evidence feature '+key+' '+(choices?choices.join('|'):'on|off'),
         scope:'workspace',...(choices?{choices}:{})};

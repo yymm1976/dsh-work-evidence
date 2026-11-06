@@ -17,25 +17,31 @@ async function stateRun(workspace,external=false){
   try{
     await fs.writeFile(path.join(cwd,'a.txt'),'original\nline2\n');
     const agent=await host.createAgent('max');await host.send(agent,'读取后处理 a.txt');
-    return {status:await host.command(agent,'detail'),body:host.requests.map(requestText).join('\n'),events:host.events};
+    return {status:await host.command(agent,'detail'),feature:(await host.command(agent,'feature stateInform')).features[0],
+      ledgerFeature:(await host.command(agent,'feature stateLedger')).features[0],accountingFeature:(await host.command(agent,'feature requestAccounting')).features[0],body:host.requests.map(requestText).join('\n'),events:host.events};
   }finally{await host.close();}
 }
 test('stateLedger records reads and invalidation while its disabled form records neither',async()=>{
   const on=await stateRun({}),off=await stateRun({stateLedger:false});
   assert.ok(on.status.detail.state.observations.some(x=>x.stale));
   assert.equal(on.status.detail.state.mutations.length,1);
+  assert.equal(on.ledgerFeature.effect.status,'applied');
   assert.equal(off.status.detail.state.observations.length,0);assert.equal(off.status.detail.state.mutations.length,0);
+  assert.equal(off.ledgerFeature.effect.status,'not-observed');
 });
 test('stateInform controls legacy invalidation notices when ledgerUnresolved is disabled',async()=>{
   for(const stateInform of [true,false]){
     const observed=await stateRun({stateInform,ledgerUnresolved:false});
     assert.equal(observed.body.includes('工程状态已失效'),stateInform);
+    assert.equal(observed.feature.effect.status,stateInform?'applied':'not-observed');
   }
 });
 test('requestAccounting can be disabled without disabling the task',async()=>{
   const on=await stateRun({}),off=await stateRun({requestAccounting:false});
   assert.equal(on.status.requestObservations.length,3);
+  assert.equal(on.accountingFeature.effect.status,'applied');
   assert.equal(off.status.requestObservations.length,0);
+  assert.equal(off.accountingFeature.effect.status,'not-observed');
   assert.ok(off.status.contextEconomics.mainHistory.length>0,'compression economics still observes usage');
   assert.equal(off.events.findLast(e=>e.type==='turn/end').data.reason.kind,'completed');
 });
@@ -50,6 +56,9 @@ test('ledgerUnresolved describes repeated empty searches and suppresses the lega
       const body=host.requests.map(requestText).join('\n');
       assert.equal(body.includes('[work-evidence ledger state]'),ledgerUnresolved);
       assert.equal(body.includes('已观察的局部检索事实'),!ledgerUnresolved);
+      const feature=(await host.command(agent,'feature ledgerUnresolved')).features[0];
+      if(ledgerUnresolved){assert.equal(feature.effect.status,'applied');assert.equal(feature.effect.lastReason,'ledger-unresolved-injected');}
+      else assert.equal(feature.effect.status,'not-observed');
     }finally{await host.close();}
   }
 });

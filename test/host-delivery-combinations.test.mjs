@@ -10,7 +10,7 @@ const stage='\n\n## 阶段摘要\n已写入第一部分。\n下一步：写入 b
 
 test('JSON repair precedes authorized continuation and only the completed delivery is reviewed',async()=>{
   const payloads=[];
-  const host=await startHost({workspace:{qualityReview:true,completionNotice:true,finalJsonGuard:true},
+  const host=await startHost({workspace:{qualityReview:true,completionNotice:true,finalJsonGuard:true,qualityReviewEffort:'inherit',qualityReviewScope:'full'},
     script:(options,n)=>{
       if(n===1)return [tool('write',{file_path:'a.txt',content:'first\n'})];
       if(n===2)return [text('```json\n{"written":["a.txt"],}\n```'+stage)];
@@ -24,10 +24,20 @@ test('JSON repair precedes authorized continuation and only the completed delive
     assert.equal(await fs.readFile(path.join(host.cwd,'a.txt'),'utf8'),'first\n');
     assert.equal(await fs.readFile(path.join(host.cwd,'b.txt'),'utf8'),'second\n');
     assert.deepEqual(notices(host).map(event=>event.data.source.kind),['work-evidence-final-json','work-evidence-completion']);
+    const completion=(await host.command(agent,'feature completionNotice')).features[0];
+    assert.equal(completion.effect.status,'applied');assert.equal(completion.effect.applied,1);
     assert.equal(payloads.length,1,'The intermediate stage does not consume a paid review.');
     assert.match(payloads[0].answer.text,/"b.txt"/);
     assert.ok(payloads[0].observed.artifacts.some(item=>item.path.endsWith('b.txt')));
     const status=await host.command(agent,'detail');assert.equal(status.qualityReview.status,'clean');
+    const review=(await host.command(agent,'feature qualityReview')).features[0];
+    assert.equal(review.effect.status,'applied');assert.equal(review.effect.lastReason,'review-completed-no-supported-gap');
+    const effort=(await host.command(agent,'feature qualityReviewEffort')).features[0];
+    assert.equal(effort.status,'ready');assert.equal(effort.effect.status,'applied');
+    assert.equal(effort.effect.lastReason,'review-options-selected');
+    const scope=(await host.command(agent,'feature qualityReviewScope')).features[0];
+    assert.equal(scope.status,'ready');assert.equal(scope.effect.status,'applied');
+    assert.equal(scope.effect.lastReason,'review-options-selected');
     assert.equal(status.finalJson?.unresolvedSyntax??null,null);
     console.log('delivery',JSON.stringify({syntaxNotices:1,continuationNotices:1,reviewCalls:payloads.length,
       writes:2,completed:true}));

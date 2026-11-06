@@ -25,6 +25,8 @@ async function exercise(mode,invalidCitation=false){
     const agent=await host.createAgent('ultra');await host.send(agent,'写入 core.mjs 和 README.md，再读取并说明结果。');
     assert.ok(payload);const {qualityReview}=await host.command(agent,'detail');
     assert.equal(qualityReview.sourceReview.configured,mode);
+    const scopeFeature=(await host.command(agent,'feature qualityReviewScope')).features[0];
+    assert.equal(scopeFeature.effect.status,'applied');assert.equal(scopeFeature.effect.lastReason,'review-options-selected');
     assert.deepEqual(qualityReview.sourceReview.last,payload.sourceReview);
     assert.ok(payload.evidence.some(item=>item.data.includes('SELECTED_SOURCE_BRANCH')));
     if(invalidCitation){assert.equal(qualityReview.status,'paused');assert.equal(qualityReview.process.last.reason,'invalid-review-result');}

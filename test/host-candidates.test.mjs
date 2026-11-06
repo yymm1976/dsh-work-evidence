@@ -53,6 +53,9 @@ test('selfIndex offers a verified alternate source after repeated empty scoped s
       const agent=await host.createAgent('max');await host.send(agent,'查找函数定义');
       const body=JSON.stringify(host.requests.map(o=>o.messages));
       assert.equal(body.includes('已核对当前源码的检索入口'),selfIndex);
+      const feature=(await host.command(agent,'feature selfIndex')).features[0];
+      if(selfIndex){assert.equal(feature.effect.status,'applied');assert.ok(feature.effect.applied>=1);assert.equal(feature.effect.lastReason,'verified-index-match');}
+      else assert.equal(feature.effect.status,'not-observed');
     }finally{await host.close();}
   }
 });

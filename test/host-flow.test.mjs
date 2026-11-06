@@ -27,12 +27,108 @@ test('executionTriage identifies repeated failures and repeated successful calls
   }
 });
 
+test('executionTriage warns only about a source-linked correction that is reused without a scoped file change',async()=>{
+  const claim='src/a.txt 保存了最终值。';
+  const report=()=>tool('work_report',{status:'partial',summary:'记录一个待核对判断。',observed:[],unverified:[claim],remaining:['核对实际文件。'],
+    claims:[{claim,status:'inferred',support:'尚无直接验证。'}]});
+  for(const executionTriage of [true,false]){
+    let correctionRequests=0;
+    const host=await startHost({workspace:{executionTriage,stepPacing:false,completionNotice:false,toolSurface:'full'},
+      script:(options,n)=>{
+        if(requestText(options).includes('纠正：')){correctionRequests++;return correctionRequests===1?[report()]:[text('已保留纠正。')];}
+        return n===1?[report()]:[text('完成。')];
+      }});
+    try{
+      const agent=await host.createAgent('max');
+      await host.send(agent,'记录这个关键判断。');
+      assert.ok(!host.requests.some(request=>requestText(request).includes('旧判断已标记为 challenged')));
+      await host.send(agent,'纠正：'+claim+'错了，请不要继续沿用。');
+      const reminder=host.events.find(event=>event.type==='user/message'&&event.data?.source?.taskFlow?.kind==='diagnostic'&&
+        event.data.content.some(block=>block.text?.includes('旧判断已标记为 challenged')));
+      assert.equal(!!reminder,executionTriage);
+      assert.equal(host.requests.some(request=>requestText(request).includes('旧判断已标记为 challenged')),executionTriage);
+      const status=await host.command(agent,'detail');
+      assert.equal(status.detail.taskFlow.judgmentChallenges.length,executionTriage?1:0);
+      if(executionTriage){
+        assert.equal(status.detail.taskFlow.judgmentChallenges[0].status,'challenged');
+        assert.equal(status.detail.observability.features.failureAdvice.applied>0,true);
+        const correction=host.events.find(event=>event.type==='user/message'&&event.data?.content?.[0]?.text?.startsWith('纠正：'));
+        assert.equal(reminder.data.content[0].text.includes('事件'+correction.seq),true);
+        const links=reminder.data.source.taskFlow.judgment;
+        assert.equal(links.status,'challenged');assert.equal(links.correctionSeq,correction.seq);
+        assert.ok(links.reusedSeq>correction.seq);assert.equal(links.source,'work_report');
+        const reportCall=host.events.find(event=>event.type==='tool/call'&&event.data.name==='work_report');
+        const reportResult=host.events.find(event=>event.type==='tool/result'&&event.data.message.source.callId===reportCall.data.callId);
+        assert.equal(links.reportSeq,reportResult.seq);
+      }
+    }finally{await host.close();}
+  }
+});
+
+test('a bare assistant repetition carries the correction into the next request without blocking the following tool',async()=>{
+  const claim='旧解析接口总是会返回数组。';
+  const report=claims=>tool('work_report',{status:'partial',summary:'记录判断。',observed:[],unverified:[],remaining:[],claims});
+  let correctionRequests=0;
+  const host=await startHost({workspace:{stepPacing:false,completionNotice:false,toolSurface:'full'},script:(options,n)=>{
+    if(requestText(options).includes('纠正：')){
+      correctionRequests++;
+      return correctionRequests===1?[text(claim),report([{claim:'另一个判断仍待核对。',status:'inferred'}])]:[text('完成。')];
+    }
+    return n===1?[report([{claim,status:'inferred'}])]:[text('完成。')];
+  }});
+  try{
+    const agent=await host.createAgent('max');await host.send(agent,'登记判断。');
+    await host.send(agent,'纠正：'+claim+'错了。');
+    const reminder=host.events.find(event=>event.type==='user/message'&&event.data?.source?.taskFlow?.judgment?.source==='assistant-text');
+    assert.ok(reminder);assert.ok(reminder.data.source.taskFlow.judgment.reusedSeq>0);
+    assert.equal(host.events.filter(event=>event.type==='tool/call'&&event.data.name==='work_report').length,2);
+    assert.ok(host.requests.some(request=>requestText(request).includes('旧判断已标记为 challenged')));
+  }finally{await host.close();}
+});
+
+test('a scoped file change and ambiguous or indirect corrections leave judgment applicability unknown or unobserved',async()=>{
+  const claim='src/a.txt 保存了最终值。',second='src/b.txt 保存了另一个最终值。';
+  for(const variation of ['file-change','opaque-boundary','ambiguous','indirect']){
+    const marker=variation==='ambiguous'?'之前的两个判断':variation==='indirect'?'另一个模块':'纠正：';
+    const uncertain=['file-change','opaque-boundary'].includes(variation);
+    let correctionRequests=0;
+    const host=await startHost({workspace:{stepPacing:false,completionNotice:false,toolSurface:'full'},script:(options,n)=>{
+      if(requestText(options).includes(marker)){
+        correctionRequests++;
+        if(variation==='file-change'&&correctionRequests===1)return [tool('write',{file_path:'src/a.txt',content:'updated\n'})];
+        if(variation==='opaque-boundary'&&correctionRequests===1)return [tool('pwsh',{command:'echo read-only-output',description:'observe external state'})];
+        if(correctionRequests===(uncertain?2:1))return [tool('work_report',{status:'partial',summary:'再次登记。',observed:[],unverified:[],remaining:[],
+          claims:[{claim,status:'observed'}]})];
+        return [text(claim)];
+      }
+      if(n===1)return [tool('work_report',{status:'partial',summary:'登记两个来源范围。',observed:[],unverified:[],remaining:['继续核对。'],
+        claims:[{claim,status:'inferred'},{claim:second,status:'inferred'}]})];
+      return [text('完成。')];
+    }});
+    try{
+      const agent=await host.createAgent('max');await host.send(agent,'登记判断。');
+      const correction=variation==='ambiguous'?'之前的两个判断都错了：'+claim+'；'+second:
+        variation==='indirect'?'另一个模块有问题，请继续核对。':'纠正：'+claim+'错了。';
+      await host.send(agent,correction);
+      assert.ok(!host.requests.some(request=>requestText(request).includes('旧判断已标记为 challenged')),variation);
+      const status=await host.command(agent,'detail');
+      if(uncertain){
+        if(variation==='file-change')assert.ok(status.detail.taskFlow.mutationVersion>0,'the file effect must be observed before invalidating the judgment');
+        assert.equal(status.detail.taskFlow.judgmentChallenges[0].status,'unknown');
+      }else assert.equal(status.detail.taskFlow.judgmentChallenges.length,0);
+    }finally{await host.close();}
+  }
+});
+
 test('stepPacing controls actual output-usage guidance',async()=>{
   const steps=Array.from({length:4},()=>[tool('pwsh',{command:'echo ok',description:'observe'})]);
   const usage=()=>({inputTokens:1000,outputTokens:6500,cacheReadTokens:0,totalTokens:7500});
   const on=await scenario({},'修改项目并观察结果',steps,{usage}),off=await scenario({stepPacing:false},'修改项目并观察结果',steps,{usage});
+  assert.ok(on.status.detail.observability.features.stageJudgment.applied>0);
+  assert.equal(off.status.detail.observability.features.stageJudgment?.applied??0,0);
   assert.ok(on.status.detail.observability.features.stepPacing.applied>0);
   assert.equal(off.status.detail.observability.features.stepPacing.applied,0);
+  assert.equal(on.status.detail.observability.features.guidance?.applied??0,0,'mode and stage guidance use named counters');
   assert.ok(!off.body.includes('本次使用激进优化'));
   assert.ok(on.body.includes('上一响应较长'));
   assert.ok(!off.body.includes('上一响应较长'));

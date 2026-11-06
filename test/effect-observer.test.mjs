@@ -178,6 +178,43 @@ test('an inconsistent reported total stays incomplete in memory, on disk and aft
   }finally{await remove(created.telemetryDir);}
 });
 
+test('legacy decisions are reclassified under the current feature names',async()=>{
+  const created=await start();
+  try{
+    const decisions=[
+      {id:'stub',feature:'compactionHandoff',status:'applied',reason:'deterministic-stub-summary'},
+      {id:'limit',feature:'finalJson',status:'failed',reason:'final-json-repair-limit',kind:'observed-result-repair'},
+      {id:'applied',feature:'finalJson',status:'applied',reason:'observed-result-repair-requested'},
+      {id:'native',feature:'compactionHandoff',status:'applied',reason:'native-summary-extension'}];
+    await fs.writeFile(path.join(created.telemetryDir,SESSION+'.observability.jsonl'),JSON.stringify(row('legacy',COMPLETE,{decisions}))+'\n','utf8');
+    await created.effects.load(created.agent);
+    const features=created.effects.snapshot(created.agent).features;
+    assert.equal(features.stubSummary.decisions,1);assert.equal(features.stubSummary.applied,1);
+    assert.equal(features.finalJsonResult.decisions,2);assert.equal(features.finalJsonResult.failed,1);assert.equal(features.finalJsonResult.applied,1);
+    assert.equal(features.finalJson.decisions,0,'the syntax guard does not inherit result-repair decisions');
+    assert.equal(features.compactionHandoff.applied,1,'unrelated legacy decisions keep their feature');
+    assert.deepEqual(created.effects.snapshot(created.agent).decisions.map(item=>item.feature).sort(),
+      ['compactionHandoff','finalJsonResult','finalJsonResult','stubSummary']);
+  }finally{await remove(created.telemetryDir);}
+});
+
+test('decisions recorded without a following main request survive disposal and restore once',async()=>{
+  const created=await start();
+  try{
+    created.effects.decide(created.agent,'retainedCompute','applied','recorded-after-last-request');
+    await created.effects.disposeAgent(created.agent);
+    const rows=await stored(created.telemetryDir);
+    assert.equal(rows.length,1);assert.equal(rows[0].schema,'work-evidence.pending-decisions.v1');
+    assert.equal(rows[0].decisions[0].feature,'retainedCompute');
+    await fs.appendFile(path.join(created.telemetryDir,SESSION+'.observability.jsonl'),JSON.stringify(rows[0])+'\n','utf8');
+    const restored=await start({telemetryDir:created.telemetryDir});
+    await restored.effects.load(restored.agent);
+    const feature=restored.effects.snapshot(restored.agent).features.retainedCompute;
+    assert.equal(feature.decisions,1);assert.equal(feature.applied,1);
+    assert.equal(feature.lastReason,'recorded-after-last-request');
+    assert.equal(restored.effects.snapshot(restored.agent).requests.count,0,'no request row is invented for a pending decision');
+  }finally{await remove(created.telemetryDir);}
+});
 test('restored host compaction is separate from plugin auxiliary calls and main feature attribution',async()=>{
   const created=await start();
   try{
@@ -194,4 +231,51 @@ test('restored host compaction is separate from plugin auxiliary calls and main 
     assert.equal(snapshot.requests.providerReported.totalTokens,2200);
     assert.equal((await stored(created.telemetryDir))[0].auxiliary,true,'original stored rows are not rewritten');
   }finally{await remove(created.telemetryDir);}
+});
+
+test('pending decisions beyond the rolling limit are persisted instead of silently dropped', async () => {
+  const created = await start();
+  try {
+    for (let index = 0; index < 300; index++) {
+      created.effects.decide(created.agent, 'retainedCompute', 'applied', 'decision-' + index);
+    }
+    await created.effects.flush(created.agent);
+    const rows = await stored(created.telemetryDir);
+    const overflow = rows.filter(item => item.schema === 'work-evidence.pending-decisions.v1')
+      .flatMap(item => item.decisions);
+    assert.equal(overflow.length, 44, 'the decisions beyond the in-memory window are written');
+    await created.effects.disposeAgent(created.agent);
+    const all = (await stored(created.telemetryDir))
+      .filter(item => item.schema === 'work-evidence.pending-decisions.v1')
+      .flatMap(item => item.decisions);
+    assert.equal(all.length, 300);
+    assert.equal(new Set(all.map(item => item.id)).size, 300);
+    const restored = await start({telemetryDir: created.telemetryDir});
+    await restored.effects.load(restored.agent);
+    assert.equal(restored.effects.snapshot(restored.agent).features.retainedCompute.decisions, 300);
+  } finally {
+    await remove(created.telemetryDir);
+  }
+});
+
+test('restored feature names cannot mutate shared prototypes', async () => {
+  const created = await start();
+  try {
+    const file = path.join(created.telemetryDir, SESSION + '.observability.jsonl');
+    await fs.writeFile(file, JSON.stringify({ schema: 'work-evidence.pending-decisions.v1', at: '2026-11-06T00:00:00.000Z', step: 1, decisions: [
+      { id: 'proto', feature: '__proto__', status: 'applied', reason: 'x', seq: 1 },
+      { id: 'constructor', feature: 'constructor', status: 'applied', reason: 'x', seq: 2 },
+      { id: 'valid', feature: 'retainedCompute', status: 'applied', reason: 'restored-valid', seq: 3 }
+    ] }) + '\n', 'utf8');
+    await created.effects.load(created.agent);
+    const snapshot = created.effects.snapshot(created.agent);
+    assert.equal(snapshot.features.retainedCompute.decisions, 1);
+    assert.equal(snapshot.features.retainedCompute.lastReason, 'restored-valid');
+    assert.equal(Object.prototype.lastStatus, undefined);
+    assert.equal(Object.prototype.decisions, undefined);
+    assert.equal(Object.prototype.applied, undefined);
+    assert.ok(!snapshot.persistence.writeErrors.some(message => message.includes('Unreadable')));
+  } finally {
+    await remove(created.telemetryDir);
+  }
 });

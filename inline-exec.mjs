@@ -46,6 +46,17 @@ export function inlineScriptEventRef(session,callId){
   return event?'event:'+event.seq:null;
 }
 const DECLARED_EXECUTABLE=/\b(?:existing|installed|available)\b|(?:已有|现有|已经安装|已安装|可用)/iu;
+const PATH_PERMISSION=/(?:改用|切换到|回退到|使用|采用|用)\s*PATH\b|(?:use|fall\s*back\s+to|switch\s+to)\s+(?:the\s+)?PATH\b|\bor\s+(?:the\s+)?PATH\b/giu;
+const PATH_PROHIBITION=/(?:不要|请勿|禁止|do not|don't|must not|never)[^。；;\n]{0,24}$/iu;
+const PATH_CONTRAST=/(?:\bbut\b|\binstead\b|\brather\b|而是|但是|不过|却|转而)/iu;
+function pathFallbackAllowedIn(clause){
+  for(const match of clause.matchAll(PATH_PERMISSION)){
+    if(!match[0].endsWith('PATH'))continue;
+    const segment=clause.slice(0,match.index).split(PATH_CONTRAST).at(-1);
+    if(!PATH_PROHIBITION.test(segment))return true;
+  }
+  return false;
+}
 const NEGATED_EXECUTABLE=/\b(?:not|never)\s+(?:existing|installed|available)\b|\bno\s+(?:existing|installed|available)\b|\bunavailable\b|\b(?:do not|don't|must not|should not|never)\s+(?:use|invoke|run|execute)\b|\bdoes\s+not\s+exist\b|(?:不要|请勿|禁止)(?:使用|调用|执行)|(?:不可用|无法使用|不能使用|未安装|不存在|未提供)|(?:未|没有|并非|不是)[^。；;\n]{0,80}(?:解释器|路径|可用|安装|存在|使用|调用)/iu;
 const pythonExecutable=/^python(?:3(?:\.\d+)?)?(?:\.exe)?$/iu,nodeExecutable=/^node(?:\.exe)?$/iu;
 function executablePath(value,runtime){
@@ -58,7 +69,7 @@ function executablePath(value,runtime){
   return (runtime==='python'?pythonExecutable:nodeExecutable).test(basename)?path:null;
 }
 function declaredPathFacts(text,runtime){
-  const all=new Map(),declared=new Map();let negated=false;
+  const all=new Map(),declared=new Map(),positive=new Map();let negated=false,pathFallbackAllowed=false;
   const windows=/[A-Za-z]:[\\/](?:[^\r\n"'`<>|?*:\\/]+[\\/])*(?:python(?:3(?:\.\d+)?)?(?:\.exe)?|node(?:\.exe)?)(?![A-Za-z0-9_\\/-]|\.[A-Za-z0-9_-])/giu;
   const posix=/(?<![\w.:\\/])\/(?:[^\r\n"'`<>|?*\\/\s]+[\\/])*(?:python(?:3(?:\.\d+)?)?(?:\.exe)?|node(?:\.exe)?)(?![A-Za-z0-9_\\/-]|\.[A-Za-z0-9_-])/giu;
   const quoted=/(["'`])([^\r\n]*?)\1/gu;
@@ -66,19 +77,21 @@ function declaredPathFacts(text,runtime){
     const quotedPaths=[...clause.matchAll(quoted)].map(match=>executablePath(match[2],runtime)).filter(Boolean);
     const views=quotedPaths.length?[]:[windows,posix];
     const paths=quotedPaths.concat(views.flatMap(view=>[...clause.matchAll(view)].map(match=>executablePath(match[0],runtime))).filter(Boolean));
-    if(!paths.length)continue;
     const denied=NEGATED_EXECUTABLE.test(clause);
+    if(pathFallbackAllowedIn(clause))pathFallbackAllowed=true;
+    if(!paths.length)continue;
     for(const candidate of paths){
       const key=/^[A-Za-z]:/u.test(candidate)?candidate.replaceAll('/','\\').toLowerCase():candidate;
       if(!all.has(key))all.set(key,candidate);
-      if(denied)negated=true;
-      else if(DECLARED_EXECUTABLE.test(clause)&&!declared.has(key))declared.set(key,candidate);
+      if(denied){negated=true;continue;}
+      if(!positive.has(key))positive.set(key,candidate);
+      if(DECLARED_EXECUTABLE.test(clause)&&!declared.has(key))declared.set(key,candidate);
     }
   }
-  return {all:[...all.values()],declared:[...declared.values()],negated};
+  return {all:[...all.values()],declared:[...declared.values()],positive:[...positive.values()],negated,pathFallbackAllowed};
 }
 function pathFactsFrom(event,runtime){
-  return event?declaredPathFacts(textOf(messageOf(event)),runtime):{all:[],declared:[],negated:false};
+  return event?declaredPathFacts(textOf(messageOf(event)),runtime):{all:[],declared:[],positive:[],negated:false,pathFallbackAllowed:false};
 }
 
 const SOURCE_LINE_CHARS=500,EXCEPTION_LINE_CHARS=600;
@@ -163,7 +176,15 @@ export function inlineFormatRecovery(script,nativeValue,scriptRef,location=inlin
     note:'The default ESM run failed. The unchanged script parses as CommonJS. This explicit retry uses the recorded version; no retry was executed.'};
 }
 
-/** Resolve an explicitly declared interpreter path from current human/system text only. */
+/** Whether the current human request names an interpreter path it does not reject. */
+export function namedInlineExecutable(session,runtime){
+  if(!['python','node'].includes(runtime))return false;
+  const events=eventLog(session);
+  const user=events.findLast(event=>event.type==='user/message'&&isUserRequestMessage(messageOf(event)));
+  const facts=pathFactsFrom(user,runtime);
+  return !facts.pathFallbackAllowed&&facts.positive.length>0;
+}
+
 export function declaredInlineExecutable(session,runtime){
   if(!['python','node'].includes(runtime))return null;
   const events=eventLog(session);

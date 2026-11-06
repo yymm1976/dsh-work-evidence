@@ -503,6 +503,7 @@ export function createObservationLedger(ctx,runtime,nativeFiles=null){
       if(changed)markStale(agent,window.path,event.seq,'new-read');
     }
     state.observations.push(observation);
+    if(config(agent).stateLedger)runtime.effects?.decide(agent,'state','applied','observation-recorded',{seq:event.seq,tool:observation.tool});
     runtime.get(agent).metrics.ledgerObservations++;
     let retained=state.observations.reduce((sum,item)=>sum+item.windows.reduce((chars,window)=>chars+window.text.length,0),0);
     while(state.observations.length>MAX_OBSERVATIONS||retained>8*1024*1024){const removed=state.observations.shift();retained-=removed.windows.reduce((sum,window)=>sum+window.text.length,0);}
@@ -643,6 +644,7 @@ export function createObservationLedger(ctx,runtime,nativeFiles=null){
     state.injectedVersion=state.version;
     state.injectedUnresolvedSignature=unresolvedSignature;
     runtime.get(agent).metrics.ledgerUnresolvedInjected++;
+    runtime.effects?.decide(agent,'unresolved','applied','ledger-unresolved-injected',{items:unresolved.length});
     return [{role:'user',id:randomUUID(),source:{kind:'work-evidence-ledger'},content:[{type:'text',text}]}];
   }
 

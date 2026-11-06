@@ -1,4 +1,5 @@
 import {argsOf,eventLog} from './runtime.mjs';
+import {toolModeFor,isBatchToolHost,patchSystemPromptTools} from './tool-execution.mjs';
 
 const LIMIT=64000;
 function sessionPrograms(session){
@@ -61,9 +62,25 @@ export function latestNativeProgram(session){
   return null;
 }
 
+function declareProgramReference(assembly,context,enabled){
+  const agent=context?.agent;
+  if(!enabled(agent)||!latestNativeProgram(agent.session)||!Array.isArray(assembly.tools))return;
+  assembly.tools=assembly.tools.map(tool=>{
+    if(tool.name!=='run_code')return tool;
+    const schema=tool.parameters;
+    if(schema?.type!=='object'||schema.properties?.code?.type!=='string'||schema.properties.programRef)return tool;
+    return {...tool,description:'Supply code, or programRef with exact literal edits to a recorded program from this session. '+
+      'Only program text is reused; each call executes again. Earlier effects remain and may already have completed. '+tool.description.replace('Takes two required arguments: `code`,','Takes `code`,'),
+      parameters:{...schema,required:(schema.required??[]).filter(key=>key!=='code'),properties:{...schema.properties,
+        programRef:{type:'string',description:'Exact event:<seq> address of a run_code call or its result in this session; the original call id is also accepted. Supply this instead of code; only program text is inherited. Current workspace, permissions and native runtime apply.'},
+        edits:{type:'array',description:'With programRef: at most 16 sequential literal replacements; each before must occur exactly once. Omit to explicitly execute unchanged.',
+          items:{type:'object',additionalProperties:false,properties:{before:{type:'string'},after:{type:'string'}},required:['before','after']}}}}};
+  });
+}
+
 /** Expand explicit references before native validation; the host still owns execution and permissions. */
 export function installNativeProgramReferences(ctx,runtime,effects){
-  const enabled=agent=>!!agent&&runtime.isEnabled(agent)&&runtime.get(agent).config.executionTriage&&runtime.get(agent).config.nativeProgramReuse&&ctx.tools.modeFor(agent)==='ptc';
+  const enabled=agent=>!!agent&&runtime.isEnabled(agent)&&runtime.get(agent).config.executionTriage&&runtime.get(agent).config.nativeProgramReuse&&toolModeFor(ctx,agent)==='ptc';
   ctx.on('tools/pre-execute',(exec,next)=>{
     if(exec.name!=='run_code'||exec.parent||!enabled(exec.agent)||exec.arguments?.programRef===undefined&&exec.arguments?.edits===undefined)return next();
     const input=exec.arguments,program=resolveNativeProgram(input,exec.agent.session,exec.signal);
@@ -73,20 +90,8 @@ export function installNativeProgramReferences(ctx,runtime,effects){
       programChars:program.code.length,submittedChars:JSON.stringify(input).length,sourceCallIds:program.sourceCallIds});
     return next();
   },{prepend:true});
-  ctx.on('system-prompt/assemble',async(assembly,context,next)=>{
-    const result=await next(),agent=context?.agent;
-    if(!enabled(agent)||!latestNativeProgram(agent.session)||!Array.isArray(assembly.tools))return result;
-    assembly.tools=assembly.tools.map(tool=>{
-      if(tool.name!=='run_code')return tool;
-      const schema=tool.parameters;
-      if(schema?.type!=='object'||schema.properties?.code?.type!=='string'||schema.properties.programRef)return tool;
-      return {...tool,description:'Supply code, or programRef with exact literal edits to a recorded program from this session. '+
-        'Only program text is reused; each call executes again. Earlier effects remain and may already have completed. '+tool.description.replace('Takes two required arguments: `code`,','Takes `code`,'),
-        parameters:{...schema,required:(schema.required??[]).filter(key=>key!=='code'),properties:{...schema.properties,
-          programRef:{type:'string',description:'Exact event:<seq> address of a run_code call or its result in this session; the original call id is also accepted. Supply this instead of code; only program text is inherited. Current workspace, permissions and native runtime apply.'},
-          edits:{type:'array',description:'With programRef: at most 16 sequential literal replacements; each before must occur exactly once. Omit to explicitly execute unchanged.',
-            items:{type:'object',additionalProperties:false,properties:{before:{type:'string'},after:{type:'string'}},required:['before','after']}}}}};
-    });
-    return result;
+  if(isBatchToolHost(ctx))patchSystemPromptTools(ctx,(assembly,context)=>declareProgramReference(assembly,context,enabled));
+  else ctx.on('system-prompt/assemble',async(assembly,context,next)=>{
+    const result=await next();declareProgramReference(assembly,context,enabled);return result;
   },{prepend:true});
 }

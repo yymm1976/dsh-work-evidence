@@ -31,6 +31,8 @@ test('folding, projection, native compaction and disabled-state recall preserve 
     const before=(await host.command(agent,'detail')).detail;
     assert.ok(before.sw.evicted>0||before.workingSet.projectedObservations>0||before.observability.historyHygiene?.charsRemovedAcrossViews>0,
       JSON.stringify({sw:before.sw,projection:before.workingSet}));
+    const ledger=(await host.command(agent,'feature swLedger')).features[0];
+    assert.equal(ledger.effect.status,'applied');assert.ok(ledger.effect.applied>0);
     const target=before.workingSet.entries[0];assert.ok(target);
     const restoredMarker=/o\d+ row 31/.exec(JSON.stringify(host.events.find(event=>event.seq===target.seq).data))[0];
     plan.push([text('已恢复旧来源。')]);
@@ -43,9 +45,13 @@ test('folding, projection, native compaction and disabled-state recall preserve 
     await host.ctx.compaction.compactIfNeeded(agent,'pressure',AbortSignal.timeout(30000));
     const pressure=(await host.command(agent,'detail')).detail.compression.nativeHandoff;
     assert.ok(pressure.deferredPressure>0,JSON.stringify(pressure));
+    const deferral=(await host.command(agent,'feature deferPressureCompaction')).features[0];
+    assert.equal(deferral.effect.status,'applied');assert.ok(deferral.effect.applied>0);
     await host.ctx.compaction.compactNow(agent,AbortSignal.timeout(30000));
     const compacted=(await host.command(agent,'detail')).detail.compression.nativeHandoff;
     assert.equal(compacted.committed,1);assert.equal(compacted.stubSummaries,1);
+    feature=(await host.command(agent,'feature stubSummary')).features[0];
+    assert.equal(feature.effect.status,'applied');assert.equal(feature.effect.applied,1);
     assert.equal(compacted.nativeSummaryCalls,0);assert.equal(host.auxiliaryRequests.length,0);
     await host.command(agent,'off');
     assert.ok(host.ctx.tools.get('work_recall',agent));

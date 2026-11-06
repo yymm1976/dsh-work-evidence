@@ -5,6 +5,7 @@ import {summarizeAttempts} from './experiment-attempts.mjs';
 import {isUserRequestMessage,argsOf} from './runtime.mjs';
 import {resultText,parseResult} from './visible-results.mjs';
 import {recordedProcessCompletion} from './execution-evidence.mjs';
+import {resolveInlineScript} from './inline-exec.mjs';
 
 export const AUDIT_SCHEMA='work-evidence.trajectory-audit.v1';
 export const ASSESSMENT_SCHEMA='work-evidence.task-assessment.v1';
@@ -46,8 +47,12 @@ export function auditCacheTransitions(events,requestAccounting=null){
     if(event.type!=='user/message'||message?.source?.kind!=='work-evidence-working-set'||plan?.action!=='project'||!Number.isSafeInteger(event.seq))continue;
     const entries=Array.isArray(plan.entries)?plan.entries:null;
     const resultSeqs=entries?.map(entry=>entry?.seq)??[];
-    const valid=!!entries&&resultSeqs.every(seq=>Number.isSafeInteger(seq)&&seq<event.seq)&&new Set(resultSeqs).size===resultSeqs.length;
-    plans.set(event.seq,{messageId:typeof message.id==='string'?message.id:null,resultSeqs:valid?resultSeqs:null});
+    const valid=plan.version===1&&!!entries?.length&&entries.every(entry=>{
+      const original=eventBySeq.get(entry?.seq);
+      return Number.isSafeInteger(entry?.seq)&&entry.seq<event.seq&&original?.type==='tool/result'&&
+        typeof entry.id==='string'&&entry.id&&messageOf(original)?.id===entry.id;
+    })&&new Set(resultSeqs).size===resultSeqs.length;
+    plans.set(event.seq,{messageId:typeof message.id==='string'?message.id:null,entryCount:entries?.length??null,resultSeqs:valid?resultSeqs:null});
   }
   const observations=new Map(),invalidRequestIds=new Set(),verifiedMainSeqs=new Set();
   for(const row of mainRequestLinks)if(row&&typeof row.requestId==='string'&&Number.isSafeInteger(row.sourceSeq))verifiedMainSeqs.add(row.sourceSeq);
@@ -137,7 +142,7 @@ export function auditCacheTransitions(events,requestAccounting=null){
       observation?.reason==='no-replaced-result'?'no-projection-in-request':'projection-observation-unknown';
     items.push({kind:'request-projection',appliedAtSeq:event.seq,previousMainSeq:previous?.sourceSeq??null,nextMainSeq:next?.sourceSeq??null,
       requestId:link?.requestId??null,appliedMainSeq:target?.sourceSeq??null,
-      applicationOrder,resultScope,projectedResultSeqs,plannedResultCount:plannedResultSeqs?.length??null,observationKind,
+      applicationOrder,resultScope,projectedResultSeqs,plannedResultCount:plans.get(event.seq)?.entryCount??null,observationKind,
       predicted,forecastEnvironment:assessment?{route:predictedRoute,routeComparison,
         envelope:Object.hasOwn(assessment,'envelope')?assessment.envelope:null,
         comparison:'unavailable; route equality does not establish equal request content, model build, cache attribution or savings; request deltas are not a controlled forecast-environment comparison'}:null,
@@ -357,7 +362,7 @@ function checkedJudgmentReviews(input,normal,sourceId,throughSeq,sourceCurrent,s
       claim,counter,...(replacement?{replacement}:{}),scopePaths:row.scopePaths.map(file=>normalizeFile(file).value),
       ...(reasons.length?{reasons:[...new Set(reasons)]}:{}),reason:row.reason,authority:'reviewer-judgment',currentApplicability:'historical-events-only'};
   });
-  return {status:'reviewed',items,authority:'reviewer-judgment',currentApplicability:'historical-events-only',
+  return {status:!items.length?'not-reviewed':sourceProblems.length?'incomplete-source':!sourceCurrent?'stale':'reviewed',items,authority:'reviewer-judgment',currentApplicability:'historical-events-only',
     meaning:'Literal quote matching confirms only recorded source text, not semantic correctness or current disk applicability.'};
 }
 
@@ -390,6 +395,20 @@ function auditedUsage(input,normalized,pricing,requestAccounting){
     knownReferenceCostByCurrency:byCurrency,costComplete:coverageComplete&&rows.length>0&&rows.every(row=>row.complete&&row.referenceCost?.amount!=null),
     auxiliaryCoverage:recorded?'purposes present in saved request list; completeness requires recorder provenance':requestAccounting?
       requestAccounting.status:'native agent attempts only; auxiliary consumption not established'};
+}
+
+function manualLabelCoverage(input,normal){
+  if(input===undefined)return {};
+  if(!input||typeof input!=='object'||Array.isArray(input))throw Error('Assessment labelCoverage must be an object keyed by audit label');
+  const result={};
+  for(const [label,row] of Object.entries(input)){
+    if(!AUDIT_LABELS.includes(label)||!row||!integer(row.throughSeq)||row.throughSeq>normal.throughSeq||
+      !Array.isArray(row.eventSeqs)||!row.eventSeqs.length||row.eventSeqs.some(seq=>!normal.seqs.has(seq)||seq>row.throughSeq))
+      throw Error('Invalid label coverage at '+label);
+    result[label]={status:row.throughSeq===normal.throughSeq?'reviewed':'stale',throughSeq:row.throughSeq,
+      eventSeqs:[...new Set(row.eventSeqs)].slice(0,32),eventSeqsOmitted:Math.max(0,new Set(row.eventSeqs).size-32)};
+  }
+  return result;
 }
 
 function checkedAnnotations(input,seqs,requestSeqs){
@@ -533,6 +552,79 @@ function reviewedCheckCoverage(input,review,normal,sourceId,sourceProblems){
     meaning:'Coverage is the reviewer\'s scoped risk judgment, independent of execution success and task outcome. Unlisted requirements, model visibility and savings are not inferred.'};
 }
 
+function tempCallArguments(code,start){
+  let depth=1,quote=null;
+  for(let index=start;index<code.length;index++){
+    const char=code[index];
+    if(quote){if(char==='\\'){index++;continue;}if(char===quote)quote=null;continue;}
+    if(char==='"'||char==="'"){quote=char;continue;}
+    if(char==='(')depth++;
+    else if(char===')'&&!--depth)return code.slice(start,index);
+  }
+  return null;
+}
+// Only a directory whose location is demonstrably inside the project may exclude a script.
+// A variable called ROOT or PROJECT_ROOT is not proof, and a missing dir uses the system temp root.
+function localTempDirectory(code,start){
+  const args=tempCallArguments(code,start);
+  if(args===null)return false;
+  const match=/\bdir\s*=\s*([^,]+)/u.exec(args);
+  if(!match)return false;
+  const value=match[1].trim(),quoted=/^(["'])(.*)\1$/su.exec(value);
+  if(quoted){
+    const item=quoted[2].trim();
+    if(!item)return false;
+    const normalized=path.posix.normalize(item.replaceAll('\\','/'));
+    return normalized==='.'||(normalized!=='..'&&!normalized.startsWith('../')&&!path.posix.isAbsolute(normalized)&&!/^[A-Za-z]:\//u.test(normalized));
+  }
+  return /^(?:os\.)?getcwd\s*\(\s*\)$/u.test(value)||/^(?:pathlib\.)?Path\.cwd\s*\(\s*\)$/u.test(value)||
+    /^(?:pathlib\.)?Path\s*\(\s*__file__\s*\)\s*\.parent$/u.test(value)||/^os\.path\.dirname\s*\(\s*__file__\s*\)$/u.test(value);
+}
+
+function constraintObservations(normal){
+  const items=[];
+  for(const human of normal.humans){
+    const event=normal.events.find(row=>row.seq===human.seq),message=messageOf(event);
+    const requirement=resultText(message?.content);
+    if(!/(?:不得|不要|禁止|不)[^。；\n]{0,40}读取项目外文件/u.test(requirement))continue;
+    for(const call of normal.calls){
+      if(call.callSeq<human.seq||!['work_exec','pwsh'].includes(call.name))continue;
+      if(normal.humans.some(next=>next.seq>human.seq&&next.seq<=call.callSeq))continue;
+      let code;
+      if(call.name==='pwsh')code=call.arguments.command;
+      else try{code=resolveInlineScript(call.arguments,{log:normal.events}).code;}catch{continue;}
+      const runpy=/\brunpy\.run_path\(\s*["']([^"']+)["']/u.exec(code);
+      const shell=call.name==='pwsh'?/\bpython(?:3(?:\.\d+)?)?(?:\.exe)?["']?\s+(?:["']([^"'\r\n]+\.py)["']|([^\s"']+\.py))/iu.exec(code):null;
+      const scriptTarget=runpy?.[1]??shell?.[1]??shell?.[2];
+      if(scriptTarget){
+        const target=scriptTarget.replaceAll('\\','/').split('/').at(-1),writes=normal.calls.filter(candidate=>candidate.callSeq<call.callSeq&&
+          String(fileOf(candidate.arguments)??'').replaceAll('\\','/').split('/').at(-1)===target);
+        // A failed or unconfirmed attempt did not change the file; only a recorded file
+        // effect may hide an earlier complete write.
+        const changed=new Set(normal.changes.map(change=>change.callSeq));
+        const latest=writes.findLast(candidate=>candidate.outcome!=='failed'&&changed.has(candidate.callSeq));
+        if(!latest||latest.name!=='write'||typeof latest.arguments?.content!=='string')continue;
+        code=latest.arguments.content;
+      }
+      if(typeof code!=='string')continue;
+      const tempCalls=[...code.matchAll(/tempfile\.(?:mkdtemp|mkstemp|TemporaryDirectory)\s*\(/gu)];
+      if(!tempCalls.length||!/\bopen\s*\(/u.test(code)||tempCalls.every(match=>localTempDirectory(code,match.index+match[0].length)))continue;
+      const text=call.resultText??'',match=/[A-Za-z]:(?:\\|\/)[^\r\n"']*?AppData(?:\\|\/)+Local(?:\\|\/)+Temp(?:\\|\/)+[^\r\n"']+/u.exec(text);
+      const location=match?.[0].replace(/\\r\\n.*$/su,'')
+        .replace(/\\[rn](?=$|[^A-Za-z0-9_.\\/-]).*$/su,'').split(/\s+(?=[A-Za-z_][\w.-]*\s*[=:])/u)[0]
+        .replace(/\b(?:token|secret|password|passwd|api[_-]?key|access[_-]?key|authorization|credential)\s*[=:]\s*\S+/giu,'[redacted]')
+        .replace(/[,\]}].*$/su,'');
+      const evidence=location?.length>240?location.slice(0,120)+'…'+location.slice(-117):location;
+      items.push({kind:'outside-workspace-temporary-file-read-candidate',requirementSeqs:[human.seq],callSeq:call.callSeq,resultSeq:call.resultSeq,
+        evidence:evidence??call.name+' source uses a system temporary-directory API and open()',classification:'candidate',violation:'not-inferred',
+        reason:'The original request explicitly forbids reading files outside the project. The recorded script uses a system temporary-directory API and open(). A system Temp path is also visible in the result when present.',
+        counterexample:'The path may only be printed or used for an unrelated operation. Review the original call and result before treating this as a confirmed violation.'});
+    }
+  }
+  return {items,status:items.length?'candidates':'no-matching-candidates',automaticCoverage:'Explicit no-outside-file-reading requirement plus work_exec/pwsh tempfile/open source or a matching complete written script; explicit project-local temporary directories are excluded; a system Temp result path is retained when present but is not required',
+    meaning:'Candidates only. No command is blocked and no task outcome, complete coverage, model visibility or savings is inferred.'};
+}
+
 function checkedChangeScopeReviews(input,normal,sourceId,sourceProblems){
   const declarations=input?.scopeReviews;
   if(declarations===undefined)return {status:'not-reviewed',items:[],coverage:'declared-reviews-only',
@@ -553,7 +645,7 @@ function checkedChangeScopeReviews(input,normal,sourceId,sourceProblems){
       !['direct-requirement','necessary-dependency','unsupported','unknown'].includes(row.declaredRelation)||
       !Array.isArray(row.requirementSeqs)||row.declaredRelation==='direct-requirement'&&!row.requirementSeqs.length||
       row.requirementSeqs.some(seq=>!humans.has(seq)||seq>=row.callSeq)||
-      !Array.isArray(row.dependencyEvidenceSeqs)||row.dependencyEvidenceSeqs.some(seq=>!normal.seqs.has(seq)||seq>row.resultSeq)||
+      !Array.isArray(row.dependencyEvidenceSeqs)||row.dependencyEvidenceSeqs.some(seq=>!normal.seqs.has(seq)||seq>=row.callSeq)||
       typeof row.reason!=='string'||!row.reason.trim()||row.reason.length>2048||
       typeof row.counterexample!=='string'||!row.counterexample.trim()||row.counterexample.length>2048||
       typeof row.reviewer!=='string'||!row.reviewer.trim())throw Error('Invalid change-scope review at index '+index);
@@ -575,16 +667,17 @@ function checkedChangeScopeReviews(input,normal,sourceId,sourceProblems){
     if(!requestedPath||!callPath||!samePath(requestedPath,callPath))reasons.push('file-path-unresolved');
     const changes=normal.changes.filter(change=>change.callSeq===row.callSeq&&change.seq===row.resultSeq);
     if(!changes.length)reasons.push('no-recorded-file-effect');
-    if(changes.length!==1)reasons.push('file-effect-not-unique');
+    if(changes.length>1)reasons.push('file-effect-not-unique');
     const change=changes[0],changePath=normalizeFile(change?.path);
     if(!changePath||!requestedPath||!samePath(requestedPath,changePath))reasons.push('file-path-unresolved');
     const recordMatched=changes.length===1&&requestedPath&&changePath&&samePath(requestedPath,changePath)&&
       !OPAQUE.has(call.name)&&['native-operation-succeeded','applied'].includes(change.status);
     if(recordMatched)matchedChanges.add(change);
     if(['partial','unknown'].includes(change?.status))reasons.push(change.status+'-file-effect');
-    if(!['native-operation-succeeded','applied','partial','unknown'].includes(change?.status))reasons.push('file-effect-unconfirmed');
+    if(change&&!['native-operation-succeeded','applied','partial','unknown'].includes(change.status))reasons.push('file-effect-unconfirmed');
     if(row.declaredRelation==='direct-requirement'&&!row.requirementSeqs.length)reasons.push('direct-requirement-source-missing');
     if(row.declaredRelation==='necessary-dependency'&&!row.dependencyEvidenceSeqs.length)reasons.push('dependency-evidence-missing');
+    if(row.declaredRelation==='unsupported'&&(row.requirementSeqs.length||row.dependencyEvidenceSeqs.length))reasons.push('conflicting-support-basis');
     const currentReasons=[];
     for(const later of normal.changes){
       if(later.seq<=row.resultSeq)continue;
@@ -615,7 +708,7 @@ function checkedChangeScopeReviews(input,normal,sourceId,sourceProblems){
         deliveryVisibility:call.deliveryVisibility}:{}),
       authority:'reviewer-judgment',violation:'not-inferred'};
   });
-  return {basis:'explicit-source-linked-change-review',status:!items.length?'not-reviewed':sourceProblems.length?'incomplete-source':'reviewed',items,
+  return {basis:'explicit-source-linked-change-review',status:!items.length?'not-reviewed':sourceProblems.length?'incomplete-source':input.throughSeq!==normal.throughSeq?'stale':'reviewed',items,
     coverage:'declared-reviews-only',recordedChangeCount:normal.changes.length,declaredReviewCount:items.length,
     matchedRecordedChanges:matchedChanges.size,
     unreviewedRecordedChanges:normal.changes.filter(change=>!matchedChanges.has(change)).length,
@@ -658,12 +751,15 @@ export function auditDshSession(input,{sourceId=null,annotations=[],pricing=[],p
     W3:'repeated failures with the same user request, tool, arguments, mutation epoch and first non-empty result line',
     W8:'repeated failures with the same user request, tool, arguments, mutation epoch and first non-empty result line'
   };
+  const manualCoverage=manualLabelCoverage(assessment?.labelCoverage,normal);
   const labelCoverage=Object.fromEntries(AUDIT_LABELS.map(label=>[label,{
     automatic:automaticScopes[label]??'none',
     automaticCandidates:candidates.filter(row=>row.labels.includes(label)).length,
     explicitAnnotations:reviewed.filter(row=>row.labels.includes(label)).length,
     reviewedAnnotations:reviewed.filter(row=>row.labels.includes(label)&&row.classification!=='candidate').length,
-    manualCoverage:'unknown; no source-bound coverage declaration is available',
+    manualCoverage:manualCoverage[label]?.status??'unknown; no source-bound coverage declaration is available',
+    ...(manualCoverage[label]?{manualThroughSeq:manualCoverage[label].throughSeq,manualEventSeqs:manualCoverage[label].eventSeqs,
+      manualEventSeqsOmitted:manualCoverage[label].eventSeqsOmitted}:{}),
     zeroMeaning:'A zero count means no matching merged record, not zero occurrences. Unreviewed or unobserved occurrences remain unknown.',
     associatedTokens:'not-savings'
   }]));
@@ -683,12 +779,30 @@ export function auditDshSession(input,{sourceId=null,annotations=[],pricing=[],p
     missingRouteSeqsOmitted:Math.max(0,missingRouteSeqs.length-32),
     source:'native request/header route carried forward to the attempt; a missing header leaves the route unknown',
     meaning:'Route values are name declarations only and do not prove the provider’s actual model build.'};
+  const eventBySeq=new Map(normal.events.map(event=>[event.seq,event]));
+  const echoRows=normal.requests.map(request=>{
+    const event=eventBySeq.get(request.sourceSeq),source=messageOf(event)?.source;
+    const replay=source?.replayState??event?.data?.stream?.findLast(chunk=>chunk.chunk?.type==='finish')?.chunk?.replayState,response=replay?.response??replay;
+    const reported=typeof response?.responseModel==='string'?response.responseModel.trim():'';
+    const status=response?.kind==='deepseek-messages'?'unsupported-by-adapter':
+      reported&&reported.length<=200&&!/[\x00-\x1f\x7f]/u.test(reported)?'reported':response?'not-reported':'unknown';
+    return {seq:request.sourceSeq,status,...(status==='reported'?{responseModel:reported}:{})};
+  });
+  const reportedEchoes=echoRows.filter(row=>row.status==='reported');
+  const echoValues=[...new Map(reportedEchoes.map(row=>[row.responseModel,row.responseModel])).values()];
+  const responseModelEcho={scope:'same-recorded-assistant-attempt',requests:echoRows.length,
+    counts:Object.fromEntries(['reported','not-reported','unsupported-by-adapter','unknown'].map(status=>[status,echoRows.filter(row=>row.status===status).length])),
+    reported:reportedEchoes.slice(0,32),reportedOmitted:Math.max(0,reportedEchoes.length-32),
+    reportedValues:echoValues.slice(0,16),reportedValuesOmitted:Math.max(0,echoValues.length-16),
+    source:'assistant/message source.replayState or the same attempt finish chunk replayState, with flat replayState accepted for older records; only scalar model names are read',
+    meaning:'A reported value is a provider-declared response name that differed from the requested identity. Not reported can mean equal or unrecorded; adapter support varies. No value or name proves actual model weights.'};
   if(requestAccounting&&(requestAccounting.schema!=='work-evidence.session-request-accounting.v1'||
     requestAccounting.throughSeq!==normal.throughSeq||requestAccounting.nativeRequests!==normal.requests.length||
     input?.sessionId&&requestAccounting.sessionId!==input.sessionId))throw Error('Request accounting does not match this native source snapshot.');
   const sourceProblems=[...problems,...normal.problems],usage=auditedUsage(input,normal,pricing,requestAccounting),review=checkedAssessment(assessment,normal,sourceId);
   const verification=reviewedCheckCoverage(assessment,review,normal,sourceId,sourceProblems);
   const changeScopeReviews=checkedChangeScopeReviews(assessment,normal,sourceId,sourceProblems);
+  const constraints=constraintObservations(normal);
   const cacheTransitions=auditCacheTransitions(normal.events,requestAccounting);
   const judgmentReviews=checkedJudgmentReviews(assessment?.judgmentReviews,normal,sourceId,assessment?.throughSeq,review?.sourceCurrent===true,sourceProblems);
   const taskOutcome=!review||sourceProblems.length?'unknown':review.criteria.some(row=>row.outcome==='fail')?'fail':
@@ -696,7 +810,7 @@ export function auditDshSession(input,{sourceId=null,annotations=[],pricing=[],p
   const budgetResult=tokenBudget===null?null:fullSuccessAtBudget([{assessment:review,problems:sourceProblems,
     usage:{totalTokens:review?.consumption.complete?usage.totalTokens:null}}],{tokenBudget});
   return {schema:AUDIT_SCHEMA,sourceId,sessionId:input?.sessionId??input?.header?.id??null,sourceEventCount:normal.events.length,sourceThroughSeq:normal.throughSeq,
-    routes,modelBuild:normal.requests.length&&declaredFlash1017?'declared-1017':'unconfirmed',modelBuildCoverage,
+    routes,modelBuild:normal.requests.length&&declaredFlash1017?'declared-1017':'unconfirmed',modelBuildCoverage,responseModelEcho,
     coverage:normal.coverage,problems:sourceProblems,usage,
     events:{humanRequests:normal.humans,changes:normal.changes,toolCalls:normal.calls.map(({resultText,arguments:args,...call})=>({...call,
       path:fileOf(args),argumentChars:JSON.stringify(args).length,resultChars:resultText?.length??null})),
@@ -707,7 +821,7 @@ export function auditDshSession(input,{sourceId=null,annotations=[],pricing=[],p
     associatedConsumption:{requestSeqs:[...associated],knownTokens:associatedRows.filter(row=>!row.consumptionUnknown).reduce((sum,row)=>sum+row.usage.totalTokens,0),
       unknownRequests:associatedRows.filter(row=>row.consumptionUnknown).length,realizableSaving:null,
       meaning:'Each associated request is counted once across W/Q labels. Association is not causal waste or possible savings.'},
-    assessment:review,verification,changeScopeReviews,judgmentReviews,taskOutcome,fullSuccessAtBudget:budgetResult,requestAccounting,cacheTransitions,
+    assessment:review,verification,changeScopeReviews,judgmentReviews,constraints,taskOutcome,fullSuccessAtBudget:budgetResult,requestAccounting,cacheTransitions,
     limitations:['Only recorded exact repetitions and failures are automatic candidates. W1/W4/W6/W7 and Q1–Q5 require source-based review.',
       'No candidate stops a model, skips a check, changes permissions, adds a prompt or calls a model.',
       'Task judgments and complete consumption coverage require explicit source-linked review. Semantic correctness, external file changes and actual billing are not inferred.']};

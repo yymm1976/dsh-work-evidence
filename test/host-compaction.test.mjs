@@ -55,9 +55,13 @@ test('native stub compaction commits without a summary call and its source remai
       `source${i} line ${j}: `+(i===0&&j===50?marker:'x'.repeat(90))).join('\n'));
     const agent=await host.createAgent('max');await host.send(agent,'依次读取 source0.txt 到 source9.txt，稍后继续使用原文。');
     sourceSeq=host.events.find(event=>event.type==='tool/result'&&event.data.message?.content.some(block=>block.text?.includes(marker))).seq;
+    const before=(await host.command(agent,'feature stubSummary')).features[0].effect;
+    assert.notEqual(before.status,'applied','preparing a stub is not a committed effect');
     await host.ctx.compaction.compactNow(agent,AbortSignal.timeout(30000));
     const detail=(await host.command(agent,'detail')).detail.compression.nativeHandoff;
     assert.equal(detail.stubSummaries,1);assert.equal(detail.committed,1);assert.equal(detail.nativeSummaryCalls,0);
+    const effect=(await host.command(agent,'feature stubSummary')).features[0].effect;
+    assert.equal(effect.status,'applied');assert.equal(effect.lastReason,'deterministic-stub-summary');
     assert.equal(host.auxiliaryRequests.length,0);
     await host.command(agent,'off');
     assert.ok(host.ctx.tools.get('work_recall',agent),'the existing checkpoint must retain its recall entry while the plugin is off');

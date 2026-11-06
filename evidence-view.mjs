@@ -90,8 +90,14 @@ export function createEvidenceViews(ctx,runtime){
     const s=runtime.get(exec.agent),state=current(exec.agent);
     const configuredView=s?.sessionDefaultResponseView??s?.config?.defaultResponseView??'full';
     const configured=configuredView==='reference-if-visible'?'reference-if-visible':'full';
-    const view=args.responseView||configured;
-    if(!state)return args.responseView?{...facts,responseView:{kind:'full',bodyEmbedded:!!bodyEmbedded(facts),requestedBodiesComplete:facts.sources.length>0&&facts.sources.every(completeSource),reason:'disabled-or-context-generation-unavailable'}}:facts;
+    const view=args.responseView||configured,defaulted=!args.responseView;
+    const observeDefault=(status,reason,details={})=>{
+      if(defaulted)runtime.effects?.decide(exec.agent,'defaultResponseView',status,reason,{configured,...details});
+    };
+    if(!state){
+      observeDefault('unavailable',!runtime.isEnabled(exec.agent)?'plugin-disabled':!s.config.evidenceViews?'evidence-views-disabled':'context-generation-unavailable');
+      return args.responseView?{...facts,responseView:{kind:'full',bodyEmbedded:!!bodyEmbedded(facts),requestedBodiesComplete:facts.sources.length>0&&facts.sources.every(completeSource),reason:'disabled-or-context-generation-unavailable'}}:facts;
+    }
     const eligible=facts.sources.length>0&&facts.sources.every(completeSource)&&!facts.budgetTruncated&&!facts.references?.truncated;
     const requestKey=stable(Object.fromEntries(Object.entries(args).filter(([key])=>key!=='responseView')));
     const sourceKey=JSON.stringify(facts.sources.map(source=>[source.path,source.archive||null,source.entry||null]));
@@ -110,6 +116,7 @@ export function createEvidenceViews(ctx,runtime){
       if(measureText(result).stringUnits<measureText(facts).stringUnits&&(!runtime.effects||runtime.effects.benefit(exec.agent,'evidenceView',JSON.stringify(facts),JSON.stringify(result)))){
         runtime.effects?.snippet(exec.agent,{callIds:[exec.callId,exec.rootCallId],feature:'evidenceView',beforeText:JSON.stringify(facts),afterText:JSON.stringify(result)});
         runtime.effects?.decide(exec.agent,'evidenceView','applied','current-request-proof');
+        observeDefault('applied','configured-reference-if-visible');
         s.metrics.evidenceReferenceViews++;s.metrics.evidenceViewOutputChars+=measureText(result).stringUnits;s.dirty=true;return result;
       }
     }
@@ -122,6 +129,7 @@ export function createEvidenceViews(ctx,runtime){
     s.metrics.evidenceFullViews++;if(view==='reference-if-visible')s.metrics.evidenceReferenceMisses++;    s.evidenceViewReasons[reason]=(s.evidenceViewReasons[reason]||0)+1;
     const id=randomUUID(),result={...facts,responseView:{kind:'full',receiptId:id,bodyEmbedded:!!bodyEmbedded(facts),requestedBodiesComplete:eligible,reason}};
     s.metrics.evidenceViewOutputChars+=measureText(result).stringUnits;s.dirty=true;
+    observeDefault(view==='full'?'applied':'not-applicable',view==='full'?'configured-full-view':'reference-precondition-not-met',{reason});
     if(eligible&&identity){
       state.records.push({id,requestKey,sourceKey,signature,identity,everVisible:false,body:JSON.stringify(result),observedAt:facts.observedAt,roots:[...new Set([exec.callId,exec.rootCallId].filter(Boolean))]});
       while(state.records.length>48||state.records.reduce((sum,record)=>sum+record.body.length,0)>1_000_000){const removed=state.records.shift();state.proof.delete(removed);}

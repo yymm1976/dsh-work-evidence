@@ -3,8 +3,23 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import {defaults,RETIRED_SETTINGS} from '../runtime.mjs';
-import {featureDefinition,featurePatch} from '../feature-control.mjs';
+import {featureDefinition,featurePatch,latestObservedEffect} from '../feature-control.mjs';
+import {featureSetting} from '../effect-observer.mjs';
 import {startHost,load,text,tool,toolNames} from './helpers/host.mjs';
+
+test('latest observed effect follows decision time rather than definition order',()=>{
+  const older={lastStatus:'applied',lastReason:'older',lastAt:'2026-11-06T00:00:00.000Z',lastStep:1};
+  const newer={lastStatus:'applied',lastReason:'newer',lastAt:'2026-11-06T00:00:01.000Z',lastStep:2};
+  assert.equal(latestObservedEffect([newer,older]).lastReason,'newer');
+  assert.equal(latestObservedEffect([older,newer]).lastReason,'newer');
+  const step2={...older,lastAt:'2026-11-06T00:00:02.000Z',lastStep:2,lastReason:'step-2'};
+  const step3={...older,lastAt:'2026-11-06T00:00:02.000Z',lastStep:3,lastReason:'step-3'};
+  assert.equal(latestObservedEffect([step3,step2]).lastReason,'step-3');
+  assert.equal(latestObservedEffect([older,{lastStatus:'not-observed'}]).lastReason,'older');
+  assert.equal(latestObservedEffect([]),null);
+  const legacy=[{lastStatus:'applied',lastReason:'first'},{lastStatus:'applied',lastReason:'second'}];
+  assert.equal(latestObservedEffect(legacy).lastReason,'second');
+});
 
 test('every retained switch has an explicit feature entry and retired fields cannot claim activation',()=>{
   for(const [key,value]of Object.entries(defaults()))if(typeof value==='boolean'&&!RETIRED_SETTINGS.includes(key)){
@@ -22,6 +37,23 @@ test('every retained switch has an explicit feature entry and retired fields can
   assert.throws(()=>featurePatch('missing','on'),/Unknown/);
 });
 
+test('shared segment counters are attributed to their own settings',()=>{
+  assert.equal(featureSetting('historyBlockDedup'),'historyHygiene');
+  assert.equal(featureSetting('contextBlockDedup'),'contextProtocol');
+  assert.equal(featureSetting('blockDedup'),null);
+});
+
+test('every feature entry exposes a dedicated effect counter except the two global gates',async()=>{
+  const host=await startHost({script:()=>[text('done')]});
+  try{
+    const agent=await host.createAgent('max');
+    const view=await host.command(agent,'features');
+    const unmapped=view.features.filter(item=>item.effect.lastReason==='no-dedicated-effect-counter').map(item=>item.key).sort();
+    assert.deepEqual(unmapped,['aggressiveMode','enabled']);
+    assert.ok(view.features.every(item=>item.effect.status&&item.entry&&item.scope==='workspace'));
+  }finally{await host.close();}
+});
+
 test('human commands expose compact-hidden tools and immediately restore the disabled surface',async()=>{
   const host=await startHost({script:options=>{
     assert.ok(toolNames(options).includes('work_state'));
@@ -33,6 +65,8 @@ test('human commands expose compact-hidden tools and immediately restore the dis
     assert.equal(view.tools.find(item=>item.name==='work_state').exposed,false);
     const changed=await host.command(agent,'feature toolSurface full');
     assert.equal(changed.scope,'workspace');assert.equal(changed.readiness.features[0].configured,'full');
+    assert.equal(changed.readiness.features[0].effect.status,'applied');
+    assert.equal(changed.readiness.features[0].effect.lastReason,'full-surface');
     view=await host.command(agent,'features');assert.equal(view.tools.find(item=>item.name==='work_state').exposed,true);
     await host.send(agent,'列出当前可用的工程工具。');
     await host.command(agent,'off');
@@ -55,6 +89,8 @@ test('feature readiness distinguishes required settings, runtime dependencies an
   try{
     const agent=await host.createAgent('max');
     const view=await host.command(agent,'features'),entry=key=>view.features.find(item=>item.key===key);
+    assert.ok(view.features.every(item=>item.effect&&typeof item.effect.status==='string'));
+    assert.equal(entry('enabled').effect.status,'not-observed');
     assert.equal(view.dependencies.archiveDecoder.available,true);
     assert.deepEqual(entry('swEviction').reasons,['requires-setting:swLedger']);
     assert.ok(entry('requestProjection').reasons.includes('requires-setting:projectionRestore'));
@@ -112,6 +148,27 @@ test('retained feature readiness follows missing dependencies, explicit retry an
     view=await host.command(agent,'feature retainedCompute');
     assert.equal(view.features[0].status,'off');
     assert.equal((await compute('retainedInput.length')).executionOccurred,false);
+  }finally{await host.close();}
+});
+
+test('dependent settings explain the switch that currently prevents their effect',async()=>{
+  const host=await startHost({workspace:{evidenceViews:false,defaultResponseView:'reference-if-visible',qualityReview:false},script:()=>[text('done')]});
+  try{
+    const agent=await host.createAgent('max');
+    let view=await host.command(agent,'features'),entry=key=>view.features.find(item=>item.key===key);
+    assert.equal(entry('defaultResponseView').status,'blocked');
+    assert.deepEqual(entry('defaultResponseView').reasons,['requires-setting:evidenceViews']);
+    for(const key of ['qualityReviewEffort','qualityReviewScope']){
+      assert.equal(entry(key).status,'blocked');
+      assert.deepEqual(entry(key).reasons,['requires-setting:qualityReview']);
+    }
+    await host.command(agent,'feature defaultResponseView full');
+    await host.command(agent,'feature qualityReview on');
+    view=await host.command(agent,'features');
+    assert.equal(entry('defaultResponseView').status,'ready');
+    assert.deepEqual(entry('defaultResponseView').reasons,[]);
+    assert.equal(entry('qualityReviewEffort').status,'ready');
+    assert.equal(entry('qualityReviewScope').status,'ready');
   }finally{await host.close();}
 });
 
@@ -195,6 +252,18 @@ test('structured calls and program references both work after live activation in
     await host.command(agent,'config {"structuredCalls":false,"nativeProgramReuse":false}');
     const view=await host.command(agent,'features');
     assert.equal(view.features.find(item=>item.key==='structuredCalls').status,'off');
+    assert.equal(view.features.find(item=>item.key==='structuredCalls').effect.status,'applied');
+    assert.ok(view.features.find(item=>item.key==='structuredCalls').effect.applied>0);
     assert.equal(view.features.find(item=>item.key==='nativeProgramReuse').status,'off');
+    assert.equal(view.features.find(item=>item.key==='nativeProgramReuse').effect.status,'applied');
   }finally{await host.close();}
+});
+
+test('latest observed effect uses the recorded decision sequence when time and step tie', () => {
+  const first = {lastStatus: 'applied', lastReason: 'first', lastAt: '2026-11-06T00:00:00.000Z', lastStep: 3, lastSeq: 1};
+  const second = {lastStatus: 'applied', lastReason: 'second', lastAt: '2026-11-06T00:00:00.000Z', lastStep: 3, lastSeq: 2};
+  assert.equal(latestObservedEffect([second, first]).lastReason, 'second');
+  assert.equal(latestObservedEffect([first, second]).lastReason, 'second');
+  const legacy = [{lastStatus: 'applied', lastReason: 'legacy-first'}, {lastStatus: 'applied', lastReason: 'legacy-second'}];
+  assert.equal(latestObservedEffect(legacy).lastReason, 'legacy-second');
 });

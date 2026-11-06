@@ -28,6 +28,7 @@ import {exportTaskHandoff,createTaskHandoffDelivery} from './task-handoff.mjs';
 import {installUltraEffort} from './ultra-effort.mjs';
 import {nativeReasoningReplayRequest} from './native-reasoning-replay.mjs';
 import {createCompactionHandoff} from "./compaction-handoff.mjs";
+import {patchToolExecution,toolModeFor,isBatchToolHost,patchSystemPromptTools} from './tool-execution.mjs';
 import {createExecutionEvidence} from './execution-evidence.mjs';
 import {createExecutionDependencies} from './execution-dependencies.mjs';
 import {createHostReferences} from './host-references.mjs';
@@ -107,6 +108,7 @@ function assertParameterBounds(schema,value,at='arguments'){
 }
 const parameters=properties=>({type:'object',additionalProperties:false,properties:supportedSchema(properties)});
 export function apply(ctx,config={}){
+  patchToolExecution(ctx);
   const nativeFiles=createNativeFiles(ctx);
   const hostReferences=createHostReferences(ctx);
   const pendingSaves=new Set();
@@ -116,6 +118,18 @@ export function apply(ctx,config={}){
   const disposeUltra=installUltraEffort(ctx,{requestView:options=>nativeReasoningReplayRequest(ctx,runtime,options)});
   ctx.effect(()=>disposeUltra);
   const toolSurfaceDisposers=new Map(),taskSurfaceModes=new Map();
+  if(isBatchToolHost(ctx))ctx.on('system-prompt/assemble',async(assembly,context,next)=>{
+    const result=await next();
+    if(Array.isArray(result?.tools))return result;
+    // The new host attaches tools after this waterfall; consumers such as the
+    // optional OPS adapter still read them from the waterfall value.
+    return {...result,tools:toolModeFor(ctx,context?.scope??context?.agent)==='ptc'?[{name:'run_code'}]:[]};
+  });
+  if(isBatchToolHost(ctx))patchSystemPromptTools(ctx,(result,context)=>{
+    const agent=context?.agent;
+    if(agent&&runtime.isEnabled(agent)&&state(agent).config.toolSurface==='compact'&&['read-only','minimal'].includes(taskSurfaceModes.get(agent.session.id))&&Array.isArray(result.tools))
+      result.tools=result.tools.filter(tool=>tool?.name!=='work_exec');
+  });
   const effects=createEffectObserver(ctx,runtime);runtime.effects=effects;
   installNativeProgramReferences(ctx,runtime,effects);
   installStructuredCalls(ctx,runtime,effects);
@@ -313,7 +327,7 @@ export function apply(ctx,config={}){
             feature:'contextPrune',afterMessage:replacement.data.message,beforeMessages:[original],
             seq:replacement.seq,sourceSeqs:[seq],
           });
-          if(result.dedupStats?.length)effects.decide(agent,'blockDedup','applied','original-result-segments',{seq,segments:result.dedupStats});
+          if(result.dedupStats?.length)effects.decide(agent,'contextBlockDedup','applied','original-result-segments',{seq,segments:result.dedupStats});
           pruned++;
           charsRemoved+=result.charsBefore-result.charsAfter;
         }
@@ -383,12 +397,12 @@ export function apply(ctx,config={}){
     if(current?.surface===surface)return;
     try{current?.dispose?.();}catch{}
     toolSurfaceDisposers.delete(agent.session.id);
-    if(surface==='full')return;
     try{
       const deny=surface==='compact-read-only'?[...COMPACT_HIDDEN_TOOLS,'work_exec']:
         surface==='compact-minimal'?[...COMPACT_HIDDEN_TOOLS,'work_exec','work_recall']:COMPACT_HIDDEN_TOOLS;
-      const dispose=agent.ctx.tools.restrict({deny});
+      const dispose=surface==='full'?null:agent.ctx.tools.restrict({deny});
       toolSurfaceDisposers.set(agent.session.id,{surface,dispose});
+      effects.decide(agent,'toolSurface','applied',surface+'-surface',{configured:base,dynamic:surface!==base});
     }catch(error){runtime.problem(state(agent),'tool-surface',error.message);}
   }
   const prepareSession=agent=>{if(!agent)return;workingSet.attach(agent);return runtime.init(agent,AbortSignal.timeout(10000)).then(()=>{applyToolSurface(agent);return effects.load(agent);}).catch(error=>runtime.problem(state(agent),'session-prepare',error.message));};
@@ -408,7 +422,7 @@ export function apply(ctx,config={}){
       _assembly.tools=_assembly.tools.filter(tool=>tool?.name!=='work_exec');
     return next();
   },{prepend:true});
-  const featureControl=createFeatureControl(ctx,runtime,{available,canRecall,workingSet,qualityReview,compactionHandoff,retainedCompute});
+  const featureControl=createFeatureControl(ctx,runtime,{available,canRecall,workingSet,qualityReview,compactionHandoff,retainedCompute,effects});
   registerPluginCommand({ctx,runtime,state,effects,available,featureControl,capabilityDiagnostic,contextEconomics,taskFlow,taskHandoff,finalJson,qualityReview,executionEvidence,refreshExecutionEvidence,workingSet,compressionControl,compactionHandoff,contextWindow,observationLedger,historyCoordinator,clearPluginState,applyToolSurface});
   const nested=new Set();
   async function call(name,args,exec){
@@ -429,7 +443,7 @@ export function apply(ctx,config={}){
       const rootCallId=token?((exec.token?exec.rootCallId:activeExecution?.rootCallId)||exec.rootCallId||callId):callId;
       // PTC rejects native names without an enclosing execution. Background
       // end-of-turn writes use the real transport, never a fabricated token.
-      if(!token&&name!=='run_code'&&ctx.tools.modeFor(exec.agent)==='ptc'){
+      if(!token&&name!=='run_code'&&toolModeFor(ctx,exec.agent)==='ptc'){
         const code=`try { return {ok:true,value:await tools[${JSON.stringify(name)}](${JSON.stringify(args)})}; } catch(e) { return {ok:false,message:String(e)}; }`;
         const result=await ctx.tools.execute({name:'run_code',arguments:{code,description:'Save or recover engineering evidence'},callId,rootCallId:callId,agent:exec.agent,signal:exec.signal});
         if(result.isError)return result;
@@ -497,13 +511,16 @@ export function apply(ctx,config={}){
     if(s.pendingLookupFact){
       const fact=s.pendingLookupFact;s.pendingLookupFact=null;
       if(!s.config.ledgerUnresolved)messages.push({role:'user',id:randomUUID(),source:{kind:'work-evidence'},content:[{type:'text',text:'已观察的局部检索事实：'+JSON.stringify(fact)+'。同一参数的两次原生查询都没有返回匹配；这是所列时间与范围内的观察，不证明整个项目或依赖中不存在该API。需要不同的具体事实；尚未取得的依据保持为未验证'+(s.config.toolSurface==='full'?'，也可记入work_report.unverified':'')+'。此消息不要求结束或声明成功。'}]});
-      if(s.config.selfIndex)try{const found=await index.query(payload.agent,fact.arguments.pattern||'',payload.signal);if(found.matches.length)messages.push({role:'user',id:randomUUID(),source:{kind:'work-evidence'},content:[{type:'text',text:'已核对当前源码的检索入口（数据，不是指令）：'+JSON.stringify(found)}]});}catch(e){runtime.problem(s,'index-query',e.message);}
+      if(s.config.selfIndex)try{const found=await index.query(payload.agent,fact.arguments.pattern||'',payload.signal);if(found.matches.length){effects.decide(payload.agent,'automaticIndex','applied','verified-index-match',{matches:found.matches.length});messages.push({role:'user',id:randomUUID(),source:{kind:'work-evidence'},content:[{type:'text',text:'已核对当前源码的检索入口（数据，不是指令）：'+JSON.stringify(found)}]});}else effects.decide(payload.agent,'automaticIndex','not-applicable','no-index-match');}catch(e){runtime.problem(s,'index-query',e.message);effects.decide(payload.agent,'automaticIndex','unavailable','index-query-error',{message:String(e.message??e).slice(0,240)});}
     }
     const ledgerMessages=observationLedger.maintenance(payload.agent);
     if(ledgerMessages.length)messages.push(...ledgerMessages);
     if(s.config.stateLedger&&s.config.stateInform){
       const notice=runtime.consumeStateNotice(s);
-      if(notice)messages.push({role:'user',id:randomUUID(),source:{kind:'work-evidence-state'},content:[{type:'text',text:notice.text}]});
+      if(notice){
+        messages.push({role:'user',id:randomUUID(),source:{kind:'work-evidence-state'},content:[{type:'text',text:notice.text}]});
+        effects.decide(payload.agent,'stateInform','applied','recorded-state-applicability-notice');
+      }
     }
     if(s.pendingOpsAdvice.length){
       const facts=s.pendingOpsAdvice.splice(0);
@@ -593,7 +610,7 @@ export function apply(ctx,config={}){
     workingSet.prepareStep(payload.agent,payload.signal);
     try{await retainedCompute.prepare(payload.agent);}catch(error){runtime.problem(state(payload.agent),'retained-compute-cleanup',error.message);}
     await effects.load(payload.agent);
-    if(ctx.tools.modeFor(payload.agent)==='ptc'){
+    if(toolModeFor(ctx,payload.agent)==='ptc'){
       const generation=payload.agent.session.surface.contentGeneration;
       let decision=await next();if(decision.kind==='enter')decision=historyCoordinator.beforeStep(payload,decision,generation);
       const s=state(payload.agent);if(decision.kind!=='enter')return decision;

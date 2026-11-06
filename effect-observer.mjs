@@ -21,23 +21,46 @@ FEATURES.inlineArgumentRecovery=null;
 FEATURES.retainedCompute='retainedCompute';
 FEATURES.retainedComputeAdvice='retainedCompute';
 FEATURES.finalJson='finalJsonGuard';
+FEATURES.finalJsonResult='finalJsonResultGuard';
+FEATURES.stubSummary='stubSummary';
+FEATURES.deferPressureCompaction='deferPressureCompaction';
+FEATURES.completionNotice='completionNotice';
+FEATURES.stateInform='stateInform';
+FEATURES.requestAccounting='requestAccounting';
+FEATURES.swLedger='swLedger';
+FEATURES.memberParsing='memberParsing';
+FEATURES.mavenSourceBinding='mavenSourceBinding';
 FEATURES.qualityReview='qualityReview';
 FEATURES.compactionHandoff='compressionControl';
 FEATURES.stageJudgment='stepPacing';
 FEATURES.referenceContext='historyHygiene';
+FEATURES.defaultResponseView='defaultResponseView';
+FEATURES.toolSurface='toolSurface';
+FEATURES.qualityReviewEffort='qualityReviewEffort';
+FEATURES.qualityReviewScope='qualityReviewScope';
+FEATURES.historyBlockDedup='historyHygiene';
+FEATURES.contextBlockDedup='contextProtocol';
 const PLUGIN_TOOLS=new Set(['project_evidence','work_report','work_status','work_state','work_recall','work_exec','work_compute','work_probe','evidence_index','candidate_select','ptc_patterns','ptc_fastpath','verified_exec','fastedit_java']);
 const RETIRED_FEATURES=new Set(['programHistory','ledgerFold','foldPlan','reasoningHistory','executionAdvice','finishAdvice','presentationAdvice','nativeProgramReference']);
+export const featureSetting=name=>FEATURES[name]??null;
 
 /** Measures changes on the same task trajectory. Provider usage is never attributed by subtraction. */
 export function createEffectObserver(ctx,runtime){
   const states=new Map();
   const nativeAttempts=new WeakMap();
   const storageFor=agent=>{const s=runtime.get(agent);return s.telemetryDir===undefined?s.dir:s.telemetryDir;};
-  const get=agent=>{let state=states.get(agent.session.id);if(!state){state={features:{},effects:new Map(),decisions:[],pendingDecisions:[],recentRequests:[],requests:0,mainRequests:0,auxiliaryRequests:0,compactionRequests:0,completeUsageRequests:0,missingUsage:0,unknownConsumption:0,reported:{inputTokens:0,cacheReadTokens:0,cacheWriteTokens:0,outputTokens:0,totalTokens:0},rawReported:{inputTokens:0,cacheReadTokens:0,cacheWriteTokens:0,outputTokens:0,totalTokens:0},totals:{directTokensEstimate:0,directChars:0,instructionTokensEstimate:0,systemTokensEstimate:0,messageTokensEstimate:0,toolSchemaTokensEstimate:0,requestReconstructionMisses:0},queue:Promise.resolve(),writeErrors:[],effectBytes:0,loaded:false,snippets:new Map(),needsLeadingNewline:new Set()};states.set(agent.session.id,state);}return state;};
-  function feature(state,name){return state.features[name]??=( {decisions:0,applied:0,deferred:0,notApplicable:0,unavailable:0,failed:0,requestsAffected:0,directTokensEstimate:0,directChars:0,reasons:{}} );}
+  const get=agent=>{let state=states.get(agent.session.id);if(!state){state={features:Object.create(null),effects:new Map(),decisions:[],pendingDecisions:[],pendingOverflow:[],decisionSeq:0,overflowWriting:false,overflowQueue:Promise.resolve(),recentRequests:[],requests:0,mainRequests:0,auxiliaryRequests:0,compactionRequests:0,completeUsageRequests:0,missingUsage:0,unknownConsumption:0,reported:{inputTokens:0,cacheReadTokens:0,cacheWriteTokens:0,outputTokens:0,totalTokens:0},rawReported:{inputTokens:0,cacheReadTokens:0,cacheWriteTokens:0,outputTokens:0,totalTokens:0},totals:{directTokensEstimate:0,directChars:0,instructionTokensEstimate:0,systemTokensEstimate:0,messageTokensEstimate:0,toolSchemaTokensEstimate:0,requestReconstructionMisses:0},queue:Promise.resolve(),writeErrors:[],effectBytes:0,loaded:false,snippets:new Map(),needsLeadingNewline:new Set()};states.set(agent.session.id,state);}return state;};
+  function feature(state,name){return state.features[name]??=( {decisions:0,applied:0,deferred:0,notApplicable:0,unavailable:0,failed:0,requestsAffected:0,directTokensEstimate:0,directChars:0,reasons:Object.create(null)} );}
   function decide(agent,name,status,reason,details={}){
-    const state=get(agent),item=feature(state,name);item.decisions++;item[status==='not-applicable'?'notApplicable':status]=(item[status==='not-applicable'?'notApplicable':status]??0)+1;item.lastStatus=status;item.lastReason=reason;item.reasons[reason]=(item.reasons[reason]??0)+1;
-    const decision={id:randomUUID(),at:new Date().toISOString(),step:runtime.get(agent).step,feature:name,status,reason,...details};state.decisions.push(decision);state.pendingDecisions.push(decision);if(state.pendingDecisions.length>256)state.pendingDecisions.shift();if(state.decisions.length>64)state.decisions.shift();runtime.get(agent).dirty=true;
+    const state=get(agent),item=feature(state,name),at=new Date().toISOString(),step=runtime.get(agent).step,seq=++state.decisionSeq;
+    item.decisions++;item[status==='not-applicable'?'notApplicable':status]=(item[status==='not-applicable'?'notApplicable':status]??0)+1;item.lastStatus=status;item.lastReason=reason;item.lastAt=at;item.lastStep=step;item.lastSeq=seq;item.reasons[reason]=(item.reasons[reason]??0)+1;
+    const decision={id:randomUUID(),at,step,seq,feature:name,status,reason,...details};state.decisions.push(decision);state.pendingDecisions.push(decision);
+    if(state.pendingDecisions.length>256){
+      const overflow=state.pendingDecisions.splice(0,state.pendingDecisions.length-256);
+      state.pendingOverflow.push(...overflow);
+    }
+    if(state.pendingOverflow.length)persistOverflow(state,agent);
+    if(state.decisions.length>64)state.decisions.shift();runtime.get(agent).dirty=true;
   }
   function rewrite(agent,{feature:name,afterMessage,beforeMessages,seq=null,sourceSeqs=[],retainedSeqs=[]}){
     if(!afterMessage?.id||!Array.isArray(beforeMessages))return;
@@ -66,6 +89,24 @@ export function createEffectObserver(ctx,runtime){
       state.needsLeadingNewline.delete(kind);return true;}).catch(error=>{state.writeErrors.push(String(error.message).slice(0,240));state.writeErrors=state.writeErrors.slice(-8);return false;});
     return state.queue;
   }
+  function persistOverflow(state,agent){
+    if(state.overflowWriting||!state.pendingOverflow.length)return;
+    state.overflowWriting=true;
+    state.overflowQueue=state.overflowQueue.catch(()=>{}).then(async()=>{
+      let ok=true;
+      while(ok&&state.pendingOverflow.length){
+        const batch=state.pendingOverflow.slice();
+        ok=await queue(state,agent,{schema:'work-evidence.pending-decisions.v1',sessionId:agent.session.id,
+          at:new Date().toISOString(),step:runtime.get(agent).step,decisions:batch});
+        if(ok){
+          const ids=new Set(batch.map(item=>item.id));
+          state.pendingOverflow=state.pendingOverflow.filter(item=>!ids.has(item.id));
+        }
+      }
+      state.overflowWriting=false;
+      return ok;
+    }).catch(()=>{state.overflowWriting=false;return false;});
+  }
   function begin(agent,options,{auxiliary=false,requestKind}={}){
     requestKind=requestKindOf({purpose:options.purpose,auxiliary,requestKind});
     const main=requestKind==='main',state=get(agent),byFeature={},used=new Set();let misses=0;
@@ -92,6 +133,7 @@ export function createEffectObserver(ctx,runtime){
     const definitions=options.tools??[],withoutPlugin=definitions.filter(tool=>!PLUGIN_TOOLS.has(tool.name??tool.function?.name));
     const schemaOverhead=definitions.length===withoutPlugin.length?0:textTokens(JSON.stringify(definitions))-textTokens(JSON.stringify(withoutPlugin));
     const requestId=randomUUID(),native=main?nativeAttempts.get(agent):null;
+    if(main&&runtime.get(agent).config.requestAccounting)decide(agent,'requestAccounting','applied','main-request-observation-started');
     let projectionObservation=unknownProjectionObservation(main?'projection-observer-unavailable':'non-main-request');
     if(main&&typeof runtime.observeRequestProjection==='function'){
       try{projectionObservation=runtime.observeRequestProjection(agent,options.messages)??projectionObservation;}
@@ -148,6 +190,22 @@ export function createEffectObserver(ctx,runtime){
       for(const [name,value]of Object.entries(row.effects.byFeature)){const item=feature(state,name);item.requestsAffected++;item.directTokensEstimate+=value.tokensEstimate;item.directChars+=value.chars;}}
     state.recentRequests.push(row);if(state.recentRequests.length>24)state.recentRequests.shift();
   }
+  function restoredFeature(decision){
+    const name=decision.feature,reason=String(decision.reason??'');
+    if(name==='compactionHandoff'&&['deterministic-stub-summary','stub-not-smaller-than-span','historical-recall-not-exposed'].includes(reason))return 'stubSummary';
+    if(name==='finalJson'&&(decision.kind==='observed-result-repair'||reason==='observed-result-repair-requested'))return 'finalJsonResult';
+    return name;
+  }
+  function restoreDecision(state,decision,at,step){
+    const name=restoredFeature(decision);
+    if(typeof name!=='string'||!name||Object.hasOwn(Object.prototype,name))return;
+    const value=feature(state,name),key=decision.status==='not-applicable'?'notApplicable':decision.status;
+    const seq=Number.isSafeInteger(decision.seq)?decision.seq:++state.decisionSeq;
+    state.decisionSeq=Math.max(state.decisionSeq,seq);
+    value.decisions++;value[key]=(value[key]??0)+1;value.lastStatus=decision.status;value.lastReason=decision.reason;
+    value.lastAt=decision.at??at;value.lastStep=decision.step??step;value.lastSeq=seq;value.reasons[decision.reason]=(value.reasons[decision.reason]??0)+1;
+    state.decisions.push(name===decision.feature?decision:{...decision,feature:name});if(state.decisions.length>64)state.decisions.shift();
+  }
   function finish(agent,row){const state=get(agent);normalizeRow(row);accumulate(state,row);queue(state,agent,row);runtime.get(agent).dirty=true;}
   async function load(agent){
     const state=get(agent);if(state.loaded)return;if(state.loading)return state.loading.catch(()=>{});
@@ -167,11 +225,11 @@ export function createEffectObserver(ctx,runtime){
           }
           if((await fs.stat(file)).size>64*1024*1024)throw new Error('Observability file exceeds 64 MiB load limit');raw=await fs.readFile(file,'utf8');
         }catch(error){if(error.code!=='ENOENT')state.writeErrors.push('load: '+error.message);continue;}
-        const seen=new Set();for(const line of raw.split('\n').filter(Boolean))try{
+        const seen=new Set(),decisionIds=new Set();for(const line of raw.split('\n').filter(Boolean))try{
           const item=JSON.parse(line);
-          if(kind==='observability'&&item.schema!=='work-evidence.request-effects.v1')continue;
+          if(kind==='observability'&&!['work-evidence.request-effects.v1','work-evidence.pending-decisions.v1'].includes(item.schema))continue;
           if(item.sessionId!==undefined&&item.sessionId!==agent.session.id)throw new Error('Observability row belongs to another session');
-          const id=kind==='observability'?item.requestId:item.id;if(seen.has(id))continue;seen.add(id);
+          const id=kind==='observability'?item.requestId:item.id;if(id!==undefined){if(seen.has(id))continue;seen.add(id);}
           if(kind==='attribution'&&item.schema==='work-evidence.attribution.v1'&&typeof item.messageId==='string'&&Array.isArray(item.before)){
             if(state.effectBytes+(item.bytes??0)>16*1024*1024){state.writeErrors.push('attribution restore exceeds memory limit');break;}
             const list=state.effects.get(item.messageId)??[];if(!list.some(effect=>effect.id===item.id)){list.push(item);state.effects.set(item.messageId,list);state.effectBytes+=item.bytes??0;}
@@ -180,7 +238,16 @@ export function createEffectObserver(ctx,runtime){
             // that field existed are canonicalized here, and only once.
             normalizeRow(item);
             accumulate(state,item);
-            for(const decision of item.decisions??[]){const value=feature(state,decision.feature),key=decision.status==='not-applicable'?'notApplicable':decision.status;value.decisions++;value[key]=(value[key]??0)+1;value.lastStatus=decision.status;value.lastReason=decision.reason;value.reasons[decision.reason]=(value.reasons[decision.reason]??0)+1;state.decisions.push(decision);if(state.decisions.length>64)state.decisions.shift();}
+            for(const decision of item.decisions??[])if(decision&&typeof decision.id==='string'&&!decisionIds.has(decision.id)){
+              decisionIds.add(decision.id);restoreDecision(state,decision,item.at,item.step);
+            }
+          }else if(kind==='observability'&&item.schema==='work-evidence.pending-decisions.v1'&&Array.isArray(item.decisions)){
+            // Decisions recorded after the last main request was assembled survive disposal
+            // here; restoring by decision id keeps a resumed session from counting one twice.
+            for(const decision of item.decisions)if(decision&&typeof decision.id==='string'&&typeof decision.feature==='string'&&
+              typeof decision.status==='string'&&typeof decision.reason==='string'&&!decisionIds.has(decision.id)){
+              decisionIds.add(decision.id);restoreDecision(state,decision,item.at,item.step);
+            }
           }
         }catch(error){state.writeErrors.push('Unreadable '+kind+' row retained: '+error.message);}
         // Repairing a missing trailing newline keeps later appends one row per line. When
@@ -194,7 +261,7 @@ export function createEffectObserver(ctx,runtime){
     catch(error){state.writeErrors.push('load: '+String(error.message??error).slice(0,200));}
     finally{state.loading=null;}
   }
-  function snapshot(agent,options={}){const state=get(agent),config=runtime.get(agent).config,features={};for(const name of new Set([...Object.keys(FEATURES),...Object.keys(state.features)])){const item=state.features[name];const setting=FEATURES[name],retired=RETIRED_FEATURES.has(name);features[name]={enabled:!retired&&runtime.isEnabled(agent)&&(setting?!!config[setting]:true),...(retired?{retired:true}:{}),...(item??{decisions:0,applied:0,lastStatus:'not-observed',lastReason:'no-opportunity-observed'} )};}
+  function snapshot(agent,options={}){const state=get(agent),config=runtime.get(agent).config,features={};for(const name of new Set([...Object.keys(FEATURES),...Object.keys(state.features)])){const base=state.features[name]??{decisions:0,applied:0};const setting=FEATURES[name],retired=RETIRED_FEATURES.has(name);features[name]={enabled:!retired&&runtime.isEnabled(agent)&&(setting?!!config[setting]:true),...(retired?{retired:true}:{}),...base,lastStatus:base.lastStatus??'not-observed',lastReason:base.lastReason??(base.decisions?'no-effect-applied':'no-opportunity-observed')};}
     const full={version:1,schema:'work-evidence.observability.v1',requests:{count:state.requests,main:state.mainRequests,compaction:state.compactionRequests,auxiliary:state.auxiliaryRequests,missingUsage:state.missingUsage,unknownConsumption:state.unknownConsumption,completeUsageRequests:state.completeUsageRequests,providerReported:{...state.reported},providerReportedRaw:{...state.rawReported}},
       totals:{...state.totals},features,recentRequests:state.recentRequests.slice(),decisions:state.decisions.slice(-24),
       persistence:{file:storageFor(agent)?path.join(storageFor(agent),agent.session.id+'.observability.jsonl'):null,writeErrors:state.writeErrors.slice(),scope:'session-local start/settlement records and native event links outside workspace discovery; no prompt bodies; survives rolling status window'},
@@ -227,8 +294,29 @@ export function createEffectObserver(ctx,runtime){
       nativeAttempt:{attemptId:active.attemptId,turn:active.turn,step:active.step},at:new Date().toISOString(),
       outcome:frame.outcome?.kind??'unknown',eventType:frame.outcome?.eventType??null,sourceSeq:frame.outcome?.seq??null});
   });
-  return {decide,rewrite,benefit,begin,start,finish,load,snippet,snapshot,instructions:(agent,text)=>{get(agent).instructionText=text;},flush:agent=>get(agent).queue,
-    async disposeAgent(agent){await get(agent).queue;nativeAttempts.delete(agent);states.delete(agent.session.id);},async dispose(){
+  return {decide,rewrite,benefit,begin,start,finish,load,snippet,snapshot,instructions:(agent,text)=>{get(agent).instructionText=text;},flush:async agent=>{const state=get(agent);await state.overflowQueue;await state.queue;},
+    async disposeAgent(agent){
+      const state=get(agent);
+      await state.overflowQueue;
+      await state.queue;
+      if(state.pendingOverflow.length){
+        const decisions=state.pendingOverflow.slice();
+        const ok=await queue(state,agent,{schema:'work-evidence.pending-decisions.v1',sessionId:agent.session.id,
+          at:new Date().toISOString(),step:runtime.get(agent).step,decisions});
+        if(ok){
+          const ids=new Set(decisions.map(item=>item.id));
+          state.pendingOverflow=state.pendingOverflow.filter(item=>!ids.has(item.id));
+        }
+      }
+      // Decisions recorded after the last main request was assembled have no request row
+      // to carry them. Persist them before the in-memory state is dropped.
+      if(state.pendingDecisions.length){
+        const decisions=state.pendingDecisions.splice(0);
+        await queue(state,agent,{schema:'work-evidence.pending-decisions.v1',sessionId:agent.session.id,
+          at:new Date().toISOString(),step:runtime.get(agent).step,decisions});
+      }
+      nativeAttempts.delete(agent);states.delete(agent.session.id);
+    },async dispose(){
       for(const stop of [unsubscribe,unsubscribeStreams])if(typeof stop==='function')stop();
-      await Promise.allSettled([...states.values()].map(state=>state.queue));states.clear();}};
+      await Promise.allSettled([...states.values()].map(async state=>{await state.overflowQueue;await state.queue;}));states.clear();}};
 }

@@ -87,6 +87,7 @@ test('incomplete native observations and disabled controls never trigger a resul
 test('one source-bound notice preserves the original answer and does not loop',async()=>{
   const host=harness(),original=host.events.at(-1).data.message.content[0].text;
   await host.stop();await host.stop();assert.equal(host.notices.length,1);
+  assert.equal(host.decisions[0][1],'finalJsonResult');assert.equal(host.decisions[0][2],'applied');
   assert.match(host.guard(),/without tool calls/);
   assert.equal(host.events.find(event=>event.seq===4).data.message.content[0].text,original);
   assert.match(host.notices[0].content[0].text,/'sourceSeq'|"sourceSeq":3/u);
@@ -104,6 +105,18 @@ test('a corrected answer, disabled candidate or fresh request releases the tool 
     if(reason==='turn-end')host.hooks.get('session/event')(host.agent.session,{type:'turn/end'});
     if(reason==='disposed')host.hooks.get('agent/disposed')({agent:host.agent});
     assert.equal(host.guard(),undefined,reason);
+  }
+});
+
+test('result-repair steering failures are attributed to the result guard',async()=>{
+  for(const mode of ['missing','throws']){
+    const host=harness();
+    if(mode==='missing')delete host.agent.steer;
+    else host.agent.steer=()=>{throw new Error('steering unavailable');};
+    await host.stop();
+    assert.equal(host.notices.length,0);
+    assert.equal(host.decisions.length,1);
+    assert.deepEqual(host.decisions[0].slice(1,4),['finalJsonResult','unavailable',mode==='missing'?'native-steering-unavailable':'native-steering-failed']);
   }
 });
 

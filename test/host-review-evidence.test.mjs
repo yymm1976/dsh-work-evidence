@@ -110,7 +110,7 @@ test('review retains every bounded artifact and focused scope counts retained un
   assert.equal(result.sourceReview.omittedFiles.includes('src/file-0.mjs'),false);
 });
 
-for(const toolMode of ['native','ptc'])test(`quality review retains successful OPS source changes (${toolMode})`,async()=>{
+for(const toolMode of ['native','ptc'])test(`quality review retains successful OPS source changes (${toolMode})`,async t=>{
   const root='C:/Users/杨铭/Documents/DSH Desktop/home/profiles/web/node_modules/dsh-ops/lib/components';
   const [file,discovery,ptc]=await Promise.all(['file','discovery','ptc'].map(name=>import(pathToFileURL(root+'/'+name+'/index.js').href)));
   const marker='OPS_MIDDLE_REQUIREMENT_BRANCH',body='/*\n'+'source heading\n'.repeat(250)+'*/\nexport const '+marker+' = true;\n/*\n'+'source tail\n'.repeat(250)+'original-ending\n*/\n';
@@ -129,7 +129,21 @@ for(const toolMode of ['native','ptc'])test(`quality review retains successful O
       return [text('源码已写入并修正末尾。')];
     },auxiliary:options=>{payload=JSON.parse(options.messages[0].content[0].text);return [text('{"issues":[]}')];}});
   try{
-    const agent=await host.createAgent('ultra');await host.send(agent,'写入 core.mjs，再准确修正末尾，保留中间的需求分支。');
+    const agent=await host.createAgent('ultra');
+    // OPS publishes scoped tool definitions asynchronously; wait for the PTC SDK too.
+    let ready=false;
+    for(let attempt=0;attempt<50&&!ready;attempt++){
+      if(host.ctx.tools.get('ops_write_file',agent)){
+        if(toolMode!=='ptc')ready=true;
+        else{
+          const assembly=await host.ctx.systemPrompt.assemble({agent,scope:agent});
+          ready=(assembly.sections?.find(section=>section.name==='tools:sdk')?.text??'').includes('ops_write_file');
+        }
+      }
+      if(!ready)await new Promise(resolve=>setTimeout(resolve,20));
+    }
+    if(!ready)return t.skip('The optional dsh-ops file component publishes no write tools on this host.');
+    await host.send(agent,'写入 core.mjs，再准确修正末尾，保留中间的需求分支。');
     assert.ok(payload,JSON.stringify({end:host.events.findLast(event=>event.type==='turn/end')?.data.reason,
       results:host.events.filter(event=>event.type==='tool/result').map(event=>event.data.message.content.map(block=>block.text??'').join('').slice(0,500))}));
     assert.ok(payload.observed.artifacts.some(item=>item.tool==='ops_edit_file'));

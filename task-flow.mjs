@@ -1,4 +1,5 @@
 import path from 'node:path';
+import {toolModeFor} from './tool-execution.mjs';
 import {randomUUID} from 'node:crypto';
 import {argsOf,eventLog,isUserRequestMessage,MODE_POLICY_VERSION} from './runtime.mjs';
 import {resultText,parseResult,resultHasProblem,resultIdentity} from './visible-results.mjs';
@@ -9,6 +10,7 @@ import {nativeReadObservation} from './host-references.mjs';
 import {nativeReadOutputSymptom,nativeReadRecoveryEntries,executionFailureFrames,recordedSourceExcerpt,reportedCheckFailure,reportedExecutionChecks,nativeProgramParseLocation,nativeTemplateCallLocation,nativePwshInvocationDiagnostic} from './recovery.mjs';
 import {resolveNativeProgram,nativeProgramAddress} from './program-reference.mjs';
 import {textWindow,within} from './evidence.mjs';
+import {declaredInlineExecutable,namedInlineExecutable} from './inline-exec.mjs';
 
 const SOURCE='work-evidence-task-flow';
 const PHASES=['investigate','modify','execute','deliver','mixed'];
@@ -166,6 +168,21 @@ function pathsOf(value){
 export function textPaths(text){
   return [...new Set([...String(text).matchAll(/(?:[A-Za-z]:[\\/])?(?:[\p{L}\p{N}_@.~-]+[\\/])*[\p{L}\p{N}_@~-]+\.(?:[cm]?[jt]sx?|py|java|sql|jsonl?[,;，；:]?|ya?ml|toml|xml|gradle|kts|rs|go|c|cpp|h|glsl|md|rst|ini|csv|ndjson|txt)\b/gu)].map(match=>match[0].replace(/[,;，；:]$/u,'')))].slice(0,16);
 }
+function explicitlyCorrectedClaim(text,claim){
+  if(claim.length<12||claim.length>800)return false;
+  const at=text.indexOf(claim);
+  if(at<0||text.indexOf(claim,at+claim.length)>=0)return false;
+  const context=text.slice(Math.max(0,at-80),at)+text.slice(at+claim.length,at+claim.length+80);
+  return /(?:不对|错了|错误|不成立|不再适用|纠正|撤销|推翻|应改为)|(?:\bwrong\b|\bincorrect\b|not true|no longer valid|\bcorrecti(?:on|ng)\b|\bretract(?:ed)?\b|\bsuperseded\b)/iu.test(context);
+}
+function challengeValidity(state,claim,root){
+  const row=state.challengedClaims.get(claim);
+  if(!row)return null;
+  if(!row.scopePaths.length)return 'challenged';
+  if(!root||state.lastOpaqueSeq>row.correctionSeq)return 'unknown';
+  if([...state.calls.values()].some(call=>call.seq>row.correctionSeq&&WRITE.has(call.name)))return 'unknown';
+  return row.scopePaths.some(file=>state.artifacts.get(normalize(path.resolve(root,file)))?.seq>row.correctionSeq)?'unknown':'challenged';
+}
 function todoPhase(todos){
   const active=todos.filter(item=>item.status==='in_progress'),phases=new Set();
   for(const item of active){
@@ -185,7 +202,8 @@ export function createTaskFlow(ctx,runtime,{nativeFiles,call,executionDependenci
     if(!state){state={cursor:0,turn:null,step:0,calls:new Map(),nested:new Map(),nestedFailures:new Map(),completedNested:new Set(),live:new Map(),errors:new Map(),reads:new Map(),jobs:new Set(),pacing:newPacing(),programFailure:null,legacyInterpreterShell:null,
       todos:null,todoSeq:null,artifacts:new Map(),artifactsEvicted:0,executionsEvicted:0,turnStartSeq:null,qualityArtifacts:new Map(),qualityExecutions:[],lastQualityReviewedMutation:null,phase:{name:null,seq:null,focus:[],source:null},lastCompaction:null,report:null,lastMutation:-1,mutationVersion:0,
       lastUser:null,programEpoch:0,programOutputDiagnostics:[],readResultRoots:new Map(),readOutputIssue:null,stageReporting:{lastTextSeq:null,lastTextSteps:0,lastNoticeSteps:0,notices:0,notifiedPhases:[]},lastInlineExec:-1,inlineExecAdvised:new Set(),scriptReuseAdvised:new Set(),diagnosticAdvised:new Set(),reuseAdvised:new Set(),cleanupAdvised:new Set(),
-      probes:[],executions:[],sourceReads:[],sourceReadsEvicted:0,repeatedExecution:null,cleanup:null,transitions:[],reuseNotices:0,cleanupNotices:0};states.set(agent.session.id,state);}
+      probes:[],executions:[],sourceReads:[],sourceReadsEvicted:0,repeatedExecution:null,cleanup:null,transitions:[],reuseNotices:0,cleanupNotices:0,
+      reportClaims:new Map(),challengedClaims:new Map(),reusedJudgment:null,lastOpaqueSeq:-1};states.set(agent.session.id,state);}
     return state;
   }
   function transition(state,name,seq,focus,source){
@@ -197,6 +215,7 @@ export function createTaskFlow(ctx,runtime,{nativeFiles,call,executionDependenci
   }
   function consume(agent,state,call,result,event,{coveredFailure=false,coveredNested=false,structuredReads=[],clippedReadSeqs=[],nonemptyRead=false}={}){
     if(call.name==='work_exec')state.lastInlineExec=event.seq;
+    if(call.name==='run_code'||SHELL.includes(call.name))state.lastOpaqueSeq=event.seq;
     if(state.lastUser&&event.seq>state.lastUser.seq&&!INTERNAL.has(call.name)&&!(call.name==='run_code'&&coveredNested)){
       state.pacing.operations++;state.pacing.steps.add(state.step);
     }
@@ -300,6 +319,8 @@ export function createTaskFlow(ctx,runtime,{nativeFiles,call,executionDependenci
         scriptEditsSubmitted:call.name==='work_exec'?(payload?.scriptEditsSubmitted??call.args.edits?.length??0):0,
         scriptEditCount:call.name==='work_exec'&&payload?.scriptRef?(payload.scriptEditCount??(call.args.edits??[]).filter(edit=>edit?.before!==edit?.after).length):0,
         scriptChars:call.name==='work_exec'?payload?.scriptChars??call.args.code?.length??0:0,scriptRuntime:call.name==='work_exec'?payload?.scriptRuntime??call.args.runtime:null,
+        errorCode:call.name==='work_exec'&&typeof payload?.errorCode==='string'?payload.errorCode:
+          call.name==='work_exec'&&typeof payload?.error?.code==='string'?payload.error.code:null,
         scriptSourceRefs:call.name==='work_exec'&&Array.isArray(payload?.scriptSourceRefs)?payload.scriptSourceRefs.filter(id=>typeof id==='string'):[],
         formatRecovery:call.name==='work_exec'&&payload?.recovery?.reason==='commonjs-program-with-default-esm'?payload.recovery:null,
         failureSignature:failed?checkFailure?.signature??payload?.failureSignature??failureSignature(payload?.errorText||streamText(payload?.stderr??payload?.stderrText)||resultText(result.content)):null,
@@ -353,6 +374,13 @@ export function createTaskFlow(ctx,runtime,{nativeFiles,call,executionDependenci
     if(call.name==='work_report'&&payload?.saved===true){
       state.report={seq,args:call.args,path:payload.path,argumentsSeq:['tool/ptc-dispatch','tool/code-dispatch'].includes(event.type)?seq:call.seq??null};
       if(call.args.status==='complete'&&!call.args.remaining?.length)transition(state,'deliver',seq,[],'reported-conclusion');
+      if(runtime.get(agent).config.executionTriage)for(const item of call.args.claims??[]){
+        if(!['observed','inferred'].includes(item.status))continue;
+        const challenge=challengeValidity(state,item.claim,runtime.get(agent).root);
+        if(challenge==='challenged')state.reusedJudgment={claim:item.claim,reportSeq:state.challengedClaims.get(item.claim).reportSeq,
+          correctionSeq:state.challengedClaims.get(item.claim).correctionSeq,reusedSeq:seq,source:'work_report'};
+        else if(!challenge)bounded(state.reportClaims,item.claim,{reportSeq:seq,scopePaths:textPaths(item.claim)},16);
+      }
     }
     return false;
   }
@@ -362,7 +390,7 @@ export function createTaskFlow(ctx,runtime,{nativeFiles,call,executionDependenci
       const event=log[state.cursor++],data=event.data??{},message=messageOf(event);
       if(event.type==='turn/start'){
         state.turn=data.turn;state.turnStartSeq=event.seq;state.todos=null;state.todoSeq=null;state.report=null;state.lastMutation=-1;state.errors.clear();state.calls.clear();state.nested.clear();state.nestedFailures.clear();state.reads.clear();
-        state.phase={name:null,seq:null,focus:[],source:null};state.repeatedExecution=null;state.cleanup=null;
+        state.phase={name:null,seq:null,focus:[],source:null};state.repeatedExecution=null;state.cleanup=null;state.reusedJudgment=null;
         state.pacing=newPacing();state.completedNested.clear();state.programFailure=null;state.programOutputDiagnostics=[];state.readResultRoots.clear();state.readOutputIssue=null;state.legacyInterpreterShell=null;
         state.qualityArtifacts.clear();state.qualityExecutions=[];state.lastQualityReviewedMutation=null;
       }
@@ -392,7 +420,14 @@ export function createTaskFlow(ctx,runtime,{nativeFiles,call,executionDependenci
           }
           if(advice?.kind==='mode')state.pacing.notices.add(advice.key);
         }else if(isUserRequestMessage(message)){
-          state.lastUser={id:message.id,seq:event.seq,text:resultText(message?.content)};state.report=null;state.pacing=newPacing();
+          const text=resultText(message?.content);
+          if(runtime.get(agent).config.executionTriage){
+            const matches=[...state.reportClaims].filter(([claim])=>explicitlyCorrectedClaim(text,claim));
+            if(matches.length===1){const [claim,original]=matches[0];
+              bounded(state.challengedClaims,claim,{...original,correctionSeq:event.seq},8);
+            }
+          }
+          state.lastUser={id:message.id,seq:event.seq,text};state.report=null;state.pacing=newPacing();state.reusedJudgment=null;
           state.stageReporting={lastTextSeq:null,lastTextSteps:0,lastNoticeSteps:0,notices:0,notifiedPhases:[]};
           state.programFailure=null;state.programOutputDiagnostics=[];state.readResultRoots.clear();state.readOutputIssue=null;state.legacyInterpreterShell=null;state.lastQualityReviewedMutation=null;
         }
@@ -404,15 +439,21 @@ export function createTaskFlow(ctx,runtime,{nativeFiles,call,executionDependenci
       if(event.type==='tool/call'&&data.callId){
         // Generic PTC code can write through node:fs without emitting a file-tool event.
         // Its boundary invalidates unversioned execution comparisons; no mutation is asserted.
+        if((data.name==='run_code'||SHELL.includes(data.name))&&!state.calls.has(data.callId))state.lastOpaqueSeq=event.seq;
         if(data.name==='run_code'&&!state.calls.has(data.callId)){state.programEpoch++;state.repeatedExecution=null;}
         bounded(state.calls,data.callId,{name:data.name,args:argsOf(data.arguments),seq:event.seq},256);
       }
       if(event.type==='assistant/message'){
-        if(resultText(message?.content).trim()){state.stageReporting.lastTextSeq=event.seq;state.stageReporting.lastTextSteps=state.pacing.steps.size;}
+        const text=resultText(message?.content).trim();
+        if(text){state.stageReporting.lastTextSeq=event.seq;state.stageReporting.lastTextSteps=state.pacing.steps.size;}
+        if(text&&challengeValidity(state,text,runtime.get(agent).root)==='challenged'){
+          const row=state.challengedClaims.get(text);state.reusedJudgment={claim:text,reportSeq:row.reportSeq,correctionSeq:row.correctionSeq,reusedSeq:event.seq,source:'assistant-text'};
+        }
         const outputTokens=data.usage?.outputTokens;
         if(Number.isSafeInteger(outputTokens)&&outputTokens>=0){state.pacing.outputTokens+=outputTokens;state.pacing.lastOutputTokens=outputTokens;}
         else state.pacing.missingOutputUsage++;
         for(const block of message?.content??[])if(block.type==='tool-call'&&!state.calls.has(block.id)){
+          if(block.name==='run_code'||SHELL.includes(block.name))state.lastOpaqueSeq=event.seq;
           if(block.name==='run_code'){state.programEpoch++;state.repeatedExecution=null;}
           bounded(state.calls,block.id,{name:block.name,args:argsOf(block.arguments),seq:event.seq},256);
         }
@@ -521,13 +562,24 @@ export function createTaskFlow(ctx,runtime,{nativeFiles,call,executionDependenci
     if(surfaceMode==='minimal')return messages;
     const user=state.lastUser,text=user?.text??'',key=String(user?.seq);
     const emit=(kind,id,text)=>{
-      runtime.effects?.decide(agent,({reuse:'reuseAdvice',cleanup:'cleanupAdvice',pacing:'stepPacing',compute:'retainedComputeAdvice',validation:'stepPacing',inlineExec:'inlineExecAdvice',diagnostic:'failureAdvice',scriptReuse:'scriptReuseAdvice',scriptVersion:'scriptReuseAdvice',review:'qualityReview'}[kind]??'guidance'),'applied','observed-scene-condition',{noticeId:id});
+      runtime.effects?.decide(agent,({reuse:'reuseAdvice',cleanup:'cleanupAdvice',pacing:'stepPacing',mode:'stepPacing',compute:'retainedComputeAdvice',validation:'stepPacing',inlineExec:'inlineExecAdvice',diagnostic:'failureAdvice',scriptReuse:'scriptReuseAdvice',scriptVersion:'scriptReuseAdvice',review:'qualityReview',judgment:'stageJudgment'}[kind]??'guidance'),'applied','observed-scene-condition',{noticeId:id});
       const notice=message(kind,id,text);
       if(kind==='pacing'){notice.source.taskFlow.outputTokens=state.pacing.outputTokens;notice.source.taskFlow.stepCount=state.pacing.steps.size;}
       messages.push(notice);runtime.get(agent).dirty=true;return messages;
     };
+    const judgmentReminder=()=>{
+      const row=state.reusedJudgment;
+      if(!config.executionTriage||!row||challengeValidity(state,row.claim,runtimeState.root)!=='challenged')return null;
+      const id=JSON.stringify(['challenged-claim',row.reportSeq,row.correctionSeq,row.reusedSeq]);
+      if(state.diagnosticAdvised.has(id))return null;
+      state.diagnosticAdvised.add(id);
+      const notices=emit('diagnostic',id,'[work-evidence] 用户在事件'+row.correctionSeq+'原文纠正了报告事件'+row.reportSeq+'中登记的判断；事件'+row.reusedSeq+'再次原样采用。旧判断已标记为 challenged，不表示纠正或任何替代结论已经验证。核对纠正与原依据；没有新证据时不要恢复旧判断。没有自动修改事实、文件或任务结果。');
+      notices[0].source.taskFlow.judgment={status:'challenged',reportSeq:row.reportSeq,correctionSeq:row.correctionSeq,reusedSeq:row.reusedSeq,source:row.source};
+      return notices;
+    };
     const incoming=pendingMessages.findLast(isUserRequestMessage);
     if(incoming){
+      const judgment=judgmentReminder();if(judgment)return judgment;
       const modeKey=JSON.stringify([incoming.id,'pb001-brief']);
       if(mode==='aggressive'&&config.stepPacing&&!state.pacing.notices.has(modeKey)){
         state.pacing.notices.add(modeKey);
@@ -547,7 +599,7 @@ export function createTaskFlow(ctx,runtime,{nativeFiles,call,executionDependenci
             '[work-evidence] 当前请求已从只读转为可写，work_exec现已可用。确需运行完整Node/Python程序时提交原文，项目修改仍用write/edit；只使用当前请求明确授权的范围，已有结果足够时直接继续。'+WORK_EXEC_DISCOVERY);
         }
       }
-      if(surfaceMode==='read-only'&&ctx.tools.modeFor?.(agent)==='ptc'&&knownPaths.length>1){
+      if(surfaceMode==='read-only'&&toolModeFor(ctx,agent)==='ptc'&&knownPaths.length>1){
         const id=JSON.stringify([incoming.id,'read-only-batch',0]);
         if(!state.pacing.notices.has(id)){
           rememberPacing(state,id);
@@ -556,7 +608,7 @@ export function createTaskFlow(ctx,runtime,{nativeFiles,call,executionDependenci
         }
       }
       if(surfaceMode==='read-only')return messages;
-      if(config.stepPacing&&ctx.tools.modeFor?.(agent)==='ptc'&&knownPaths.length){
+      if(config.stepPacing&&toolModeFor(ctx,agent)==='ptc'&&knownPaths.length){
         const id=JSON.stringify([incoming.id,'startup',0]);
         if(!state.pacing.notices.has(id)){
           rememberPacing(state,id);
@@ -571,6 +623,7 @@ export function createTaskFlow(ctx,runtime,{nativeFiles,call,executionDependenci
       }
       return messages;
     }
+    const judgment=judgmentReminder();if(judgment)return judgment;
     const readIssue=state.readOutputIssue,readIssueKey=JSON.stringify([user?.seq,readIssue?.symptom==='line-text-truncated-json'?'native-read-clipped-json':'native-read-result']);
     if(config.executionTriage&&user&&readIssue?.userSeq===user.seq&&!state.diagnosticAdvised.has(readIssueKey)){
       state.diagnosticAdvised.add(readIssueKey);
@@ -622,7 +675,14 @@ export function createTaskFlow(ctx,runtime,{nativeFiles,call,executionDependenci
     if(config.executionTriage&&user&&failedScript&&!state.scriptReuseAdvised.has(scriptAdviceKey)&&
       !failedScript.scriptSourceRefs.some(ref=>state.scriptReuseAdvised.has(JSON.stringify([user.seq,ref])))){
       state.scriptReuseAdvised.add(scriptAdviceKey);
-      return emit('scriptReuse',scriptAdviceKey,'[work-evidence] 事件'+failedScript.seq+'的完整脚本可用work_exec({runtime:'+JSON.stringify(failedScript.scriptRuntime)+',scriptRef:'+JSON.stringify(failedScript.scriptEventRef??failedScript.scriptRef)+',edits:[{before:"唯一原文",after:"替换原文"}]})复用。合并已知且独立的修正，有依赖时先处理阻塞项；保留错误及未完成要求。替换须唯一匹配，成功执行会返回新scriptEventRef。');
+      const pathFallback=failedScript.errorCode==='WORK_EXEC_EXECUTABLE_NOT_FOUND'&&!declaredInlineExecutable(agent.session,failedScript.scriptRuntime)&&
+        !namedInlineExecutable(agent.session,failedScript.scriptRuntime);
+      const recovery={runtime:failedScript.scriptRuntime,scriptRef:failedScript.scriptEventRef??failedScript.scriptRef,
+        ...(pathFallback?{executable:failedScript.scriptRuntime}:{}),
+        edits:[{before:'唯一原文',after:'替换原文'}]};
+      return emit('scriptReuse',scriptAdviceKey,'[work-evidence] 事件'+failedScript.seq+'的完整脚本可用work_exec('+JSON.stringify(recovery)+')复用。'+
+        (pathFallback?'此处显式指定PATH运行时，避免继续继承不存在的解释器路径。':failedScript.errorCode==='WORK_EXEC_EXECUTABLE_NOT_FOUND'?'任务声明了特定解释器，保留该缺失路径为阻塞项，不改用PATH。':'')+
+        '合并已知且独立的修正，有依赖时先处理阻塞项；保留错误及未完成要求。替换须唯一匹配，成功执行会返回新scriptEventRef。');
     }
     const editedScript=state.executions.findLast(item=>item.userSeq===user?.seq&&item.tool==='work_exec'&&Number.isInteger(item.exitCode)&&!item.partial&&item.status!=='pending'&&item.scriptEditCount>0&&item.scriptRef);
     const versionAdviceKey=scriptVersionKey(user?.seq,editedScript?.scriptRef);
@@ -639,7 +699,7 @@ export function createTaskFlow(ctx,runtime,{nativeFiles,call,executionDependenci
       if(programFailure.kind==='cancelled')return emit('diagnostic',programFailureKey,
         '[work-evidence] 事件'+programFailure.seq+'的程序已取消。保留实际执行状态，遵守当前暂停或停止要求。');
       let retainedAvailable=false;try{retainedAvailable=!!ctx.tools.get('work_exec',agent);}catch{}
-      const programRef=config.nativeProgramReuse&&ctx.tools.modeFor?.(agent)==='ptc'?nativeProgramAddress(agent.session,programFailure.callId):null;
+      const programRef=config.nativeProgramReuse&&toolModeFor(ctx,agent)==='ptc'?nativeProgramAddress(agent.session,programFailure.callId):null;
       const reference=programRef?
         ' 可用 run_code({programRef:'+JSON.stringify(programRef)+',edits:[{before:"唯一原文",after:"替换原文"}]}) 修改已记录程序。只复用程序文字，原有修改仍保留；本次执行由你明确发起。':'';
       return emit('diagnostic',programFailureKey,(programFailure.dispatched?
@@ -775,10 +835,14 @@ export function createTaskFlow(ctx,runtime,{nativeFiles,call,executionDependenci
     }
     return messages;
   }
+  function challenges(agent,state){
+    return [...state.challengedClaims].slice(-4).map(([claim,row])=>({status:challengeValidity(state,claim,runtime.get(agent).root),
+      reportSeq:row.reportSeq,correctionSeq:row.correctionSeq,scopePaths:[...row.scopePaths],currentApplicability:'historical-events-only'}));
+  }
   function summary(agent){
     const state=sync(agent),config=runtime.get(agent).config;
     return {enabled:runtime.isEnabled(agent),mode:runtime.modeStatus(agent),stageReporting:{...state.stageReporting,enabled:runtime.isEnabled(agent)&&config.stepPacing,delivery:'assistant-text-guidance; content-not-semantically-verified'},executionTriage:config.executionTriage,stageWorkingSet:config.stageWorkingSet,
-      phase:phase(agent),pendingCalls:state.calls.size+state.nested.size,
+      judgmentChallenges:challenges(agent,state),phase:phase(agent),pendingCalls:state.calls.size+state.nested.size,
       userId:state.lastUser?.id??null,userSeq:state.lastUser?.seq??null,lastMutationSeq:state.lastMutation,mutationVersion:state.mutationVersion,
       unresolvedErrors:[...state.errors.values()].slice(-8),pendingJobs:[...state.jobs].slice(-16),
       sourceReads:state.sourceReads.map(item=>({...item})),sourceReadsOmitted:state.sourceReadsEvicted,
@@ -830,6 +894,7 @@ export function createTaskFlow(ctx,runtime,{nativeFiles,call,executionDependenci
       pendingCalls:[...new Map([...state.calls,...state.nested]).entries()].map(([callId,{name,seq}])=>({callId,tool:name,seq})),
       report:state.report?{seq:state.report.seq,argumentsSeq:state.report.argumentsSeq,path:state.report.path,claimedStatus:state.report.args.status,summary:state.report.args.summary,
         remaining:state.report.args.remaining??[],unverified:state.report.args.unverified??[]}:null,
+      judgmentChallenges:challenges(agent,state),
       lastMutationSeq:state.lastMutation,completion:'not-determined'};},
     executionReferenceContext(exec,result){
       if(!exec.agent||exec.name!=='run_code'||exec.parent||result?.isError||exec.signal?.aborted||!runtime.isEnabled(exec.agent)||!runtime.get(exec.agent).config.executionTriage)return null;
@@ -872,7 +937,7 @@ export function createTaskFlow(ctx,runtime,{nativeFiles,call,executionDependenci
       if(state.diagnosticAdvised.has(key))return null;
       state.diagnosticAdvised.add(key);runtime.get(exec.agent).dirty=true;
       runtime.effects?.decide(exec.agent,'failureAdvice','applied',template?'native-template-source-visible':'native-parser-location-visible',{callId:exec.callId,line:location.line});
-      const programRef=runtime.get(exec.agent).config.nativeProgramReuse&&ctx.tools.modeFor?.(exec.agent)==='ptc'?
+      const programRef=runtime.get(exec.agent).config.nativeProgramReuse&&toolModeFor(ctx,exec.agent)==='ptc'?
         nativeProgramAddress(exec.agent.session,exec.callId):null;
       return message('diagnostic',key,(template?
         '[work-evidence] 本次程序已开始执行，并因字符串被当成模板标签函数而失败。'+(location.kind==='string-raw-template-call'?
@@ -958,7 +1023,8 @@ export function createTaskFlow(ctx,runtime,{nativeFiles,call,executionDependenci
         ...(exec.name==='work_recall'||exec.name==='work_state'&&argsOf(exec.arguments).mode==='recall'?
           {localSourceRead:localRecallObservation(exec.agent,exec.name==='work_state'?{...argsOf(exec.arguments),kind:'output'}:argsOf(exec.arguments),result)}:{}),
         exitCode:value?.exitCode,exit_code:value?.exit_code,jobId:value?.jobId??value?.job_id,job:value?.job,
-        error:!!(value?.error||raw?.error),timedOut:value?.timedOut,aborted:value?.aborted,cancelled:value?.cancelled,
+        error:!!(value?.error||raw?.error),errorCode:typeof (value?.error??raw?.error)?.code==='string'?(value?.error??raw?.error).code:null,
+        timedOut:value?.timedOut,aborted:value?.aborted,cancelled:value?.cancelled,
         signal:value?.signal,stopped:value?.stopped,effectState:value?.effectState,cwd:value?.cwd,outputPartial,comparisonText,
         errorText:String(exec.name==='run_code'&&result.isError&&resultText(result.content)||
           (value?.error?.message??raw?.error?.message??value?.error??raw?.error??result.error?.message??(stderr||stdout||resultText(result.content)))).slice(0,1200),

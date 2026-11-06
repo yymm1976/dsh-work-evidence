@@ -1,4 +1,5 @@
 import {within,finalizeEvidenceWindow} from './evidence.mjs';
+import {toolModeFor} from './tool-execution.mjs';
 import {archiveSource} from './archive-source.mjs';
 
 export function archiveLocator(value){
@@ -76,6 +77,6 @@ export function createReadRouting(ctx,runtime,call,nativeFiles){
     const value={status:failed?'error':'completed',data:{items,total:items.length,failed,nextIndex:items.length,pending:0,complete:true,
       source:{kind:'work-evidence-archive-routing',note:'File order is preserved; virtual archive paths are read-only. Native file receipts retain their original fields.'}}};
     if(failed)value.error=failure('ARCHIVE_READ_FAILED','Some requested file ranges could not be read; inspect per-file errors and keep successful items.');
-    return toolResult(ctx.tools.modeFor(exec.agent)==='ptc'?value:{status:value.status,...value.data,...(value.error?{error:value.error}:{})});
+    return toolResult(toolModeFor(ctx,exec.agent)==='ptc'?value:{status:value.status,...value.data,...(value.error?{error:value.error}:{})});
   };
 }

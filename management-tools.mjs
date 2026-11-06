@@ -1,9 +1,10 @@
 import {VERSION} from "./runtime.mjs";
+import {toolModeFor} from './tool-execution.mjs';
 import path from 'node:path';
 import {stat} from 'node:fs/promises';
 import {recallHistory} from "./compaction-handoff.mjs";
 import {recallCall} from "./history-hygiene.mjs";
-import {inlineCommand,resolveInlineScript,declaredInlineExecutable,inlineFailureLocation,inlineFormatRecovery,inlineScriptEventRef} from './inline-exec.mjs';
+import {inlineCommand,resolveInlineScript,declaredInlineExecutable,namedInlineExecutable,inlineFailureLocation,inlineFormatRecovery,inlineScriptEventRef} from './inline-exec.mjs';
 import {declaredFileSources,dependencyExecutionComplete} from './execution-dependencies.mjs';
 import {reportedExecutionChecks} from './recovery.mjs';
 
@@ -71,7 +72,9 @@ export function registerManagementTools({ctx,runtime,state,effects,available,fea
       }
       const pathFallback=typeof args.executable==='string'&&['python','node'].includes(args.executable)&&args.executable===script.runtime;
       if(pathFallback)script={...script,executable:args.executable};
-      const declaredExecutable=script.executable===undefined?declaredInlineExecutable(exec.agent.session,script.runtime):null;
+      const requiredExecutable=declaredInlineExecutable(exec.agent.session,script.runtime);
+      const namedExecutable=namedInlineExecutable(exec.agent.session,script.runtime);
+      const declaredExecutable=script.executable===undefined?requiredExecutable:null;
       if(declaredExecutable)script={...script,executable:declaredExecutable.executable};
       const root=await ctx.workingDirectory.ensure(exec.agent,exec.signal);
       if(script.executable!==undefined&&path.isAbsolute(script.executable)){
@@ -83,7 +86,9 @@ export function registerManagementTools({ctx,runtime,state,effects,available,fea
         if(missing)return {status:'failed',isError:true,executionOccurred:false,
           error:{code:'WORK_EXEC_EXECUTABLE_NOT_FOUND',message:'The explicit interpreter path does not identify an existing file: '+script.executable},
           scriptRef:exec.callId??null,scriptChars:script.code.length,scriptRuntime:script.runtime,scriptExecutable:script.executable,
-          retry:'No program was executed. Supply an existing absolute interpreter path, or omit executable to use the runtime on PATH. Reuse the returned scriptRef to retain the complete program.'};
+          retry:requiredExecutable?'No program was executed. The task requires a specific interpreter. Supply that interpreter at an existing absolute path or report the unmet requirement; do not substitute PATH. Reuse the returned scriptRef to retain the complete program.':
+            namedExecutable?'No program was executed. The task names a specific interpreter path. Supply that interpreter at an existing absolute path or report the unmet requirement; do not substitute PATH. Reuse the returned scriptRef to retain the complete program.':
+            'No program was executed. Supply an existing absolute interpreter path. If the task permits changing environments, explicitly set executable to python or node (matching the runtime) to use PATH. Omitting executable retains the recorded or declared path. Reuse the returned scriptRef to retain the complete program.'};
       }
       const command=inlineCommand(script,root);
       // Inline scripts may print source files. Their output has no native read
@@ -148,7 +153,7 @@ export function registerManagementTools({ctx,runtime,state,effects,available,fea
       }
       const toolNames=['read','write','edit','glob','grep','ops_glob','ops_grep','ops_inspect_local_file','ops_read_files','ops_stat','ops_edit_file','ops_write_file','ops_bash','bash','pwsh'];
       const pluginTools=COMPACT_HIDDEN_TOOLS;
-      let mode=null;try{mode=ctx.tools.modeFor(exec.agent);}catch{}
+      let mode=null;try{mode=toolModeFor(ctx,exec.agent);}catch{}
       await refreshExecutionEvidence(exec.agent,exec.signal);
       const snapshot=runtime.snapshot(s,{detail:args.detail===true}),effective=runtime.isEnabled(exec.agent);
       const activeCounters=['evidenceAttempts','evidenceDelivered','evidenceLocated','evidenceIncomplete','evidenceUnavailable','evidenceNoSource','indexLearned','indexHits','candidatePredictions','candidateRuns','ptcFastpathRuns',
