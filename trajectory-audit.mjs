@@ -549,7 +549,10 @@ function constraintObservations(normal){
       const code=call.arguments.code;
       if(!/tempfile\.(?:mkdtemp|mkstemp|TemporaryDirectory)\b/u.test(code)||!/\bopen\s*\(/u.test(code))continue;
       const text=call.resultText??'',match=/[A-Za-z]:(?:\\|\/)[^\r\n"']*?AppData(?:\\|\/)+Local(?:\\|\/)+Temp(?:\\|\/)+[^\r\n"']+/u.exec(text);
-      const location=match?.[0].replace(/\\[rn].*$/su,'').replace(/[,\]}].*$/su,'');
+      const location=match?.[0].replace(/\\r\\n.*$/su,'')
+        .replace(/\\[rn](?=$|[^A-Za-z0-9_.\\/-]).*$/su,'').split(/\s+(?=[A-Za-z_][\w.-]*\s*[=:])/u)[0]
+        .replace(/\b(?:token|secret|password|passwd|api[_-]?key|access[_-]?key|authorization|credential)\s*[=:]\s*\S+/giu,'[redacted]')
+        .replace(/[,\]}].*$/su,'');
       const evidence=location?.length>240?location.slice(0,120)+'…'+location.slice(-117):location;
       items.push({kind:'outside-workspace-temporary-file-read-candidate',requirementSeqs:[human.seq],callSeq:call.callSeq,resultSeq:call.resultSeq,
         evidence:evidence??'work_exec source uses a system temporary-directory API and open()',classification:'candidate',violation:'not-inferred',

@@ -163,6 +163,15 @@ export function inlineFormatRecovery(script,nativeValue,scriptRef,location=inlin
     note:'The default ESM run failed. The unchanged script parses as CommonJS. This explicit retry uses the recorded version; no retry was executed.'};
 }
 
+/** Whether the current human request names any interpreter path, even without an existence cue. */
+export function namedInlineExecutable(session,runtime){
+  if(!['python','node'].includes(runtime))return false;
+  const events=eventLog(session);
+  const user=events.findLast(event=>event.type==='user/message'&&isUserRequestMessage(messageOf(event)));
+  const facts=pathFactsFrom(user,runtime);
+  return !facts.negated&&facts.all.length>0;
+}
+
 /** Resolve an explicitly declared interpreter path from current human/system text only. */
 export function declaredInlineExecutable(session,runtime){
   if(!['python','node'].includes(runtime))return null;

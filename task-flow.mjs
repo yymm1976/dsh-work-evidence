@@ -9,7 +9,7 @@ import {nativeReadObservation} from './host-references.mjs';
 import {nativeReadOutputSymptom,nativeReadRecoveryEntries,executionFailureFrames,recordedSourceExcerpt,reportedCheckFailure,reportedExecutionChecks,nativeProgramParseLocation,nativeTemplateCallLocation,nativePwshInvocationDiagnostic} from './recovery.mjs';
 import {resolveNativeProgram,nativeProgramAddress} from './program-reference.mjs';
 import {textWindow,within} from './evidence.mjs';
-import {declaredInlineExecutable} from './inline-exec.mjs';
+import {declaredInlineExecutable,namedInlineExecutable} from './inline-exec.mjs';
 
 const SOURCE='work-evidence-task-flow';
 const PHASES=['investigate','modify','execute','deliver','mixed'];
@@ -625,7 +625,8 @@ export function createTaskFlow(ctx,runtime,{nativeFiles,call,executionDependenci
     if(config.executionTriage&&user&&failedScript&&!state.scriptReuseAdvised.has(scriptAdviceKey)&&
       !failedScript.scriptSourceRefs.some(ref=>state.scriptReuseAdvised.has(JSON.stringify([user.seq,ref])))){
       state.scriptReuseAdvised.add(scriptAdviceKey);
-      const pathFallback=failedScript.errorCode==='WORK_EXEC_EXECUTABLE_NOT_FOUND'&&!declaredInlineExecutable(agent.session,failedScript.scriptRuntime);
+      const pathFallback=failedScript.errorCode==='WORK_EXEC_EXECUTABLE_NOT_FOUND'&&!declaredInlineExecutable(agent.session,failedScript.scriptRuntime)&&
+        !namedInlineExecutable(agent.session,failedScript.scriptRuntime);
       const recovery={runtime:failedScript.scriptRuntime,scriptRef:failedScript.scriptEventRef??failedScript.scriptRef,
         ...(pathFallback?{executable:failedScript.scriptRuntime}:{}),
         edits:[{before:'唯一原文',after:'替换原文'}]};

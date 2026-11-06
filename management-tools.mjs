@@ -3,7 +3,7 @@ import path from 'node:path';
 import {stat} from 'node:fs/promises';
 import {recallHistory} from "./compaction-handoff.mjs";
 import {recallCall} from "./history-hygiene.mjs";
-import {inlineCommand,resolveInlineScript,declaredInlineExecutable,inlineFailureLocation,inlineFormatRecovery,inlineScriptEventRef} from './inline-exec.mjs';
+import {inlineCommand,resolveInlineScript,declaredInlineExecutable,namedInlineExecutable,inlineFailureLocation,inlineFormatRecovery,inlineScriptEventRef} from './inline-exec.mjs';
 import {declaredFileSources,dependencyExecutionComplete} from './execution-dependencies.mjs';
 import {reportedExecutionChecks} from './recovery.mjs';
 
@@ -72,6 +72,7 @@ export function registerManagementTools({ctx,runtime,state,effects,available,fea
       const pathFallback=typeof args.executable==='string'&&['python','node'].includes(args.executable)&&args.executable===script.runtime;
       if(pathFallback)script={...script,executable:args.executable};
       const requiredExecutable=declaredInlineExecutable(exec.agent.session,script.runtime);
+      const namedExecutable=namedInlineExecutable(exec.agent.session,script.runtime);
       const declaredExecutable=script.executable===undefined?requiredExecutable:null;
       if(declaredExecutable)script={...script,executable:declaredExecutable.executable};
       const root=await ctx.workingDirectory.ensure(exec.agent,exec.signal);
@@ -85,6 +86,7 @@ export function registerManagementTools({ctx,runtime,state,effects,available,fea
           error:{code:'WORK_EXEC_EXECUTABLE_NOT_FOUND',message:'The explicit interpreter path does not identify an existing file: '+script.executable},
           scriptRef:exec.callId??null,scriptChars:script.code.length,scriptRuntime:script.runtime,scriptExecutable:script.executable,
           retry:requiredExecutable?'No program was executed. The task requires a specific interpreter. Supply that interpreter at an existing absolute path or report the unmet requirement; do not substitute PATH. Reuse the returned scriptRef to retain the complete program.':
+            namedExecutable?'No program was executed. The task names a specific interpreter path. Supply that interpreter at an existing absolute path or report the unmet requirement; do not substitute PATH. Reuse the returned scriptRef to retain the complete program.':
             'No program was executed. Supply an existing absolute interpreter path. If the task permits changing environments, explicitly set executable to python or node (matching the runtime) to use PATH. Omitting executable retains the recorded or declared path. Reuse the returned scriptRef to retain the complete program.'};
       }
       const command=inlineCommand(script,root);

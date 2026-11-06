@@ -503,3 +503,19 @@ test('the next user request and successful program clear a prior clipped-read is
     assert.ok(!t.notices().some(m=>m.source.taskFlow.key.includes('native-read-clipped-json')),action);
   }
 });
+
+test('a user-named interpreter path is not replaced by PATH unless fallback is allowed', () => {
+  for (const [text, fallback] of [['使用 C:\\named\\node.exe 执行程序', false],
+    ['不要使用 C:\\named\\node.exe，改用 PATH 中的 node', true]]) {
+    const t = timeline({stepPacing: false});
+    t.agent.session.log.find(event => event.type === 'user/message').data.message.content = [{type: 'text', text}];
+    t.command('work_exec', {runtime: 'node', code: 'x'.repeat(2400)}, {status: 'failed', isError: true, executionOccurred: false,
+      error: {code: 'WORK_EXEC_EXECUTABLE_NOT_FOUND', message: 'failed'},
+      scriptRef: 'failed-script', scriptEventRef: 'event:12', scriptRuntime: 'node', scriptChars: 2400}, {isError: true});
+    const notice = t.notices().find(message => message.source.taskFlow.kind === 'scriptReuse');
+    assert.ok(notice);
+    const message = notice.content[0].text;
+    assert.equal(message.includes('"executable":"node"'), fallback, text);
+    assert.equal(message.includes('保留该缺失路径为阻塞项'), !fallback, text);
+  }
+});
