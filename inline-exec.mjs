@@ -47,7 +47,7 @@ export function inlineScriptEventRef(session,callId){
 }
 const DECLARED_EXECUTABLE=/\b(?:existing|installed|available)\b|(?:已有|现有|已经安装|已安装|可用)/iu;
 const PATH_FALLBACK_USE=/(?:改用|切换到|回退到|使用|采用|用)\s*PATH\b|(?:use|fall\s*back\s+to|switch\s+to)\s+(?:the\s+)?PATH\b/iu;
-const PATH_FALLBACK_REJECT=/(?:不要|请勿|禁止|do not|don't|must not|never)[^。；;\n]{0,24}(?:use|使用|用|fall\s*back\s+to)[^。；;\n]{0,24}PATH\b/iu;
+const PATH_FALLBACK_REJECT=/(?:不要|请勿|禁止|do not|don't|must not|never)[^。；;\n]{0,24}(?:use|使用|用|fall\s*back\s+to|switch\s+to|切换到)[^。；;\n]{0,24}PATH\b/iu;
 const NEGATED_EXECUTABLE=/\b(?:not|never)\s+(?:existing|installed|available)\b|\bno\s+(?:existing|installed|available)\b|\bunavailable\b|\b(?:do not|don't|must not|should not|never)\s+(?:use|invoke|run|execute)\b|\bdoes\s+not\s+exist\b|(?:不要|请勿|禁止)(?:使用|调用|执行)|(?:不可用|无法使用|不能使用|未安装|不存在|未提供)|(?:未|没有|并非|不是)[^。；;\n]{0,80}(?:解释器|路径|可用|安装|存在|使用|调用)/iu;
 const pythonExecutable=/^python(?:3(?:\.\d+)?)?(?:\.exe)?$/iu,nodeExecutable=/^node(?:\.exe)?$/iu;
 function executablePath(value,runtime){
