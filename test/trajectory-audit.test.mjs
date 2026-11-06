@@ -314,6 +314,7 @@ test('a damaged source keeps a supplied failure judgment unknown and native-only
   assessment.criteria[0].outcome='fail';
   const result=auditDshSession(f.events,{sourceId:assessment.sourceId,assessment,tokenBudget:10,problems:[{line:2,reason:'invalid-json-row'}]});
   assert.equal(result.taskOutcome,'unknown');assert.equal(result.fullSuccessAtBudget.unknown,1);
+  assert.equal(result.requirements.requirements[0].status,'unknown');
 });
 
 test('a later operation invalidates an older review even without another human message',()=>{
@@ -354,7 +355,7 @@ test('the requirement view keeps gaps, contradictions and stale checks distinct'
   assert.equal(gapFixture.audit().requirements.requirements[0].status,'gap');
   const missFixture=reviewedFixture();
   missFixture.assessment.checks=[recordedCheck(missFixture.f,missFixture.done,'source','misses')];
-  assert.equal(missFixture.audit().requirements.requirements[0].status,'contradicted');
+  assert.equal(missFixture.audit().requirements.requirements[0].status,'gap');
   const staleFixture=reviewedFixture();
   staleFixture.assessment.checks=[recordedCheck(staleFixture.f,staleFixture.done,'source','addresses')];
   staleFixture.assessment.checks[0].coverage[0].scopePaths=['a.txt'];
@@ -384,6 +385,7 @@ test('a successful recorded check that misses a requirement cannot turn a review
   assert.equal(result.verification.checks[0].toolOutcome,'succeeded');
   assert.equal(result.verification.missedCriteria,1);assert.equal(result.verification.allListedCriteriaAddressed,false);
   assert.equal(result.taskOutcome,'fail');assert.equal(result.fullSuccessAtBudget.failed,1);
+  assert.equal(result.requirements.requirements[0].status,'contradicted');
   assert.equal(JSON.stringify(f.events),original);assert.equal(result.verification.criteria[0].outcome,'fail');
 });
 
@@ -395,6 +397,66 @@ test('a failing check can address a risk without proving that its requirement wa
   const result=audit();assert.equal(result.verification.checks[0].toolOutcome,'failed');
   assert.equal(result.verification.allListedCriteriaAddressed,true);assert.equal(result.taskOutcome,'unknown');
   assert.equal(result.fullSuccessAtBudget.success,0);assert.equal(result.fullSuccessAtBudget.unknown,1);
+  assert.equal(result.requirements.requirements[0].status,'unknown');
+});
+
+test('requirement support requires a current review and a successful applicable check',()=>{
+  const {f,assessment,audit}=reviewedFixture();
+  const failed=f.operation('pwsh',{command:'node regression.js'},JSON.stringify({exitCode:1}),{failed:true});
+  assessment.throughSeq=f.events.at(-1).seq;
+  assessment.checks=[recordedCheck(f,failed,'source','addresses')];
+  assessment.checks[0].coverage[0].scopePaths=['a.txt'];
+  assert.notEqual(audit().requirements.requirements[0].status,'supported');
+
+  const passed=f.operation('pwsh',{command:'node regression.js'},JSON.stringify({exitCode:0}));
+  assessment.throughSeq=f.events.at(-1).seq;
+  assessment.criteria[0].eventSeqs=[passed.resultSeq];
+  assessment.checks.push(recordedCheck(f,passed,'source','addresses'));
+  assessment.checks[1].coverage[0].scopePaths=['a.txt'];
+  assert.equal(audit().requirements.requirements[0].status,'supported');
+
+  assessment.criteria[0].outcome='unknown';
+  assert.equal(audit().requirements.requirements[0].status,'unknown');
+});
+
+test('a different successful check cannot replace a failed check in the same file scope',()=>{
+  const {f,assessment,audit}=reviewedFixture();
+  const failed=f.operation('pwsh',{command:'node first.js'},JSON.stringify({exitCode:1}),{failed:true});
+  const passed=f.operation('pwsh',{command:'node second.js'},JSON.stringify({exitCode:0}));
+  assessment.throughSeq=f.events.at(-1).seq;
+  assessment.criteria[0].eventSeqs=[passed.resultSeq];
+  assessment.checks=[recordedCheck(f,failed,'source','addresses'),recordedCheck(f,passed,'source','addresses')];
+  for(const check of assessment.checks)check.coverage[0].scopePaths=['a.txt'];
+  assert.notEqual(audit().requirements.requirements[0].status,'supported');
+});
+
+test('unknown mutation paths remain visible in the requirement view',()=>{
+  const {f,assessment,audit}=reviewedFixture();
+  const mutation=f.operation('write',{content:'changed'},'written');
+  const check=f.operation('read',{file_path:'a.txt'},'current');
+  assessment.throughSeq=f.events.at(-1).seq;
+  assessment.criteria[0].eventSeqs=[check.resultSeq];
+  assessment.checks=[recordedCheck(f,check,'source','addresses')];
+  assessment.checks[0].coverage[0].scopePaths=['a.txt'];
+  const node=audit().requirements.requirements[0].nodes.relevantMutation;
+  assert.equal(node.status,'unknown');
+  assert.ok(node.unresolvedEventSeqs.includes(mutation.resultSeq));
+});
+
+test('a check that misses a requirement does not itself contradict it',()=>{
+  const {f,done,assessment,audit}=reviewedFixture();
+  assessment.checks=[recordedCheck(f,done,'source','misses')];
+  assert.equal(audit().requirements.requirements[0].status,'gap');
+});
+
+test('an unsuccessful producer completion cannot support a requirement',()=>{
+  const {f,call,result}=processFixture();
+  const assessment={schema:ASSESSMENT_SCHEMA,sourceId:'process-source',throughSeq:result.seq,reviewer:'human',allExplicitRequirementsCovered:true,
+    criteria:[{id:'source',requirementSeqs:[1],eventSeqs:[result.seq],outcome:'pass'}],
+    checks:[{id:'process-check',callSeq:call.seq,resultSeq:result.seq,coverage:[{criterionId:'source',reach:'addresses',reason:'Reviewed operation.'}]}]};
+  const audited=auditDshSession(f.events,{sourceId:assessment.sourceId,assessment});
+  assert.equal(audited.verification.checks[0].processOutcome,'exited-nonzero');
+  assert.notEqual(audited.requirements.requirements[0].status,'supported');
 });
 
 test('check review rejects unrelated event pairs, duplicate operation counts and unknown criteria',()=>{
