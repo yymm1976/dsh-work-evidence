@@ -332,6 +332,49 @@ function recordedCheck(f,done,criterionId,reach){
     coverage:[{criterionId,reach,reason:'Reviewed the recorded operation against this explicit requirement.'}]};
 }
 
+test('the requirement evidence view links seven nodes without claiming unobserved delivery',()=>{
+  const {f,assessment,audit,done}=reviewedFixture();
+  assessment.checks=[recordedCheck(f,done,'source','addresses')];
+  assessment.checks[0].coverage[0].scopePaths=['a.txt'];
+  const result=audit(),view=result.requirements;
+  assert.equal(view.counts.supported,1);
+  const row=view.requirements[0],nodes=row.nodes;
+  assert.deepEqual(nodes.humanRequirement.eventSeqs,[1]);
+  assert.deepEqual(nodes.sourceScope.paths,['a.txt']);
+  assert.equal(nodes.relevantMutation.status,'none-recorded');
+  assert.equal(nodes.checkExecution.checks[0].seq,result.verification.checks[0].resultSeq);
+  assert.equal(nodes.result.outcomes[0].toolOutcome,'succeeded');
+  assert.equal(nodes.currentValidity.status,'supported');
+  assert.equal(nodes.deliveryClaim.status,'unknown');
+  assert.equal(nodes.humanRequirement.textRetained,false);
+});
+
+test('the requirement view keeps gaps, contradictions and stale checks distinct',()=>{
+  const gapFixture=reviewedFixture();
+  assert.equal(gapFixture.audit().requirements.requirements[0].status,'gap');
+  const missFixture=reviewedFixture();
+  missFixture.assessment.checks=[recordedCheck(missFixture.f,missFixture.done,'source','misses')];
+  assert.equal(missFixture.audit().requirements.requirements[0].status,'contradicted');
+  const staleFixture=reviewedFixture();
+  staleFixture.assessment.checks=[recordedCheck(staleFixture.f,staleFixture.done,'source','addresses')];
+  staleFixture.assessment.checks[0].coverage[0].scopePaths=['a.txt'];
+  staleFixture.assessment.throughSeq=staleFixture.f.events.at(-1).seq;
+  staleFixture.f.operation('write',{file_path:'a.txt',content:'changed after check'},'written');
+  const stale=staleFixture.audit().requirements.requirements[0];
+  assert.equal(stale.status,'stale');
+  assert.equal(stale.nodes.currentValidity.reason,'events-after-review');
+});
+
+test('the requirement view stays empty without an explicit review and does not infer an undeclared scope',()=>{
+  const f=fixture();f.operation('read',{file_path:'a.txt'},'source');
+  assert.equal(auditDshSession(f.events).requirements.reason,'no-source-linked-review');
+  const reviewed=reviewedFixture();
+  reviewed.assessment.checks=[recordedCheck(reviewed.f,reviewed.done,'source','addresses')];
+  const row=reviewed.audit().requirements.requirements[0];
+  assert.equal(row.nodes.sourceScope.status,'unknown');
+  assert.equal(row.nodes.relevantMutation.status,'unknown');
+});
+
 test('a successful recorded check that misses a requirement cannot turn a reviewed failure into success',()=>{
   const {f,assessment,audit}=reviewedFixture();
   const check=f.operation('pwsh',{command:'node check_regex.js'},JSON.stringify({exitCode:0,stdout:'16/16'}));

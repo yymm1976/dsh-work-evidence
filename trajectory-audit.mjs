@@ -816,6 +816,7 @@ export function auditDshSession(input,{sourceId=null,annotations=[],pricing=[],p
     review.allExplicitRequirementsCovered&&review.criteria.every(row=>row.outcome==='pass')?'pass':'unknown';
   const budgetResult=tokenBudget===null?null:fullSuccessAtBudget([{assessment:review,problems:sourceProblems,
     usage:{totalTokens:review?.consumption.complete?usage.totalTokens:null}}],{tokenBudget});
+  const requirements=requirementEvidenceView(normal,review,verification);
   return {schema:AUDIT_SCHEMA,sourceId,sessionId:input?.sessionId??input?.header?.id??null,sourceEventCount:normal.events.length,sourceThroughSeq:normal.throughSeq,
     routes,modelBuild:normal.requests.length&&declaredFlash1017?'declared-1017':'unconfirmed',modelBuildCoverage,responseModelEcho,
     coverage:normal.coverage,problems:sourceProblems,usage,
@@ -828,10 +829,60 @@ export function auditDshSession(input,{sourceId=null,annotations=[],pricing=[],p
     associatedConsumption:{requestSeqs:[...associated],knownTokens:associatedRows.filter(row=>!row.consumptionUnknown).reduce((sum,row)=>sum+row.usage.totalTokens,0),
       unknownRequests:associatedRows.filter(row=>row.consumptionUnknown).length,realizableSaving:null,
       meaning:'Each associated request is counted once across W/Q labels. Association is not causal waste or possible savings.'},
-    assessment:review,verification,changeScopeReviews,judgmentReviews,constraints,taskOutcome,fullSuccessAtBudget:budgetResult,requestAccounting,cacheTransitions,
+    assessment:review,verification,requirements,changeScopeReviews,judgmentReviews,constraints,taskOutcome,fullSuccessAtBudget:budgetResult,requestAccounting,cacheTransitions,
     limitations:['Only recorded exact repetitions and failures are automatic candidates. W1/W4/W6/W7 and Q1–Q5 require source-based review.',
       'No candidate stops a model, skips a check, changes permissions, adds a prompt or calls a model.',
       'Task judgments and complete consumption coverage require explicit source-linked review. Semantic correctness, external file changes and actual billing are not inferred.']};
+}
+
+/**
+ * Read-only seven-node view of reviewed requirements. A supported criterion
+ * proves only its declared scope; absent or changed evidence is never success.
+ */
+export function requirementEvidenceView(normal,review,verification){
+  if(!normal||!review)return {schema:'work-evidence.requirement-evidence.v1',sourceThroughSeq:normal?.throughSeq??null,
+    requirements:[],counts:{supported:0,contradicted:0,gap:0,stale:0,unknown:0},reason:'no-source-linked-review'};
+  const checks=new Map(verification.checks.map(check=>[check.id,check]));
+  const rows=new Map(verification.criteria.map(row=>[row.criterionId,row]));
+  const delivery=[...normal.events].reverse().find(event=>event.type==='assistant/message'&&event.surfaceOp?.op!=='replace');
+  const requirements=review.criteria.map(criterion=>{
+    const row=rows.get(criterion.id)??{addresses:[],misses:[],unknown:[],coverage:'unknown'};
+    const ids=[...new Set([...row.addresses,...row.misses,...row.unknown])];
+    const related=ids.map(id=>checks.get(id)).filter(Boolean);
+    const relations=related.flatMap(check=>check.coverage.filter(item=>item.criterionId===criterion.id).map(item=>({check,item})));
+    const scopes=[...new Set(relations.flatMap(({item})=>item.scopePaths??[]))];
+    const scopeKeys=new Set(scopes.map(scope=>normalizeFile(scope)?.value).filter(Boolean));
+    const mutations=scopeKeys.size?normal.changes.filter(change=>scopeKeys.has(normalizeFile(change.path)?.value)):[];
+    const unavailable=[...new Set(relations.flatMap(({item})=>item.unavailableReason?[item.unavailableReason]:[]))];
+    let status=row.misses.length?'contradicted':row.addresses.length&&!row.unknown.length?'supported':
+      row.addresses.length||row.unknown.length?'unknown':'gap';
+    let reason=status==='supported'?'reviewed-check-addresses-scope':status==='contradicted'?'reviewed-check-misses-scope':
+      status==='gap'?'no-source-linked-check':'check-coverage-incomplete';
+    if(unavailable.some(value=>['events-after-review','file-changed-after-check','opaque-execution-after-check','unsettled-mutation'].includes(value)))
+      {status='stale';reason=unavailable.find(value=>['events-after-review','file-changed-after-check','opaque-execution-after-check','unsettled-mutation'].includes(value));}
+    else if(unavailable.length&&status==='supported'){status='unknown';reason=unavailable[0];}
+    const executed=related.map(check=>({id:check.id,seq:check.resultSeq,tool:check.tool,toolOutcome:check.toolOutcome,
+      processOutcome:check.processOutcome,exitCode:check.exitCode,outputIncomplete:check.outputIncomplete,
+      requestSeq:check.requestSeq??null}));
+    return {id:'req-'+criterion.id,criterionId:criterion.id,status,reason,
+      nodes:{
+        humanRequirement:{status:'observed',eventSeqs:criterion.requirementSeqs,textRetained:false},
+        sourceScope:{status:scopes.length?'observed':mutations.length?'inferred-from-recorded-mutations':'unknown',
+          paths:scopes,eventSeqs:mutations.map(change=>change.seq).filter(integer)},
+        relevantMutation:{status:mutations.length?'observed':scopes.length?'none-recorded':'unknown',
+          files:mutations.map(change=>({seq:change.seq,path:change.path,tool:change.tool,status:change.status}))},
+        checkExecution:{status:executed.length?'observed':'gap',checks:executed},
+        result:{status:executed.some(check=>check.toolOutcome==='unknown')?'unknown':executed.length?'observed':'gap',
+          outcomes:executed.map(check=>({seq:check.seq,toolOutcome:check.toolOutcome,processOutcome:check.processOutcome,
+            exitCode:check.exitCode,outputIncomplete:check.outputIncomplete}))},
+        currentValidity:{status,reason,declaredCoverage:row.coverage,unavailableReasons:unavailable},
+        deliveryClaim:{status:'unknown',reason:'final-text-not-retained-or-semantically-reviewed',
+          assistantSeq:integer(delivery?.seq)?delivery.seq:null}
+      }};
+  });
+  const counts=Object.fromEntries(['supported','contradicted','gap','stale','unknown'].map(key=>[key,requirements.filter(row=>row.status===key).length]));
+  return {schema:'work-evidence.requirement-evidence.v1',sourceThroughSeq:normal.throughSeq,requirements,counts,
+    meaning:'Each status covers one reviewed criterion and its declared scope. Delivery text, semantic completeness and whole-task correctness are not inferred.'};
 }
 
 export function fullSuccessAtBudget(rows,{tokenBudget}={}){
