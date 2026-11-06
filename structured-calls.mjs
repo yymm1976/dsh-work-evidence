@@ -1,6 +1,7 @@
 import {toolModeFor,isBatchToolHost,patchSystemPromptTools} from './tool-execution.mjs';
 const MAX_CALLS=16,MAX_CHARS=64000;
 const SDK_ARGUMENTS=/^`run_code` takes two required arguments: `code`, ([^\n]+?), and `description`, a short summary of what the program does\./mu;
+const SDK_DECLARED=/`run_code` accepts exactly one of `code` or `calls`/u;
 const LITERAL_CALL_EXAMPLE=JSON.stringify({calls:[{name:'write',arguments:{file_path:'template.txt',content:'${name}\n\\bword\\b\n'}}],description:'Save the supplied literal text'});
 
 function compileCalls(input,ctx,exec){
@@ -37,13 +38,14 @@ function declareStructuredCalls(assembly,context,enabled,declaredAgents){
   if(agent)declaredAgents.delete(agent);
   if(!enabled(agent)||!Array.isArray(assembly.tools))return;
   const sdk=assembly.sections?.find(section=>section.name==='tools:sdk');
-  if(!sdk||!SDK_ARGUMENTS.test(sdk.text))return;
+  if(!sdk||(!SDK_ARGUMENTS.test(sdk.text)&&!SDK_DECLARED.test(sdk.text)))return;
+  const textDeclared=SDK_DECLARED.test(sdk.text);
   let declared=false;
   assembly.tools=assembly.tools.map(tool=>{
     if(tool.name!=='run_code')return tool;
     const schema=tool.parameters;
     if(schema?.type!=='object'||schema.properties?.code?.type!=='string')return tool;
-    if(schema.properties.calls||schema.properties.parallel||schema.properties.resultView)throw new Error('run_code structured-call fields are already declared by another provider');
+    if(schema.properties.calls||schema.properties.parallel||schema.properties.resultView){declared=true;return tool;}
     declared=true;
     return {...tool,description:'Provide JavaScript code, or calls containing native tool names and their existing SDK arguments. '+
       'Use calls for literal file writes/edits and complete work_exec programs without JavaScript string wrappers. '+
@@ -58,6 +60,7 @@ function declareStructuredCalls(assembly,context,enabled,declaredAgents){
   });
   if(declared){
     declaredAgents.add(agent);
+    if(textDeclared)return;
     assembly.sections=assembly.sections.map(section=>section!==sdk?section:{...section,text:section.text.replace(SDK_ARGUMENTS,
     '`run_code` accepts exactly one of `code` or `calls`, with `description` summarizing the operation. '+
     'For literal file writes/edits or a complete work_exec program, use `calls:[{name,arguments}]` directly as JSON without a JavaScript string wrapper. '+

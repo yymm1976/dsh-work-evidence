@@ -118,6 +118,13 @@ export function apply(ctx,config={}){
   const disposeUltra=installUltraEffort(ctx,{requestView:options=>nativeReasoningReplayRequest(ctx,runtime,options)});
   ctx.effect(()=>disposeUltra);
   const toolSurfaceDisposers=new Map(),taskSurfaceModes=new Map();
+  if(isBatchToolHost(ctx))ctx.on('system-prompt/assemble',async(assembly,context,next)=>{
+    const result=await next();
+    if(Array.isArray(result?.tools))return result;
+    // The new host attaches tools after this waterfall; consumers such as the
+    // optional OPS adapter still read them from the waterfall value.
+    return {...result,tools:toolModeFor(ctx,context?.scope??context?.agent)==='ptc'?[{name:'run_code'}]:[]};
+  });
   if(isBatchToolHost(ctx))patchSystemPromptTools(ctx,(result,context)=>{
     const agent=context?.agent;
     if(agent&&runtime.isEnabled(agent)&&state(agent).config.toolSurface==='compact'&&['read-only','minimal'].includes(taskSurfaceModes.get(agent.session.id))&&Array.isArray(result.tools))

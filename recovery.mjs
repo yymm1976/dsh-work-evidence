@@ -1,8 +1,7 @@
 import path from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {stripTypeScriptTypes} from 'node:module';
-import {Script} from 'node:vm';
-const NATIVE_TEMPLATE_FRAME=/^    at eval \(eval at runProgram \(file:\/\/\/[^\r\n]*\/@deepseek-ai\/dsh-ptc-runtime-node\/lib\/process\.js:\d+:\d+\), <anonymous>:(\d+):(\d+)\)/mu;
+const NATIVE_TEMPLATE_FRAME=/^    at eval \(eval at (?:runProgram|evaluate) \(file:\/\/\/[^\r\n]*\/@deepseek-ai\/dsh-ptc-runtime-node\/lib\/process\.js:\d+:\d+\), <anonymous>:(\d+):(\d+)\)/mu;
 
 export function nativePwshInvocationDiagnostic(argumentsValue,result){
   const command=argumentsValue?.command;
@@ -47,6 +46,38 @@ export function nativeProgramParseLocation(code,result){
   return null;
 }
 
+const TEMPLATE_ESCAPES={n:'\n',r:'\r',t:'\t',b:'\b',f:'\f',v:'\v','0':'\0','\\':'\\','`':'`','$':'$','"':'"',"'":"'"};
+/** Decode a template body without executing it; unknown escapes stay unknown. */
+function decodeTemplateBody(body){
+  let out='';
+  for(let index=0;index<body.length;index++){
+    const char=body[index];
+    if(char!=='\\'){out+=char;continue;}
+    const next=body[++index];
+    if(next===undefined)throw new Error('trailing escape');
+    if(next==='\r'){if(body[index+1]==='\n')index++;continue;}
+    if(next==='\n')continue;
+    if(Object.hasOwn(TEMPLATE_ESCAPES,next)){out+=TEMPLATE_ESCAPES[next];continue;}
+    if(next==='x'){
+      const hex=body.slice(index+1,index+3);
+      if(!/^[0-9a-fA-F]{2}$/u.test(hex))throw new Error('invalid hex escape');
+      out+=String.fromCharCode(parseInt(hex,16));index+=2;continue;
+    }
+    if(next==='u'){
+      if(body[index+1]==='{'){
+        const close=body.indexOf('}',index+2),hex=body.slice(index+2,close);
+        if(close<0||!/^[0-9a-fA-F]{1,6}$/u.test(hex))throw new Error('invalid code point escape');
+        out+=String.fromCodePoint(parseInt(hex,16));index=close;continue;
+      }
+      const hex=body.slice(index+1,index+5);
+      if(!/^[0-9a-fA-F]{4}$/u.test(hex))throw new Error('invalid unicode escape');
+      out+=String.fromCharCode(parseInt(hex,16));index+=4;continue;
+    }
+    throw new Error('unsupported escape');
+  }
+  return out;
+}
+
 export function nativeTemplateCallLocation(code,result){
   if(!result?.isError||typeof code!=='string'||code.length<1000||code.length>64000)return null;
   const output=(result.content??[]).filter(block=>block.type==='text').map(block=>block.text??'').join('\n');
@@ -78,7 +109,7 @@ export function nativeTemplateCallLocation(code,result){
     for(const template of code.matchAll(/`(?:\\[\s\S]|[^`\\$]|\$(?!\{))*`(?=`)/gu)){
       if(!/=\s*$/u.test(code.slice(0,template.index)))continue;
       if(++inspected>16)return null;
-      let value;try{value=new Script('('+template[0]+')').runInNewContext(Object.create(null),{timeout:20});}catch{continue;}
+      let value;try{value=decodeTemplateBody(template[0].slice(1,-1));}catch{continue;}
       if(value===literal)candidates.push({start:template.index+1,end:template.index+template[0].length-1});
       if(candidates.length>1)return null;
     }

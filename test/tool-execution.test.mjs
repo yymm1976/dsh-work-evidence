@@ -18,7 +18,24 @@ test('a batch tool host accepts the legacy single-call shape',async()=>{
   assert.deepEqual(JSON.parse(received.calls[0].arguments),{code:'x'});
   assert.equal(received.signal,signal);
   assert.equal(received.agent,agent);
-  assert.deepEqual(received.log,{turn:0,step:0});
+  assert.equal(received.log,undefined);
+});
+
+test('nested internal calls keep their parent and bypass batch dispatch',async()=>{
+  let batchCalls=0,preparedInput,completed;
+  const pipeline={
+    prepare:async input=>{preparedInput=input;return {kind:'dispatch',exec:{id:'exec-1'}};},
+    dispatch:async exec=>({kind:'post-result',result:{isError:false,value:{exec}} }),
+    complete:async(exec,outcome)=>{completed={exec,outcome};return outcome.result??outcome;}
+  };
+  const tools={selectExecutor:()=>({pipeline}),execute:async()=>{batchCalls++;return {results:[]};}};
+  patchToolExecution({tools});
+  const result=await tools.execute({name:'pwsh',arguments:{command:'echo 1'},callId:'call-3',rootCallId:'root-3',parent:'root-3:ptc:1',agent:{}});
+  assert.equal(batchCalls,0);
+  assert.equal(preparedInput.parent,'root-3:ptc:1');
+  assert.deepEqual(preparedInput.arguments,{command:'echo 1'});
+  assert.deepEqual(result,{isError:false,value:{exec:{id:'exec-1'}}});
+  assert.equal(completed.exec.id,'exec-1');
 });
 
 test('an older single-call executor is left unchanged',async()=>{
