@@ -816,7 +816,7 @@ export function auditDshSession(input,{sourceId=null,annotations=[],pricing=[],p
     review.allExplicitRequirementsCovered&&review.criteria.every(row=>row.outcome==='pass')?'pass':'unknown';
   const budgetResult=tokenBudget===null?null:fullSuccessAtBudget([{assessment:review,problems:sourceProblems,
     usage:{totalTokens:review?.consumption.complete?usage.totalTokens:null}}],{tokenBudget});
-  const requirements=requirementEvidenceView(normal,review,verification);
+  const requirements=requirementEvidenceView(normal,review,verification,sourceProblems);
   return {schema:AUDIT_SCHEMA,sourceId,sessionId:input?.sessionId??input?.header?.id??null,sourceEventCount:normal.events.length,sourceThroughSeq:normal.throughSeq,
     routes,modelBuild:normal.requests.length&&declaredFlash1017?'declared-1017':'unconfirmed',modelBuildCoverage,responseModelEcho,
     coverage:normal.coverage,problems:sourceProblems,usage,
@@ -839,11 +839,12 @@ export function auditDshSession(input,{sourceId=null,annotations=[],pricing=[],p
  * Read-only seven-node view of reviewed requirements. A supported criterion
  * proves only its declared scope; absent or changed evidence is never success.
  */
-export function requirementEvidenceView(normal,review,verification){
+export function requirementEvidenceView(normal,review,verification,sourceProblems=[]){
   if(!normal||!review)return {schema:'work-evidence.requirement-evidence.v1',sourceThroughSeq:normal?.throughSeq??null,
     requirements:[],counts:{supported:0,contradicted:0,gap:0,stale:0,unknown:0},reason:'no-source-linked-review'};
   const checks=new Map(verification.checks.map(check=>[check.id,check]));
   const rows=new Map(verification.criteria.map(row=>[row.criterionId,row]));
+  const calls=new Map(normal.calls.map(call=>[call.callSeq+':'+call.resultSeq,call]));
   const delivery=[...normal.events].reverse().find(event=>event.type==='assistant/message'&&event.surfaceOp?.op!=='replace');
   const requirements=review.criteria.map(criterion=>{
     const row=rows.get(criterion.id)??{addresses:[],misses:[],unknown:[],coverage:'unknown'};
@@ -853,14 +854,33 @@ export function requirementEvidenceView(normal,review,verification){
     const scopes=[...new Set(relations.flatMap(({item})=>item.scopePaths??[]))];
     const scopeKeys=new Set(scopes.map(scope=>normalizeFile(scope)?.value).filter(Boolean));
     const mutations=scopeKeys.size?normal.changes.filter(change=>scopeKeys.has(normalizeFile(change.path)?.value)):[];
-    const unavailable=[...new Set(relations.flatMap(({item})=>item.unavailableReason?[item.unavailableReason]:[]))];
-    let status=row.misses.length?'contradicted':row.addresses.length&&!row.unknown.length?'supported':
-      row.addresses.length||row.unknown.length?'unknown':'gap';
-    let reason=status==='supported'?'reviewed-check-addresses-scope':status==='contradicted'?'reviewed-check-misses-scope':
-      status==='gap'?'no-source-linked-check':'check-coverage-incomplete';
-    if(unavailable.some(value=>['events-after-review','file-changed-after-check','opaque-execution-after-check','unsettled-mutation'].includes(value)))
-      {status='stale';reason=unavailable.find(value=>['events-after-review','file-changed-after-check','opaque-execution-after-check','unsettled-mutation'].includes(value));}
-    else if(unavailable.length&&status==='supported'){status='unknown';reason=unavailable[0];}
+    const unresolved=normal.changes.filter(change=>{
+      const changed=normalizeFile(change.path);
+      return !changed||!scopeKeys.size||scopes.some(scope=>normalizeFile(scope)?.absolute!==changed.absolute);
+    });
+    const latestByScope=new Map();
+    for(const relation of relations.filter(({item})=>item.declaredReach==='addresses')){
+      const paths=relation.item.scopePaths;
+      const call=calls.get(relation.check.callSeq+':'+relation.check.resultSeq);
+      const key=paths?.length&&call?JSON.stringify([[...paths].sort(),call.name,call.arguments]):'unscoped:'+relation.check.id;
+      const previous=latestByScope.get(key);
+      if(!previous||relation.check.resultSeq>previous.check.resultSeq)latestByScope.set(key,relation);
+    }
+    const current=[...latestByScope.values(),...relations.filter(({item})=>item.declaredReach==='unknown')];
+    const unavailable=[...new Set(current.flatMap(({item})=>item.unavailableReasons??(item.unavailableReason?[item.unavailableReason]:[])))];
+    const staleReasons=['events-after-review','file-changed-after-check','opaque-execution-after-check','unsettled-mutation'];
+    const stale=!review.sourceCurrent?'events-after-review':unavailable.find(value=>staleReasons.includes(value));
+    const successful=({check,item})=>item.reach==='addresses'&&check.toolOutcome==='succeeded'&&
+      (!check.nested||check.enclosingOutcome==='succeeded')&&
+      (!['pwsh','ops_bash','bash','run_code','work_exec','work_probe','verified_exec','job_output'].includes(check.tool)||
+        check.processOutcome==='exited-zero');
+    let status,reason;
+    if(sourceProblems.length){status='unknown';reason='incomplete-source';}
+    else if(stale){status='stale';reason=stale;}
+    else if(criterion.outcome==='fail'){status='contradicted';reason='reviewed-requirement-failed';}
+    else if(!current.length){status='gap';reason='no-addressing-check';}
+    else if(criterion.outcome==='pass'&&current.every(successful)){status='supported';reason='reviewed-successful-check-addresses-scope';}
+    else {status='unknown';reason=unavailable[0]??'check-or-requirement-outcome-unknown';}
     const executed=related.map(check=>({id:check.id,seq:check.resultSeq,tool:check.tool,toolOutcome:check.toolOutcome,
       processOutcome:check.processOutcome,exitCode:check.exitCode,outputIncomplete:check.outputIncomplete,
       requestSeq:check.requestSeq??null}));
@@ -869,8 +889,9 @@ export function requirementEvidenceView(normal,review,verification){
         humanRequirement:{status:'observed',eventSeqs:criterion.requirementSeqs,textRetained:false},
         sourceScope:{status:scopes.length?'observed':mutations.length?'inferred-from-recorded-mutations':'unknown',
           paths:scopes,eventSeqs:mutations.map(change=>change.seq).filter(integer)},
-        relevantMutation:{status:mutations.length?'observed':scopes.length?'none-recorded':'unknown',
-          files:mutations.map(change=>({seq:change.seq,path:change.path,tool:change.tool,status:change.status}))},
+        relevantMutation:{status:mutations.length?'observed':unresolved.length?'unknown':scopes.length?'none-recorded':'unknown',
+          files:mutations.map(change=>({seq:change.seq,path:change.path,tool:change.tool,status:change.status})),
+          unresolvedEventSeqs:unresolved.map(change=>change.seq).filter(integer)},
         checkExecution:{status:executed.length?'observed':'gap',checks:executed},
         result:{status:executed.some(check=>check.toolOutcome==='unknown')?'unknown':executed.length?'observed':'gap',
           outcomes:executed.map(check=>({seq:check.seq,toolOutcome:check.toolOutcome,processOutcome:check.processOutcome,
