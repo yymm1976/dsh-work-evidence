@@ -314,11 +314,12 @@ test('successful replacement PTC programs supersede wrapper errors without resol
 });
 
 test('long-script reuse only selects a PATH runtime for a missing interpreter',()=>{
-  for(const variation of ['missing','ordinary','required','named','mixed']){
+  for(const variation of ['missing','ordinary','required','named','mixed','switch']){
     const missing=variation!=='ordinary',t=timeline({stepPacing:false});
     if(variation==='required')t.agent.session.log.find(event=>event.type==='user/message').data.message.content=[{type:'text',text:'使用现有 C:\\required\\node.exe 执行程序'}];
     if(variation==='named')t.agent.session.log.find(event=>event.type==='user/message').data.message.content=[{type:'text',text:'使用 C:\\named\\node.exe 执行程序'}];
     if(variation==='mixed')t.agent.session.log.find(event=>event.type==='user/message').data.message.content=[{type:'text',text:'不要使用 C:\\old\\node.exe；使用 C:\\named\\node.exe 执行程序'}];
+    if(variation==='switch')t.agent.session.log.find(event=>event.type==='user/message').data.message.content=[{type:'text',text:'不要切换到 PATH，使用 C:\\named\\node.exe 执行程序'}];
     t.command('work_exec',{runtime:'node',code:'x'.repeat(2400)},{status:'failed',isError:true,executionOccurred:false,
       error:{code:missing?'WORK_EXEC_EXECUTABLE_NOT_FOUND':'WORK_EXEC_SCRIPT_FAILED',message:'failed'},
       scriptRef:'failed-script',scriptEventRef:'event:12',scriptRuntime:'node',scriptChars:2400},{isError:true});
@@ -327,7 +328,7 @@ test('long-script reuse only selects a PATH runtime for a missing interpreter',(
     assert.ok(notice);const text=notice.content[0].text;
     assert.equal(text.includes('"executable":"node"'),variation==='missing');
     assert.equal(text.includes('避免继续继承不存在的解释器路径'),variation==='missing');
-    assert.equal(text.includes('保留该缺失路径为阻塞项'),['required','named','mixed'].includes(variation));
+    assert.equal(text.includes('保留该缺失路径为阻塞项'),['required','named','mixed','switch'].includes(variation));
     assert.ok(text.includes('"scriptRef":"event:12"'));
   }
 });
