@@ -454,6 +454,44 @@ test('an unscoped check cannot remain supported after an unclassified mutation',
   assert.equal(audit().requirements.requirements[0].status,'unknown');
 });
 
+test('an uncertain settled write cannot preserve check validity without a no-effect result',()=>{
+  for(const scoped of [false,true]){
+    for(const error of [undefined,true]){
+      const {f,done,assessment,audit}=reviewedFixture();
+      const write=f.operation('write',{file_path:'a.txt',content:'possibly changed'},'uncertain');
+      const result=f.events.find(event=>event.seq===write.resultSeq).data.message;
+      result.isError=error;
+      assessment.throughSeq=f.events.at(-1).seq;
+      assessment.checks=[recordedCheck(f,done,'source','addresses')];
+      if(scoped)assessment.checks[0].coverage[0].scopePaths=['a.txt'];
+      assert.notEqual(audit().requirements.requirements[0].status,'supported');
+      result.content=[{type:'text',text:JSON.stringify({effectState:'none'})}];
+      assert.equal(audit().requirements.requirements[0].status,'supported');
+    }
+  }
+});
+
+test('an uncertain write to an unrelated scoped file does not invalidate the check',()=>{
+  const {f,done,assessment,audit}=reviewedFixture();
+  const write=f.operation('write',{file_path:'other.txt',content:'possibly changed'},'uncertain');
+  delete f.events.find(event=>event.seq===write.resultSeq).data.message.isError;
+  assessment.throughSeq=f.events.at(-1).seq;
+  assessment.checks=[recordedCheck(f,done,'source','addresses')];
+  assessment.checks[0].coverage[0].scopePaths=['a.txt'];
+  assert.equal(audit().requirements.requirements[0].status,'supported');
+});
+
+test('a repeated check is identified independently of argument property order',()=>{
+  const {f,assessment,audit}=reviewedFixture();
+  const failed=f.operation('read',{file_path:'a.txt',offset:1},'failed',{failed:true});
+  const passed=f.operation('read',{offset:1,file_path:'a.txt'},'source');
+  assessment.throughSeq=f.events.at(-1).seq;
+  assessment.criteria[0].eventSeqs=[passed.resultSeq];
+  assessment.checks=[recordedCheck(f,failed,'source','addresses'),recordedCheck(f,passed,'source','addresses')];
+  for(const check of assessment.checks)check.coverage[0].scopePaths=['a.txt'];
+  assert.equal(audit().requirements.requirements[0].status,'supported');
+});
+
 test('a check that misses a requirement does not itself contradict it',()=>{
   const {f,done,assessment,audit}=reviewedFixture();
   assessment.checks=[recordedCheck(f,done,'source','misses')];
