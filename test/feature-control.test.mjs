@@ -4,6 +4,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import {defaults,RETIRED_SETTINGS} from '../runtime.mjs';
 import {featureDefinition,featurePatch,latestObservedEffect} from '../feature-control.mjs';
+import {featureSetting} from '../effect-observer.mjs';
 import {startHost,load,text,tool,toolNames} from './helpers/host.mjs';
 
 test('latest observed effect follows decision time rather than definition order',()=>{
@@ -34,6 +35,12 @@ test('every retained switch has an explicit feature entry and retired fields can
   assert.throws(()=>featurePatch('swEviction','true'),/on.*off/);
   assert.throws(()=>featurePatch('programHistory','on'),/retired/);
   assert.throws(()=>featurePatch('missing','on'),/Unknown/);
+});
+
+test('shared segment counters are attributed to their own settings',()=>{
+  assert.equal(featureSetting('historyBlockDedup'),'historyHygiene');
+  assert.equal(featureSetting('contextBlockDedup'),'contextProtocol');
+  assert.equal(featureSetting('blockDedup'),null);
 });
 
 test('every feature entry exposes a dedicated effect counter except the two global gates',async()=>{

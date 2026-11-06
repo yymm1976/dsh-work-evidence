@@ -561,7 +561,7 @@ export function createTaskFlow(ctx,runtime,{nativeFiles,call,executionDependenci
     if(surfaceMode==='minimal')return messages;
     const user=state.lastUser,text=user?.text??'',key=String(user?.seq);
     const emit=(kind,id,text)=>{
-      runtime.effects?.decide(agent,({reuse:'reuseAdvice',cleanup:'cleanupAdvice',pacing:'stepPacing',compute:'retainedComputeAdvice',validation:'stepPacing',inlineExec:'inlineExecAdvice',diagnostic:'failureAdvice',scriptReuse:'scriptReuseAdvice',scriptVersion:'scriptReuseAdvice',review:'qualityReview',judgment:'stageJudgment'}[kind]??'guidance'),'applied','observed-scene-condition',{noticeId:id});
+      runtime.effects?.decide(agent,({reuse:'reuseAdvice',cleanup:'cleanupAdvice',pacing:'stepPacing',mode:'stepPacing',compute:'retainedComputeAdvice',validation:'stepPacing',inlineExec:'inlineExecAdvice',diagnostic:'failureAdvice',scriptReuse:'scriptReuseAdvice',scriptVersion:'scriptReuseAdvice',review:'qualityReview',judgment:'stageJudgment'}[kind]??'guidance'),'applied','observed-scene-condition',{noticeId:id});
       const notice=message(kind,id,text);
       if(kind==='pacing'){notice.source.taskFlow.outputTokens=state.pacing.outputTokens;notice.source.taskFlow.stepCount=state.pacing.steps.size;}
       messages.push(notice);runtime.get(agent).dirty=true;return messages;

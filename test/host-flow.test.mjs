@@ -128,6 +128,7 @@ test('stepPacing controls actual output-usage guidance',async()=>{
   assert.equal(off.status.detail.observability.features.stageJudgment?.applied??0,0);
   assert.ok(on.status.detail.observability.features.stepPacing.applied>0);
   assert.equal(off.status.detail.observability.features.stepPacing.applied,0);
+  assert.equal(on.status.detail.observability.features.guidance?.applied??0,0,'mode and stage guidance use named counters');
   assert.ok(!off.body.includes('本次使用激进优化'));
   assert.ok(on.body.includes('上一响应较长'));
   assert.ok(!off.body.includes('上一响应较长'));

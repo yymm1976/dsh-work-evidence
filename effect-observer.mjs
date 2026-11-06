@@ -38,6 +38,8 @@ FEATURES.defaultResponseView='defaultResponseView';
 FEATURES.toolSurface='toolSurface';
 FEATURES.qualityReviewEffort='qualityReviewEffort';
 FEATURES.qualityReviewScope='qualityReviewScope';
+FEATURES.historyBlockDedup='historyHygiene';
+FEATURES.contextBlockDedup='contextProtocol';
 const PLUGIN_TOOLS=new Set(['project_evidence','work_report','work_status','work_state','work_recall','work_exec','work_compute','work_probe','evidence_index','candidate_select','ptc_patterns','ptc_fastpath','verified_exec','fastedit_java']);
 const RETIRED_FEATURES=new Set(['programHistory','ledgerFold','foldPlan','reasoningHistory','executionAdvice','finishAdvice','presentationAdvice','nativeProgramReference']);
 export const featureSetting=name=>FEATURES[name]??null;
@@ -209,7 +211,7 @@ export function createEffectObserver(ctx,runtime){
     catch(error){state.writeErrors.push('load: '+String(error.message??error).slice(0,200));}
     finally{state.loading=null;}
   }
-  function snapshot(agent,options={}){const state=get(agent),config=runtime.get(agent).config,features={};for(const name of new Set([...Object.keys(FEATURES),...Object.keys(state.features)])){const item=state.features[name];const setting=FEATURES[name],retired=RETIRED_FEATURES.has(name);features[name]={enabled:!retired&&runtime.isEnabled(agent)&&(setting?!!config[setting]:true),...(retired?{retired:true}:{}),...(item??{decisions:0,applied:0,lastStatus:'not-observed',lastReason:'no-opportunity-observed'} )};}
+  function snapshot(agent,options={}){const state=get(agent),config=runtime.get(agent).config,features={};for(const name of new Set([...Object.keys(FEATURES),...Object.keys(state.features)])){const base=state.features[name]??{decisions:0,applied:0};const setting=FEATURES[name],retired=RETIRED_FEATURES.has(name);features[name]={enabled:!retired&&runtime.isEnabled(agent)&&(setting?!!config[setting]:true),...(retired?{retired:true}:{}),...base,lastStatus:base.lastStatus??'not-observed',lastReason:base.lastReason??(base.decisions?'no-effect-applied':'no-opportunity-observed')};}
     const full={version:1,schema:'work-evidence.observability.v1',requests:{count:state.requests,main:state.mainRequests,compaction:state.compactionRequests,auxiliary:state.auxiliaryRequests,missingUsage:state.missingUsage,unknownConsumption:state.unknownConsumption,completeUsageRequests:state.completeUsageRequests,providerReported:{...state.reported},providerReportedRaw:{...state.rawReported}},
       totals:{...state.totals},features,recentRequests:state.recentRequests.slice(),decisions:state.decisions.slice(-24),
       persistence:{file:storageFor(agent)?path.join(storageFor(agent),agent.session.id+'.observability.jsonl'):null,writeErrors:state.writeErrors.slice(),scope:'session-local start/settlement records and native event links outside workspace discovery; no prompt bodies; survives rolling status window'},

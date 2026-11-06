@@ -313,7 +313,7 @@ export function apply(ctx,config={}){
             feature:'contextPrune',afterMessage:replacement.data.message,beforeMessages:[original],
             seq:replacement.seq,sourceSeqs:[seq],
           });
-          if(result.dedupStats?.length)effects.decide(agent,'blockDedup','applied','original-result-segments',{seq,segments:result.dedupStats});
+          if(result.dedupStats?.length)effects.decide(agent,'contextBlockDedup','applied','original-result-segments',{seq,segments:result.dedupStats});
           pruned++;
           charsRemoved+=result.charsBefore-result.charsAfter;
         }
