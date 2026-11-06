@@ -2,7 +2,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import {canonicalUsage,usageCost} from './context-economics.mjs';
 import {summarizeAttempts} from './experiment-attempts.mjs';
-import {isUserRequestMessage,argsOf} from './runtime.mjs';
+import {isUserRequestMessage} from './runtime.mjs';
 import {resultText,parseResult} from './visible-results.mjs';
 import {recordedProcessCompletion} from './execution-evidence.mjs';
 import {resolveInlineScript} from './inline-exec.mjs';
@@ -205,7 +205,7 @@ export async function readAuditInput(file){
 export function normalizeDshEvents(input){
   const events=Array.isArray(input)?input:input?.events;
   if(!Array.isArray(events)||events.some(event=>!event||typeof event.type!=='string'))throw Error('Expected DSH events or an object containing events.');
-  const seqs=new Set(),problems=[],calls=[],callsById=new Map(),requests=summarizeAttempts(events).attempts,changes=[],humans=[];
+  const seqs=new Set(),problems=[],calls=[],callsById=new Map(),requests=summarizeAttempts(events).attempts,changes=[],possibleChanges=[],humans=[];
   const attempts=new Map(requests.map(request=>[request.sourceSeq,request]));
   let requestSeq=null,userSeq=null,mutationEpoch=0,opaqueEpoch=0,throughSeq=null;
   const addCall=(id,name,args,event,nested=false,rootCallId=null,settlement=false)=>{
@@ -215,7 +215,13 @@ export function normalizeDshEvents(input){
       if(settlement)return callsById.get(key);
       problems.push({seq:event.seq,reason:'duplicate-tool-call-id',id});
     }
-    const call={id,name,arguments:argsOf(args),callSeq:event.seq??null,resultSeq:null,requestSeq,userSeq,nested,rootCallId,
+    let parsed=args;
+    if(typeof args==='string'){try{parsed=JSON.parse(args);}catch{parsed=null;}}
+    if(parsed===undefined)parsed={};
+    if(!parsed||typeof parsed!=='object'||Array.isArray(parsed)){
+      problems.push({seq:event.seq??null,reason:'invalid-tool-call-arguments'});parsed={};
+    }
+    const call={id,name,arguments:parsed,callSeq:event.seq??null,resultSeq:null,requestSeq,userSeq,nested,rootCallId,
       mutationEpoch,opaqueEpoch,outcome:'unknown',resultText:null};
     calls.push(call);callsById.set(key,call);return call;
   };
@@ -223,7 +229,10 @@ export function normalizeDshEvents(input){
     const data=event.data??{},message=messageOf(event);
     if(!integer(event.seq))problems.push({seq:event.seq??null,reason:'missing-or-invalid-source-seq'});
     else if(seqs.has(event.seq))problems.push({seq:event.seq,reason:'duplicate-source-seq'});
-    else {seqs.add(event.seq);throughSeq=throughSeq===null?event.seq:Math.max(throughSeq,event.seq);}
+    else {
+      if(throughSeq!==null&&event.seq<throughSeq)problems.push({seq:event.seq,reason:'out-of-order-source-seq'});
+      seqs.add(event.seq);throughSeq=throughSeq===null?event.seq:Math.max(throughSeq,event.seq);
+    }
     if(event.type==='user/message'&&isUserRequestMessage(message)){
       userSeq=event.seq;humans.push({seq:userSeq,textChars:resultText(message.content).length});
     }
@@ -242,6 +251,10 @@ export function normalizeDshEvents(input){
     }
   }
   function settle(call,event,content,isError,nativeValue){
+    if(call.resultSeq!==null){
+      problems.push({seq:event.seq??null,reason:'duplicate-tool-result',callId:call.id,priorResultSeq:call.resultSeq});
+      return;
+    }
     call.resultSeq=event.seq??null;call.resultText=resultText(content);
     const raw=nativeValue??parseResult(call.resultText),value=raw?.data??raw;
     const exit=value?.exitCode??value?.exit_code;
@@ -256,6 +269,8 @@ export function normalizeDshEvents(input){
     if(WRITE.has(call.name)&&!readOnlyJava&&(call.outcome==='succeeded'||['applied','partial','unknown'].includes(effect))&&effect!=='none'){
     mutationEpoch++;changes.push({seq:call.resultSeq,callSeq:call.callSeq,path:fileOf(call.arguments),tool:call.name,
         status:effect??'native-operation-succeeded',currentState:'not-inferred'});
+    }else if(WRITE.has(call.name)&&!readOnlyJava&&effect!=='none'){
+      possibleChanges.push({seq:call.resultSeq,callSeq:call.callSeq,path:fileOf(call.arguments),tool:call.name,status:'unknown'});
     }
     if(call.name==='run_code')opaqueEpoch++;
   }
@@ -279,7 +294,7 @@ export function normalizeDshEvents(input){
     call.deliveryVisibility='not-inferred-from-inner-return';
   }
   const leaf=calls.filter(call=>call.nested||!nestedRoots.has(call.id));
-  return {events,requests,calls,leaf,changes,humans,problems,seqs,throughSeq,
+  return {events,requests,calls,leaf,changes,possibleChanges,humans,problems,seqs,throughSeq,
     coverage:{originalEvents:true,modelTurns:requests.length,rootCalls:calls.filter(call=>!call.nested).length,nestedCalls:calls.filter(call=>call.nested).length,
       opaquePrograms:calls.filter(call=>call.name==='run_code').length,fileState:'successful recorded file operations only; external and arbitrary program effects remain unobserved'}};
 }
@@ -515,11 +530,19 @@ function reviewedCheckCoverage(input,review,normal,sourceId,sourceProblems){
           if(scopes.some(scope=>scope.value===changed.value)){fileReasons.push('file-changed-after-check');break;}
           if(scopes.some(scope=>scope.absolute!==changed.absolute)){fileReasons.push('file-scope-unresolved');break;}
         }
+        for(const change of normal.possibleChanges){
+          if(change.seq<=row.resultSeq||change.seq>review.throughSeq)continue;
+          const changed=normalizeFile(change.path);
+          if(!changed||scopes?.some(scope=>scope.value===changed.value||scope.absolute!==changed.absolute)){
+            fileReasons.push('possible-file-change-after-check');break;
+          }
+        }
         const opaque=normal.calls.some(other=>other.callSeq<=review.throughSeq&&OPAQUE.has(other.name)&&
-          (other.resultSeq===null?other.callSeq>row.resultSeq:other.resultSeq>row.resultSeq));
+          (other.resultSeq===null||other.resultSeq>row.resultSeq));
         if(opaque)fileReasons.push('opaque-execution-after-check');
         for(const pending of normal.calls){
-          if(pending.resultSeq!==null||pending.callSeq<=row.resultSeq||pending.callSeq>review.throughSeq||!WRITE.has(pending.name))continue;
+          if(pending.resultSeq!==null||pending.callSeq>review.throughSeq||!WRITE.has(pending.name)||
+            pending.name==='fastedit_java'&&['read','find','locate'].includes(pending.arguments.mode??pending.arguments.action))continue;
           const changed=normalizeFile(fileOf(pending.arguments));
           if(!changed){fileReasons.push('file-scope-unresolved');break;}
           if(scopes?.some(scope=>scope.value===changed.value)){fileReasons.push('unsettled-mutation');break;}
@@ -608,7 +631,8 @@ function constraintObservations(normal){
       }
       if(typeof code!=='string')continue;
       const tempCalls=[...code.matchAll(/tempfile\.(?:mkdtemp|mkstemp|TemporaryDirectory)\s*\(/gu)];
-      if(!tempCalls.length||!/\bopen\s*\(/u.test(code)||tempCalls.every(match=>localTempDirectory(code,match.index+match[0].length)))continue;
+      if(!tempCalls.length||!/(?:\bopen\s*\(|\.\s*read_(?:bytes|text)\s*\()/u.test(code)||
+        tempCalls.every(match=>localTempDirectory(code,match.index+match[0].length)))continue;
       const text=call.resultText??'',match=/[A-Za-z]:(?:\\|\/)[^\r\n"']*?AppData(?:\\|\/)+Local(?:\\|\/)+Temp(?:\\|\/)+[^\r\n"']+/u.exec(text);
       const location=match?.[0].replace(/\\r\\n.*$/su,'')
         .replace(/\\[rn](?=$|[^A-Za-z0-9_.\\/-]).*$/su,'').split(/\s+(?=[A-Za-z_][\w.-]*\s*[=:])/u)[0]
@@ -616,12 +640,12 @@ function constraintObservations(normal){
         .replace(/[,\]}].*$/su,'');
       const evidence=location?.length>240?location.slice(0,120)+'…'+location.slice(-117):location;
       items.push({kind:'outside-workspace-temporary-file-read-candidate',requirementSeqs:[human.seq],callSeq:call.callSeq,resultSeq:call.resultSeq,
-        evidence:evidence??call.name+' source uses a system temporary-directory API and open()',classification:'candidate',violation:'not-inferred',
-        reason:'The original request explicitly forbids reading files outside the project. The recorded script uses a system temporary-directory API and open(). A system Temp path is also visible in the result when present.',
+        evidence:evidence??call.name+' source uses a system temporary-directory API and a recognized file read',classification:'candidate',violation:'not-inferred',
+        reason:'The original request explicitly forbids reading files outside the project. The recorded script uses a system temporary-directory API and a recognized file read. A system Temp path is also visible in the result when present.',
         counterexample:'The path may only be printed or used for an unrelated operation. Review the original call and result before treating this as a confirmed violation.'});
     }
   }
-  return {items,status:items.length?'candidates':'no-matching-candidates',automaticCoverage:'Explicit no-outside-file-reading requirement plus work_exec/pwsh tempfile/open source or a matching complete written script; explicit project-local temporary directories are excluded; a system Temp result path is retained when present but is not required',
+  return {items,status:items.length?'candidates':'no-matching-candidates',automaticCoverage:'Explicit no-outside-file-reading requirement plus work_exec/pwsh tempfile and open/read_bytes/read_text source or a matching complete written script; explicit project-local temporary directories are excluded; a system Temp result path is retained when present but is not required',
     meaning:'Candidates only. No command is blocked and no task outcome, complete coverage, model visibility or savings is inferred.'};
 }
 
@@ -685,14 +709,21 @@ function checkedChangeScopeReviews(input,normal,sourceId,sourceProblems){
       if(!laterPath||!requestedPath||laterPath.absolute!==requestedPath.absolute)currentReasons.push('later-file-scope-unresolved');
       else if(samePath(laterPath,requestedPath))currentReasons.push('file-changed-after-review');
     }
+    for(const later of normal.possibleChanges){
+      if(later.seq<=row.resultSeq)continue;
+      const laterPath=normalizeFile(later.path);
+      if(!laterPath||!requestedPath||laterPath.absolute!==requestedPath.absolute||samePath(laterPath,requestedPath))
+        currentReasons.push('possible-file-change-after-review');
+    }
     for(const later of normal.calls){
-      if(later.resultSeq===null&&later.callSeq>row.resultSeq&&WRITE.has(later.name)){
+      if(later.resultSeq===null&&WRITE.has(later.name)&&
+        !(later.name==='fastedit_java'&&['read','find','locate'].includes(later.arguments.mode??later.arguments.action))){
         const laterPath=normalizeFile(fileOf(later.arguments));
         if(!laterPath||!requestedPath||laterPath.absolute!==requestedPath.absolute||samePath(laterPath,requestedPath))currentReasons.push('unsettled-mutation');
       }
-      if(later.resultSeq>row.resultSeq&&OPAQUE.has(later.name))currentReasons.push('opaque-execution-after-review');
+      if(OPAQUE.has(later.name)&&(later.resultSeq===null||later.resultSeq>row.resultSeq))currentReasons.push('opaque-execution-after-review');
     }
-    if(normal.humans.some(seq=>seq>row.resultSeq))currentReasons.push('later-human-request');
+    if(normal.humans.some(human=>human.seq>row.resultSeq))currentReasons.push('later-human-request');
     return {id:row.id,callSeq:row.callSeq,resultSeq:row.resultSeq,path:requestedPath?.value??row.path,
       tool:call.name,callId:call.id,nested:call.nested,rootCallId:call.rootCallId,
       evidence:[sourceId+'#event:'+row.callSeq,sourceId+'#event:'+row.resultSeq],
@@ -809,6 +840,7 @@ export function auditDshSession(input,{sourceId=null,annotations=[],pricing=[],p
     review.allExplicitRequirementsCovered&&review.criteria.every(row=>row.outcome==='pass')?'pass':'unknown';
   const budgetResult=tokenBudget===null?null:fullSuccessAtBudget([{assessment:review,problems:sourceProblems,
     usage:{totalTokens:review?.consumption.complete?usage.totalTokens:null}}],{tokenBudget});
+  const requirements=requirementEvidenceView(normal,review,verification,sourceProblems);
   return {schema:AUDIT_SCHEMA,sourceId,sessionId:input?.sessionId??input?.header?.id??null,sourceEventCount:normal.events.length,sourceThroughSeq:normal.throughSeq,
     routes,modelBuild:normal.requests.length&&declaredFlash1017?'declared-1017':'unconfirmed',modelBuildCoverage,responseModelEcho,
     coverage:normal.coverage,problems:sourceProblems,usage,
@@ -821,10 +853,88 @@ export function auditDshSession(input,{sourceId=null,annotations=[],pricing=[],p
     associatedConsumption:{requestSeqs:[...associated],knownTokens:associatedRows.filter(row=>!row.consumptionUnknown).reduce((sum,row)=>sum+row.usage.totalTokens,0),
       unknownRequests:associatedRows.filter(row=>row.consumptionUnknown).length,realizableSaving:null,
       meaning:'Each associated request is counted once across W/Q labels. Association is not causal waste or possible savings.'},
-    assessment:review,verification,changeScopeReviews,judgmentReviews,constraints,taskOutcome,fullSuccessAtBudget:budgetResult,requestAccounting,cacheTransitions,
+    assessment:review,verification,requirements,changeScopeReviews,judgmentReviews,constraints,taskOutcome,fullSuccessAtBudget:budgetResult,requestAccounting,cacheTransitions,
     limitations:['Only recorded exact repetitions and failures are automatic candidates. W1/W4/W6/W7 and Q1–Q5 require source-based review.',
       'No candidate stops a model, skips a check, changes permissions, adds a prompt or calls a model.',
       'Task judgments and complete consumption coverage require explicit source-linked review. Semantic correctness, external file changes and actual billing are not inferred.']};
+}
+
+/**
+ * Read-only seven-node view of reviewed requirements. A supported criterion
+ * proves only its declared scope; absent or changed evidence is never success.
+ */
+export function requirementEvidenceView(normal,review,verification,sourceProblems=[]){
+  if(!normal||!review)return {schema:'work-evidence.requirement-evidence.v1',sourceThroughSeq:normal?.throughSeq??null,
+    requirements:[],counts:{supported:0,contradicted:0,gap:0,stale:0,unknown:0},reason:'no-source-linked-review'};
+  const checks=new Map(verification.checks.map(check=>[check.id,check]));
+  const rows=new Map(verification.criteria.map(row=>[row.criterionId,row]));
+  const calls=new Map(normal.calls.map(call=>[call.callSeq+':'+call.resultSeq,call]));
+  const delivery=[...normal.events].reverse().find(event=>event.type==='assistant/message'&&event.surfaceOp?.op!=='replace');
+  const requirements=review.criteria.map(criterion=>{
+    const row=rows.get(criterion.id)??{addresses:[],misses:[],unknown:[],coverage:'unknown'};
+    const ids=[...new Set([...row.addresses,...row.misses,...row.unknown])];
+    const related=ids.map(id=>checks.get(id)).filter(Boolean);
+    const relations=related.flatMap(check=>check.coverage.filter(item=>item.criterionId===criterion.id).map(item=>({check,item})));
+    const scopes=[...new Set(relations.flatMap(({item})=>item.scopePaths??[]))];
+    const scopeKeys=new Set(scopes.map(scope=>normalizeFile(scope)?.value).filter(Boolean));
+    const mutations=scopeKeys.size?normal.changes.filter(change=>scopeKeys.has(normalizeFile(change.path)?.value)):[];
+    const unresolved=[...normal.changes,...normal.possibleChanges].filter(change=>{
+      const changed=normalizeFile(change.path);
+      return change.status==='unknown'||!changed||!scopeKeys.size||scopes.some(scope=>normalizeFile(scope)?.absolute!==changed.absolute);
+    });
+    const latestByScope=new Map();
+    for(const relation of relations.filter(({item})=>item.declaredReach==='addresses')){
+      const paths=relation.item.scopePaths;
+      const call=calls.get(relation.check.callSeq+':'+relation.check.resultSeq);
+      const key=paths?.length&&call?stable([[...paths].sort(),call.name,call.arguments]):'unscoped:'+relation.check.id;
+      const previous=latestByScope.get(key);
+      if(!previous||relation.check.resultSeq>previous.check.resultSeq)latestByScope.set(key,relation);
+    }
+    const current=[...latestByScope.values(),...relations.filter(({item})=>item.declaredReach==='unknown')];
+    const unavailable=[...new Set(current.flatMap(({item})=>item.unavailableReasons??(item.unavailableReason?[item.unavailableReason]:[])))];
+    const staleReasons=['events-after-review','file-changed-after-check','opaque-execution-after-check','unsettled-mutation'];
+    const stale=!review.sourceCurrent?'events-after-review':unavailable.find(value=>staleReasons.includes(value));
+    const unscopedChange=current.some(({check,item})=>item.scopePaths===undefined&&(
+      [...normal.changes,...normal.possibleChanges].some(change=>change.seq>check.resultSeq&&change.seq<=review.throughSeq)||
+      normal.calls.some(call=>call.callSeq<=review.throughSeq&&(
+        OPAQUE.has(call.name)&&(call.resultSeq===null||call.resultSeq>check.resultSeq)||
+        WRITE.has(call.name)&&call.resultSeq===null&&
+          !(call.name==='fastedit_java'&&['read','find','locate'].includes(call.arguments.mode??call.arguments.action))))));
+    const successful=({check,item})=>item.reach==='addresses'&&check.toolOutcome==='succeeded'&&
+      (!check.nested||check.enclosingOutcome==='succeeded')&&
+      (!['pwsh','ops_bash','bash','run_code','work_exec','work_probe','verified_exec','job_output'].includes(check.tool)||
+        check.processOutcome==='exited-zero');
+    let status,reason;
+    if(sourceProblems.length){status='unknown';reason='incomplete-source';}
+    else if(stale){status='stale';reason=stale;}
+    else if(unscopedChange){status='unknown';reason='change-after-unscoped-check';}
+    else if(criterion.outcome==='fail'){status='contradicted';reason='reviewed-requirement-failed';}
+    else if(!current.length){status='gap';reason='no-addressing-check';}
+    else if(criterion.outcome==='pass'&&current.every(successful)){status='supported';reason='reviewed-successful-check-addresses-scope';}
+    else {status='unknown';reason=unavailable[0]??'check-or-requirement-outcome-unknown';}
+    const executed=related.map(check=>({id:check.id,seq:check.resultSeq,tool:check.tool,toolOutcome:check.toolOutcome,
+      processOutcome:check.processOutcome,exitCode:check.exitCode,outputIncomplete:check.outputIncomplete,
+      requestSeq:check.requestSeq??null}));
+    return {id:'req-'+criterion.id,criterionId:criterion.id,status,reason,
+      nodes:{
+        humanRequirement:{status:'observed',eventSeqs:criterion.requirementSeqs,textRetained:false},
+        sourceScope:{status:scopes.length?'observed':mutations.length?'inferred-from-recorded-mutations':'unknown',
+          paths:scopes,eventSeqs:mutations.map(change=>change.seq).filter(integer)},
+        relevantMutation:{status:mutations.length?'observed':unresolved.length?'unknown':scopes.length?'none-recorded':'unknown',
+          files:mutations.map(change=>({seq:change.seq,path:change.path,tool:change.tool,status:change.status})),
+          unresolvedEventSeqs:unresolved.map(change=>change.seq).filter(integer)},
+        checkExecution:{status:executed.length?'observed':'gap',checks:executed},
+        result:{status:executed.some(check=>check.toolOutcome==='unknown')?'unknown':executed.length?'observed':'gap',
+          outcomes:executed.map(check=>({seq:check.seq,toolOutcome:check.toolOutcome,processOutcome:check.processOutcome,
+            exitCode:check.exitCode,outputIncomplete:check.outputIncomplete}))},
+        currentValidity:{status,reason,declaredCoverage:row.coverage,unavailableReasons:unavailable},
+        deliveryClaim:{status:'unknown',reason:'final-text-not-retained-or-semantically-reviewed',
+          assistantSeq:integer(delivery?.seq)?delivery.seq:null}
+      }};
+  });
+  const counts=Object.fromEntries(['supported','contradicted','gap','stale','unknown'].map(key=>[key,requirements.filter(row=>row.status===key).length]));
+  return {schema:'work-evidence.requirement-evidence.v1',sourceThroughSeq:normal.throughSeq,requirements,counts,
+    meaning:'Each status covers one reviewed criterion and its declared scope. Delivery text, semantic completeness and whole-task correctness are not inferred.'};
 }
 
 export function fullSuccessAtBudget(rows,{tokenBudget}={}){
