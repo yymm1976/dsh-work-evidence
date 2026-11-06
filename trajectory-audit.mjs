@@ -223,7 +223,10 @@ export function normalizeDshEvents(input){
     const data=event.data??{},message=messageOf(event);
     if(!integer(event.seq))problems.push({seq:event.seq??null,reason:'missing-or-invalid-source-seq'});
     else if(seqs.has(event.seq))problems.push({seq:event.seq,reason:'duplicate-source-seq'});
-    else {seqs.add(event.seq);throughSeq=throughSeq===null?event.seq:Math.max(throughSeq,event.seq);}
+    else {
+      if(throughSeq!==null&&event.seq<throughSeq)problems.push({seq:event.seq,reason:'out-of-order-source-seq'});
+      seqs.add(event.seq);throughSeq=throughSeq===null?event.seq:Math.max(throughSeq,event.seq);
+    }
     if(event.type==='user/message'&&isUserRequestMessage(message)){
       userSeq=event.seq;humans.push({seq:userSeq,textChars:resultText(message.content).length});
     }
@@ -242,6 +245,10 @@ export function normalizeDshEvents(input){
     }
   }
   function settle(call,event,content,isError,nativeValue){
+    if(call.resultSeq!==null){
+      problems.push({seq:event.seq??null,reason:'duplicate-tool-result',callId:call.id,priorResultSeq:call.resultSeq});
+      return;
+    }
     call.resultSeq=event.seq??null;call.resultText=resultText(content);
     const raw=nativeValue??parseResult(call.resultText),value=raw?.data??raw;
     const exit=value?.exitCode??value?.exit_code;
