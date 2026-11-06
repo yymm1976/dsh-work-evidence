@@ -56,6 +56,9 @@ test('ledgerUnresolved describes repeated empty searches and suppresses the lega
       const body=host.requests.map(requestText).join('\n');
       assert.equal(body.includes('[work-evidence ledger state]'),ledgerUnresolved);
       assert.equal(body.includes('已观察的局部检索事实'),!ledgerUnresolved);
+      const feature=(await host.command(agent,'feature ledgerUnresolved')).features[0];
+      if(ledgerUnresolved){assert.equal(feature.effect.status,'applied');assert.equal(feature.effect.lastReason,'ledger-unresolved-injected');}
+      else assert.equal(feature.effect.status,'not-observed');
     }finally{await host.close();}
   }
 });

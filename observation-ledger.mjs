@@ -644,6 +644,7 @@ export function createObservationLedger(ctx,runtime,nativeFiles=null){
     state.injectedVersion=state.version;
     state.injectedUnresolvedSignature=unresolvedSignature;
     runtime.get(agent).metrics.ledgerUnresolvedInjected++;
+    runtime.effects?.decide(agent,'unresolved','applied','ledger-unresolved-injected',{items:unresolved.length});
     return [{role:'user',id:randomUUID(),source:{kind:'work-evidence-ledger'},content:[{type:'text',text}]}];
   }
 
