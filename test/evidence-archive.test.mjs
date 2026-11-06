@@ -389,6 +389,28 @@ test('archive entry reading supports stored and deflate compression', async t =>
   assert.equal(deflated.lines.length, 40);
 });
 
+test('an unversioned archive is reread when its contents change without a size change', async t => {
+  const fixture = await makeArchive(t, [{name: 'source.txt', data: 'before'}]);
+  const stat = fixture.exec.nativeFiles.stat;
+  fixture.exec.nativeFiles.stat = async (...args) => ({...await stat(...args), version: null});
+  const first = await readArchiveEntry(fixture.directory, fixture.archive, 'source.txt', fixture.exec);
+  assert.equal(first.text, 'before');
+  await fs.writeFile(path.join(fixture.directory, fixture.archive), buildZip([{name: 'source.txt', data: 'after!'}]));
+  const second = await readArchiveEntry(fixture.directory, fixture.archive, 'source.txt', fixture.exec);
+  assert.equal(second.state, 'observed');
+  assert.equal(second.text, 'after!');
+  assert.equal(second.cache.hit, false);
+});
+
+test('a versioned archive reuses its cached contents while its version is unchanged', async t => {
+  const fixture = await makeArchive(t, [{name: 'source.txt', data: 'unchanged'}]);
+  const first = await readArchiveEntry(fixture.directory, fixture.archive, 'source.txt', fixture.exec);
+  const second = await readArchiveEntry(fixture.directory, fixture.archive, 'source.txt', fixture.exec);
+  assert.equal(first.text, 'unchanged');
+  assert.equal(second.text, 'unchanged');
+  assert.equal(second.cache.hit, true);
+});
+
 test('archive entry paths normalize backslashes without allowing traversal', async t => {
   const fixture = await makeArchive(t, [
     {name: 'pkg/Widget.java', data: 'class Widget {}\n'}

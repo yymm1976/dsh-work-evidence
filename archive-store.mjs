@@ -42,14 +42,15 @@ async function openArchive(root,archive,exec){
   const file=path.resolve(root,archive),before=await exec.nativeFiles.stat(root,file,exec.signal);
   if(!before.exists||before.type!=='file')fail('ARCHIVE_UNAVAILABLE','Archive is not a regular file.');
   if(before.bytes>MAX_ARCHIVE)fail('ARCHIVE_SIZE_LIMIT','Archive exceeds the 128 MiB in-memory limit.');
-  const identity=String(before.version??before.bytes),s=session(root,exec),cached=s.files.get(file);
-  if(cached?.identity===identity){
+  const cacheable=typeof before.version==='string'&&before.version.length>0;
+  const identity=cacheable?before.version:null,s=session(root,exec),cached=s.files.get(file);
+  if(cacheable&&cached?.identity===identity){
     s.files.delete(file);s.files.set(file,cached);
     return {record:cached,cache:{hit:true,observedAt:cached.observedAt,validatedAt:new Date().toISOString(),scope:'session-and-workspace'}};
   }
   s.files.delete(file);
-  const pendingKey=file+'\0'+identity;
-  let promise=s.pending.get(pendingKey),shared=!!promise;
+  const pendingKey=cacheable?file+'\0'+identity:null;
+  let promise=cacheable?s.pending.get(pendingKey):null,shared=!!promise;
   if(!promise){
     promise=(async()=>{
       const buffer=(await exec.nativeFiles.readBytes(root,file,exec.signal,MAX_ARCHIVE)).bytes;
@@ -60,15 +61,16 @@ async function openArchive(root,archive,exec){
         entries.push(entry);const existing=byName.get(entry.name)||[];existing.push(entry);byName.set(entry.name,existing);return false;
       }});
       const record={file,identity,buffer,entries,byName,texts:new Map(),bytes:buffer.length+entries.length*180,observedAt:new Date().toISOString(),owner:s};
-      s.files.set(file,record);trim(s);return record;
+      if(cacheable){s.files.set(file,record);trim(s);}return record;
     })();
-    s.pending.set(pendingKey,promise);
+    if(cacheable)s.pending.set(pendingKey,promise);
   }
   let record;try{record=await promise;}finally{if(s.pending.get(pendingKey)===promise)s.pending.delete(pendingKey);}
   exec.signal?.throwIfAborted();
   const current=await exec.nativeFiles.stat(root,file,exec.signal);
-  if(!current.exists||String(current.version??current.bytes)!==identity)fail('ARCHIVE_CHANGED','Archive changed before source delivery.');
-  return {record,cache:{hit:shared,observedAt:record.observedAt,validatedAt:new Date().toISOString(),scope:'session-and-workspace'}};
+  if(!current.exists||current.type!=='file'||(cacheable?current.version!==identity:current.bytes!==before.bytes))fail('ARCHIVE_CHANGED','Archive changed before source delivery.');
+  return {record,cache:{hit:shared,observedAt:record.observedAt,validatedAt:cacheable?new Date().toISOString():null,
+    scope:cacheable?'session-and-workspace':'uncached-unversioned'}};
 }
 function entryText(record,name,maxBytes=MAX_ENTRY){
   const matches=record.byName.get(name)||[];
