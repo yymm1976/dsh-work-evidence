@@ -486,6 +486,17 @@ test('archive entry reads support ZIP64 directory sizes and offsets', async t =>
   assert.equal(result.text, 'zip64 content');
 });
 
+test('legacy ZIP directories can contain 65535 entries without a ZIP64 locator', async t => {
+  const directory = await temporaryDirectory(t);
+  const archive = 'many-entries.zip';
+  const entries = Array.from({length: 65535}, (_, index) => ({name: `${index}.txt`, data: ''}));
+  await fs.writeFile(path.join(directory, archive), buildZip(entries));
+
+  const result = await readArchiveEntry(directory, archive, '65534.txt', archiveExec(directory));
+  assert.equal(result.state, 'observed');
+  assert.equal(result.text, '');
+});
+
 test('an unversioned archive is reread when its contents change without a size change', async t => {
   const fixture = await makeArchive(t, [{name: 'source.txt', data: 'before'}]);
   const stat = fixture.exec.nativeFiles.stat;
