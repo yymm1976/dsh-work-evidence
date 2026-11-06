@@ -465,6 +465,12 @@ test('an uncertain settled write cannot preserve check validity without a no-eff
       assessment.checks=[recordedCheck(f,done,'source','addresses')];
       if(scoped)assessment.checks[0].coverage[0].scopePaths=['a.txt'];
       assert.notEqual(audit().requirements.requirements[0].status,'supported');
+      if(scoped){
+        f.events.find(event=>event.seq===write.resultSeq-1).data.arguments.file_path='/workspace/other.txt';
+        const row=audit().requirements.requirements[0];
+        assert.equal(row.status,'unknown');
+        assert.equal(row.reason,'possible-file-change-after-check');
+      }
       result.content=[{type:'text',text:JSON.stringify({effectState:'none'})}];
       assert.equal(audit().requirements.requirements[0].status,'supported');
     }
@@ -482,12 +488,15 @@ test('an uncertain write to an unrelated scoped file does not invalidate the che
 });
 
 test('a pending operation started before a check cannot validate an overlapping scope',()=>{
-  for(const [name,args,scoped,expected] of [
+  for(const [name,args,scoped,expected,expectedReasons] of [
     ['write',{file_path:'a.txt',content:'new'},true,'stale'],
     ['write',{file_path:'other.txt',content:'new'},true,'supported'],
     ['write',{file_path:'a.txt',content:'new'},false,'unknown'],
+    ['write',{content:'new'},true,'unknown',['file-scope-unresolved']],
     ['run_code',{code:'modifyProject()'},true,'stale'],
     ['run_code',{code:'modifyProject()'},false,'unknown'],
+    ['verified_exec',{edits:[{file:'other.txt',mode:'create',content:'new'}]},true,'stale',
+      ['opaque-execution-after-check','file-scope-unresolved']],
     ['fastedit_java',{file_path:'a.txt',mode:'read'},true,'supported'],
     ['fastedit_java',{file_path:'a.txt',mode:'read'},false,'supported']
   ]){
@@ -500,6 +509,20 @@ test('a pending operation started before a check cannot validate an overlapping 
     if(scoped)assessment.checks[0].coverage[0].scopePaths=['a.txt'];
     const row=auditDshSession(f.events,{sourceId:assessment.sourceId,assessment}).requirements.requirements[0];
     assert.equal(row.status,expected,`${name} ${JSON.stringify(args)} scoped=${scoped}`);
+    if(expectedReasons)assert.deepEqual(row.nodes.currentValidity.unavailableReasons,expectedReasons);
+  }
+});
+
+test('malformed recorded tool arguments cannot crash an audit or support a requirement',()=>{
+  for(const args of ['null','[]','1','"text"','{bad',null]){
+    const {f,done,assessment,audit}=reviewedFixture();
+    f.add('tool/call',{callId:'pending',name:'fastedit_java',arguments:args});
+    assessment.throughSeq=f.events.at(-1).seq;
+    assessment.checks=[recordedCheck(f,done,'source','addresses')];
+    assessment.checks[0].coverage[0].scopePaths=['a.txt'];
+    const result=audit();
+    assert.ok(result.problems.some(problem=>problem.reason==='invalid-tool-call-arguments'),String(args));
+    assert.equal(result.requirements.requirements[0].status,'unknown',String(args));
   }
 });
 

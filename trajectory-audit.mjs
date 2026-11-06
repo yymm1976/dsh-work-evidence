@@ -2,7 +2,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import {canonicalUsage,usageCost} from './context-economics.mjs';
 import {summarizeAttempts} from './experiment-attempts.mjs';
-import {isUserRequestMessage,argsOf} from './runtime.mjs';
+import {isUserRequestMessage} from './runtime.mjs';
 import {resultText,parseResult} from './visible-results.mjs';
 import {recordedProcessCompletion} from './execution-evidence.mjs';
 import {resolveInlineScript} from './inline-exec.mjs';
@@ -215,7 +215,13 @@ export function normalizeDshEvents(input){
       if(settlement)return callsById.get(key);
       problems.push({seq:event.seq,reason:'duplicate-tool-call-id',id});
     }
-    const call={id,name,arguments:argsOf(args),callSeq:event.seq??null,resultSeq:null,requestSeq,userSeq,nested,rootCallId,
+    let parsed=args;
+    if(typeof args==='string'){try{parsed=JSON.parse(args);}catch{parsed=null;}}
+    if(parsed===undefined)parsed={};
+    if(!parsed||typeof parsed!=='object'||Array.isArray(parsed)){
+      problems.push({seq:event.seq??null,reason:'invalid-tool-call-arguments'});parsed={};
+    }
+    const call={id,name,arguments:parsed,callSeq:event.seq??null,resultSeq:null,requestSeq,userSeq,nested,rootCallId,
       mutationEpoch,opaqueEpoch,outcome:'unknown',resultText:null};
     calls.push(call);callsById.set(key,call);return call;
   };
