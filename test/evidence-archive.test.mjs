@@ -389,6 +389,103 @@ test('archive entry reading supports stored and deflate compression', async t =>
   assert.equal(deflated.lines.length, 40);
 });
 
+test('archive entries with understated decoded size are not reported as complete', async t => {
+  const directory = await temporaryDirectory(t);
+  const archive = 'understated.zip';
+  const zip = buildZip([{name: 'source.txt', data: 'abcdefghijk', method: 8}]);
+  const central = zip.indexOf(Buffer.from([0x50, 0x4b, 0x01, 0x02]));
+  assert.notEqual(central, -1);
+  zip.writeUInt32LE(2, 22);
+  zip.writeUInt32LE(2, central + 24);
+  zip.writeUInt32LE(crc32(Buffer.from('ab')), 14);
+  zip.writeUInt32LE(crc32(Buffer.from('ab')), central + 16);
+  await fs.writeFile(path.join(directory, archive), zip);
+
+  const result = await readArchiveEntry(directory, archive, 'source.txt', archiveExec(directory));
+  assert.equal(result.state, 'unavailable');
+});
+
+test('archive entry reads reject an incorrect checksum', async t => {
+  const directory = await temporaryDirectory(t);
+  for (const method of [0, 8]) {
+    const archive = `checksum-${method}.zip`;
+    const zip = buildZip([{name: 'source.txt', data: 'intact', method}]);
+    const central = zip.indexOf(Buffer.from([0x50, 0x4b, 0x01, 0x02]));
+    zip.writeUInt32LE(0, central + 16);
+    await fs.writeFile(path.join(directory, archive), zip);
+    const result = await readArchiveEntry(directory, archive, 'source.txt', archiveExec(directory));
+    assert.equal(result.state, 'unavailable');
+    assert.equal(result.code, 'ARCHIVE_ENTRY_CHECKSUM_MISMATCH');
+  }
+});
+
+test('archive entry reads accept data descriptors after compressed data', async t => {
+  const directory = await temporaryDirectory(t);
+  const archive = 'descriptor.zip';
+  const zip = buildZip([{name: 'source.txt', data: 'descriptor content', method: 8}]);
+  const centralOffset = zip.indexOf(Buffer.from([0x50, 0x4b, 0x01, 0x02]));
+  const local = Buffer.from(zip.subarray(0, centralOffset));
+  const central = Buffer.from(zip.subarray(centralOffset, zip.length - 22));
+  const descriptor = Buffer.alloc(16);
+  descriptor.writeUInt32LE(0x08074b50, 0);
+  descriptor.writeUInt32LE(central.readUInt32LE(16), 4);
+  descriptor.writeUInt32LE(central.readUInt32LE(20), 8);
+  descriptor.writeUInt32LE(central.readUInt32LE(24), 12);
+  local.writeUInt16LE(local.readUInt16LE(6) | 8, 6);
+  local.fill(0, 14, 26);
+  central.writeUInt16LE(central.readUInt16LE(8) | 8, 8);
+  const end = Buffer.from(zip.subarray(zip.length - 22));
+  end.writeUInt32LE(centralOffset + descriptor.length, 16);
+  await fs.writeFile(path.join(directory, archive), Buffer.concat([local, descriptor, central, end]));
+
+  const result = await readArchiveEntry(directory, archive, 'source.txt', archiveExec(directory));
+  assert.equal(result.state, 'observed');
+  assert.equal(result.text, 'descriptor content');
+});
+
+test('archive entry reads support ZIP64 directory sizes and offsets', async t => {
+  const directory = await temporaryDirectory(t);
+  const archive = 'zip64.zip';
+  const zip = buildZip([{name: 'source.txt', data: 'zip64 content', method: 8}]);
+  const centralOffset = zip.indexOf(Buffer.from([0x50, 0x4b, 0x01, 0x02]));
+  const endOffset = zip.length - 22;
+  const central = Buffer.from(zip.subarray(centralOffset, endOffset));
+  const compressedSize = central.readUInt32LE(20), originalSize = central.readUInt32LE(24);
+  const extra = Buffer.alloc(28);
+  extra.writeUInt16LE(1, 0);
+  extra.writeUInt16LE(24, 2);
+  extra.writeBigUInt64LE(BigInt(originalSize), 4);
+  extra.writeBigUInt64LE(BigInt(compressedSize), 12);
+  extra.writeBigUInt64LE(0n, 20);
+  central.writeUInt32LE(0xffffffff, 20);
+  central.writeUInt32LE(0xffffffff, 24);
+  central.writeUInt32LE(0xffffffff, 42);
+  central.writeUInt16LE(extra.length, 30);
+  const zip64End = Buffer.alloc(56);
+  zip64End.writeUInt32LE(0x06064b50, 0);
+  zip64End.writeBigUInt64LE(44n, 4);
+  zip64End.writeUInt16LE(45, 12);
+  zip64End.writeUInt16LE(45, 14);
+  zip64End.writeBigUInt64LE(1n, 24);
+  zip64End.writeBigUInt64LE(1n, 32);
+  zip64End.writeBigUInt64LE(BigInt(central.length + extra.length), 40);
+  zip64End.writeBigUInt64LE(BigInt(centralOffset), 48);
+  const locator = Buffer.alloc(20);
+  locator.writeUInt32LE(0x07064b50, 0);
+  locator.writeBigUInt64LE(BigInt(centralOffset + central.length + extra.length), 8);
+  locator.writeUInt32LE(1, 16);
+  const end = Buffer.from(zip.subarray(endOffset));
+  end.writeUInt16LE(0xffff, 8);
+  end.writeUInt16LE(0xffff, 10);
+  end.writeUInt32LE(0xffffffff, 12);
+  end.writeUInt32LE(0xffffffff, 16);
+  await fs.writeFile(path.join(directory, archive), Buffer.concat([zip.subarray(0, centralOffset), central, extra, zip64End, locator, end]));
+
+  const result = await readArchiveEntry(directory, archive, 'source.txt', archiveExec(directory));
+  assert.equal(result.state, 'observed');
+  assert.equal(result.text, 'zip64 content');
+});
+
 test('an unversioned archive is reread when its contents change without a size change', async t => {
   const fixture = await makeArchive(t, [{name: 'source.txt', data: 'before'}]);
   const stat = fixture.exec.nativeFiles.stat;

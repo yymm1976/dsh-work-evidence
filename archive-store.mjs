@@ -1,5 +1,6 @@
 import path from 'node:path';
 import {createRequire} from 'node:module';
+import {crc32,inflateRawSync} from 'node:zlib';
 
 const require=createRequire(import.meta.url);
 let unzip;
@@ -44,6 +45,53 @@ async function withArchiveSlot(signal,operation){
 const normalize=name=>name.replaceAll('\\','/');
 const unavailable=(archive,error)=>({state:'unavailable',archive,code:error.code||'ARCHIVE_READ_UNAVAILABLE',message:String(error.message).slice(0,1200)});
 function fail(code,message){const error=new Error(message);error.code=code;throw error;}
+function archiveDirectory(buffer){
+  const data=Buffer.from(buffer.buffer,buffer.byteOffset,buffer.byteLength);
+  const invalid=()=>fail('ARCHIVE_DIRECTORY_INVALID','Archive directory is incomplete or inconsistent.');
+  const inRange=(offset,length)=>Number.isSafeInteger(offset)&&Number.isSafeInteger(length)&&offset>=0&&length>=0&&offset+length<=data.length;
+  const u64=offset=>{if(!inRange(offset,8))invalid();const value=data.readBigUInt64LE(offset);if(value>BigInt(Number.MAX_SAFE_INTEGER))invalid();return Number(value);};
+  let end=data.length-22;
+  for(;end>=Math.max(0,data.length-65557);end--)if(data.readUInt32LE(end)===0x06054b50&&end+22+data.readUInt16LE(end+20)===data.length)break;
+  if(end<Math.max(0,data.length-65557))invalid();
+  let count=data.readUInt16LE(end+10),offset=data.readUInt32LE(end+16);
+  if(count===0xffff||offset===0xffffffff||data.readUInt32LE(end+12)===0xffffffff){
+    if(end<20||data.readUInt32LE(end-20)!==0x07064b50)invalid();
+    const zip64=u64(end-12);
+    if(!inRange(zip64,56)||data.readUInt32LE(zip64)!==0x06064b50)invalid();
+    count=u64(zip64+32);offset=u64(zip64+48);
+  }
+  if(count>150000)fail('ARCHIVE_ENTRY_LIMIT','Archive has more than 150000 entries.');
+  const entries=[];
+  for(let index=0;index<count;index++){
+    if(!inRange(offset,46)||data.readUInt32LE(offset)!==0x02014b50)invalid();
+    const nameLength=data.readUInt16LE(offset+28),extraLength=data.readUInt16LE(offset+30),commentLength=data.readUInt16LE(offset+32);
+    const next=offset+46+nameLength+extraLength+commentLength;
+    if(!inRange(offset,next-offset))invalid();
+    let size=data.readUInt32LE(offset+20),originalSize=data.readUInt32LE(offset+24),localOffset=data.readUInt32LE(offset+42);
+    if(size===0xffffffff||originalSize===0xffffffff||localOffset===0xffffffff){
+      let extra=offset+46+nameLength,found=false;
+      const extraEnd=extra+extraLength;
+      while(extra+4<=extraEnd){
+        const kind=data.readUInt16LE(extra),length=data.readUInt16LE(extra+2),payload=extra+4;
+        if(payload+length>extraEnd)invalid();
+        if(kind===1){
+          let cursor=payload;
+          const field=()=>{if(cursor+8>payload+length)invalid();const value=u64(cursor);cursor+=8;return value;};
+          if(originalSize===0xffffffff)originalSize=field();
+          if(size===0xffffffff)size=field();
+          if(localOffset===0xffffffff)localOffset=field();
+          found=true;break;
+        }
+        extra=payload+length;
+      }
+      if(!found)invalid();
+    }
+    entries.push({size,originalSize,localOffset,crc:data.readUInt32LE(offset+16),flags:data.readUInt16LE(offset+8),
+      compression:data.readUInt16LE(offset+10),nameBytes:data.subarray(offset+46,offset+46+nameLength)});
+    offset=next;
+  }
+  return entries;
+}
 function session(root,exec){
   const key=String(exec.agent?.sessionId||exec.agent?.id||'unscoped')+'\0'+path.resolve(root);
   let s=sessions.get(key);if(!s){s={files:new Map(),pending:new Map()};sessions.set(key,s);}
@@ -76,13 +124,18 @@ async function openArchive(root,archive,exec){
   if(!promise){
     promise=(async()=>{
       const buffer=(await exec.nativeFiles.readBytes(root,file,exec.signal,MAX_ARCHIVE)).bytes;
-      const entries=[],byName=new Map();
+      const entries=[],byName=new Map(),directory=archiveDirectory(buffer);
       unzipper()(buffer,{filter:item=>{
         if(entries.length>=150000)fail('ARCHIVE_ENTRY_LIMIT','Archive has more than 150000 entries.');
-        const entry={name:normalize(item.name),raw:item.name,size:item.size,originalSize:item.originalSize,compression:item.compression};
+        const metadata=directory[entries.length];
+        if(!metadata||metadata.size!==item.size||metadata.originalSize!==item.originalSize||metadata.compression!==item.compression)
+          fail('ARCHIVE_DIRECTORY_INVALID','Archive decoder and directory metadata disagree.');
+        const entry=Object.assign(metadata,{name:normalize(item.name),raw:item.name});
         entries.push(entry);const existing=byName.get(entry.name)||[];existing.push(entry);byName.set(entry.name,existing);return false;
       }});
-      const record={file,identity,buffer,entries,byName,texts:new Map(),bytes:buffer.length+entries.length*180,observedAt:new Date().toISOString(),owner:s};
+      if(entries.length!==directory.length)fail('ARCHIVE_DIRECTORY_INVALID','Archive decoder omitted directory entries.');
+      const record={file,identity,buffer,entries,byName,texts:new Map(),
+        bytes:buffer.length+entries.reduce((total,entry)=>total+400+(entry.name.length+entry.raw.length)*2,0),observedAt:new Date().toISOString(),owner:s};
       if(cacheable){s.files.set(file,record);trim(s);}return record;
     })();
     if(cacheable)s.pending.set(pendingKey,promise);
@@ -102,10 +155,25 @@ function entryText(record,name,maxBytes=MAX_ENTRY){
   if(!Number.isSafeInteger(entry.originalSize)||entry.originalSize>maxBytes)fail('ARCHIVE_ENTRY_SIZE_LIMIT','Entry exceeds the in-memory text budget.');
   if(![0,8].includes(entry.compression))fail('ARCHIVE_COMPRESSION_UNSUPPORTED','Only stored and deflated entries are supported.');
   if(record.texts.has(name))return record.texts.get(name);
-  const files=unzipper()(record.buffer,{filter:item=>item.name===entry.raw});
-  if(!Object.hasOwn(files,entry.raw))fail('ARCHIVE_ENTRY_UNAVAILABLE','Entry could not be decoded.');
-  const buffer=files[entry.raw];
+  const archive=Buffer.from(record.buffer.buffer,record.buffer.byteOffset,record.buffer.byteLength),offset=entry.localOffset;
+  if(entry.flags&1||offset<0||offset+30>archive.length||archive.readUInt32LE(offset)!==0x04034b50)
+    fail('ARCHIVE_ENTRY_UNAVAILABLE','Entry local header is unavailable or encrypted.');
+  const nameLength=archive.readUInt16LE(offset+26),extraLength=archive.readUInt16LE(offset+28),start=offset+30+nameLength+extraLength,end=start+entry.size;
+  if(!Number.isSafeInteger(end)||end>archive.length||!archive.subarray(offset+30,offset+30+nameLength).equals(entry.nameBytes)||
+    archive.readUInt16LE(offset+6)!==entry.flags||archive.readUInt16LE(offset+8)!==entry.compression)
+    fail('ARCHIVE_ENTRY_UNAVAILABLE','Entry local header differs from its directory.');
+  let buffer;
+  if(entry.compression===0)buffer=archive.subarray(start,end);
+  else try{
+    const output=inflateRawSync(archive.subarray(start,end),{maxOutputLength:Math.min(maxBytes,entry.originalSize)+1,info:true});
+    if(output.engine.bytesWritten!==entry.size)fail('ARCHIVE_ENTRY_SIZE_MISMATCH','Entry compressed size differs from archive metadata.');
+    buffer=output.buffer;
+  }catch(error){
+    if(error.code==='ARCHIVE_ENTRY_SIZE_MISMATCH')throw error;
+    fail('ARCHIVE_ENTRY_UNAVAILABLE','Entry could not be decoded within the text budget.');
+  }
   if(buffer.length!==entry.originalSize||buffer.length>maxBytes)fail('ARCHIVE_ENTRY_SIZE_MISMATCH','Entry output size differs from archive metadata.');
+  if(crc32(buffer)!==entry.crc)fail('ARCHIVE_ENTRY_CHECKSUM_MISMATCH','Entry checksum differs from archive metadata.');
   let text;
   try{text=new TextDecoder('utf-8',{fatal:true}).decode(buffer);}catch{fail('ARCHIVE_ENCODING_UNSUPPORTED','Source entry is not valid UTF-8.');}
   if(text.includes('\0'))fail('ARCHIVE_NOT_TEXT','Source entry contains NUL bytes.');
