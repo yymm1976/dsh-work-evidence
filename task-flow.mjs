@@ -1,4 +1,5 @@
 import path from 'node:path';
+import {toolModeFor} from './tool-execution.mjs';
 import {randomUUID} from 'node:crypto';
 import {argsOf,eventLog,isUserRequestMessage,MODE_POLICY_VERSION} from './runtime.mjs';
 import {resultText,parseResult,resultHasProblem,resultIdentity} from './visible-results.mjs';
@@ -598,7 +599,7 @@ export function createTaskFlow(ctx,runtime,{nativeFiles,call,executionDependenci
             '[work-evidence] 当前请求已从只读转为可写，work_exec现已可用。确需运行完整Node/Python程序时提交原文，项目修改仍用write/edit；只使用当前请求明确授权的范围，已有结果足够时直接继续。'+WORK_EXEC_DISCOVERY);
         }
       }
-      if(surfaceMode==='read-only'&&ctx.tools.modeFor?.(agent)==='ptc'&&knownPaths.length>1){
+      if(surfaceMode==='read-only'&&toolModeFor(ctx,agent)==='ptc'&&knownPaths.length>1){
         const id=JSON.stringify([incoming.id,'read-only-batch',0]);
         if(!state.pacing.notices.has(id)){
           rememberPacing(state,id);
@@ -607,7 +608,7 @@ export function createTaskFlow(ctx,runtime,{nativeFiles,call,executionDependenci
         }
       }
       if(surfaceMode==='read-only')return messages;
-      if(config.stepPacing&&ctx.tools.modeFor?.(agent)==='ptc'&&knownPaths.length){
+      if(config.stepPacing&&toolModeFor(ctx,agent)==='ptc'&&knownPaths.length){
         const id=JSON.stringify([incoming.id,'startup',0]);
         if(!state.pacing.notices.has(id)){
           rememberPacing(state,id);
@@ -697,7 +698,7 @@ export function createTaskFlow(ctx,runtime,{nativeFiles,call,executionDependenci
       if(programFailure.kind==='cancelled')return emit('diagnostic',programFailureKey,
         '[work-evidence] 事件'+programFailure.seq+'的程序已取消。保留实际执行状态，遵守当前暂停或停止要求。');
       let retainedAvailable=false;try{retainedAvailable=!!ctx.tools.get('work_exec',agent);}catch{}
-      const programRef=config.nativeProgramReuse&&ctx.tools.modeFor?.(agent)==='ptc'?nativeProgramAddress(agent.session,programFailure.callId):null;
+      const programRef=config.nativeProgramReuse&&toolModeFor(ctx,agent)==='ptc'?nativeProgramAddress(agent.session,programFailure.callId):null;
       const reference=programRef?
         ' 可用 run_code({programRef:'+JSON.stringify(programRef)+',edits:[{before:"唯一原文",after:"替换原文"}]}) 修改已记录程序。只复用程序文字，原有修改仍保留；本次执行由你明确发起。':'';
       return emit('diagnostic',programFailureKey,(programFailure.dispatched?
@@ -935,7 +936,7 @@ export function createTaskFlow(ctx,runtime,{nativeFiles,call,executionDependenci
       if(state.diagnosticAdvised.has(key))return null;
       state.diagnosticAdvised.add(key);runtime.get(exec.agent).dirty=true;
       runtime.effects?.decide(exec.agent,'failureAdvice','applied',template?'native-template-source-visible':'native-parser-location-visible',{callId:exec.callId,line:location.line});
-      const programRef=runtime.get(exec.agent).config.nativeProgramReuse&&ctx.tools.modeFor?.(exec.agent)==='ptc'?
+      const programRef=runtime.get(exec.agent).config.nativeProgramReuse&&toolModeFor(ctx,exec.agent)==='ptc'?
         nativeProgramAddress(exec.agent.session,exec.callId):null;
       return message('diagnostic',key,(template?
         '[work-evidence] 本次程序已开始执行，并因字符串被当成模板标签函数而失败。'+(location.kind==='string-raw-template-call'?

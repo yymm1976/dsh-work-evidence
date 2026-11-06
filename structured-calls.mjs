@@ -1,3 +1,4 @@
+import {toolModeFor} from './tool-execution.mjs';
 const MAX_CALLS=16,MAX_CHARS=64000;
 const SDK_ARGUMENTS=/^`run_code` takes two required arguments: `code`, ([^\n]+?), and `description`, a short summary of what the program does\./mu;
 const LITERAL_CALL_EXAMPLE=JSON.stringify({calls:[{name:'write',arguments:{file_path:'template.txt',content:'${name}\n\\bword\\b\n'}}],description:'Save the supplied literal text'});
@@ -36,7 +37,7 @@ export function installStructuredCalls(ctx,runtime,effects){
   const declaredAgents=new WeakSet();
   const enabled=agent=>{
     const native=ctx.get('ptcRuntime');
-    return !!agent&&runtime.isEnabled(agent)&&runtime.get(agent).config.structuredCalls&&ctx.tools.modeFor(agent)==='ptc'&&
+    return !!agent&&runtime.isEnabled(agent)&&runtime.get(agent).config.structuredCalls&&toolModeFor(ctx,agent)==='ptc'&&
       native?.language==='typescript'&&native.programFormat==='function-body';
   };
   ctx.on('tools/pre-execute',(exec,next)=>{

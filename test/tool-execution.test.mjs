@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {patchToolExecution} from '../tool-execution.mjs';
+import {patchToolExecution,toolModeFor} from '../tool-execution.mjs';
 
 test('a batch tool host accepts the legacy single-call shape',async()=>{
   let received;
@@ -29,4 +29,16 @@ test('an older single-call executor is left unchanged',async()=>{
   const result=await ctx.tools.execute({name:'read',arguments:{file_path:'a.txt'},callId:'call-2'});
   assert.deepEqual(result,{isError:false,value:{name:'read'}});
   assert.equal(calls,1);
+});
+
+test('tool mode follows the legacy modeFor method when present',()=>{
+  assert.equal(toolModeFor({tools:{modeFor:()=> 'ptc'}},null),'ptc');
+  assert.equal(toolModeFor({tools:{modeFor:()=> 'native'}},null),'native');
+});
+
+test('tool mode recognizes a selected PTC executor on newer hosts',()=>{
+  const agent={},ptc={renderSdk:()=> ''},native={};
+  assert.equal(toolModeFor({tools:{selectExecutor:()=>ptc}},agent),'ptc');
+  assert.equal(toolModeFor({tools:{selectExecutor:()=>native}},agent),'native');
+  assert.equal(toolModeFor({tools:{selectExecutor:()=>{throw Error('unavailable');}}},agent),'native');
 });

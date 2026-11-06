@@ -1,4 +1,5 @@
 import {VERSION} from "./runtime.mjs";
+import {toolModeFor} from './tool-execution.mjs';
 import path from 'node:path';
 import {stat} from 'node:fs/promises';
 import {recallHistory} from "./compaction-handoff.mjs";
@@ -150,7 +151,7 @@ export function registerManagementTools({ctx,runtime,state,effects,available,fea
       }
       const toolNames=['read','write','edit','glob','grep','ops_glob','ops_grep','ops_inspect_local_file','ops_read_files','ops_stat','ops_edit_file','ops_write_file','ops_bash','bash','pwsh'];
       const pluginTools=COMPACT_HIDDEN_TOOLS;
-      let mode=null;try{mode=ctx.tools.modeFor(exec.agent);}catch{}
+      let mode=null;try{mode=toolModeFor(ctx,exec.agent);}catch{}
       await refreshExecutionEvidence(exec.agent,exec.signal);
       const snapshot=runtime.snapshot(s,{detail:args.detail===true}),effective=runtime.isEnabled(exec.agent);
       const activeCounters=['evidenceAttempts','evidenceDelivered','evidenceLocated','evidenceIncomplete','evidenceUnavailable','evidenceNoSource','indexLearned','indexHits','candidatePredictions','candidateRuns','ptcFastpathRuns',

@@ -2,6 +2,17 @@ import {randomUUID} from 'node:crypto';
 
 const patched=new WeakSet();
 
+/** New DSH hosts replace modeFor with a selected executor; older hosts keep the direct method. */
+export function toolModeFor(ctx,agent){
+  const tools=ctx?.tools;
+  if(typeof tools?.modeFor==='function')return tools.modeFor(agent);
+  if(typeof tools?.selectExecutor!=='function')return 'native';
+  try{
+    const executor=tools.selectExecutor(agent);
+    return executor&&(typeof executor.renderSdk==='function'||executor.ptcTransport!==undefined)?'ptc':'native';
+  }catch{return 'native';}
+}
+
 /** New DSH hosts expose a batch executor; older hosts accept one execution object. */
 export function patchToolExecution(ctx){
   const tools=ctx?.tools;

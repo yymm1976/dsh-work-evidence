@@ -1,4 +1,5 @@
 import fs from 'node:fs/promises';
+import {toolModeFor} from './tool-execution.mjs';
 import path from 'node:path';
 import {defaults,RETIRED_SETTINGS,VERSION} from './runtime.mjs';
 import {archiveDecoderStatus} from './archive-store.mjs';
@@ -80,7 +81,7 @@ export function createFeatureControl(ctx,runtime,{available,canRecall,workingSet
   const service=name=>{try{return ctx.get(name);}catch{return null;}};
   async function snapshot(agent,only){
     const state=runtime.get(agent),config=state.config,effective=runtime.isEnabled(agent),selection=runtime.currentSelection(agent);
-    const native=service('ptcRuntime'),ptc=(()=>{try{return ctx.tools.modeFor(agent)==='ptc';}catch{return false;}})();
+    const native=service('ptcRuntime'),ptc=(()=>{try{return toolModeFor(ctx,agent)==='ptc';}catch{return false;}})();
     const nativeCompaction=compactionHandoff.metrics(agent).nativeSummarizerAttached;
     const retained=retainedCompute.summary(agent);
     const observedFeatures=effects?.snapshot(agent,{detail:false}).features??{};

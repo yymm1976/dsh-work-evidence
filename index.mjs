@@ -28,7 +28,7 @@ import {exportTaskHandoff,createTaskHandoffDelivery} from './task-handoff.mjs';
 import {installUltraEffort} from './ultra-effort.mjs';
 import {nativeReasoningReplayRequest} from './native-reasoning-replay.mjs';
 import {createCompactionHandoff} from "./compaction-handoff.mjs";
-import {patchToolExecution} from './tool-execution.mjs';
+import {patchToolExecution,toolModeFor} from './tool-execution.mjs';
 import {createExecutionEvidence} from './execution-evidence.mjs';
 import {createExecutionDependencies} from './execution-dependencies.mjs';
 import {createHostReferences} from './host-references.mjs';
@@ -431,7 +431,7 @@ export function apply(ctx,config={}){
       const rootCallId=token?((exec.token?exec.rootCallId:activeExecution?.rootCallId)||exec.rootCallId||callId):callId;
       // PTC rejects native names without an enclosing execution. Background
       // end-of-turn writes use the real transport, never a fabricated token.
-      if(!token&&name!=='run_code'&&ctx.tools.modeFor(exec.agent)==='ptc'){
+      if(!token&&name!=='run_code'&&toolModeFor(ctx,exec.agent)==='ptc'){
         const code=`try { return {ok:true,value:await tools[${JSON.stringify(name)}](${JSON.stringify(args)})}; } catch(e) { return {ok:false,message:String(e)}; }`;
         const result=await ctx.tools.execute({name:'run_code',arguments:{code,description:'Save or recover engineering evidence'},callId,rootCallId:callId,agent:exec.agent,signal:exec.signal});
         if(result.isError)return result;
@@ -598,7 +598,7 @@ export function apply(ctx,config={}){
     workingSet.prepareStep(payload.agent,payload.signal);
     try{await retainedCompute.prepare(payload.agent);}catch(error){runtime.problem(state(payload.agent),'retained-compute-cleanup',error.message);}
     await effects.load(payload.agent);
-    if(ctx.tools.modeFor(payload.agent)==='ptc'){
+    if(toolModeFor(ctx,payload.agent)==='ptc'){
       const generation=payload.agent.session.surface.contentGeneration;
       let decision=await next();if(decision.kind==='enter')decision=historyCoordinator.beforeStep(payload,decision,generation);
       const s=state(payload.agent);if(decision.kind!=='enter')return decision;

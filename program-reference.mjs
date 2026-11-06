@@ -1,4 +1,5 @@
 import {argsOf,eventLog} from './runtime.mjs';
+import {toolModeFor} from './tool-execution.mjs';
 
 const LIMIT=64000;
 function sessionPrograms(session){
@@ -63,7 +64,7 @@ export function latestNativeProgram(session){
 
 /** Expand explicit references before native validation; the host still owns execution and permissions. */
 export function installNativeProgramReferences(ctx,runtime,effects){
-  const enabled=agent=>!!agent&&runtime.isEnabled(agent)&&runtime.get(agent).config.executionTriage&&runtime.get(agent).config.nativeProgramReuse&&ctx.tools.modeFor(agent)==='ptc';
+  const enabled=agent=>!!agent&&runtime.isEnabled(agent)&&runtime.get(agent).config.executionTriage&&runtime.get(agent).config.nativeProgramReuse&&toolModeFor(ctx,agent)==='ptc';
   ctx.on('tools/pre-execute',(exec,next)=>{
     if(exec.name!=='run_code'||exec.parent||!enabled(exec.agent)||exec.arguments?.programRef===undefined&&exec.arguments?.edits===undefined)return next();
     const input=exec.arguments,program=resolveNativeProgram(input,exec.agent.session,exec.signal);
