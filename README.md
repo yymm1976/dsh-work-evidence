@@ -153,7 +153,7 @@ mode 只查询状态。旧的 mode <名称> 和 workspace-mode 命令不再设�
 
 每项只绑定一次文件操作和一个路径。调用、结果、要求和依赖编号必须属于所选会话；用户要求和依赖依据都必须早于操作，不能用被审调用或其结果自证。`declaredRelation` 可为 `direct-requirement`、`necessary-dependency`、`unsupported` 或 `unknown`。只有 `direct-requirement` 必须附用户要求；`necessary-dependency` 须附依赖依据，否则有效关系为未知。`unsupported` 和 `unknown` 可以没有两类依据。`unsupported` 表示审阅者没有找到支持依据，不表示违规；若同时填写任一类支持依据，声明仍保留，但有效关系以 `unknown` 和 `conflicting-support-basis` 标注冲突。
 
-输出的 `changeScopeReviews` 保留历史审阅判断及来源。来源在审阅后新增事件时顶层状态为 `stale`，来源破损时为 `incomplete-source`，不会继续显示为现行 `reviewed`。文件操作、路径或效果不能确认时，有效关系为 `unknown`；程序内部直接写入不自动算作已记录的逐文件效果。后续文件变化影响当前适用性，不自动否定历史判断。已审阅声明和可匹配的已记录修改分别计数；该结果不证明全部文件效果已被观察，也不改变任务结果。
+输出的 `changeScopeReviews` 保留历史审阅判断及来源。来源在审阅后新增事件时顶层状态为 `stale`，来源破损时为 `incomplete-source`，不会继续显示为现行 `reviewed`。文件操作、路径或效果不能确认时，有效关系为 `unknown`；程序内部直接写入不自动算作已记录的逐文件效果。后续文件变化、效果未知的相关写入、未结束的相关操作或后续用户要求使当前适用性变为未知，不自动否定历史判断。已审阅声明和可匹配的已记录修改分别计数；该结果不证明全部文件效果已被观察，也不改变任务结果。
 
 同一个审阅文件可附 `judgmentReviews`，关联原助手判断、反证和后续替代声明。例如：
 

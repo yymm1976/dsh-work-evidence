@@ -702,14 +702,21 @@ function checkedChangeScopeReviews(input,normal,sourceId,sourceProblems){
       if(!laterPath||!requestedPath||laterPath.absolute!==requestedPath.absolute)currentReasons.push('later-file-scope-unresolved');
       else if(samePath(laterPath,requestedPath))currentReasons.push('file-changed-after-review');
     }
+    for(const later of normal.possibleChanges){
+      if(later.seq<=row.resultSeq)continue;
+      const laterPath=normalizeFile(later.path);
+      if(!laterPath||!requestedPath||laterPath.absolute!==requestedPath.absolute||samePath(laterPath,requestedPath))
+        currentReasons.push('possible-file-change-after-review');
+    }
     for(const later of normal.calls){
-      if(later.resultSeq===null&&later.callSeq>row.resultSeq&&WRITE.has(later.name)){
+      if(later.resultSeq===null&&WRITE.has(later.name)&&
+        !(later.name==='fastedit_java'&&['read','find','locate'].includes(later.arguments.mode??later.arguments.action))){
         const laterPath=normalizeFile(fileOf(later.arguments));
         if(!laterPath||!requestedPath||laterPath.absolute!==requestedPath.absolute||samePath(laterPath,requestedPath))currentReasons.push('unsettled-mutation');
       }
-      if(later.resultSeq>row.resultSeq&&OPAQUE.has(later.name))currentReasons.push('opaque-execution-after-review');
+      if(OPAQUE.has(later.name)&&(later.resultSeq===null||later.resultSeq>row.resultSeq))currentReasons.push('opaque-execution-after-review');
     }
-    if(normal.humans.some(seq=>seq>row.resultSeq))currentReasons.push('later-human-request');
+    if(normal.humans.some(human=>human.seq>row.resultSeq))currentReasons.push('later-human-request');
     return {id:row.id,callSeq:row.callSeq,resultSeq:row.resultSeq,path:requestedPath?.value??row.path,
       tool:call.name,callId:call.id,nested:call.nested,rootCallId:call.rootCallId,
       evidence:[sourceId+'#event:'+row.callSeq,sourceId+'#event:'+row.resultSeq],

@@ -681,6 +681,32 @@ test('change scope review status becomes stale when the source advances',()=>{
   assert.equal(result.items[0].relation,'direct-requirement');
 });
 
+test('change scope applicability accounts for overlapping operations and later requirements',()=>{
+  for(const kind of ['pending-write','pending-program','unknown-write','later-requirement',
+    'pending-unrelated','pending-read','unknown-unrelated','no-effect']){
+    const f=fixture();
+    if(kind==='pending-write')f.add('tool/call',{callId:'pending',name:'write',arguments:{file_path:'a.txt',content:'later'}});
+    if(kind==='pending-program')f.add('tool/call',{callId:'pending',name:'run_code',arguments:{code:'modifyProject()'}});
+    if(kind==='pending-unrelated')f.add('tool/call',{callId:'pending',name:'write',arguments:{file_path:'other.txt',content:'later'}});
+    if(kind==='pending-read')f.add('tool/call',{callId:'pending',name:'fastedit_java',arguments:{file_path:'a.txt',mode:'read'}});
+    const done=f.operation('edit',{file_path:'a.txt',old_string:'old',new_string:'new'},'applied');
+    if(['unknown-write','unknown-unrelated','no-effect'].includes(kind)){
+      const later=f.operation('write',{file_path:kind==='unknown-unrelated'?'other.txt':'a.txt',content:'later'},
+        kind==='no-effect'?JSON.stringify({effectState:'none'}):'uncertain');
+      delete f.events.find(event=>event.seq===later.resultSeq).data.message.isError;
+    }
+    if(kind==='later-requirement')f.add('user/message',{message:{role:'user',source:{kind:'user'},content:[{type:'text',text:'Change the requirement.'}]}});
+    const call=normalizeDshEvents(f.events).calls.find(row=>row.resultSeq===done.resultSeq);
+    const assessment={schema:ASSESSMENT_SCHEMA,sourceId:'recorded-session',throughSeq:f.events.at(-1).seq,reviewer:'human',
+      allExplicitRequirementsCovered:true,criteria:[{id:'source',requirementSeqs:[1],eventSeqs:[done.resultSeq],outcome:'pass'}],
+      scopeReviews:[{id:'change',callSeq:call.callSeq,resultSeq:done.resultSeq,path:'a.txt',declaredRelation:'direct-requirement',
+        requirementSeqs:[1],dependencyEvidenceSeqs:[],reviewer:'human',reason:'Requested.',counterexample:'The request may change.'}]};
+    const item=auditDshSession(f.events,{sourceId:assessment.sourceId,assessment}).changeScopeReviews.items[0];
+    assert.equal(item.currentApplicability,
+      ['pending-unrelated','pending-read','unknown-unrelated','no-effect'].includes(kind)?'historical-events-only':'unknown',kind);
+  }
+});
+
 test('new operations and damaged source preserve declared check coverage but make effective reach unknown',()=>{
   const {f,done,assessment,audit}=reviewedFixture();assessment.checks=[recordedCheck(f,done,'source','addresses')];
   let result=auditDshSession(f.events,{sourceId:assessment.sourceId,assessment,problems:[{line:4,reason:'invalid-json-row'}]});
