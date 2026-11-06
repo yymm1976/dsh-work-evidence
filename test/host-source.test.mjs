@@ -9,7 +9,7 @@ import {startHost,text,tool} from './helpers/host.mjs';
 // OPS is a profile package, not part of the desktop runtime; skip when it is absent.
 const OPS_ROOT='C:/Users/杨铭/Documents/DSH Desktop/home/profiles/web/node_modules/dsh-ops/lib/components';
 const hasOps=existsSync(OPS_ROOT+'/file/index.js');
-const PYTHON=process.env.DSH_TEST_FASTEDIT_PYTHON??path.resolve(import.meta.dirname,'..','.fastedit-venv','Scripts','python.exe');
+const PYTHON=process.env.DSH_TEST_FASTEDIT_PYTHON||path.resolve(import.meta.dirname,'..','.fastedit-venv','Scripts','python.exe');
 
 async function opsMounts(){
   const file=await import(pathToFileURL(OPS_ROOT+'/file/index.js').href);
