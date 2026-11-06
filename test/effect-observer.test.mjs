@@ -178,6 +178,43 @@ test('an inconsistent reported total stays incomplete in memory, on disk and aft
   }finally{await remove(created.telemetryDir);}
 });
 
+test('legacy decisions are reclassified under the current feature names',async()=>{
+  const created=await start();
+  try{
+    const decisions=[
+      {id:'stub',feature:'compactionHandoff',status:'applied',reason:'deterministic-stub-summary'},
+      {id:'limit',feature:'finalJson',status:'failed',reason:'final-json-repair-limit',kind:'observed-result-repair'},
+      {id:'applied',feature:'finalJson',status:'applied',reason:'observed-result-repair-requested'},
+      {id:'native',feature:'compactionHandoff',status:'applied',reason:'native-summary-extension'}];
+    await fs.writeFile(path.join(created.telemetryDir,SESSION+'.observability.jsonl'),JSON.stringify(row('legacy',COMPLETE,{decisions}))+'\n','utf8');
+    await created.effects.load(created.agent);
+    const features=created.effects.snapshot(created.agent).features;
+    assert.equal(features.stubSummary.decisions,1);assert.equal(features.stubSummary.applied,1);
+    assert.equal(features.finalJsonResult.decisions,2);assert.equal(features.finalJsonResult.failed,1);assert.equal(features.finalJsonResult.applied,1);
+    assert.equal(features.finalJson.decisions,0,'the syntax guard does not inherit result-repair decisions');
+    assert.equal(features.compactionHandoff.applied,1,'unrelated legacy decisions keep their feature');
+    assert.deepEqual(created.effects.snapshot(created.agent).decisions.map(item=>item.feature).sort(),
+      ['compactionHandoff','finalJsonResult','finalJsonResult','stubSummary']);
+  }finally{await remove(created.telemetryDir);}
+});
+
+test('decisions recorded without a following main request survive disposal and restore once',async()=>{
+  const created=await start();
+  try{
+    created.effects.decide(created.agent,'retainedCompute','applied','recorded-after-last-request');
+    await created.effects.disposeAgent(created.agent);
+    const rows=await stored(created.telemetryDir);
+    assert.equal(rows.length,1);assert.equal(rows[0].schema,'work-evidence.pending-decisions.v1');
+    assert.equal(rows[0].decisions[0].feature,'retainedCompute');
+    await fs.appendFile(path.join(created.telemetryDir,SESSION+'.observability.jsonl'),JSON.stringify(rows[0])+'\n','utf8');
+    const restored=await start({telemetryDir:created.telemetryDir});
+    await restored.effects.load(restored.agent);
+    const feature=restored.effects.snapshot(restored.agent).features.retainedCompute;
+    assert.equal(feature.decisions,1);assert.equal(feature.applied,1);
+    assert.equal(feature.lastReason,'recorded-after-last-request');
+    assert.equal(restored.effects.snapshot(restored.agent).requests.count,0,'no request row is invented for a pending decision');
+  }finally{await remove(created.telemetryDir);}
+});
 test('restored host compaction is separate from plugin auxiliary calls and main feature attribution',async()=>{
   const created=await start();
   try{

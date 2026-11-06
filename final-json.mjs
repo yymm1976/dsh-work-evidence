@@ -163,7 +163,7 @@ export function createFinalJsonGuard(ctx,runtime){
     }
     if(typeof agent.steer!=='function'){
       syntaxRepairing.delete(agent.session.id);
-      runtime.effects?.decide(agent,'finalJson','unavailable','native-steering-unavailable',{afterSeq:current.assistant.seq});
+      runtime.effects?.decide(agent,kind==='observed-result-repair'?'finalJsonResult':'finalJson','unavailable','native-steering-unavailable',{afterSeq:current.assistant.seq});
       return;
     }
     syntaxRepairing.set(agent.session.id,{turn,kind,afterSeq:current.assistant.seq});
@@ -174,7 +174,7 @@ export function createFinalJsonGuard(ctx,runtime){
       content:[{type:'text',text:notice}]});}
     catch(error){
       syntaxRepairing.delete(agent.session.id);
-      runtime.effects?.decide(agent,'finalJson','unavailable','native-steering-failed',{afterSeq:current.assistant.seq});
+      runtime.effects?.decide(agent,kind==='observed-result-repair'?'finalJsonResult':'finalJson','unavailable','native-steering-failed',{afterSeq:current.assistant.seq});
       runtime.problem?.(runtime.get(agent),'final-json-steering',String(error?.message??error));
       return;
     }

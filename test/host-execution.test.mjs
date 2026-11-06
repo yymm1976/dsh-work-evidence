@@ -186,6 +186,19 @@ test('work_exec missing-interpreter retries inherit the path until an explicit P
   }finally{await host.close();}
 });
 
+test('a user-named missing interpreter is not replaced by PATH in the retry hint',async()=>{
+  const missing='C:/definitely-missing-work-evidence/node.exe';
+  const host=await startHost({script:(o,n)=>n===1?
+    [tool('work_exec',{runtime:'node',executable:missing,code:'console.log(1);'})]:[text('完成。')]});
+  try{
+    const agent=await host.createAgent('max');await host.send(agent,'使用 '+missing+' 运行程序。');
+    const [failed]=outputs(host);
+    assert.equal(failed.error.code,'WORK_EXEC_EXECUTABLE_NOT_FOUND');
+    assert.match(failed.retry,/names a specific interpreter path/);
+    assert.doesNotMatch(failed.retry,/explicitly set executable/);
+  }finally{await host.close();}
+});
+
 test('work_exec leaves PATH names and directories that cannot execute to native handling',async()=>{
   const host=await startHost({script:(_o,n)=>n===1?
     [tool('work_exec',{runtime:'node',executable:'node',code:'console.log(7);'})]:[text('完成。')]});

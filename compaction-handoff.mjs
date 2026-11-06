@@ -448,7 +448,8 @@ export function createCompactionHandoff(ctx,runtime,taskFlow,{canRecall=()=>fals
         state.stubSummaries++;state.summariesReturned++;state.last.status='prepared-awaiting-native-commit';
         state.last.method='deterministic-stub-summary';state.last.stub={events:stub.events,problemRows:stub.problemRows,rows:stub.rows,chars:text.length};
         runtime.get(agent).dirty=true;
-        runtime.effects?.decide(agent,'stubSummary','applied','deterministic-stub-summary',{policy:POLICY,newModelCall:false,stubChars:stub.text.length,events:stub.events,problemRows:stub.problemRows});
+        // The host can still reject this checkpoint in its shrink or commit checks.
+        // The applied effect is recorded only when compaction/end confirms the commit.
         return {result:{summary:[{type:'text',text}],provider:'work-evidence',model:'deterministic-stub',llmStreamCall:false}};
         }
       }else if(stubPolicy){
@@ -538,8 +539,20 @@ export function createCompactionHandoff(ctx,runtime,taskFlow,{canRecall=()=>fals
       state.last.compactionId=event.data.compactionId;state.last.summarySeq=event.seq;state.last.status='summary-recorded';
     }
     if(event.type==='compaction/end'&&event.data?.compactionId===state.last.compactionId){
-      if(event.data.error){if(state.last.status!=='failed')state.failed++;state.last.status='failed';}
-      else{state.committed++;state.last.status='committed';}
+      const agent=ctx.agents?.get?.(session.id);
+      if(event.data.error){
+        if(state.last.status!=='failed')state.failed++;state.last.status='failed';
+        if(state.last.method==='deterministic-stub-summary'&&agent)
+          runtime.effects?.decide(agent,'stubSummary','failed','stub-summary-not-committed',{policy:POLICY,newModelCall:false,
+            ...(state.last.stub?.chars===undefined?{}:{stubChars:state.last.stub.chars}),error:String(event.data.error?.message??event.data.error).slice(0,300)});
+      }else{
+        state.committed++;state.last.status='committed';
+        if(state.last.method==='deterministic-stub-summary'&&agent)
+          runtime.effects?.decide(agent,'stubSummary','applied','deterministic-stub-summary',{policy:POLICY,newModelCall:false,
+            ...(state.last.stub?.chars===undefined?{}:{stubChars:state.last.stub.chars}),
+            ...(state.last.stub?.events===undefined?{}:{events:state.last.stub.events}),
+            ...(state.last.stub?.problemRows===undefined?{}:{problemRows:state.last.stub.problemRows})});
+      }
     }
   });
   ctx.on('agent/disposed',({agent})=>states.delete(agent.session.id));

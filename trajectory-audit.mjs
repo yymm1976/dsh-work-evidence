@@ -552,6 +552,33 @@ function reviewedCheckCoverage(input,review,normal,sourceId,sourceProblems){
     meaning:'Coverage is the reviewer\'s scoped risk judgment, independent of execution success and task outcome. Unlisted requirements, model visibility and savings are not inferred.'};
 }
 
+function tempCallArguments(code,start){
+  let depth=1,quote=null;
+  for(let index=start;index<code.length;index++){
+    const char=code[index];
+    if(quote){if(char==='\\'){index++;continue;}if(char===quote)quote=null;continue;}
+    if(char==='"'||char==="'"){quote=char;continue;}
+    if(char==='(')depth++;
+    else if(char===')'&&!--depth)return code.slice(start,index);
+  }
+  return null;
+}
+// Only a directory whose location is demonstrably inside the project may exclude a script.
+// A variable called ROOT or PROJECT_ROOT is not proof, and a missing dir uses the system temp root.
+function localTempDirectory(code,start){
+  const args=tempCallArguments(code,start);
+  if(args===null)return false;
+  const match=/\bdir\s*=\s*([^,]+)/u.exec(args);
+  if(!match)return false;
+  const value=match[1].trim(),quoted=/^(["'])(.*)\1$/su.exec(value);
+  if(quoted){
+    const item=quoted[2].trim();
+    return !!item&&!item.startsWith('..')&&!/^[A-Za-z]:[\\/]/u.test(item)&&!/^[\\/]/u.test(item);
+  }
+  return /^(?:os\.)?getcwd\s*\(\s*\)$/u.test(value)||/^(?:pathlib\.)?Path\.cwd\s*\(\s*\)$/u.test(value)||
+    /^(?:pathlib\.)?Path\s*\(\s*__file__\s*\)\s*\.parent$/u.test(value)||/^os\.path\.dirname\s*\(\s*__file__\s*\)$/u.test(value);
+}
+
 function constraintObservations(normal){
   const items=[];
   for(const human of normal.humans){
@@ -565,18 +592,26 @@ function constraintObservations(normal){
       if(call.name==='pwsh')code=call.arguments.command;
       else try{code=resolveInlineScript(call.arguments,{log:normal.events}).code;}catch{continue;}
       const runpy=/\brunpy\.run_path\(\s*["']([^"']+)["']/u.exec(code);
-      const shell=call.name==='pwsh'?/\bpython(?:3(?:\.\d+)?)?(?:\.exe)?["']?\s+([^\s"']+\.py)\b/iu.exec(code):null;
-      if(runpy||shell){
-        const target=(runpy?.[1]??shell[1]).replaceAll('\\','/').split('/').at(-1),writes=normal.calls.filter(candidate=>candidate.callSeq<call.callSeq&&
+      const shell=call.name==='pwsh'?/\bpython(?:3(?:\.\d+)?)?(?:\.exe)?["']?\s+(?:["']([^"'\r\n]+\.py)["']|([^\s"']+\.py))/iu.exec(code):null;
+      const scriptTarget=runpy?.[1]??shell?.[1]??shell?.[2];
+      if(scriptTarget){
+        const target=scriptTarget.replaceAll('\\','/').split('/').at(-1),writes=normal.calls.filter(candidate=>candidate.callSeq<call.callSeq&&
           String(fileOf(candidate.arguments)??'').replaceAll('\\','/').split('/').at(-1)===target);
-        const latest=writes.at(-1);
+        // A failed or unconfirmed attempt did not change the file; only a recorded file
+        // effect may hide an earlier complete write.
+        const changed=new Set(normal.changes.map(change=>change.callSeq));
+        const latest=writes.findLast(candidate=>candidate.outcome!=='failed'&&
+          (candidate.name==='write'&&typeof candidate.arguments?.content==='string'||changed.has(candidate.callSeq)));
         if(!latest||latest.name!=='write'||typeof latest.arguments?.content!=='string')continue;
         code=latest.arguments.content;
       }
-      if(!/tempfile\.(?:mkdtemp|mkstemp|TemporaryDirectory)\b/u.test(code)||!/\bopen\s*\(/u.test(code)||
-        /tempfile\.(?:mkdtemp|mkstemp|TemporaryDirectory)\([^)]*\bdir\s*=\s*(?:["']\.["']|ROOT|PROJECT_ROOT|PROJECT_DIR|WORKSPACE)/u.test(code))continue;
+      const tempCalls=[...code.matchAll(/tempfile\.(?:mkdtemp|mkstemp|TemporaryDirectory)\s*\(/gu)];
+      if(!tempCalls.length||!/\bopen\s*\(/u.test(code)||tempCalls.every(match=>localTempDirectory(code,match.index+match[0].length)))continue;
       const text=call.resultText??'',match=/[A-Za-z]:(?:\\|\/)[^\r\n"']*?AppData(?:\\|\/)+Local(?:\\|\/)+Temp(?:\\|\/)+[^\r\n"']+/u.exec(text);
-      const location=match?.[0].replace(/\\[rn].*$/su,'').replace(/[,\]}].*$/su,'');
+      const location=match?.[0].replace(/\\r\\n.*$/su,'')
+        .replace(/\\[rn](?=$|[^A-Za-z0-9_.\\/-]).*$/su,'').split(/\s+(?=[A-Za-z_][\w.-]*\s*[=:])/u)[0]
+        .replace(/\b(?:token|secret|password|passwd|api[_-]?key|access[_-]?key|authorization|credential)\s*[=:]\s*\S+/giu,'[redacted]')
+        .replace(/[,\]}].*$/su,'');
       const evidence=location?.length>240?location.slice(0,120)+'…'+location.slice(-117):location;
       items.push({kind:'outside-workspace-temporary-file-read-candidate',requirementSeqs:[human.seq],callSeq:call.callSeq,resultSeq:call.resultSeq,
         evidence:evidence??call.name+' source uses a system temporary-directory API and open()',classification:'candidate',violation:'not-inferred',

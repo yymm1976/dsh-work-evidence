@@ -108,6 +108,18 @@ test('a corrected answer, disabled candidate or fresh request releases the tool 
   }
 });
 
+test('result-repair steering failures are attributed to the result guard',async()=>{
+  for(const mode of ['missing','throws']){
+    const host=harness();
+    if(mode==='missing')delete host.agent.steer;
+    else host.agent.steer=()=>{throw new Error('steering unavailable');};
+    await host.stop();
+    assert.equal(host.notices.length,0);
+    assert.equal(host.decisions.length,1);
+    assert.deepEqual(host.decisions[0].slice(1,4),['finalJsonResult','unavailable',mode==='missing'?'native-steering-unavailable':'native-steering-failed']);
+  }
+});
+
 test('changing invalid JSON cannot exceed two repairs for one request',async()=>{
   const host=harness();
   for(let n=0;n<5;n++){host.append('{"value":'+n+',}');await host.stop();}

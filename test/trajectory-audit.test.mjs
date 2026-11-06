@@ -386,6 +386,38 @@ test('outside workspace temporary reads stay source-bound candidates',()=>{
   assert.equal(project.audit().constraints.items.length,0,'an explicit project-local temporary directory is not an outside-read candidate');
 });
 
+test('temporary-read evidence ignores trailing secrets and only trusts recorded script effects',()=>{
+  const withRequirement=()=>{
+    const {f,audit}=reviewedFixture();
+    f.events.find(event=>event.type==='user/message').data.message.content=[{type:'text',text:'不要读取项目外文件。'}];
+    return {f,audit};
+  };
+  const code='import tempfile\np=tempfile.mkdtemp()\nopen(p+"/a.env").read()';
+  {
+    const {f,audit}=withRequirement();
+    f.operation('work_exec',{runtime:'python',code},'C:\\Users\\name\\AppData\\Local\\Temp\\tmp1\\a.env token=do-not-copy');
+    const item=audit().constraints.items[0];
+    assert.ok(item.evidence.endsWith('a.env'),JSON.stringify(item.evidence));assert.equal(item.evidence.includes('do-not-copy'),false);
+  }
+  {
+    const {f,audit}=withRequirement();
+    f.operation('write',{file_path:'check set keys.py',content:code},'written');
+    f.operation('edit',{file_path:'check set keys.py',old_string:'tempfile',new_string:'os'},'failed',{failed:true});
+    const shell=f.operation('pwsh',{command:'& "C:\\runtime\\python.exe" "check set keys.py"'},'completed');
+    assert.equal(audit().constraints.items.at(-1).resultSeq,shell.resultSeq);
+  }
+  {
+    const {f,audit}=withRequirement();
+    f.operation('work_exec',{runtime:'python',code:'import tempfile\np=tempfile.mkdtemp(dir=PROJECT_ROOT.parent)\nopen(p+"/a.env").read()'},'completed');
+    assert.equal(audit().constraints.items.length,1,'a variable name does not prove the directory is inside the project');
+  }
+  {
+    const {f,audit}=withRequirement();
+    f.operation('work_exec',{runtime:'python',code:'import tempfile\na=tempfile.mkdtemp(dir=".")\nb=tempfile.mkdtemp()\nopen(a+"/a.env").read()'},'completed');
+    assert.equal(audit().constraints.items.length,1,'one local call does not exclude the script when another call uses the system temp root');
+  }
+});
+
 test('change scope reviews retain unsupported and unknown declarations without a requirement source',()=>{
   const {f,assessment,audit}=reviewedFixture(),done=f.operation('edit',{file_path:'a.txt',old_string:'old',new_string:'new'},'applied');
   assessment.throughSeq=f.events.at(-1).seq;

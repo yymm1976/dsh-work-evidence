@@ -165,6 +165,18 @@ export function createEffectObserver(ctx,runtime){
       for(const [name,value]of Object.entries(row.effects.byFeature)){const item=feature(state,name);item.requestsAffected++;item.directTokensEstimate+=value.tokensEstimate;item.directChars+=value.chars;}}
     state.recentRequests.push(row);if(state.recentRequests.length>24)state.recentRequests.shift();
   }
+  function restoredFeature(decision){
+    const name=decision.feature,reason=String(decision.reason??'');
+    if(name==='compactionHandoff'&&['deterministic-stub-summary','stub-not-smaller-than-span','historical-recall-not-exposed'].includes(reason))return 'stubSummary';
+    if(name==='finalJson'&&(decision.kind==='observed-result-repair'||reason==='observed-result-repair-requested'))return 'finalJsonResult';
+    return name;
+  }
+  function restoreDecision(state,decision,at,step){
+    const name=restoredFeature(decision),value=feature(state,name),key=decision.status==='not-applicable'?'notApplicable':decision.status;
+    value.decisions++;value[key]=(value[key]??0)+1;value.lastStatus=decision.status;value.lastReason=decision.reason;
+    value.lastAt=decision.at??at;value.lastStep=decision.step??step;value.reasons[decision.reason]=(value.reasons[decision.reason]??0)+1;
+    state.decisions.push(name===decision.feature?decision:{...decision,feature:name});if(state.decisions.length>64)state.decisions.shift();
+  }
   function finish(agent,row){const state=get(agent);normalizeRow(row);accumulate(state,row);queue(state,agent,row);runtime.get(agent).dirty=true;}
   async function load(agent){
     const state=get(agent);if(state.loaded)return;if(state.loading)return state.loading.catch(()=>{});
@@ -184,11 +196,11 @@ export function createEffectObserver(ctx,runtime){
           }
           if((await fs.stat(file)).size>64*1024*1024)throw new Error('Observability file exceeds 64 MiB load limit');raw=await fs.readFile(file,'utf8');
         }catch(error){if(error.code!=='ENOENT')state.writeErrors.push('load: '+error.message);continue;}
-        const seen=new Set();for(const line of raw.split('\n').filter(Boolean))try{
+        const seen=new Set(),decisionIds=new Set();for(const line of raw.split('\n').filter(Boolean))try{
           const item=JSON.parse(line);
-          if(kind==='observability'&&item.schema!=='work-evidence.request-effects.v1')continue;
+          if(kind==='observability'&&!['work-evidence.request-effects.v1','work-evidence.pending-decisions.v1'].includes(item.schema))continue;
           if(item.sessionId!==undefined&&item.sessionId!==agent.session.id)throw new Error('Observability row belongs to another session');
-          const id=kind==='observability'?item.requestId:item.id;if(seen.has(id))continue;seen.add(id);
+          const id=kind==='observability'?item.requestId:item.id;if(id!==undefined){if(seen.has(id))continue;seen.add(id);}
           if(kind==='attribution'&&item.schema==='work-evidence.attribution.v1'&&typeof item.messageId==='string'&&Array.isArray(item.before)){
             if(state.effectBytes+(item.bytes??0)>16*1024*1024){state.writeErrors.push('attribution restore exceeds memory limit');break;}
             const list=state.effects.get(item.messageId)??[];if(!list.some(effect=>effect.id===item.id)){list.push(item);state.effects.set(item.messageId,list);state.effectBytes+=item.bytes??0;}
@@ -197,7 +209,16 @@ export function createEffectObserver(ctx,runtime){
             // that field existed are canonicalized here, and only once.
             normalizeRow(item);
             accumulate(state,item);
-            for(const decision of item.decisions??[]){const value=feature(state,decision.feature),key=decision.status==='not-applicable'?'notApplicable':decision.status;value.decisions++;value[key]=(value[key]??0)+1;value.lastStatus=decision.status;value.lastReason=decision.reason;value.lastAt=decision.at??item.at;value.lastStep=decision.step??item.step;value.reasons[decision.reason]=(value.reasons[decision.reason]??0)+1;state.decisions.push(decision);if(state.decisions.length>64)state.decisions.shift();}
+            for(const decision of item.decisions??[])if(decision&&typeof decision.id==='string'&&!decisionIds.has(decision.id)){
+              decisionIds.add(decision.id);restoreDecision(state,decision,item.at,item.step);
+            }
+          }else if(kind==='observability'&&item.schema==='work-evidence.pending-decisions.v1'&&Array.isArray(item.decisions)){
+            // Decisions recorded after the last main request was assembled survive disposal
+            // here; restoring by decision id keeps a resumed session from counting one twice.
+            for(const decision of item.decisions)if(decision&&typeof decision.id==='string'&&typeof decision.feature==='string'&&
+              typeof decision.status==='string'&&typeof decision.reason==='string'&&!decisionIds.has(decision.id)){
+              decisionIds.add(decision.id);restoreDecision(state,decision,item.at,item.step);
+            }
           }
         }catch(error){state.writeErrors.push('Unreadable '+kind+' row retained: '+error.message);}
         // Repairing a missing trailing newline keeps later appends one row per line. When
@@ -245,7 +266,18 @@ export function createEffectObserver(ctx,runtime){
       outcome:frame.outcome?.kind??'unknown',eventType:frame.outcome?.eventType??null,sourceSeq:frame.outcome?.seq??null});
   });
   return {decide,rewrite,benefit,begin,start,finish,load,snippet,snapshot,instructions:(agent,text)=>{get(agent).instructionText=text;},flush:agent=>get(agent).queue,
-    async disposeAgent(agent){await get(agent).queue;nativeAttempts.delete(agent);states.delete(agent.session.id);},async dispose(){
+    async disposeAgent(agent){
+      const state=get(agent);
+      await state.queue;
+      // Decisions recorded after the last main request was assembled have no request row
+      // to carry them. Persist them before the in-memory state is dropped.
+      if(state.pendingDecisions.length){
+        const decisions=state.pendingDecisions.splice(0);
+        await queue(state,agent,{schema:'work-evidence.pending-decisions.v1',sessionId:agent.session.id,
+          at:new Date().toISOString(),step:runtime.get(agent).step,decisions});
+      }
+      nativeAttempts.delete(agent);states.delete(agent.session.id);
+    },async dispose(){
       for(const stop of [unsubscribe,unsubscribeStreams])if(typeof stop==='function')stop();
       await Promise.allSettled([...states.values()].map(state=>state.queue));states.clear();}};
 }
