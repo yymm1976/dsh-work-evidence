@@ -421,13 +421,16 @@ test('requirement support requires a current review and a successful applicable 
 
 test('a different successful check cannot replace a failed check in the same file scope',()=>{
   const {f,assessment,audit}=reviewedFixture();
-  const failed=f.operation('pwsh',{command:'node first.js'},JSON.stringify({exitCode:1}),{failed:true});
-  const passed=f.operation('pwsh',{command:'node second.js'},JSON.stringify({exitCode:0}));
+  const failed=f.operation('read',{file_path:'a.txt'},'failed',{failed:true});
+  const passed=f.operation('read',{file_path:'./a.txt'},'source');
   assessment.throughSeq=f.events.at(-1).seq;
   assessment.criteria[0].eventSeqs=[passed.resultSeq];
   assessment.checks=[recordedCheck(f,failed,'source','addresses'),recordedCheck(f,passed,'source','addresses')];
   for(const check of assessment.checks)check.coverage[0].scopePaths=['a.txt'];
-  assert.notEqual(audit().requirements.requirements[0].status,'supported');
+  assert.equal(audit().requirements.requirements[0].status,'unknown');
+  const result=f.events.find(event=>event.seq===failed.resultSeq).data.message;
+  result.isError=false;result.content=[{type:'text',text:'source'}];
+  assert.equal(audit().requirements.requirements[0].status,'supported');
 });
 
 test('unknown mutation paths remain visible in the requirement view',()=>{
