@@ -437,6 +437,17 @@ test('a pwsh call without script text does not abort the audit',()=>{
   assert.equal(audit().constraints.items.length,0);
 });
 
+test('temporary-read evidence keeps Windows path segments beginning with n or r',()=>{
+  const {f,audit}=reviewedFixture();
+  f.events.find(event=>event.type==='user/message').data.message.content=[{type:'text',text:'不要读取项目外文件。'}];
+  const code='import tempfile\np=tempfile.mkdtemp()\nopen(p+"/a.env").read()';
+  const resultPath='C:\\Users\\name\\AppData\\Local\\Temp\\tmp123\\node_modules\\pkg\\new\\reports\\a.env\\r\\n';
+  f.operation('work_exec',{runtime:'python',code},resultPath);
+  const evidence=audit().constraints.items[0].evidence;
+  assert.ok(evidence.endsWith('node_modules\\pkg\\new\\reports\\a.env'),evidence);
+  assert.equal(evidence.includes('\\r\\n'),false);
+});
+
 test('change scope reviews retain unsupported and unknown declarations without a requirement source',()=>{
   const {f,assessment,audit}=reviewedFixture(),done=f.operation('edit',{file_path:'a.txt',old_string:'old',new_string:'new'},'applied');
   assessment.throughSeq=f.events.at(-1).seq;

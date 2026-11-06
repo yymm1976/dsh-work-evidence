@@ -314,12 +314,17 @@ test('successful replacement PTC programs supersede wrapper errors without resol
 });
 
 test('long-script reuse only selects a PATH runtime for a missing interpreter',()=>{
-  for(const variation of ['missing','ordinary','required','named','mixed','switch','or-path','separate','lowercase-path']){
+  for(const variation of ['missing','ordinary','required','named','negate-path','mixed','mixed-en','old-unavailable','reject-path-cn','switch','switch-en','or-path','separate','lowercase-path']){
     const missing=variation!=='ordinary',t=timeline({stepPacing:false});
     if(variation==='required')t.agent.session.log.find(event=>event.type==='user/message').data.message.content=[{type:'text',text:'使用现有 C:\\required\\node.exe 执行程序'}];
     if(variation==='named')t.agent.session.log.find(event=>event.type==='user/message').data.message.content=[{type:'text',text:'使用 C:\\named\\node.exe 执行程序'}];
+    if(variation==='negate-path')t.agent.session.log.find(event=>event.type==='user/message').data.message.content=[{type:'text',text:'不要使用 C:\\named\\node.exe，改用 PATH 中的 node'}];
     if(variation==='mixed')t.agent.session.log.find(event=>event.type==='user/message').data.message.content=[{type:'text',text:'不要使用 C:\\old\\node.exe；使用 C:\\named\\node.exe 执行程序'}];
+    if(variation==='mixed-en')t.agent.session.log.find(event=>event.type==='user/message').data.message.content=[{type:'text',text:'Do not use C:\\old\\node.exe; use C:\\named\\node.exe'}];
+    if(variation==='old-unavailable')t.agent.session.log.find(event=>event.type==='user/message').data.message.content=[{type:'text',text:'The old Node is unavailable; use C:\\named\\node.exe'}];
+    if(variation==='reject-path-cn')t.agent.session.log.find(event=>event.type==='user/message').data.message.content=[{type:'text',text:'不要使用 PATH 中的 node，使用 C:\\named\\node.exe 执行程序'}];
     if(variation==='switch')t.agent.session.log.find(event=>event.type==='user/message').data.message.content=[{type:'text',text:'不要切换到 PATH，使用 C:\\named\\node.exe 执行程序'}];
+    if(variation==='switch-en')t.agent.session.log.find(event=>event.type==='user/message').data.message.content=[{type:'text',text:'Do not switch to PATH; use C:\\named\\node.exe'}];
     if(variation==='or-path')t.agent.session.log.find(event=>event.type==='user/message').data.message.content=[{type:'text',text:'Use C:\\named\\node.exe or PATH if it is missing'}];
     if(variation==='separate')t.agent.session.log.find(event=>event.type==='user/message').data.message.content=[{type:'text',text:'Use C:\\named\\node.exe; do not switch to node14 but switch to PATH if it is missing'}];
     if(variation==='lowercase-path')t.agent.session.log.find(event=>event.type==='user/message').data.message.content=[{type:'text',text:'Use the path C:\\named\\node.exe to run this'}];
@@ -329,10 +334,10 @@ test('long-script reuse only selects a PATH runtime for a missing interpreter',(
     assert.equal(t.flow.handoff(t.agent).executions.at(-1).errorCode,missing?'WORK_EXEC_EXECUTABLE_NOT_FOUND':'WORK_EXEC_SCRIPT_FAILED');
     const notice=t.notices().find(message=>message.source.taskFlow.kind==='scriptReuse');
     assert.ok(notice);const text=notice.content[0].text;
-    const fallback=['missing','or-path','separate'].includes(variation);
+    const fallback=['missing','or-path','separate','negate-path'].includes(variation);
     assert.equal(text.includes('"executable":"node"'),fallback);
     assert.equal(text.includes('避免继续继承不存在的解释器路径'),fallback);
-    assert.equal(text.includes('保留该缺失路径为阻塞项'),['required','named','mixed','switch','lowercase-path'].includes(variation));
+    assert.equal(text.includes('保留该缺失路径为阻塞项'),['required','named','mixed','mixed-en','old-unavailable','reject-path-cn','switch','switch-en','lowercase-path'].includes(variation));
     assert.ok(text.includes('"scriptRef":"event:12"'));
   }
 });
