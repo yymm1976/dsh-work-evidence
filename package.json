@@ -86,6 +86,7 @@
     "MIGRATION-1.1.0.md",
     "ROLLBACK-1.1.0.md",
     "1.1.0-SCOPE-FREEZE.md",
+    "RELEASE-GATES-1.1.0.md",
     "cordis.patch.yml",
     "locale/*.json",
     "icon.svg",
