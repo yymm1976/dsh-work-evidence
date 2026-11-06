@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {patchToolExecution,toolModeFor} from '../tool-execution.mjs';
+import {patchToolExecution,toolModeFor,isBatchToolHost,patchSystemPromptTools} from '../tool-execution.mjs';
 
 test('a batch tool host accepts the legacy single-call shape',async()=>{
   let received;
@@ -41,4 +41,23 @@ test('tool mode recognizes a selected PTC executor on newer hosts',()=>{
   assert.equal(toolModeFor({tools:{selectExecutor:()=>ptc}},agent),'ptc');
   assert.equal(toolModeFor({tools:{selectExecutor:()=>native}},agent),'native');
   assert.equal(toolModeFor({tools:{selectExecutor:()=>{throw Error('unavailable');}}},agent),'native');
+});
+
+test('new system prompt hosts receive tool transforms after assembly',async()=>{
+  let assembles=0;
+  const ctx={tools:{selectExecutor:()=>({})},systemPrompt:{assemble:async()=>({tools:[{name:'run_code'}],sections:[]})}};
+  assert.equal(isBatchToolHost(ctx),true);
+  patchSystemPromptTools(ctx,(result)=>{result.tools=[...result.tools,{name:'added'}];});
+  const before=ctx.systemPrompt.assemble;
+  const result=await before({});
+  assembles++;
+  assert.equal(assembles,1);
+  assert.deepEqual(result.tools.map(tool=>tool.name),['run_code','added']);
+});
+
+test('older system prompt hosts are not wrapped',async()=>{
+  const ctx={tools:{},systemPrompt:{assemble:async()=>({tools:[{name:'run_code'}]})}};
+  const before=ctx.systemPrompt.assemble;
+  patchSystemPromptTools(ctx,()=>{throw Error('should not run');});
+  assert.equal(ctx.systemPrompt.assemble,before);
 });

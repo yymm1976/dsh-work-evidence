@@ -1,6 +1,8 @@
 import {randomUUID} from 'node:crypto';
 
-const patched=new WeakSet();
+const patched=new WeakSet(),toolTransforms=new WeakMap();
+
+export const isBatchToolHost=ctx=>typeof ctx?.tools?.selectExecutor==='function';
 
 /** New DSH hosts replace modeFor with a selected executor; older hosts keep the direct method. */
 export function toolModeFor(ctx,agent){
@@ -31,4 +33,21 @@ export function patchToolExecution(ctx){
     return result;
   };
   patched.add(tools);
+}
+
+/** New system-prompt hosts add tool schemas after the assemble waterfall. */
+export function patchSystemPromptTools(ctx,transform){
+  const service=ctx?.systemPrompt;
+  if(!isBatchToolHost(ctx)||!service||typeof service.assemble!=='function')return;
+  let transforms=toolTransforms.get(service);
+  if(!transforms){
+    transforms=[];toolTransforms.set(service,transforms);
+    const original=service.assemble.bind(service);
+    service.assemble=async context=>{
+      const result=await original(context);
+      if(Array.isArray(result?.tools))for(const apply of transforms)apply(result,context);
+      return result;
+    };
+  }
+  transforms.push(transform);
 }

@@ -28,7 +28,7 @@ import {exportTaskHandoff,createTaskHandoffDelivery} from './task-handoff.mjs';
 import {installUltraEffort} from './ultra-effort.mjs';
 import {nativeReasoningReplayRequest} from './native-reasoning-replay.mjs';
 import {createCompactionHandoff} from "./compaction-handoff.mjs";
-import {patchToolExecution,toolModeFor} from './tool-execution.mjs';
+import {patchToolExecution,toolModeFor,isBatchToolHost,patchSystemPromptTools} from './tool-execution.mjs';
 import {createExecutionEvidence} from './execution-evidence.mjs';
 import {createExecutionDependencies} from './execution-dependencies.mjs';
 import {createHostReferences} from './host-references.mjs';
@@ -118,6 +118,11 @@ export function apply(ctx,config={}){
   const disposeUltra=installUltraEffort(ctx,{requestView:options=>nativeReasoningReplayRequest(ctx,runtime,options)});
   ctx.effect(()=>disposeUltra);
   const toolSurfaceDisposers=new Map(),taskSurfaceModes=new Map();
+  if(isBatchToolHost(ctx))patchSystemPromptTools(ctx,(result,context)=>{
+    const agent=context?.agent;
+    if(agent&&runtime.isEnabled(agent)&&state(agent).config.toolSurface==='compact'&&['read-only','minimal'].includes(taskSurfaceModes.get(agent.session.id))&&Array.isArray(result.tools))
+      result.tools=result.tools.filter(tool=>tool?.name!=='work_exec');
+  });
   const effects=createEffectObserver(ctx,runtime);runtime.effects=effects;
   installNativeProgramReferences(ctx,runtime,effects);
   installStructuredCalls(ctx,runtime,effects);
