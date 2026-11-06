@@ -1,6 +1,6 @@
 # DSH 工程证据插件
 
-当前开发版本为 1.0.1-dev.101，模式策略为 pb001-v39。原 1.0.0 用于真实任务对照。
+当前开发版本为 1.0.1-dev.102，模式策略为 pb001-v39。原 1.0.0 用于真实任务对照。
 桌面加载目录独立维护。运行中的会话采用哪个版本，取决于宿主加载时间。
 插件提供任务指引、观察账本、历史取回和按需工程工具。
 插件直接使用原生 DSH，不依赖 PTC Plus。
@@ -40,7 +40,7 @@ mode 只查询状态。旧的 mode <名称> 和 workspace-mode 命令不再设�
 `feature <设置名>` 查看单项，末尾加 `on` 或 `off` 修改布尔设置。
 `toolSurface` 接受 `compact` 或 `full`；`defaultResponseView` 接受 `full` 或 `reference-if-visible`。
 `qualityReviewEffort` 接受 `auto`、`inherit`、`low`、`medium`、`high` 或 `max`，只控制交付复核。
-`qualityReviewScope` 接受 `auto` 或 `full`，控制复核采用的源码片段范围。`defaultResponseView` 记录未显式覆盖时的默认短引用是否实际采用、回退为完整正文的原因或视图不可用；`toolSurface` 记录实际生效的工具面及只读/最小任务动态切换。`qualityReviewEffort` 和 `qualityReviewScope` 记录实际复核档位、选择来源与装配范围；未请求复核、显式覆盖来源返回或未采用短引用时保持未观察或不适用。`evidenceViews` 关闭或插件关闭时，默认返回视图分别记录 `evidence-views-disabled` 或 `plugin-disabled`，不归为上下文代际错误。`selfIndex` 记录 `verified-index-match`、`no-index-match` 或 `index-query-error`。`defaultResponseView` 在 `evidenceViews` 关闭且采用默认短引用时显示 `requires-setting:evidenceViews`；`qualityReviewEffort` 和 `qualityReviewScope` 在 `qualityReview` 关闭时显示 `requires-setting:qualityReview`。
+`qualityReviewScope` 接受 `auto` 或 `full`，控制复核采用的源码片段范围。`defaultResponseView` 记录未显式覆盖时的默认短引用是否实际采用、回退为完整正文的原因或视图不可用；`toolSurface` 记录实际生效的工具面及只读/最小任务动态切换。`qualityReviewEffort` 和 `qualityReviewScope` 记录实际复核档位、选择来源与装配范围；未请求复核、显式覆盖来源返回或未采用短引用时保持未观察或不适用。`evidenceViews` 关闭或插件关闭时，默认返回视图分别记录 `evidence-views-disabled` 或 `plugin-disabled`，不归为上下文代际错误。`selfIndex` 记录 `verified-index-match`、`no-index-match` 或 `index-query-error`；`historyHygiene` 在成功改写历史正文时记 `message-rewrite-recorded`。`defaultResponseView` 在 `evidenceViews` 关闭且采用默认短引用时显示 `requires-setting:evidenceViews`；`qualityReviewEffort` 和 `qualityReviewScope` 在 `qualityReview` 关闭时显示 `requires-setting:qualityReview`。
 默认 compact 会隐藏管理工具，以上命令仍可直接使用，无须先让模型查找工具。
 
 `feature` 和 `config <JSON>` 保存到当前工作区的 `.dsh/work-evidence/config.json`，同一工作区的会话在下次读取配置时采用。

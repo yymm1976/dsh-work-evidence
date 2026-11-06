@@ -23,6 +23,8 @@ test('historyHygiene reduces old successful command output only when enabled',as
   assert.ok(on.total<off.total*.7,`${on.total} / ${off.total}`);
   assert.ok(on.body.includes('work_recall'),'removed text remains addressable');
   assert.equal(on.events.filter(e=>e.type==='compaction/summary').length,0,'request views need no summary request');
+  assert.equal(off.status.observability.features.historyOutput?.applied??0,0);
+  assert.ok(on.status.observability.features.historyOutput?.applied>0);
 });
 
 test('SW evicts exact duplicate outputs under context pressure and respects its switches and age',async()=>{
