@@ -54,12 +54,11 @@ function archiveDirectory(buffer){
   for(;end>=Math.max(0,data.length-65557);end--)if(data.readUInt32LE(end)===0x06054b50&&end+22+data.readUInt16LE(end+20)===data.length)break;
   if(end<Math.max(0,data.length-65557))invalid();
   let count=data.readUInt16LE(end+10),offset=data.readUInt32LE(end+16);
-  if(count===0xffff||offset===0xffffffff||data.readUInt32LE(end+12)===0xffffffff){
-    if(end<20||data.readUInt32LE(end-20)!==0x07064b50)invalid();
+  if(end>=20&&data.readUInt32LE(end-20)===0x07064b50){
     const zip64=u64(end-12);
     if(!inRange(zip64,56)||data.readUInt32LE(zip64)!==0x06064b50)invalid();
     count=u64(zip64+32);offset=u64(zip64+48);
-  }
+  }else if(offset===0xffffffff||data.readUInt32LE(end+12)===0xffffffff)invalid();
   if(count>150000)fail('ARCHIVE_ENTRY_LIMIT','Archive has more than 150000 entries.');
   const entries=[];
   for(let index=0;index<count;index++){
