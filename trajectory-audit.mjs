@@ -870,6 +870,11 @@ export function requirementEvidenceView(normal,review,verification,sourceProblem
     const unavailable=[...new Set(current.flatMap(({item})=>item.unavailableReasons??(item.unavailableReason?[item.unavailableReason]:[])))];
     const staleReasons=['events-after-review','file-changed-after-check','opaque-execution-after-check','unsettled-mutation'];
     const stale=!review.sourceCurrent?'events-after-review':unavailable.find(value=>staleReasons.includes(value));
+    const unscopedChange=current.some(({check,item})=>item.scopePaths===undefined&&(
+      normal.changes.some(change=>change.seq>check.resultSeq&&change.seq<=review.throughSeq)||
+      normal.calls.some(call=>call.callSeq<=review.throughSeq&&(
+        OPAQUE.has(call.name)&&(call.resultSeq??call.callSeq)>check.resultSeq||
+        WRITE.has(call.name)&&call.resultSeq===null&&call.callSeq>check.resultSeq))));
     const successful=({check,item})=>item.reach==='addresses'&&check.toolOutcome==='succeeded'&&
       (!check.nested||check.enclosingOutcome==='succeeded')&&
       (!['pwsh','ops_bash','bash','run_code','work_exec','work_probe','verified_exec','job_output'].includes(check.tool)||
@@ -877,6 +882,7 @@ export function requirementEvidenceView(normal,review,verification,sourceProblem
     let status,reason;
     if(sourceProblems.length){status='unknown';reason='incomplete-source';}
     else if(stale){status='stale';reason=stale;}
+    else if(unscopedChange){status='unknown';reason='change-after-unscoped-check';}
     else if(criterion.outcome==='fail'){status='contradicted';reason='reviewed-requirement-failed';}
     else if(!current.length){status='gap';reason='no-addressing-check';}
     else if(criterion.outcome==='pass'&&current.every(successful)){status='supported';reason='reviewed-successful-check-addresses-scope';}

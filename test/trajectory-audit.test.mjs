@@ -443,6 +443,14 @@ test('unknown mutation paths remain visible in the requirement view',()=>{
   assert.ok(node.unresolvedEventSeqs.includes(mutation.resultSeq));
 });
 
+test('an unscoped check cannot remain supported after an unclassified mutation',()=>{
+  const {f,done,assessment,audit}=reviewedFixture();
+  f.operation('write',{file_path:'other.txt',content:'changed'},'written');
+  assessment.throughSeq=f.events.at(-1).seq;
+  assessment.checks=[recordedCheck(f,done,'source','addresses')];
+  assert.equal(audit().requirements.requirements[0].status,'unknown');
+});
+
 test('a check that misses a requirement does not itself contradict it',()=>{
   const {f,done,assessment,audit}=reviewedFixture();
   assessment.checks=[recordedCheck(f,done,'source','misses')];
