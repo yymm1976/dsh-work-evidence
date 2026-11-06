@@ -402,6 +402,39 @@ test('an unversioned archive is reread when its contents change without a size c
   assert.equal(second.cache.hit, false);
 });
 
+test('concurrent unversioned archive reads do not share a pending read', async t => {
+  const fixture = await makeArchive(t, [{name: 'source.txt', data: 'before'}]);
+  const stat = fixture.exec.nativeFiles.stat;
+  let statCount = 0;
+  let bothStated;
+  const bothStats = new Promise(resolve => { bothStated = resolve; });
+  fixture.exec.nativeFiles.stat = async (...args) => {
+    const result = await stat(...args);
+    if (++statCount === 2) bothStated();
+    return {...result, version: null};
+  };
+  const readBytes = fixture.exec.nativeFiles.readBytes;
+  let readCount = 0;
+  let releaseReads;
+  const gate = new Promise(resolve => { releaseReads = resolve; });
+  fixture.exec.nativeFiles.readBytes = async (...args) => {
+    readCount++;
+    await gate;
+    return readBytes(...args);
+  };
+  const reads = [
+    readArchiveEntry(fixture.directory, fixture.archive, 'source.txt', fixture.exec),
+    readArchiveEntry(fixture.directory, fixture.archive, 'source.txt', fixture.exec)
+  ];
+  await bothStats;
+  await new Promise(resolve => setImmediate(resolve));
+  releaseReads();
+  const results = await Promise.all(reads);
+  assert.equal(readCount, 2);
+  assert.deepEqual(results.map(result => result.cache?.hit), [false, false]);
+  assert.deepEqual(results.map(result => result.text), ['before', 'before']);
+});
+
 test('a versioned archive reuses its cached contents while its version is unchanged', async t => {
   const fixture = await makeArchive(t, [{name: 'source.txt', data: 'unchanged'}]);
   const first = await readArchiveEntry(fixture.directory, fixture.archive, 'source.txt', fixture.exec);
