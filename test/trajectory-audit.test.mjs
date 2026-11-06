@@ -418,6 +418,25 @@ test('temporary-read evidence ignores trailing secrets and only trusts recorded 
   }
 });
 
+test('an unconfirmed later write does not hide the confirmed script or create a candidate',()=>{
+  const {f,audit}=reviewedFixture();
+  f.events.find(event=>event.type==='user/message').data.message.content=[{type:'text',text:'不要读取项目外文件。'}];
+  f.operation('write',{file_path:'check.py',content:'print(42)'},'written');
+  const id='unconfirmed-write';
+  f.add('tool/call',{callId:id,name:'write',arguments:{file_path:'check.py',content:'import tempfile\np=tempfile.mkdtemp()\nopen(p+"/a.env").read()'}});
+  f.add('tool/result',{message:{role:'tool',source:{callId:id},content:[{type:'text',text:'not confirmed'}]}});
+  f.operation('pwsh',{command:'& "C:\\runtime\\python.exe" check.py'},'completed');
+  assert.equal(audit().constraints.items.length,0);
+});
+
+test('a pwsh call without script text does not abort the audit',()=>{
+  const {f,audit}=reviewedFixture();
+  f.events.find(event=>event.type==='user/message').data.message.content=[{type:'text',text:'不要读取项目外文件。'}];
+  f.operation('pwsh',{},'completed');
+  assert.doesNotThrow(()=>audit());
+  assert.equal(audit().constraints.items.length,0);
+});
+
 test('change scope reviews retain unsupported and unknown declarations without a requirement source',()=>{
   const {f,assessment,audit}=reviewedFixture(),done=f.operation('edit',{file_path:'a.txt',old_string:'old',new_string:'new'},'applied');
   assessment.throughSeq=f.events.at(-1).seq;

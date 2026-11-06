@@ -257,3 +257,25 @@ test('pending decisions beyond the rolling limit are persisted instead of silent
     await remove(created.telemetryDir);
   }
 });
+
+test('restored feature names cannot mutate shared prototypes', async () => {
+  const created = await start();
+  try {
+    const file = path.join(created.telemetryDir, SESSION + '.observability.jsonl');
+    await fs.writeFile(file, JSON.stringify({ schema: 'work-evidence.pending-decisions.v1', at: '2026-11-06T00:00:00.000Z', step: 1, decisions: [
+      { id: 'proto', feature: '__proto__', status: 'applied', reason: 'x', seq: 1 },
+      { id: 'constructor', feature: 'constructor', status: 'applied', reason: 'x', seq: 2 },
+      { id: 'valid', feature: 'retainedCompute', status: 'applied', reason: 'restored-valid', seq: 3 }
+    ] }) + '\n', 'utf8');
+    await created.effects.load(created.agent);
+    const snapshot = created.effects.snapshot(created.agent);
+    assert.equal(snapshot.features.retainedCompute.decisions, 1);
+    assert.equal(snapshot.features.retainedCompute.lastReason, 'restored-valid');
+    assert.equal(Object.prototype.lastStatus, undefined);
+    assert.equal(Object.prototype.decisions, undefined);
+    assert.equal(Object.prototype.applied, undefined);
+    assert.ok(!snapshot.persistence.writeErrors.some(message => message.includes('Unreadable')));
+  } finally {
+    await remove(created.telemetryDir);
+  }
+});

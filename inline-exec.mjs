@@ -51,6 +51,7 @@ const PATH_PROHIBITION=/(?:不要|请勿|禁止|do not|don't|must not|never)[^�
 const PATH_CONTRAST=/(?:\bbut\b|\binstead\b|\brather\b|而是|但是|不过|却|转而)/iu;
 function pathFallbackAllowedIn(clause){
   for(const match of clause.matchAll(PATH_PERMISSION)){
+    if(!match[0].endsWith('PATH'))continue;
     const segment=clause.slice(0,match.index).split(PATH_CONTRAST).at(-1);
     if(!PATH_PROHIBITION.test(segment))return true;
   }

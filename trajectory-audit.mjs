@@ -602,11 +602,11 @@ function constraintObservations(normal){
         // A failed or unconfirmed attempt did not change the file; only a recorded file
         // effect may hide an earlier complete write.
         const changed=new Set(normal.changes.map(change=>change.callSeq));
-        const latest=writes.findLast(candidate=>candidate.outcome!=='failed'&&
-          (candidate.name==='write'&&typeof candidate.arguments?.content==='string'||changed.has(candidate.callSeq)));
+        const latest=writes.findLast(candidate=>candidate.outcome!=='failed'&&changed.has(candidate.callSeq));
         if(!latest||latest.name!=='write'||typeof latest.arguments?.content!=='string')continue;
         code=latest.arguments.content;
       }
+      if(typeof code!=='string')continue;
       const tempCalls=[...code.matchAll(/tempfile\.(?:mkdtemp|mkstemp|TemporaryDirectory)\s*\(/gu)];
       if(!tempCalls.length||!/\bopen\s*\(/u.test(code)||tempCalls.every(match=>localTempDirectory(code,match.index+match[0].length)))continue;
       const text=call.resultText??'',match=/[A-Za-z]:(?:\\|\/)[^\r\n"']*?AppData(?:\\|\/)+Local(?:\\|\/)+Temp(?:\\|\/)+[^\r\n"']+/u.exec(text);
