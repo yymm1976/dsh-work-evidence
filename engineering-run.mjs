@@ -1,11 +1,13 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
+import os from 'node:os';
 import {createRequire} from 'node:module';
 import {pathToFileURL,fileURLToPath} from 'node:url';
 import {isolatedProviderConfig,route} from '../dsh-mechanism-lab/api.mjs';
 const folder=path.dirname(fileURLToPath(import.meta.url));
-const app='C:/Users/杨铭/AppData/Local/Programs/DSH Desktop/dsh-desktop';
-const workspace='C:/Users/杨铭/Desktop/修仙模组';
+const app=process.env.DSH_APP?.trim()||path.join(os.homedir(),'AppData','Local','Programs','DSH Desktop','dsh-desktop');
+const workspace=process.env.DSH_ENGINEERING_WORKSPACE?.trim();
+if(!workspace)throw new Error('Set DSH_ENGINEERING_WORKSPACE to the project directory under test');
 await fs.mkdir(path.join(folder,'node_modules'),{recursive:true});
 try{await fs.symlink(path.join(app,'node_modules/@deepseek-ai'),path.join(folder,'node_modules/@deepseek-ai'),'junction');}catch(e){if(e.code!=='EEXIST')throw e;}
 const require=createRequire(path.join(app,'package.json'));

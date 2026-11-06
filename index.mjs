@@ -649,6 +649,7 @@ export function apply(ctx,config={}){
     pendingSaves.add(promise);promise.finally(()=>pendingSaves.delete(promise));return promise;
   }
   ctx.on('agent/disposed',({agent})=>{taskSurfaceModes.delete(agent.session.id);});
+  ctx.on('session/disposed',session=>runtime.dispose(session.id));
   ctx.on('agent/request-error',async(payload,next)=>{
     const action=await next();
     if(action?.kind==='retry'||payload.signal.aborted)return action;
@@ -656,14 +657,16 @@ export function apply(ctx,config={}){
     return action;
   });
   ctx.on('session/event',(session,event)=>{
-    const s=state({session});
     if(event.type==='turn/start')return;
     const owner=ctx.agents.get(session.id);if(owner)runtime.sync(owner);
-    if(event.type!=='turn/end'||!s.active)return;
+    if(event.type!=='turn/end')return;
+    const agent=ctx.agents.get(session.id);
+    if(!agent)return;
+    const s=state(agent);
+    if(!s.active)return;
     const reason=event.data?.reason?.kind;
     if(reason==='completed'&&s.reportedCurrentTurn)return;
     if(!['completed','max-tokens','error','interrupted','blocked'].includes(reason))return;
-    const agent=ctx.agents.get(session.id);if(!agent)return;
     void trackedSave(agent,{turn:event.data.turn,reason:reason==='completed'?'completed-without-work-report':reason,signal:AbortSignal.timeout(8000)});
     const receipt=runtime.receipt(agent,AbortSignal.timeout(8000),true);pendingSaves.add(receipt);receipt.finally(()=>pendingSaves.delete(receipt));
   });

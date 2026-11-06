@@ -4,8 +4,9 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import {pathToFileURL} from 'node:url';
 import {startHost,text,tool} from './helpers/host.mjs';
+import {OPS_ROOT} from './helpers/paths.mjs';
 
-const OPS='C:/Users/杨铭/Documents/DSH Desktop/home/profiles/web/node_modules/dsh-ops/lib/components';
+const OPS=OPS_ROOT;
 const valueOf=options=>JSON.parse(options.messages.findLast(message=>message.role==='tool').content.map(block=>block.text??'').join(''));
 const executeProgram=`import fs from 'node:fs';
 const adjustment = 0;

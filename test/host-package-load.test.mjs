@@ -6,6 +6,7 @@ import path from 'node:path';
 import {pathToFileURL} from 'node:url';
 import {defaults,RETIRED_SETTINGS,VERSION} from '../runtime.mjs';
 import {startHost,text,tool} from './helpers/host.mjs';
+import {OPS_ROOT} from './helpers/paths.mjs';
 
 const source=path.resolve(import.meta.dirname,'..');
 const contained=(root,relative)=>{
@@ -30,7 +31,7 @@ test('declared package files independently load all retained controls and preser
     const workspace={...Object.fromEntries(Object.entries(defaults()).filter(([key,value])=>typeof value==='boolean'&&!RETIRED_SETTINGS.includes(key)).map(([key])=>[key,true])),
       toolSurface:'full',fastEditPython:process.env.DSH_TEST_FASTEDIT_PYTHON||path.join(source,'.fastedit-venv/Scripts/python.exe'),
       projectionPricing:[{provider:'scripted',model:'scripted-model',input:.15,cacheRead:.003,output:.6,currency:'USD'}]};
-    const opsRoot='C:/Users/杨铭/Documents/DSH Desktop/home/profiles/web/node_modules/dsh-ops/lib/components';
+    const opsRoot=OPS_ROOT;
     const ops=await Promise.all(['file','ptc'].map(name=>import(pathToFileURL(opsRoot+'/'+name+'/index.js').href)));
     let sourceValue,nativeValue;
     host=await startHost({pluginDirectory:directory,workspace,toolMode:'ptc',

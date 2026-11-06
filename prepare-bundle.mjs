@@ -1,9 +1,12 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
+import os from 'node:os';
 
 // Mount once at the host so preset changes cannot silently remove the plugin.
 // Retain the former preset identity for existing sessions, without a second copy.
-const source = process.argv[2] || 'C:/Users/杨铭/Documents/DSH Desktop/home/profiles/web/cordis.patch.yml';
+const profile=process.env.DSH_PROFILE?.trim();
+const source = process.argv[2] || (profile&&path.join(profile,'cordis.patch.yml')) ||
+  path.join(os.homedir(),'Documents','DSH Desktop','home','profiles','web','cordis.patch.yml');
 const text = (await fs.readFile(source, 'utf8')).replace(/\r\n/g, '\n');
 const match = /^- id: preset-ptc\n[\s\S]*?(?=^- id: |$(?![\s\S]))/m.exec(text);
 if (!match) throw new Error('Current PTC preset row was not found in ' + source);

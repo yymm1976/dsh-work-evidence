@@ -1,6 +1,6 @@
 {
   "name": "@local/dsh-work-evidence",
-  "version": "1.0.1-dev.112",
+  "version": "1.1.0",
   "private": true,
   "description": "DSH-native evidence, stable request working sets, history recovery and optional OPS CAS/Java adapters",
   "type": "module",
@@ -16,7 +16,7 @@
   },
   "engines": {
     "node": ">=22.19",
-    "dsh": "0.2.1-rc.2 || 0.2.1-rc.3 || 0.2.1-rc.4 || 0.2.1-rc.5 || 0.2.2-rc.1"
+    "dsh": "0.2.1-rc.4 || 0.2.2-rc.1"
   },
   "files": [
     "scripts/check-syntax.mjs",
@@ -82,6 +82,10 @@
     "experiment-cli.mjs",
     "trajectory-audit.mjs",
     "README.md",
+    "RELEASE-NOTES-1.1.0.md",
+    "MIGRATION-1.1.0.md",
+    "ROLLBACK-1.1.0.md",
+    "1.1.0-SCOPE-FREEZE.md",
     "cordis.patch.yml",
     "locale/*.json",
     "icon.svg",
@@ -96,7 +100,7 @@
     "fflate": "^0.8.3"
   },
   "peerDependencies": {
-    "@deepseek-ai/dsh-session-reference": "0.2.1-rc.2 || 0.2.1-rc.3 || 0.2.1-rc.4 || 0.2.1-rc.5 || 0.2.2-rc.1"
+    "@deepseek-ai/dsh-session-reference": "0.2.1-rc.4 || 0.2.2-rc.1"
   },
   "peerDependenciesMeta": {
     "@deepseek-ai/dsh-session-reference": {

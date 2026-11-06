@@ -1,13 +1,15 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
+import os from 'node:os';
 import {createRequire} from 'node:module';
 import {pathToFileURL} from 'node:url';
 
 // Exercise the real native tools on the existing project without an LLM request.
-const app = 'C:/Users/杨铭/AppData/Local/Programs/DSH Desktop/dsh-desktop';
+const app = process.env.DSH_APP?.trim() || path.join(os.homedir(), 'AppData', 'Local', 'Programs', 'DSH Desktop', 'dsh-desktop');
 const handoff = process.argv.includes('--handoff');
 const recoverRead = process.argv.includes('--recover-read');
-const workspace = process.argv.slice(2).find(arg => !arg.startsWith('--')) || 'C:/Users/杨铭/Desktop/修仙模组';
+const workspace = process.argv.slice(2).find(arg => !arg.startsWith('--')) || process.env.DSH_ENGINEERING_WORKSPACE?.trim();
+if (!workspace) throw new Error('Pass a workspace directory or set DSH_ENGINEERING_WORKSPACE');
 const require = createRequire(path.join(app, 'package.json'));
 const load = name => import(pathToFileURL(require.resolve('@deepseek-ai/' + name)));
 const {Context} = await load('cordis');

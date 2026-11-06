@@ -6,6 +6,7 @@ import path from 'node:path';
 import {newSummary,applyRow,readRun} from '../experiment-store.mjs';
 import {nativeChildInventory,importSession} from '../experiment-native.mjs';
 import {trialsFor} from '../experiment-cli.mjs';
+import {DSH_APP} from './helpers/paths.mjs';
 
 const catalog=(childId,mode='continuable',seq=1)=>({seq,type:'subagent/catalog',data:{version:mode==='external'?2:0,childId,mode,childCreatedAt:100,label:'child label'}});
 function run(id,{parent=null,children=[],inventory=true,source='native-session-readonly',tools={}}={}){
@@ -91,7 +92,7 @@ test('the real file importer retains child facts and readRun preserves them with
       catalog('external-task','external',2),{seq:3,type:'turn/end',time:3,data:{reason:{kind:'stop'}}}];
     await fs.writeFile(file,JSON.stringify({sessionId:'saved-parent',workspace:directory,events}));
     const result=await importSession({directory,sessionId:'saved-parent',variant:'work-evidence',file,
-      app:'C:/Users/杨铭/AppData/Local/Programs/DSH Desktop/dsh-desktop',home:directory});
+      app:DSH_APP,home:directory});
     const imported=await readRun(path.join(directory,result.runId));
     assert.equal(imported.childInventory.complete,false);assert.equal(imported.childInventory.source,'engineering-artifact');
     assert.deepEqual(imported.childInventory.children.map(row=>[row.childId,row.mode]),[['missing-child','continuable'],['external-task','external']]);

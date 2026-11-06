@@ -15,10 +15,13 @@ async function versionOf(app,packageName){
 }
 
 const declared=value=>String(value??'').split('||').map(item=>item.trim()).filter(Boolean);
+const supportedHosts=['0.2.1-rc.4','0.2.2-rc.1'];
 
-test('the package declaration covers every host runtime present for this release check',async t=>{
+test('the package declaration exactly matches the two verified host runtimes',async t=>{
   const manifest=JSON.parse(await fs.readFile(path.join(root,'package.json'),'utf8'));
   const dshVersions=declared(manifest.engines?.dsh),peerVersions=declared(manifest.peerDependencies?.['@deepseek-ai/dsh-session-reference']);
+  assert.deepEqual(dshVersions,supportedHosts);
+  assert.deepEqual(peerVersions,supportedHosts);
   const tools=await versionOf(app,'@deepseek-ai/dsh-tools');
   if(!tools){
     if(process.env.DSH_APP)assert.fail(`No DSH host runtime found at DSH_APP: ${app}`);

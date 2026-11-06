@@ -2,10 +2,6 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {MODES, MODE_POLICY_VERSION, defaults} from '../runtime.mjs';
 
-const ENV_FEATURES = [
-  ['stubSummary', 'DSH_EXPERIMENT_STUB_SUMMARY']
-];
-
 function withEnv(overrides, callback) {
   const previous = new Map();
   for (const [name, value] of Object.entries(overrides)) {
@@ -264,16 +260,19 @@ test('projectionPricing rejects more than 32 routes', () => {
   assert.throws(() => defaults({projectionPricing: rows}), /Invalid projectionPricing/);
 });
 
-for (const [key, envName] of ENV_FEATURES) {
-  test(`${envName} controls ${key} at defaults() call time`, () => {
-    const cleared = Object.fromEntries(ENV_FEATURES.map(([, name]) => [name, undefined]));
-    withEnv(cleared, () => assert.equal(defaults()[key], false));
-    withEnv({...cleared, [envName]: '1'}, () => assert.equal(defaults()[key], true));
-    withEnv({...cleared, [envName]: 'true'}, () => assert.equal(defaults()[key], true));
-    withEnv({...cleared, [envName]: '0'}, () => assert.equal(defaults()[key], false));
-    withEnv({...cleared, [envName]: 'yes'}, () => assert.equal(defaults()[key], false));
-  });
-}
+test('hidden experiment environment variables cannot change stable defaults', () => {
+  withEnv(
+    {
+      DSH_EXPERIMENT_DEFER_COMPACTION: '1',
+      DSH_EXPERIMENT_STUB_SUMMARY: 'true',
+    },
+    () => {
+      const config = defaults();
+      assert.equal(config.deferPressureCompaction, false);
+      assert.equal(config.stubSummary, false);
+    },
+  );
+});
 
 test('exported modes and policy version match the current policy format', () => {
   assert.deepEqual(MODES, ['default', 'aggressive', 'quality']);

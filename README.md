@@ -1,10 +1,10 @@
 # DSH 工程证据插件
 
-当前开发版本为 1.0.1-dev.112，模式策略为 pb001-v39。原 1.0.0 用于真实任务对照。
+当前发布候选版本为 1.1.0，模式策略为 pb001-v39。原 1.0.0 用于真实任务对照。
 桌面加载目录独立维护。运行中的会话采用哪个版本，取决于宿主加载时间。
 插件提供任务指引、观察账本、历史取回和按需工程工具。
 插件直接使用原生 DSH，不依赖 PTC Plus。
-历史说明见 [HISTORY.md](HISTORY.md)。历史结果不代表当前版本的实际效果。
+历史说明见 [HISTORY.md](HISTORY.md)。1.1.0 的改动和边界见 [Release Notes](RELEASE-NOTES-1.1.0.md)、[迁移说明](MIGRATION-1.1.0.md) 和 [回退说明](ROLLBACK-1.1.0.md)。历史结果不代表当前版本的实际效果。
 
 ## 模式与开关
 
@@ -537,14 +537,14 @@ stubSummary 保留问题处理标记、事件指针和原文取回。
 
 ## 开发与桌面加载
 
-开发目录：C:/Users/杨铭/Documents/Codex/2026-10-19/wo/outputs/dsh-work-evidence。
-桌面加载目录：C:/Users/杨铭/Documents/DSH Desktop/home/tools/dsh-work-evidence。
+开发目录：当前仓库根目录。测试和实验工具可使用 `DSH_APP`、`DSH_PROFILE`、`DSH_TEST_PYTHON` 指向本机运行时和可选组件。
+桌面加载目录：由桌面 profile 决定。需要同步时使用 `node sync-desktop.mjs`，不要写死本机绝对路径。
 桌面 web profile 的包依赖和目录联接指向加载目录。
 加载目录保存独立源码与 Python 环境；宿主依赖来自已安装的桌面运行时。
 插件直接引用桌面宿主提供的 `@deepseek-ai/dsh-llm`、`@deepseek-ai/cordis`、DSH PTC 运行时和应用启动模块。`dsh-ops` 只用于可选来源和精确编辑适配器，不是核心历史与交接功能的必需依赖。
 修改开发目录不会自动更新桌面加载目录。
-同步使用 node sync-desktop.mjs。正在运行的会话是否采用新代码取决于宿主生命周期。
-node sync-desktop.mjs --code-only 同步包内代码与说明，并修正独立目录的加载联接及锁文件路径。
+同步使用 `node sync-desktop.mjs`。正在运行的会话是否采用新代码取决于宿主生命周期。
+`node sync-desktop.mjs --code-only` 同步包内代码与说明，并修正独立目录的加载联接及锁文件路径。
 该选项保留桌面模型配置、依赖环境及 Python 环境。
 
 index.mjs 负责组装和会话事件。
@@ -554,9 +554,9 @@ plugin-command.mjs 负责命令；source-tools.mjs 负责源码和报告入口�
 
 运行完整测试时，Java 精确编辑检查需要能导入 `requirements-fastedit.txt` 所列依赖的 Python。将 `DSH_TEST_FASTEDIT_PYTHON` 设置为该解释器的绝对路径；未设置或设为空时，测试使用开发目录的 `.fastedit-venv/Scripts/python.exe`。
 
-当前安装的桌面运行时 `dsh-tools@0.2.2-rc.1` 已移除 `mode` 配置。dev.107 增加 `tool-execution.mjs` 的批量执行兼容与 `toolModeFor`，并让测试宿主按版本挂载拆分执行器；旧运行时保持原行为。dev.109 修完新宿主的主要适配点：批量执行不再把内部执行写成会话事件，内部嵌套调用保留 `parent` 并走所选执行器的 pipeline，`systemPrompt.assemble` 的包装按 Cordis 真实服务去重，工具面声明改为幂等，并给仍读取 waterfall 工具列表的 OPS 组件补上只读 shim。dev.111 核对出先前记录的 OPS PTC 缺口其实是用例启动竞态：OPS 异步发布作用域定义，用例等待原生工具可见及 PTC SDK 出现后再发送，两个 OPS 复核用例在新旧宿主均通过。dev.111 时当前安装版全量测试 514/514 通过，0 失败、0 跳过。标准验证仍需设置 `DSH_APP=C:/Users/杨铭/Desktop/DSH/real-projects/host-runtime-20261102`，指向 2026-11-02 保存的宿主运行时；插件全量 514/514 在该运行时复验通过。桌面配置没有改动。
+当前安装的桌面运行时 `dsh-tools@0.2.2-rc.1` 已移除 `mode` 配置。1.1.0 保留 `tool-execution.mjs` 的批量执行兼容与 `toolModeFor`，并让测试宿主按版本挂载拆分执行器；旧运行时保持原行为。1.1.0 只声明实际验证过的 `dsh-tools@0.2.1-rc.4` 和 `0.2.2-rc.1`。开发过程中记录的历史 514/514、522/522 等结果属于旧版本，不是 1.1.0 的最终验收。
 
-dev.112 处理 PR #2 首次 CodeRabbit 审查中仍有效的问题：stub 摘要的 applied 效果改为在 `compaction/end` 确认提交后记录，拒绝时记 failed；恢复观测记录时把旧的 `compactionHandoff` 摘要决策和结果修复决策分别归入 `stubSummary`、`finalJsonResult`；尚无主请求时产生的决策在 agent 释放前持久化，恢复时按决策 id 去重；轨迹审计不再把路径后的 `token=...` 写入证据，能识别带引号（含空格）的 Python 脚本参数，失败或未确认的 edit 不再遮蔽此前完整写入的脚本，临时目录只有逐调用证明在项目内时才排除；源码解析尝试失败记 failed、运行时缺失记 unavailable、Maven 坐标拒绝记 failed，archive member 读取也记录解析结果；用户点名但未声明“已安装”的解释器路径失败后，不再建议改用 PATH。修复后当前安装版全量测试 522/522 通过，0 失败、0 跳过；保存运行时同样 522/522 通过。桌面配置没有改动。
+1.1.0 修复了无版本归档的同长度陈旧缓存、归档解码截断和本地头不一致，乱序/重复事件、非法参数崩溃、未结束写入的证据失效，以及会话状态回收。归档读取使用受限原生 deflate 解码并核对实际解压长度、压缩长度、CRC、目录和本地头；双宿主最终结果见集成分支验收记录。1.1.0 不宣称历史去除建议带来的 Token 净收益，不把测试通过或字符缩减当作发布效果。
 
 `dsh-work-evidence --help` 列出审计和实验命令。`pair --off SESSION_ID --on SESSION_ID --task TASK_KEY --context KEY` 导入并比较两个已有会话；`show --run RUN_ID` 读取一份实验记录；`label --session SESSION_ID --file assessment.json` 保存带来源的人工判断。实验命令不自动调用模型。
 
@@ -567,10 +567,7 @@ dev.112 处理 PR #2 首次 CodeRabbit 审查中仍有效的问题：stub 摘要
 正式实验使用 auto/deepseek-v4.1-flash / max。新增效率候选须解决已观察到的重复传输或实际交付问题；不重复启动没有新机制的提示词、经验注入或压缩候选。
 正确读取、拒绝错误修改和状态准确按各自用途判断。Token 与完整参考费用单独核算；缓存正文可能比新交接便宜。Ultra 行为保留。
 比较结果、采用条件和未完事项分别记录在现行迭代实验页与功能核查页。
-本机现行交接位于 C:/Users/杨铭/Desktop/DSH/Codex-2026-10-23/outputs/Work-Evidence-当前交接-2026-10-31.md；该文件不随公开仓库上传。
-旧运行目录清理后，历史说明里的原始记录路径可能已不可用。
-
-费用比较和未证实的效果见同目录的 Work-Evidence-功能核查-2026-11.md 和 Work-Evidence-迭代实验-2026-11.md。
+私人交接、原始会话和本机实验记录不进入公开仓库，也不在本文提供绝对路径。公开版本只保留可复现的方法、汇总结果和证据边界。
 
 ## GitHub PR 开发与 CodeRabbit 审查规范
 
