@@ -205,7 +205,7 @@ export async function readAuditInput(file){
 export function normalizeDshEvents(input){
   const events=Array.isArray(input)?input:input?.events;
   if(!Array.isArray(events)||events.some(event=>!event||typeof event.type!=='string'))throw Error('Expected DSH events or an object containing events.');
-  const seqs=new Set(),problems=[],calls=[],callsById=new Map(),requests=summarizeAttempts(events).attempts,changes=[],humans=[];
+  const seqs=new Set(),problems=[],calls=[],callsById=new Map(),requests=summarizeAttempts(events).attempts,changes=[],possibleChanges=[],humans=[];
   const attempts=new Map(requests.map(request=>[request.sourceSeq,request]));
   let requestSeq=null,userSeq=null,mutationEpoch=0,opaqueEpoch=0,throughSeq=null;
   const addCall=(id,name,args,event,nested=false,rootCallId=null,settlement=false)=>{
@@ -263,6 +263,8 @@ export function normalizeDshEvents(input){
     if(WRITE.has(call.name)&&!readOnlyJava&&(call.outcome==='succeeded'||['applied','partial','unknown'].includes(effect))&&effect!=='none'){
     mutationEpoch++;changes.push({seq:call.resultSeq,callSeq:call.callSeq,path:fileOf(call.arguments),tool:call.name,
         status:effect??'native-operation-succeeded',currentState:'not-inferred'});
+    }else if(WRITE.has(call.name)&&!readOnlyJava&&effect!=='none'){
+      possibleChanges.push({seq:call.resultSeq,callSeq:call.callSeq,path:fileOf(call.arguments),tool:call.name,status:'unknown'});
     }
     if(call.name==='run_code')opaqueEpoch++;
   }
@@ -286,7 +288,7 @@ export function normalizeDshEvents(input){
     call.deliveryVisibility='not-inferred-from-inner-return';
   }
   const leaf=calls.filter(call=>call.nested||!nestedRoots.has(call.id));
-  return {events,requests,calls,leaf,changes,humans,problems,seqs,throughSeq,
+  return {events,requests,calls,leaf,changes,possibleChanges,humans,problems,seqs,throughSeq,
     coverage:{originalEvents:true,modelTurns:requests.length,rootCalls:calls.filter(call=>!call.nested).length,nestedCalls:calls.filter(call=>call.nested).length,
       opaquePrograms:calls.filter(call=>call.name==='run_code').length,fileState:'successful recorded file operations only; external and arbitrary program effects remain unobserved'}};
 }
@@ -521,6 +523,13 @@ function reviewedCheckCoverage(input,review,normal,sourceId,sourceProblems){
           if(!changed){fileReasons.push('file-scope-unresolved');break;}
           if(scopes.some(scope=>scope.value===changed.value)){fileReasons.push('file-changed-after-check');break;}
           if(scopes.some(scope=>scope.absolute!==changed.absolute)){fileReasons.push('file-scope-unresolved');break;}
+        }
+        for(const change of normal.possibleChanges){
+          if(change.seq<=row.resultSeq||change.seq>review.throughSeq)continue;
+          const changed=normalizeFile(change.path);
+          if(!changed||scopes?.some(scope=>scope.value===changed.value||scope.absolute!==changed.absolute)){
+            fileReasons.push('possible-file-change-after-check');break;
+          }
         }
         const opaque=normal.calls.some(other=>other.callSeq<=review.throughSeq&&OPAQUE.has(other.name)&&
           (other.resultSeq===null?other.callSeq>row.resultSeq:other.resultSeq>row.resultSeq));
@@ -854,15 +863,15 @@ export function requirementEvidenceView(normal,review,verification,sourceProblem
     const scopes=[...new Set(relations.flatMap(({item})=>item.scopePaths??[]))];
     const scopeKeys=new Set(scopes.map(scope=>normalizeFile(scope)?.value).filter(Boolean));
     const mutations=scopeKeys.size?normal.changes.filter(change=>scopeKeys.has(normalizeFile(change.path)?.value)):[];
-    const unresolved=normal.changes.filter(change=>{
+    const unresolved=[...normal.changes,...normal.possibleChanges].filter(change=>{
       const changed=normalizeFile(change.path);
-      return !changed||!scopeKeys.size||scopes.some(scope=>normalizeFile(scope)?.absolute!==changed.absolute);
+      return change.status==='unknown'||!changed||!scopeKeys.size||scopes.some(scope=>normalizeFile(scope)?.absolute!==changed.absolute);
     });
     const latestByScope=new Map();
     for(const relation of relations.filter(({item})=>item.declaredReach==='addresses')){
       const paths=relation.item.scopePaths;
       const call=calls.get(relation.check.callSeq+':'+relation.check.resultSeq);
-      const key=paths?.length&&call?JSON.stringify([[...paths].sort(),call.name,call.arguments]):'unscoped:'+relation.check.id;
+      const key=paths?.length&&call?stable([[...paths].sort(),call.name,call.arguments]):'unscoped:'+relation.check.id;
       const previous=latestByScope.get(key);
       if(!previous||relation.check.resultSeq>previous.check.resultSeq)latestByScope.set(key,relation);
     }
@@ -871,7 +880,7 @@ export function requirementEvidenceView(normal,review,verification,sourceProblem
     const staleReasons=['events-after-review','file-changed-after-check','opaque-execution-after-check','unsettled-mutation'];
     const stale=!review.sourceCurrent?'events-after-review':unavailable.find(value=>staleReasons.includes(value));
     const unscopedChange=current.some(({check,item})=>item.scopePaths===undefined&&(
-      normal.changes.some(change=>change.seq>check.resultSeq&&change.seq<=review.throughSeq)||
+      [...normal.changes,...normal.possibleChanges].some(change=>change.seq>check.resultSeq&&change.seq<=review.throughSeq)||
       normal.calls.some(call=>call.callSeq<=review.throughSeq&&(
         OPAQUE.has(call.name)&&(call.resultSeq??call.callSeq)>check.resultSeq||
         WRITE.has(call.name)&&call.resultSeq===null&&call.callSeq>check.resultSeq))));
