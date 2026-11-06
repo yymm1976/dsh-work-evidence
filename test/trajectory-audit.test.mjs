@@ -181,6 +181,29 @@ test('duplicate native call identifiers remain separate observations with explic
   assert.ok(normalized.problems.some(problem=>problem.reason==='duplicate-tool-call-id'));
 });
 
+test('duplicate results for one call cannot replace the recorded failure with success',()=>{
+  const f=fixture();
+  const done=f.operation('pwsh',{command:'node check.mjs'},'failed',{failed:true});
+  const original=f.events.find(event=>event.seq===done.resultSeq);
+  f.add('tool/result',{message:{...original.data.message,isError:false,content:[{type:'text',text:'passed'}]}});
+  const normalized=normalizeDshEvents(f.events);
+  const call=normalized.calls.find(item=>item.resultSeq===done.resultSeq);
+  assert.ok(normalized.problems.some(problem=>problem.reason==='duplicate-tool-result'));
+  assert.equal(call.outcome,'failed');
+  assert.equal(call.resultText,'failed');
+});
+
+test('out-of-order source events cannot support a completed task or budget result',()=>{
+  const {f,done,assessment,audit}=reviewedFixture();
+  assessment.consumption={scope:'all-task-requests',complete:true,eventSeqs:[done.requestSeq]};
+  assert.equal(audit().fullSuccessAtBudget.success,1);
+  [f.events[1],f.events[2]]=[f.events[2],f.events[1]];
+  const result=audit();
+  assert.ok(result.problems.some(problem=>problem.reason==='out-of-order-source-seq'));
+  assert.equal(result.taskOutcome,'unknown');
+  assert.equal(result.fullSuccessAtBudget.unknown,1);
+});
+
 test('invalid budget usage, incomplete source and unsupported assessment claims remain unknown',()=>{
   const assessment={allExplicitRequirementsCovered:true,reviewer:'human',criteria:[{outcome:'pass',evidence:['event:4']}]};
   for(const row of [{assessment,usage:{totalTokens:-1}},{assessment,usage:{}},{assessment,usage:{totalTokens:1},problems:[{reason:'invalid-json-row'}]},
