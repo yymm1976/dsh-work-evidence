@@ -130,10 +130,19 @@ for(const toolMode of ['native','ptc'])test(`quality review retains successful O
     },auxiliary:options=>{payload=JSON.parse(options.messages[0].content[0].text);return [text('{"issues":[]}')];}});
   try{
     const agent=await host.createAgent('ultra');
-    if(toolMode==='ptc'&&typeof host.ctx.tools.selectExecutor==='function')
-      return t.skip('The new host resolves each step tool set before the optional dsh-ops PTC component publishes its scoped SDK definitions.');
-    for(let attempt=0;attempt<50&&!host.ctx.tools.get('ops_write_file',agent);attempt++)await new Promise(resolve=>setTimeout(resolve,20));
-    if(!host.ctx.tools.get('ops_write_file',agent))return t.skip('The optional dsh-ops file component publishes no write tools on this host.');
+    // OPS publishes scoped tool definitions asynchronously; wait for the PTC SDK too.
+    let ready=false;
+    for(let attempt=0;attempt<50&&!ready;attempt++){
+      if(host.ctx.tools.get('ops_write_file',agent)){
+        if(toolMode!=='ptc')ready=true;
+        else{
+          const assembly=await host.ctx.systemPrompt.assemble({agent,scope:agent});
+          ready=(assembly.sections?.find(section=>section.name==='tools:sdk')?.text??'').includes('ops_write_file');
+        }
+      }
+      if(!ready)await new Promise(resolve=>setTimeout(resolve,20));
+    }
+    if(!ready)return t.skip('The optional dsh-ops file component publishes no write tools on this host.');
     await host.send(agent,'写入 core.mjs，再准确修正末尾，保留中间的需求分支。');
     assert.ok(payload,JSON.stringify({end:host.events.findLast(event=>event.type==='turn/end')?.data.reason,
       results:host.events.filter(event=>event.type==='tool/result').map(event=>event.data.message.content.map(block=>block.text??'').join('').slice(0,500))}));
