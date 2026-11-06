@@ -28,6 +28,7 @@ import {exportTaskHandoff,createTaskHandoffDelivery} from './task-handoff.mjs';
 import {installUltraEffort} from './ultra-effort.mjs';
 import {nativeReasoningReplayRequest} from './native-reasoning-replay.mjs';
 import {createCompactionHandoff} from "./compaction-handoff.mjs";
+import {patchToolExecution} from './tool-execution.mjs';
 import {createExecutionEvidence} from './execution-evidence.mjs';
 import {createExecutionDependencies} from './execution-dependencies.mjs';
 import {createHostReferences} from './host-references.mjs';
@@ -107,6 +108,7 @@ function assertParameterBounds(schema,value,at='arguments'){
 }
 const parameters=properties=>({type:'object',additionalProperties:false,properties:supportedSchema(properties)});
 export function apply(ctx,config={}){
+  patchToolExecution(ctx);
   const nativeFiles=createNativeFiles(ctx);
   const hostReferences=createHostReferences(ctx);
   const pendingSaves=new Set();

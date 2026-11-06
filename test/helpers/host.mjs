@@ -7,10 +7,13 @@ import {existsSync,readFileSync} from 'node:fs';
 import {createRequire,registerHooks} from 'node:module';
 import {pathToFileURL,fileURLToPath} from 'node:url';
 import {randomUUID} from 'node:crypto';
+import {patchToolExecution} from '../../tool-execution.mjs';
 
 export const APP=process.env.DSH_APP??'C:/Users/杨铭/AppData/Local/Programs/DSH Desktop/dsh-desktop';
 const require=createRequire(path.join(APP,'package.json'));
 const rootZod=path.join(APP,'node_modules','zod');
+const toolsVersion=JSON.parse(readFileSync(require.resolve('@deepseek-ai/dsh-tools/package.json'),'utf8')).version;
+const splitToolExecutor=toolsVersion.startsWith('0.2.2');
 // Same zod de-duplication the experiment runner uses for the desktop bundle.
 registerHooks({resolve(specifier,context,next){
   try{
@@ -89,11 +92,14 @@ export async function startHost({script,auxiliary=()=>[text('{}')],pluginConfig=
   // A mount name is a desktop runtime package; a module object mounts as given (for example OPS).
   const mount=async(name,config={})=>{const m=typeof name==='string'?await load(name):name;await ctx.plugin(m.default??m,config);};
   for(const [name,config] of [
-    ['dsh-session'],['dsh-agent'],['dsh-session-projection'],sessionQueryMount,['dsh-token-meter'],['dsh-system-prompt'],['dsh-tools',{mode:toolMode}],
+    ['dsh-session'],['dsh-agent'],['dsh-session-projection'],sessionQueryMount,['dsh-token-meter'],['dsh-system-prompt'],
+    ['dsh-tools',splitToolExecutor?{}:{mode:toolMode}],
+    ...(splitToolExecutor?[[toolMode==='ptc'?'dsh-tool-executor-ptc':'dsh-tool-executor-native',{}]]:[]),
     ['dsh-fs-local',{cwd}],['dsh-working-directory',{defaultDirectory:cwd}],['dsh-subprocess-local'],['dsh-sandbox-local'],['dsh-sandbox-policy',{mode:'danger-full-access',workspaceRoot:cwd}],
     ['dsh-shell-env'],['dsh-jobs-local'],['dsh-pwsh-local',{cwd}],['dsh-tool-pwsh',{}],['dsh-tool-fs',{read:true,write:true,edit:true}],['dsh-tool-fs-search',{sampleOverCapGlobResults:false}],
     ['dsh-llm'],['dsh-agent-loop'],['dsh-commands'],['dsh-session-persistence-jsonl',{root:path.join(cwd,'.sessions')}],...extraMounts,
   ])await mount(name,config);
+  patchToolExecution(ctx);
   ctx.llm.registerAdapter(['scripted'],new ScriptedAdapter());
   if(mountPlugin){
     const plugin=await import(pathToFileURL(path.join(pluginDirectory,'index.mjs')).href);
