@@ -608,6 +608,24 @@ test('outside workspace temporary reads stay source-bound candidates',()=>{
   assert.equal(project.audit().constraints.items.length,0,'an explicit project-local temporary directory is not an outside-read candidate');
 });
 
+test('pathlib temporary file reads remain candidates without assuming their location',()=>{
+  for(const method of ['read_bytes','read_text']){
+    const {f,audit}=reviewedFixture();
+    f.events.find(event=>event.type==='user/message').data.message.content=[{type:'text',text:'不要读取项目外文件。'}];
+    const code=`import pathlib, tempfile\nwith tempfile.TemporaryDirectory() as tmp:\n    path=pathlib.Path(tmp)/"a.env"\n    path.${method}()`;
+    f.operation('write',{file_path:'check.py',content:code},'written');
+    const shell=f.operation('pwsh',{command:'python check.py'},'completed');
+    const item=audit().constraints.items.at(-1);
+    assert.equal(item?.classification,'candidate');
+    assert.equal(item?.violation,'not-inferred');
+    assert.equal(item?.resultSeq,shell.resultSeq);
+    const local=reviewedFixture();
+    local.f.events.find(event=>event.type==='user/message').data.message.content=[{type:'text',text:'不要读取项目外文件。'}];
+    local.f.operation('work_exec',{runtime:'python',code:code.replace('TemporaryDirectory()','TemporaryDirectory(dir=".")')},'completed');
+    assert.equal(local.audit().constraints.items.length,0);
+  }
+});
+
 test('temporary-read evidence ignores trailing secrets and only trusts recorded script effects',()=>{
   const withRequirement=()=>{
     const {f,audit}=reviewedFixture();

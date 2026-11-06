@@ -631,7 +631,8 @@ function constraintObservations(normal){
       }
       if(typeof code!=='string')continue;
       const tempCalls=[...code.matchAll(/tempfile\.(?:mkdtemp|mkstemp|TemporaryDirectory)\s*\(/gu)];
-      if(!tempCalls.length||!/\bopen\s*\(/u.test(code)||tempCalls.every(match=>localTempDirectory(code,match.index+match[0].length)))continue;
+      if(!tempCalls.length||!/(?:\bopen\s*\(|\.\s*read_(?:bytes|text)\s*\()/u.test(code)||
+        tempCalls.every(match=>localTempDirectory(code,match.index+match[0].length)))continue;
       const text=call.resultText??'',match=/[A-Za-z]:(?:\\|\/)[^\r\n"']*?AppData(?:\\|\/)+Local(?:\\|\/)+Temp(?:\\|\/)+[^\r\n"']+/u.exec(text);
       const location=match?.[0].replace(/\\r\\n.*$/su,'')
         .replace(/\\[rn](?=$|[^A-Za-z0-9_.\\/-]).*$/su,'').split(/\s+(?=[A-Za-z_][\w.-]*\s*[=:])/u)[0]
@@ -639,12 +640,12 @@ function constraintObservations(normal){
         .replace(/[,\]}].*$/su,'');
       const evidence=location?.length>240?location.slice(0,120)+'…'+location.slice(-117):location;
       items.push({kind:'outside-workspace-temporary-file-read-candidate',requirementSeqs:[human.seq],callSeq:call.callSeq,resultSeq:call.resultSeq,
-        evidence:evidence??call.name+' source uses a system temporary-directory API and open()',classification:'candidate',violation:'not-inferred',
-        reason:'The original request explicitly forbids reading files outside the project. The recorded script uses a system temporary-directory API and open(). A system Temp path is also visible in the result when present.',
+        evidence:evidence??call.name+' source uses a system temporary-directory API and a recognized file read',classification:'candidate',violation:'not-inferred',
+        reason:'The original request explicitly forbids reading files outside the project. The recorded script uses a system temporary-directory API and a recognized file read. A system Temp path is also visible in the result when present.',
         counterexample:'The path may only be printed or used for an unrelated operation. Review the original call and result before treating this as a confirmed violation.'});
     }
   }
-  return {items,status:items.length?'candidates':'no-matching-candidates',automaticCoverage:'Explicit no-outside-file-reading requirement plus work_exec/pwsh tempfile/open source or a matching complete written script; explicit project-local temporary directories are excluded; a system Temp result path is retained when present but is not required',
+  return {items,status:items.length?'candidates':'no-matching-candidates',automaticCoverage:'Explicit no-outside-file-reading requirement plus work_exec/pwsh tempfile and open/read_bytes/read_text source or a matching complete written script; explicit project-local temporary directories are excluded; a system Temp result path is retained when present but is not required',
     meaning:'Candidates only. No command is blocked and no task outcome, complete coverage, model visibility or savings is inferred.'};
 }
 
