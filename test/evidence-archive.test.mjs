@@ -591,7 +591,13 @@ test('concurrent unversioned archive reads do not share a pending read', async t
 test('archive operations limit concurrent buffers and release slots after failure or cancellation', async t => {
   const fixture = await makeArchive(t, [{name: 'source.txt', data: 'before'}]);
   const stat = fixture.exec.nativeFiles.stat;
-  fixture.exec.nativeFiles.stat = async (...args) => ({...await stat(...args), version: null});
+  let statCount = 0;
+  let releaseSecondStat;
+  const secondStatGate = new Promise(resolve => { releaseSecondStat = resolve; });
+  fixture.exec.nativeFiles.stat = async (...args) => {
+    if (++statCount === 2) await secondStatGate;
+    return {...await stat(...args), version: null};
+  };
   const readBytes = fixture.exec.nativeFiles.readBytes;
   let active = 0;
   let peak = 0;
@@ -605,6 +611,7 @@ test('archive operations limit concurrent buffers and release slots after failur
     active++;
     peak = Math.max(peak, active);
     const readNumber = ++started;
+    if (readNumber === 1) releaseSecondStat();
     if (readNumber === 2) signalStarted();
     try {
       await gate;
