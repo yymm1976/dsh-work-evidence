@@ -19,6 +19,37 @@ test('status stays readable while disabled but cannot enable or rewrite workspac
   }finally{await host.close();}
 });
 
+test('the session gate hides management tools and restores them without touching native tools',async()=>{
+  const seen=[];
+  const host=await startHost({workspace:{toolSurface:'full'},script:(options,call)=>{
+    seen.push({call,names:(options.tools??[]).map(item=>item.name)});
+    if(call===1)return [text('就绪。')];
+    if(call===2)return [tool('work_status',{})];
+    if(call===3)return [tool('read',{file_path:'a.txt'})];
+    return [text('完成。')];
+  }});
+  try{
+    await fs.writeFile(path.join(host.cwd,'a.txt'),'gate-native-marker\n');
+    const agent=await host.createAgent('max');
+    await host.send(agent,'先说明已就绪');
+    const enabled=seen.find(item=>item.call===1).names;
+    const management=['project_evidence','work_report','work_state','work_probe','evidence_index','candidate_select','ptc_patterns','ptc_fastpath','verified_exec','fastedit_java','work_compute','work_exec'];
+    for(const name of management)assert.ok(enabled.includes(name),`enabled surface keeps ${name}`);
+    assert.ok(enabled.includes('read')&&enabled.includes('pwsh'));
+    await host.command(agent,'off');
+    await host.send(agent,'查看状态后读取 a.txt');
+    const disabled=seen.find(item=>item.call===2).names;
+    for(const name of management)assert.ok(!disabled.includes(name),`disabled surface hides ${name}`);
+    assert.ok(disabled.includes('work_status'));
+    assert.ok(disabled.includes('read')&&disabled.includes('pwsh'));
+    const results=host.events.filter(event=>event.type==='tool/result').map(event=>event.data.message.content.map(block=>block.text??'').join(''));
+    assert.ok(results.some(result=>result.includes('gate-native-marker')));
+    await host.command(agent,'on');
+    await host.send(agent,'恢复工作证据入口');
+    assert.ok(seen.at(-1).names.includes('project_evidence'));
+  }finally{await host.close();}
+});
+
 test('missing settings files retain the loaded session choice and report the missing files',async()=>{
   const host=await startHost({workspace:{historyHygiene:false},script:()=>[text('完成。')]});
   try{

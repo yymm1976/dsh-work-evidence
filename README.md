@@ -1,6 +1,6 @@
 # DSH 工程证据插件
 
-当前开发版本为 1.0.1-dev.109，模式策略为 pb001-v39。原 1.0.0 用于真实任务对照。
+当前开发版本为 1.0.1-dev.110，模式策略为 pb001-v39。原 1.0.0 用于真实任务对照。
 桌面加载目录独立维护。运行中的会话采用哪个版本，取决于宿主加载时间。
 插件提供任务指引、观察账本、历史取回和按需工程工具。
 插件直接使用原生 DSH，不依赖 PTC Plus。
@@ -549,7 +549,7 @@ plugin-command.mjs 负责命令；source-tools.mjs 负责源码和报告入口�
 
 当前开发版已在本机桌面宿主运行时独立加载声明的发布文件，并完成来源读取、结构化调用、保留计算、程序引用、精确编辑、交接及关闭后的原生读取。`node --test test/host-package-load.test.mjs test/host-workflow-combinations.test.mjs` 覆盖这些路径；`node --test test/trajectory-audit.test.mjs` 覆盖审计行为。宿主核对使用脚本化模型，需要本机 DSH Desktop 运行时、现有 OPS 组件和配套 Python 环境，不调用在线模型。`test/helpers/host.mjs` 可用 `DSH_APP` 指定桌面运行时目录。当前结果不表示桌面目录已加载开发版，也不证明每项模型质量和费用效果。
 
-当前安装的桌面运行时 `dsh-tools@0.2.2-rc.1` 已移除 `mode` 配置。dev.107 增加 `tool-execution.mjs` 的批量执行兼容与 `toolModeFor`，并让测试宿主按版本挂载拆分执行器；旧运行时保持原行为。dev.109 修完新宿主的主要适配点：批量执行不再把内部执行写成会话事件，内部嵌套调用保留 `parent` 并走所选执行器的 pipeline，`systemPrompt.assemble` 的包装按 Cordis 真实服务去重，工具面声明改为幂等，并给仍读取 waterfall 工具列表的 OPS 组件补上只读 shim。当前安装版全量测试 513 项中 512 通过、1 项跳过、0 失败；跳过的是可选 `dsh-ops` PTC 组件：新宿主在组件发布作用域 SDK 定义之前就完成了每步工具集解析，首步拿不到 OPS 的 PTC 工具。原生模式的 OPS 用例通过。该依赖时序缺口在此说明，不当作通过。标准验证仍需设置 `DSH_APP=C:/Users/杨铭/Desktop/DSH/real-projects/host-runtime-20261102`，指向 2026-11-02 保存的宿主运行时；插件全量 513/513 在该运行时复验通过。桌面配置没有改动。
+当前安装的桌面运行时 `dsh-tools@0.2.2-rc.1` 已移除 `mode` 配置。dev.107 增加 `tool-execution.mjs` 的批量执行兼容与 `toolModeFor`，并让测试宿主按版本挂载拆分执行器；旧运行时保持原行为。dev.109 修完新宿主的主要适配点：批量执行不再把内部执行写成会话事件，内部嵌套调用保留 `parent` 并走所选执行器的 pipeline，`systemPrompt.assemble` 的包装按 Cordis 真实服务去重，工具面声明改为幂等，并给仍读取 waterfall 工具列表的 OPS 组件补上只读 shim。当前安装版全量测试 514 项中 513 通过、1 项跳过、0 失败；跳过的是可选 `dsh-ops` PTC 组件：新宿主在组件发布作用域 SDK 定义之前就完成了每步工具集解析，首步拿不到 OPS 的 PTC 工具。原生模式的 OPS 用例通过。该依赖时序缺口在此说明，不当作通过。标准验证仍需设置 `DSH_APP=C:/Users/杨铭/Desktop/DSH/real-projects/host-runtime-20261102`，指向 2026-11-02 保存的宿主运行时；插件全量 514/514 在该运行时复验通过。桌面配置没有改动。
 
 `dsh-work-evidence --help` 列出审计和实验命令。`pair --off SESSION_ID --on SESSION_ID --task TASK_KEY --context KEY` 导入并比较两个已有会话；`show --run RUN_ID` 读取一份实验记录；`label --session SESSION_ID --file assessment.json` 保存带来源的人工判断。实验命令不自动调用模型。
 
