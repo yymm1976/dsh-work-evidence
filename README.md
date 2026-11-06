@@ -549,6 +549,8 @@ plugin-command.mjs 负责命令；source-tools.mjs 负责源码和报告入口�
 
 当前开发版已在本机桌面宿主运行时独立加载声明的发布文件，并完成来源读取、结构化调用、保留计算、程序引用、精确编辑、交接及关闭后的原生读取。`node --test test/host-package-load.test.mjs test/host-workflow-combinations.test.mjs` 覆盖这些路径；`node --test test/trajectory-audit.test.mjs` 覆盖审计行为。宿主核对使用脚本化模型，需要本机 DSH Desktop 运行时、现有 OPS 组件和配套 Python 环境，不调用在线模型。`test/helpers/host.mjs` 可用 `DSH_APP` 指定桌面运行时目录。当前结果不表示桌面目录已加载开发版，也不证明每项模型质量和费用效果。
 
+当前安装的桌面运行时 `dsh-tools@0.2.2-rc.1` 已移除 `mode` 配置，旧测试辅助程序直接挂载会报 `mode expected nullable`。隔离测试需设置 `DSH_APP=C:/Users/杨铭/Desktop/DSH/real-projects/host-runtime-20261102`，指向 2026-11-02 保存的宿主运行时；插件全量 `node --test` 506/506 在该运行时复验通过。桌面配置没有改动，完整的新版宿主兼容适配仍是后续事项。
+
 `dsh-work-evidence --help` 列出审计和实验命令。`pair --off SESSION_ID --on SESSION_ID --task TASK_KEY --context KEY` 导入并比较两个已有会话；`show --run RUN_ID` 读取一份实验记录；`label --session SESSION_ID --file assessment.json` 保存带来源的人工判断。实验命令不自动调用模型。
 
 ## 当前方向
