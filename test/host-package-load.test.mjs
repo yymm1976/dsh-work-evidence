@@ -28,7 +28,7 @@ test('declared package files independently load all retained controls and preser
     for(const file of files){const target=contained(directory,file);await fs.mkdir(path.dirname(target),{recursive:true});await fs.copyFile(contained(source,file),target);}
     await fs.mkdir(path.join(directory,'node_modules'));await fs.symlink(await fs.realpath(path.join(source,'node_modules/fflate')),path.join(directory,'node_modules/fflate'),'junction');
     const workspace={...Object.fromEntries(Object.entries(defaults()).filter(([key,value])=>typeof value==='boolean'&&!RETIRED_SETTINGS.includes(key)).map(([key])=>[key,true])),
-      toolSurface:'full',fastEditPython:process.env.DSH_TEST_FASTEDIT_PYTHON??path.join(source,'.fastedit-venv/Scripts/python.exe'),
+      toolSurface:'full',fastEditPython:process.env.DSH_TEST_FASTEDIT_PYTHON||path.join(source,'.fastedit-venv/Scripts/python.exe'),
       projectionPricing:[{provider:'scripted',model:'scripted-model',input:.15,cacheRead:.003,output:.6,currency:'USD'}]};
     const opsRoot='C:/Users/杨铭/Documents/DSH Desktop/home/profiles/web/node_modules/dsh-ops/lib/components';
     const ops=await Promise.all(['file','ptc'].map(name=>import(pathToFileURL(opsRoot+'/'+name+'/index.js').href)));

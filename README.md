@@ -549,6 +549,8 @@ plugin-command.mjs 负责命令；source-tools.mjs 负责源码和报告入口�
 
 当前开发版已在本机桌面宿主运行时独立加载声明的发布文件，并完成来源读取、结构化调用、保留计算、程序引用、精确编辑、交接及关闭后的原生读取。`node --test test/host-package-load.test.mjs test/host-workflow-combinations.test.mjs` 覆盖这些路径；`node --test test/trajectory-audit.test.mjs` 覆盖审计行为。宿主核对使用脚本化模型，需要本机 DSH Desktop 运行时、现有 OPS 组件和配套 Python 环境，不调用在线模型。`test/helpers/host.mjs` 可用 `DSH_APP` 指定桌面运行时目录。当前结果不表示桌面目录已加载开发版，也不证明每项模型质量和费用效果。
 
+运行完整测试时，Java 精确编辑检查需要能导入 `requirements-fastedit.txt` 所列依赖的 Python。将 `DSH_TEST_FASTEDIT_PYTHON` 设置为该解释器的绝对路径；未设置或设为空时，测试使用开发目录的 `.fastedit-venv/Scripts/python.exe`。
+
 当前安装的桌面运行时 `dsh-tools@0.2.2-rc.1` 已移除 `mode` 配置。dev.107 增加 `tool-execution.mjs` 的批量执行兼容与 `toolModeFor`，并让测试宿主按版本挂载拆分执行器；旧运行时保持原行为。dev.109 修完新宿主的主要适配点：批量执行不再把内部执行写成会话事件，内部嵌套调用保留 `parent` 并走所选执行器的 pipeline，`systemPrompt.assemble` 的包装按 Cordis 真实服务去重，工具面声明改为幂等，并给仍读取 waterfall 工具列表的 OPS 组件补上只读 shim。dev.111 核对出先前记录的 OPS PTC 缺口其实是用例启动竞态：OPS 异步发布作用域定义，用例等待原生工具可见及 PTC SDK 出现后再发送，两个 OPS 复核用例在新旧宿主均通过。dev.111 时当前安装版全量测试 514/514 通过，0 失败、0 跳过。标准验证仍需设置 `DSH_APP=C:/Users/杨铭/Desktop/DSH/real-projects/host-runtime-20261102`，指向 2026-11-02 保存的宿主运行时；插件全量 514/514 在该运行时复验通过。桌面配置没有改动。
 
 dev.112 处理 PR #2 首次 CodeRabbit 审查中仍有效的问题：stub 摘要的 applied 效果改为在 `compaction/end` 确认提交后记录，拒绝时记 failed；恢复观测记录时把旧的 `compactionHandoff` 摘要决策和结果修复决策分别归入 `stubSummary`、`finalJsonResult`；尚无主请求时产生的决策在 agent 释放前持久化，恢复时按决策 id 去重；轨迹审计不再把路径后的 `token=...` 写入证据，能识别带引号（含空格）的 Python 脚本参数，失败或未确认的 edit 不再遮蔽此前完整写入的脚本，临时目录只有逐调用证明在项目内时才排除；源码解析尝试失败记 failed、运行时缺失记 unavailable、Maven 坐标拒绝记 failed，archive member 读取也记录解析结果；用户点名但未声明“已安装”的解释器路径失败后，不再建议改用 PATH。修复后当前安装版全量测试 522/522 通过，0 失败、0 跳过；保存运行时同样 522/522 通过。桌面配置没有改动。
