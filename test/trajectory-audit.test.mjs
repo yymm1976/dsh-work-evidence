@@ -481,6 +481,28 @@ test('an uncertain write to an unrelated scoped file does not invalidate the che
   assert.equal(audit().requirements.requirements[0].status,'supported');
 });
 
+test('a pending operation started before a check cannot validate an overlapping scope',()=>{
+  for(const [name,args,scoped,expected] of [
+    ['write',{file_path:'a.txt',content:'new'},true,'stale'],
+    ['write',{file_path:'other.txt',content:'new'},true,'supported'],
+    ['write',{file_path:'a.txt',content:'new'},false,'unknown'],
+    ['run_code',{code:'modifyProject()'},true,'stale'],
+    ['run_code',{code:'modifyProject()'},false,'unknown'],
+    ['fastedit_java',{file_path:'a.txt',mode:'read'},true,'supported'],
+    ['fastedit_java',{file_path:'a.txt',mode:'read'},false,'supported']
+  ]){
+    const f=fixture();
+    f.add('tool/call',{callId:'pending',name,arguments:args});
+    const done=f.operation('read',{file_path:'a.txt'},'source');
+    const assessment={schema:ASSESSMENT_SCHEMA,sourceId:'recorded-session',throughSeq:done.resultSeq,reviewer:'human',
+      allExplicitRequirementsCovered:true,criteria:[{id:'source',requirementSeqs:[1],eventSeqs:[done.resultSeq],outcome:'pass'}],
+      checks:[recordedCheck(f,done,'source','addresses')]};
+    if(scoped)assessment.checks[0].coverage[0].scopePaths=['a.txt'];
+    const row=auditDshSession(f.events,{sourceId:assessment.sourceId,assessment}).requirements.requirements[0];
+    assert.equal(row.status,expected,`${name} ${JSON.stringify(args)} scoped=${scoped}`);
+  }
+});
+
 test('a repeated check is identified independently of argument property order',()=>{
   const {f,assessment,audit}=reviewedFixture();
   const failed=f.operation('read',{file_path:'a.txt',offset:1},'failed',{failed:true});

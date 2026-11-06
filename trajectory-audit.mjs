@@ -532,10 +532,11 @@ function reviewedCheckCoverage(input,review,normal,sourceId,sourceProblems){
           }
         }
         const opaque=normal.calls.some(other=>other.callSeq<=review.throughSeq&&OPAQUE.has(other.name)&&
-          (other.resultSeq===null?other.callSeq>row.resultSeq:other.resultSeq>row.resultSeq));
+          (other.resultSeq===null||other.resultSeq>row.resultSeq));
         if(opaque)fileReasons.push('opaque-execution-after-check');
         for(const pending of normal.calls){
-          if(pending.resultSeq!==null||pending.callSeq<=row.resultSeq||pending.callSeq>review.throughSeq||!WRITE.has(pending.name))continue;
+          if(pending.resultSeq!==null||pending.callSeq>review.throughSeq||!WRITE.has(pending.name)||
+            pending.name==='fastedit_java'&&['read','find','locate'].includes(pending.arguments.mode??pending.arguments.action))continue;
           const changed=normalizeFile(fileOf(pending.arguments));
           if(!changed){fileReasons.push('file-scope-unresolved');break;}
           if(scopes?.some(scope=>scope.value===changed.value)){fileReasons.push('unsettled-mutation');break;}
@@ -882,8 +883,9 @@ export function requirementEvidenceView(normal,review,verification,sourceProblem
     const unscopedChange=current.some(({check,item})=>item.scopePaths===undefined&&(
       [...normal.changes,...normal.possibleChanges].some(change=>change.seq>check.resultSeq&&change.seq<=review.throughSeq)||
       normal.calls.some(call=>call.callSeq<=review.throughSeq&&(
-        OPAQUE.has(call.name)&&(call.resultSeq??call.callSeq)>check.resultSeq||
-        WRITE.has(call.name)&&call.resultSeq===null&&call.callSeq>check.resultSeq))));
+        OPAQUE.has(call.name)&&(call.resultSeq===null||call.resultSeq>check.resultSeq)||
+        WRITE.has(call.name)&&call.resultSeq===null&&
+          !(call.name==='fastedit_java'&&['read','find','locate'].includes(call.arguments.mode??call.arguments.action))))));
     const successful=({check,item})=>item.reach==='addresses'&&check.toolOutcome==='succeeded'&&
       (!check.nested||check.enclosingOutcome==='succeeded')&&
       (!['pwsh','ops_bash','bash','run_code','work_exec','work_probe','verified_exec','job_output'].includes(check.tool)||
