@@ -474,3 +474,58 @@ test('recallHistory rejects invalid offsets and pages', () => {
     /Invalid history seq, offset or maxChars/,
   );
 });
+
+test('compaction applied effects are recorded only after the host commits the summary', async () => {
+  for (const failure of [false, true]) {
+    let cleanup;
+    const decisions = [];
+    const handlers = new Map();
+    const agent = eventLogAgent([event(1, 'compaction/start', {compactionId: 'c1'}), userMessage(2, 'Keep the exact requirement.')]);
+    agent.session.seq = 2;
+    agent.session.requestHeader = () => ({config: {provider: 'p', model: 'm'}});
+    const service = {
+      regionDependencies: () => ({meter: null}),
+      summarize: async () => ({summary: [{type: 'text', text: 'Native summary keeps the requirement.'}]}),
+    };
+    const ctx = {
+      on(type, handler) { handlers.set(type, handler); },
+      agents: {get: () => agent},
+      inject(_dependencies, callback) {
+        callback({compaction: service, effect: fn => { cleanup = fn(); }});
+        return {dispose: async () => cleanup()};
+      },
+    };
+    const state = {config: {compressionControl: true, stubSummary: false}, dirty: false};
+    const runtime = {
+      init: async () => {},
+      get: () => state,
+      isEnabled: () => true,
+      activeMode: () => 'default',
+      problem: () => {},
+      effects: {decide(_agent, name, status, reason) { decisions.push({name, status, reason}); }},
+    };
+    const taskFlow = {handoff: () => ({artifacts: [], unresolvedErrors: [], pendingJobs: [], executions: []})};
+    const handoff = createCompactionHandoff(ctx, runtime, taskFlow, {canRecall: () => false});
+    try {
+      await service.summarize({messages: []}, agent);
+      assert.equal(decisions.some(item => item.name === 'compactionHandoff' && item.status === 'applied'), false,
+        'prepared summaries must not count as applied before a commit');
+      const handler = handlers.get('session/event');
+      assert.equal(typeof handler, 'function');
+      handler(agent.session, event(3, 'compaction/end', failure ? {compactionId: 'c1', error: {message: 'rejected'}} : {compactionId: 'c1'}));
+      const applied = decisions.filter(item => item.name === 'compactionHandoff' && item.status === 'applied');
+      const failed = decisions.filter(item => item.name === 'compactionHandoff' && item.status === 'failed');
+      if (failure) {
+        assert.equal(applied.length, 0);
+        assert.equal(failed.length, 1);
+        assert.equal(failed[0].reason, 'compaction-summary-not-committed');
+      } else {
+        assert.equal(applied.length, 1);
+        assert.equal(applied[0].reason, 'native-summary-extension');
+        assert.equal(failed.length, 0);
+      }
+    } finally {
+      await handoff.dispose();
+    }
+  }
+});

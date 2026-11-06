@@ -49,11 +49,18 @@ export function createEffectObserver(ctx,runtime){
   const states=new Map();
   const nativeAttempts=new WeakMap();
   const storageFor=agent=>{const s=runtime.get(agent);return s.telemetryDir===undefined?s.dir:s.telemetryDir;};
-  const get=agent=>{let state=states.get(agent.session.id);if(!state){state={features:{},effects:new Map(),decisions:[],pendingDecisions:[],recentRequests:[],requests:0,mainRequests:0,auxiliaryRequests:0,compactionRequests:0,completeUsageRequests:0,missingUsage:0,unknownConsumption:0,reported:{inputTokens:0,cacheReadTokens:0,cacheWriteTokens:0,outputTokens:0,totalTokens:0},rawReported:{inputTokens:0,cacheReadTokens:0,cacheWriteTokens:0,outputTokens:0,totalTokens:0},totals:{directTokensEstimate:0,directChars:0,instructionTokensEstimate:0,systemTokensEstimate:0,messageTokensEstimate:0,toolSchemaTokensEstimate:0,requestReconstructionMisses:0},queue:Promise.resolve(),writeErrors:[],effectBytes:0,loaded:false,snippets:new Map(),needsLeadingNewline:new Set()};states.set(agent.session.id,state);}return state;};
+  const get=agent=>{let state=states.get(agent.session.id);if(!state){state={features:{},effects:new Map(),decisions:[],pendingDecisions:[],pendingOverflow:[],decisionSeq:0,overflowWriting:false,overflowQueue:Promise.resolve(),recentRequests:[],requests:0,mainRequests:0,auxiliaryRequests:0,compactionRequests:0,completeUsageRequests:0,missingUsage:0,unknownConsumption:0,reported:{inputTokens:0,cacheReadTokens:0,cacheWriteTokens:0,outputTokens:0,totalTokens:0},rawReported:{inputTokens:0,cacheReadTokens:0,cacheWriteTokens:0,outputTokens:0,totalTokens:0},totals:{directTokensEstimate:0,directChars:0,instructionTokensEstimate:0,systemTokensEstimate:0,messageTokensEstimate:0,toolSchemaTokensEstimate:0,requestReconstructionMisses:0},queue:Promise.resolve(),writeErrors:[],effectBytes:0,loaded:false,snippets:new Map(),needsLeadingNewline:new Set()};states.set(agent.session.id,state);}return state;};
   function feature(state,name){return state.features[name]??=( {decisions:0,applied:0,deferred:0,notApplicable:0,unavailable:0,failed:0,requestsAffected:0,directTokensEstimate:0,directChars:0,reasons:{}} );}
   function decide(agent,name,status,reason,details={}){
-    const state=get(agent),item=feature(state,name),at=new Date().toISOString(),step=runtime.get(agent).step;item.decisions++;item[status==='not-applicable'?'notApplicable':status]=(item[status==='not-applicable'?'notApplicable':status]??0)+1;item.lastStatus=status;item.lastReason=reason;item.lastAt=at;item.lastStep=step;item.reasons[reason]=(item.reasons[reason]??0)+1;
-    const decision={id:randomUUID(),at,step,feature:name,status,reason,...details};state.decisions.push(decision);state.pendingDecisions.push(decision);if(state.pendingDecisions.length>256)state.pendingDecisions.shift();if(state.decisions.length>64)state.decisions.shift();runtime.get(agent).dirty=true;
+    const state=get(agent),item=feature(state,name),at=new Date().toISOString(),step=runtime.get(agent).step,seq=++state.decisionSeq;
+    item.decisions++;item[status==='not-applicable'?'notApplicable':status]=(item[status==='not-applicable'?'notApplicable':status]??0)+1;item.lastStatus=status;item.lastReason=reason;item.lastAt=at;item.lastStep=step;item.lastSeq=seq;item.reasons[reason]=(item.reasons[reason]??0)+1;
+    const decision={id:randomUUID(),at,step,seq,feature:name,status,reason,...details};state.decisions.push(decision);state.pendingDecisions.push(decision);
+    if(state.pendingDecisions.length>256){
+      const overflow=state.pendingDecisions.splice(0,state.pendingDecisions.length-256);
+      state.pendingOverflow.push(...overflow);
+    }
+    if(state.pendingOverflow.length)persistOverflow(state,agent);
+    if(state.decisions.length>64)state.decisions.shift();runtime.get(agent).dirty=true;
   }
   function rewrite(agent,{feature:name,afterMessage,beforeMessages,seq=null,sourceSeqs=[],retainedSeqs=[]}){
     if(!afterMessage?.id||!Array.isArray(beforeMessages))return;
@@ -81,6 +88,24 @@ export function createEffectObserver(ctx,runtime){
       // so the file still ends mid-line and the following row must keep its own leading newline.
       state.needsLeadingNewline.delete(kind);return true;}).catch(error=>{state.writeErrors.push(String(error.message).slice(0,240));state.writeErrors=state.writeErrors.slice(-8);return false;});
     return state.queue;
+  }
+  function persistOverflow(state,agent){
+    if(state.overflowWriting||!state.pendingOverflow.length)return;
+    state.overflowWriting=true;
+    state.overflowQueue=state.overflowQueue.catch(()=>{}).then(async()=>{
+      let ok=true;
+      while(ok&&state.pendingOverflow.length){
+        const batch=state.pendingOverflow.slice();
+        ok=await queue(state,agent,{schema:'work-evidence.pending-decisions.v1',sessionId:agent.session.id,
+          at:new Date().toISOString(),step:runtime.get(agent).step,decisions:batch});
+        if(ok){
+          const ids=new Set(batch.map(item=>item.id));
+          state.pendingOverflow=state.pendingOverflow.filter(item=>!ids.has(item.id));
+        }
+      }
+      state.overflowWriting=false;
+      return ok;
+    }).catch(()=>{state.overflowWriting=false;return false;});
   }
   function begin(agent,options,{auxiliary=false,requestKind}={}){
     requestKind=requestKindOf({purpose:options.purpose,auxiliary,requestKind});
@@ -173,8 +198,10 @@ export function createEffectObserver(ctx,runtime){
   }
   function restoreDecision(state,decision,at,step){
     const name=restoredFeature(decision),value=feature(state,name),key=decision.status==='not-applicable'?'notApplicable':decision.status;
+    const seq=Number.isSafeInteger(decision.seq)?decision.seq:++state.decisionSeq;
+    state.decisionSeq=Math.max(state.decisionSeq,seq);
     value.decisions++;value[key]=(value[key]??0)+1;value.lastStatus=decision.status;value.lastReason=decision.reason;
-    value.lastAt=decision.at??at;value.lastStep=decision.step??step;value.reasons[decision.reason]=(value.reasons[decision.reason]??0)+1;
+    value.lastAt=decision.at??at;value.lastStep=decision.step??step;value.lastSeq=seq;value.reasons[decision.reason]=(value.reasons[decision.reason]??0)+1;
     state.decisions.push(name===decision.feature?decision:{...decision,feature:name});if(state.decisions.length>64)state.decisions.shift();
   }
   function finish(agent,row){const state=get(agent);normalizeRow(row);accumulate(state,row);queue(state,agent,row);runtime.get(agent).dirty=true;}
@@ -265,10 +292,20 @@ export function createEffectObserver(ctx,runtime){
       nativeAttempt:{attemptId:active.attemptId,turn:active.turn,step:active.step},at:new Date().toISOString(),
       outcome:frame.outcome?.kind??'unknown',eventType:frame.outcome?.eventType??null,sourceSeq:frame.outcome?.seq??null});
   });
-  return {decide,rewrite,benefit,begin,start,finish,load,snippet,snapshot,instructions:(agent,text)=>{get(agent).instructionText=text;},flush:agent=>get(agent).queue,
+  return {decide,rewrite,benefit,begin,start,finish,load,snippet,snapshot,instructions:(agent,text)=>{get(agent).instructionText=text;},flush:async agent=>{const state=get(agent);await state.overflowQueue;await state.queue;},
     async disposeAgent(agent){
       const state=get(agent);
+      await state.overflowQueue;
       await state.queue;
+      if(state.pendingOverflow.length){
+        const decisions=state.pendingOverflow.slice();
+        const ok=await queue(state,agent,{schema:'work-evidence.pending-decisions.v1',sessionId:agent.session.id,
+          at:new Date().toISOString(),step:runtime.get(agent).step,decisions});
+        if(ok){
+          const ids=new Set(decisions.map(item=>item.id));
+          state.pendingOverflow=state.pendingOverflow.filter(item=>!ids.has(item.id));
+        }
+      }
       // Decisions recorded after the last main request was assembled have no request row
       // to carry them. Persist them before the in-memory state is dropped.
       if(state.pendingDecisions.length){
@@ -279,5 +316,5 @@ export function createEffectObserver(ctx,runtime){
       nativeAttempts.delete(agent);states.delete(agent.session.id);
     },async dispose(){
       for(const stop of [unsubscribe,unsubscribeStreams])if(typeof stop==='function')stop();
-      await Promise.allSettled([...states.values()].map(state=>state.queue));states.clear();}};
+      await Promise.allSettled([...states.values()].map(async state=>{await state.overflowQueue;await state.queue;}));states.clear();}};
 }

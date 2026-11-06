@@ -420,11 +420,10 @@ export function createCompactionHandoff(ctx,runtime,taskFlow,{canRecall=()=>fals
       const prepare=async()=>{
       await runtime.init(agent,signal);
       if(!runtime.isEnabled(agent)||!runtime.get(agent).config.compressionControl)return null;
-      state=get(agent);
+      state=get(agent);state.pendingEffects=[];
       const record=handoffRecord(agent,runtime,taskFlow,input,canRecall(agent)),text='[Work Evidence continuation sources]\n'+JSON.stringify(record);
       const start=eventLog(agent.session).findLast(event=>event.type==='compaction/start');
       state.prepared++;state.last={policy:POLICY,compactionId:start?.data?.compactionId??null,preparedAtSeq:agent.session.seq,sourceChars:text.length,mode:runtime.activeMode(agent),status:'preparing'};
-      runtime.effects?.decide(agent,'compactionHandoff','applied','native-summary-extension',{policy:POLICY,sourceChars:text.length});
       let reuse;
       try{reuse=stageReuseCandidate(agent,input,record,service.regionDependencies()?.meter);}
       catch(error){reuse={applicable:false,reason:'stage-reuse-unavailable'};state.last.stageReuseError=String(error.message??error).slice(0,300);}
@@ -433,7 +432,7 @@ export function createCompactionHandoff(ctx,runtime,taskFlow,{canRecall=()=>fals
         signal?.throwIfAborted();
         state.reusedStageSummaries++;state.summariesReturned++;state.last.status='prepared-awaiting-native-commit';state.last.method='stage-checkpoint-reuse';
         runtime.get(agent).dirty=true;
-        runtime.effects?.decide(agent,'compactionHandoff','applied','existing-stage-checkpoint-reused',{policy:POLICY,checkpointSeq:reuse.checkpointSeq,newModelCall:false});
+        state.pendingEffects.push({reason:'existing-stage-checkpoint-reused',details:{policy:POLICY,checkpointSeq:reuse.checkpointSeq,newModelCall:false}});
         return {result:{summary:stageSummary,provider:'work-evidence',model:'stage-checkpoint-reuse',llmStreamCall:false}};
       }
       const stubPolicy=runtime.get(agent).config.stubSummary;
@@ -478,6 +477,7 @@ export function createCompactionHandoff(ctx,runtime,taskFlow,{canRecall=()=>fals
       }
       // When the full sources do not fit, keep the human requests: they are the part a
       // host summary is most likely to paraphrase away.
+      state.pendingEffects.push({reason:'native-summary-extension',details:{policy:POLICY,sourceChars:text.length}});
       let appended=text;
       if(!sourcesFit){
         appended=requestsFit?requestsOnly:null;
@@ -516,11 +516,17 @@ export function createCompactionHandoff(ctx,runtime,taskFlow,{canRecall=()=>fals
         state.last.sourcesOmitted=state.last.sourcesAppended==='full'?null:appended?'state':'all';
         if(state.last.sourcesOmitted){
           state.sourcesOmitted=(state.sourcesOmitted??0)+1;
-          runtime.effects?.decide(agent,'compactionHandoff','applied','continuation-sources-omitted-to-fit-span',
-            {regionTokensEstimate:size?.region??null,sourcesAppended:state.last.sourcesAppended});
+          state.pendingEffects.push({reason:'continuation-sources-omitted-to-fit-span',
+            details:{regionTokensEstimate:size?.region??null,sourcesAppended:state.last.sourcesAppended}});
         }
         return appended?{...result,summary:[...result.summary,{type:'text',text:appended}]}:result;
-      }catch(error){state.failed++;state.last.status='failed';throw error;}
+      }catch(error){
+        state.failed++;state.last.status='failed';
+        for(const effect of state.pendingEffects??[])
+          runtime.effects?.decide(agent,'compactionHandoff','failed','compaction-summary-not-committed',{...effect.details,error:String(error?.message??error).slice(0,300)});
+        state.pendingEffects=[];
+        throw error;
+      }
       finally{if(previous)active.set(agent.session.id,previous);else active.delete(agent.session.id);runtime.get(agent).dirty=true;}
     };
     service.summarize=wrapped;attachment={service,wrapped};
@@ -539,14 +545,18 @@ export function createCompactionHandoff(ctx,runtime,taskFlow,{canRecall=()=>fals
       state.last.compactionId=event.data.compactionId;state.last.summarySeq=event.seq;state.last.status='summary-recorded';
     }
     if(event.type==='compaction/end'&&event.data?.compactionId===state.last.compactionId){
-      const agent=ctx.agents?.get?.(session.id);
+      const agent=ctx.agents?.get?.(session.id),pending=state.pendingEffects??[];state.pendingEffects=[];
       if(event.data.error){
         if(state.last.status!=='failed')state.failed++;state.last.status='failed';
+        if(agent)for(const effect of pending)
+          runtime.effects?.decide(agent,'compactionHandoff','failed','compaction-summary-not-committed',{...effect.details,error:String(event.data.error?.message??event.data.error).slice(0,300)});
         if(state.last.method==='deterministic-stub-summary'&&agent)
           runtime.effects?.decide(agent,'stubSummary','failed','stub-summary-not-committed',{policy:POLICY,newModelCall:false,
             ...(state.last.stub?.chars===undefined?{}:{stubChars:state.last.stub.chars}),error:String(event.data.error?.message??event.data.error).slice(0,300)});
       }else{
         state.committed++;state.last.status='committed';
+        if(agent)for(const effect of pending)
+          runtime.effects?.decide(agent,'compactionHandoff','applied',effect.reason,effect.details);
         if(state.last.method==='deterministic-stub-summary'&&agent)
           runtime.effects?.decide(agent,'stubSummary','applied','deterministic-stub-summary',{policy:POLICY,newModelCall:false,
             ...(state.last.stub?.chars===undefined?{}:{stubChars:state.last.stub.chars}),

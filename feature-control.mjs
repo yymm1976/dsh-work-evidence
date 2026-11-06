@@ -66,6 +66,8 @@ export function featurePatch(name,value){
 export function latestObservedEffect(counters){
   return counters.filter(item=>item.lastStatus&&item.lastStatus!=='not-observed').reduce((last,item)=>{
     if(!last)return item;
+    const seq=Number.isSafeInteger(item.lastSeq)?item.lastSeq:null,previousSeq=Number.isSafeInteger(last.lastSeq)?last.lastSeq:null;
+    if(seq!==null&&previousSeq!==null&&seq!==previousSeq)return seq>previousSeq?item:last;
     const at=String(item.lastAt??''),previous=String(last.lastAt??'');
     if(at!==previous){
       if(!at)return last;

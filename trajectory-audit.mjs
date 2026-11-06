@@ -573,7 +573,9 @@ function localTempDirectory(code,start){
   const value=match[1].trim(),quoted=/^(["'])(.*)\1$/su.exec(value);
   if(quoted){
     const item=quoted[2].trim();
-    return !!item&&!item.startsWith('..')&&!/^[A-Za-z]:[\\/]/u.test(item)&&!/^[\\/]/u.test(item);
+    if(!item)return false;
+    const normalized=path.posix.normalize(item.replaceAll('\\','/'));
+    return normalized==='.'||(normalized!=='..'&&!normalized.startsWith('../')&&!path.posix.isAbsolute(normalized)&&!/^[A-Za-z]:\//u.test(normalized));
   }
   return /^(?:os\.)?getcwd\s*\(\s*\)$/u.test(value)||/^(?:pathlib\.)?Path\.cwd\s*\(\s*\)$/u.test(value)||
     /^(?:pathlib\.)?Path\s*\(\s*__file__\s*\)\s*\.parent$/u.test(value)||/^os\.path\.dirname\s*\(\s*__file__\s*\)$/u.test(value);

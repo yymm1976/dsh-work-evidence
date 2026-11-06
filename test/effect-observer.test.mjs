@@ -232,3 +232,28 @@ test('restored host compaction is separate from plugin auxiliary calls and main 
     assert.equal((await stored(created.telemetryDir))[0].auxiliary,true,'original stored rows are not rewritten');
   }finally{await remove(created.telemetryDir);}
 });
+
+test('pending decisions beyond the rolling limit are persisted instead of silently dropped', async () => {
+  const created = await start();
+  try {
+    for (let index = 0; index < 300; index++) {
+      created.effects.decide(created.agent, 'retainedCompute', 'applied', 'decision-' + index);
+    }
+    await created.effects.flush(created.agent);
+    const rows = await stored(created.telemetryDir);
+    const overflow = rows.filter(item => item.schema === 'work-evidence.pending-decisions.v1')
+      .flatMap(item => item.decisions);
+    assert.equal(overflow.length, 44, 'the decisions beyond the in-memory window are written');
+    await created.effects.disposeAgent(created.agent);
+    const all = (await stored(created.telemetryDir))
+      .filter(item => item.schema === 'work-evidence.pending-decisions.v1')
+      .flatMap(item => item.decisions);
+    assert.equal(all.length, 300);
+    assert.equal(new Set(all.map(item => item.id)).size, 300);
+    const restored = await start({telemetryDir: created.telemetryDir});
+    await restored.effects.load(restored.agent);
+    assert.equal(restored.effects.snapshot(restored.agent).features.retainedCompute.decisions, 300);
+  } finally {
+    await remove(created.telemetryDir);
+  }
+});

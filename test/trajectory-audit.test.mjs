@@ -644,3 +644,14 @@ test('an unobserved file effect does not also claim a non-unique effect',()=>{
   assert.equal(reasons.includes('file-effect-not-unique'),false);
   assert.equal(reasons.includes('file-effect-unconfirmed'),false);
 });
+
+test('temporary directory paths are normalized before deciding they are project-local', () => {
+  for (const [dir, expected] of [['./../outside', 1], ['safe/../../../outside', 1], ['a/../../b', 1], ['..\\outside', 1],
+    ['.', 0], ['safe/..', 0], ['safe/../inside', 0], ['sub/dir', 0]]) {
+    const {f, audit} = reviewedFixture();
+    f.events.find(event => event.type === 'user/message').data.message.content = [{type: 'text', text: '不要读取项目外文件。'}];
+    const code = 'import tempfile\ntmp=tempfile.mkdtemp(dir=' + JSON.stringify(dir) + ')\nopen(tmp+"/a.env").read()';
+    f.operation('work_exec', {runtime: 'python', code}, 'completed');
+    assert.equal(audit().constraints.items.length, expected, dir);
+  }
+});

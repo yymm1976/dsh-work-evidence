@@ -258,3 +258,12 @@ test('structured calls and program references both work after live activation in
     assert.equal(view.features.find(item=>item.key==='nativeProgramReuse').effect.status,'applied');
   }finally{await host.close();}
 });
+
+test('latest observed effect uses the recorded decision sequence when time and step tie', () => {
+  const first = {lastStatus: 'applied', lastReason: 'first', lastAt: '2026-11-06T00:00:00.000Z', lastStep: 3, lastSeq: 1};
+  const second = {lastStatus: 'applied', lastReason: 'second', lastAt: '2026-11-06T00:00:00.000Z', lastStep: 3, lastSeq: 2};
+  assert.equal(latestObservedEffect([second, first]).lastReason, 'second');
+  assert.equal(latestObservedEffect([first, second]).lastReason, 'second');
+  const legacy = [{lastStatus: 'applied', lastReason: 'legacy-first'}, {lastStatus: 'applied', lastReason: 'legacy-second'}];
+  assert.equal(latestObservedEffect(legacy).lastReason, 'legacy-second');
+});
