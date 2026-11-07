@@ -39,12 +39,16 @@ test('completion notice is opt-in and adds no request by default', async()=>{
   }finally{await host.close();}
 });
 
-test('completion notice can be switched off explicitly after opt-in', async()=>{
-  const host=await startHost({workspace:{completionNotice:false},script:()=>[text('## 阶段摘要\n下一步：修改 b.txt')]});
+test('completion notice can be switched off after opt-in in the same session', async()=>{
+  const host=await startHost({workspace:{completionNotice:true},script:(_o,n)=>n===2?[text('全部完成。')]:[text('## 阶段摘要\n下一步：修改 b.txt')]});
   try{
     const agent=await host.createAgent('max');
     await host.send(agent,'修改 a.txt 和 b.txt');
-    assert.equal(host.requests.length,1);
+    assert.equal(host.requests.length,2,'opt-in must trigger one continuation request');
+    const changed=await host.command(agent,'feature completionNotice off');
+    assert.equal(changed.readiness.features[0].configured,false);
+    await host.send(agent,'修改 c.txt');
+    assert.equal(host.requests.length,3,'disabling after opt-in must suppress the notice');
   }finally{await host.close();}
 });
 
