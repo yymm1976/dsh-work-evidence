@@ -74,6 +74,7 @@ function archiveDirectory(buffer){
     const next=offset+46+nameLength+extraLength+commentLength;
     if(!inRange(offset,next-offset))invalid();
     let size=data.readUInt32LE(offset+20),originalSize=data.readUInt32LE(offset+24),localOffset=data.readUInt32LE(offset+42);
+    const zip64Size=size===0xffffffff,zip64OriginalSize=originalSize===0xffffffff,zip64LocalOffset=localOffset===0xffffffff;
     if(size===0xffffffff||originalSize===0xffffffff||localOffset===0xffffffff){
       let extra=offset+46+nameLength,found=false;
       const extraEnd=extra+extraLength;
@@ -94,7 +95,8 @@ function archiveDirectory(buffer){
     }
     const flags=data.readUInt16LE(offset+8),nameBytes=data.subarray(offset+46,offset+46+nameLength);
     entries.push({size,originalSize,localOffset,crc:data.readUInt32LE(offset+16),flags,
-      compression:data.readUInt16LE(offset+10),nameBytes,name:entryName(nameBytes,flags)});
+      compression:data.readUInt16LE(offset+10),nameBytes,name:entryName(nameBytes,flags),
+      zip64:{size:zip64Size,originalSize:zip64OriginalSize,localOffset:zip64LocalOffset}});
     offset=next;
   }
   return entries;
@@ -139,7 +141,9 @@ async function openArchive(root,archive,exec){
         unzipper()(buffer,{filter:item=>{
           if(entries.length>=150000)fail('ARCHIVE_ENTRY_LIMIT','Archive has more than 150000 entries.');
           const metadata=directory[entries.length];
-          if(!metadata||metadata.name!==item.name||metadata.size!==item.size||metadata.originalSize!==item.originalSize||metadata.compression!==item.compression)
+          const sameZip64=(decoded,actual,enabled)=>decoded===actual||(enabled&&decoded===0xffffffff);
+          if(!metadata||metadata.name!==item.name||!sameZip64(item.size,metadata.size,metadata.zip64.size)||
+            !sameZip64(item.originalSize,metadata.originalSize,metadata.zip64.originalSize)||metadata.compression!==item.compression)
             fail('ARCHIVE_DIRECTORY_INVALID','Archive decoder and directory metadata disagree.');
           const entry=Object.assign(metadata,{name:normalize(item.name),raw:item.name});
           entries.push(entry);const existing=byName.get(entry.name)||[];existing.push(entry);byName.set(entry.name,existing);return false;
@@ -149,14 +153,33 @@ async function openArchive(root,archive,exec){
           bytes:buffer.length+entries.reduce((total,entry)=>total+400+(entry.name.length+entry.raw.length)*2,0),observedAt:new Date().toISOString(),owner:s};
       })();
       pending={promise,signal:creatorSignal};
-      if(cacheable)s.pending.set(pendingKey,pending);
+      if(cacheable){
+        s.pending.set(pendingKey,pending);
+        promise.then(
+          ()=>{if(s.pending.get(pendingKey)===pending)s.pending.delete(pendingKey);},
+          ()=>{if(s.pending.get(pendingKey)===pending)s.pending.delete(pendingKey);}
+        );
+      }
     }
     let record;
-    try{record=await pending.promise;}
+    try{
+      if(!shared||!exec.signal)record=await pending.promise;
+      else record=await new Promise((resolve,reject)=>{
+        const signal=exec.signal;
+        const abort=()=>{cleanup();reject(signal.reason??Object.assign(new Error('Archive read aborted'),{name:'AbortError'}));};
+        const cleanup=()=>signal.removeEventListener('abort',abort);
+        if(signal.aborted){abort();return;}
+        signal.addEventListener('abort',abort,{once:true});
+        pending.promise.then(value=>{cleanup();resolve(value);},error=>{cleanup();reject(error);});
+      });
+    }
     catch(error){
-      if(shared&&attempt===0&&creatorSignal?.aborted&&!exec.signal?.aborted)continue;
+      if(shared&&attempt===0&&creatorSignal?.aborted&&!exec.signal?.aborted){
+        if(cacheable&&s.pending.get(pendingKey)===pending)s.pending.delete(pendingKey);
+        continue;
+      }
       throw error;
-    }finally{if(cacheable&&s.pending.get(pendingKey)===pending)s.pending.delete(pendingKey);}
+    }
     exec.signal?.throwIfAborted();
     const current=await exec.nativeFiles.stat(root,file,exec.signal);
     if(!current.exists||current.type!=='file'||(cacheable?current.version!==identity:current.bytes!==before.bytes)){
