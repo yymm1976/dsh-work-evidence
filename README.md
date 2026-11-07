@@ -373,7 +373,7 @@ OPS 的预览和失败修改不作为成功片段。ops_read_files 与 ops_inspe
 复核返回空问题列表只表示没有报告可证实缺口，不证明交付正确。
 复核意见注明引用编号是会话事件。已有原文可直接核对；需要补取时使用 `work_recall({kind:"event",seq:事件编号})`。
 
-completionNotice 独立控制阶段摘要后的继续提醒，默认开启。
+completionNotice 独立控制阶段摘要后的继续提醒，默认关闭。显式开启后，触发时增加一次主模型请求。
 插件启用的档位均可使用。提醒要求模型继续已授权且能执行的工作。
 用户暂停、等待用户决定或存在阻碍时结束。“下一步：无”不触发提醒。
 明确只要求制定计划或方案时，不将计划中的下一步当作继续执行的授权；同时明确要求实施时仍可继续。“只按计划修改”“仅方案B”这类把计划、方案当名词使用的要求照常继续。用户确认之后才执行的表述（如“等我确认后再实施”“制定计划并经用户确认后执行”）视为暂停；明确说明不必等待确认时照常继续。该判断基于有限的文字模式，不能识别所有表达。
@@ -495,7 +495,7 @@ FastEdit Python 路径由 fastEditPython 设置。
 ```js
 await tools.work_status({config: {
   aggressiveMode: true,
-  completionNotice: true,
+  completionNotice: false,
   qualityReview: false,
   qualityReviewEffort: 'auto',
   qualityReviewScope: 'auto',

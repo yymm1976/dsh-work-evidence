@@ -7,7 +7,7 @@ import {startHost,text,tool,requestText,lastUserText} from './helpers/host.mjs';
 const NOTICE='[work-evidence] 上一条答复包含阶段摘要';
 
 test('completion notice continues a turn that stopped at an actionable stage summary', async()=>{
-  const host=await startHost({script:(_o,n)=>n===1?[text('已完成第一部分。\n\n## 阶段摘要\n- 已改 a.txt\n下一步：修改 b.txt')]:[text('全部完成。')]});
+  const host=await startHost({workspace:{completionNotice:true},script:(_o,n)=>n===1?[text('已完成第一部分。\n\n## 阶段摘要\n- 已改 a.txt\n下一步：修改 b.txt')]:[text('全部完成。')]});
   try{
     const agent=await host.createAgent('max');
     await host.send(agent,'修改 a.txt 和 b.txt');
@@ -30,7 +30,16 @@ test('completion notice stays silent when the next step is none or the user aske
   }
 });
 
-test('completion notice can be switched off independently', async()=>{
+test('completion notice is opt-in and adds no request by default', async()=>{
+  const host=await startHost({script:()=>[text('## 阶段摘要\n下一步：修改 b.txt')]});
+  try{
+    const agent=await host.createAgent('max');
+    await host.send(agent,'修改 a.txt 和 b.txt');
+    assert.equal(host.requests.length,1);
+  }finally{await host.close();}
+});
+
+test('completion notice can be switched off explicitly after opt-in', async()=>{
   const host=await startHost({workspace:{completionNotice:false},script:()=>[text('## 阶段摘要\n下一步：修改 b.txt')]});
   try{
     const agent=await host.createAgent('max');

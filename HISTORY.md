@@ -510,7 +510,7 @@ Shell 未指定等待时间时为 10,000 ms；该入口的上限为 60,000 ms。
 
 `finishAdvice` 的条件见上节：已有原生观察或合格报告，计划完整，并且没有已知未决项。提醒允许继续处理明确缺口，不替代最终答复。缺少这些依据时不提示，也不要求为了获得提醒新增报告或计划。
 
-`executionTriage`、`stageWorkingSet` 和 `stepPacing` 默认 true；`executionAdvice` 和 `finishAdvice` 默认 false。上述设置都服从会话总开关。两个已退出功能的有效值固定为 false。
+`executionTriage`、`stageWorkingSet` 和 `stepPacing` 默认 true；`completionNotice`、`executionAdvice` 和 `finishAdvice` 默认 false。上述设置都服从会话总开关。两个已退出功能的有效值固定为 false。
 
 `work_status`、`/work-evidence status` 和 `work_state` 返回 `taskFlow/nativeExecution`；detail 还返回工作集阶段和采用计划的边界。
 
