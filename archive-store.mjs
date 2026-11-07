@@ -116,43 +116,58 @@ function trim(s){
 async function openArchive(root,archive,exec){
   exec.signal?.throwIfAborted();
   if(typeof archive!=='string'||!/\.(jar|zip)$/i.test(archive))fail('ARCHIVE_PATH_INVALID','Expected a workspace jar/zip path.');
-  const file=path.resolve(root,archive),before=await exec.nativeFiles.stat(root,file,exec.signal);
-  if(!before.exists||before.type!=='file')fail('ARCHIVE_UNAVAILABLE','Archive is not a regular file.');
-  if(before.bytes>MAX_ARCHIVE)fail('ARCHIVE_SIZE_LIMIT','Archive exceeds the 128 MiB in-memory limit.');
-  const cacheable=typeof before.version==='string'&&before.version.length>0;
-  const identity=cacheable?before.version:null,s=session(root,exec),cached=s.files.get(file);
-  if(cacheable&&cached?.identity===identity){
-    s.files.delete(file);s.files.set(file,cached);
-    return {record:cached,cache:{hit:true,observedAt:cached.observedAt,validatedAt:new Date().toISOString(),scope:'session-and-workspace'}};
+  const file=path.resolve(root,archive),s=session(root,exec);
+  for(let attempt=0;attempt<2;attempt++){
+    const before=await exec.nativeFiles.stat(root,file,exec.signal);
+    if(!before.exists||before.type!=='file')fail('ARCHIVE_UNAVAILABLE','Archive is not a regular file.');
+    if(before.bytes>MAX_ARCHIVE)fail('ARCHIVE_SIZE_LIMIT','Archive exceeds the 128 MiB in-memory limit.');
+    const cacheable=typeof before.version==='string'&&before.version.length>0;
+    const identity=cacheable?before.version:null,cached=s.files.get(file);
+    if(cacheable&&cached?.identity===identity){
+      s.files.delete(file);s.files.set(file,cached);
+      return {record:cached,cache:{hit:true,observedAt:cached.observedAt,validatedAt:new Date().toISOString(),scope:'session-and-workspace'}};
+    }
+    s.files.delete(file);
+    const pendingKey=cacheable?file+'\0'+identity:null;
+    let pending=cacheable?s.pending.get(pendingKey):null,shared=!!pending;
+    const creatorSignal=pending?.signal??exec.signal;
+    if(!pending){
+      const promise=(async()=>{
+        const read=await exec.nativeFiles.readBytes(root,file,exec.signal,MAX_ARCHIVE),buffer=read.bytes;
+        if(cacheable&&read.version!==identity)fail('ARCHIVE_CHANGED','Archive changed before its bytes were read.');
+        const entries=[],byName=new Map(),directory=archiveDirectory(buffer);
+        unzipper()(buffer,{filter:item=>{
+          if(entries.length>=150000)fail('ARCHIVE_ENTRY_LIMIT','Archive has more than 150000 entries.');
+          const metadata=directory[entries.length];
+          if(!metadata||metadata.name!==item.name||metadata.size!==item.size||metadata.originalSize!==item.originalSize||metadata.compression!==item.compression)
+            fail('ARCHIVE_DIRECTORY_INVALID','Archive decoder and directory metadata disagree.');
+          const entry=Object.assign(metadata,{name:normalize(item.name),raw:item.name});
+          entries.push(entry);const existing=byName.get(entry.name)||[];existing.push(entry);byName.set(entry.name,existing);return false;
+        }});
+        if(entries.length!==directory.length)fail('ARCHIVE_DIRECTORY_INVALID','Archive decoder omitted directory entries.');
+        return {file,identity,buffer,entries,byName,texts:new Map(),
+          bytes:buffer.length+entries.reduce((total,entry)=>total+400+(entry.name.length+entry.raw.length)*2,0),observedAt:new Date().toISOString(),owner:s};
+      })();
+      pending={promise,signal:creatorSignal};
+      if(cacheable)s.pending.set(pendingKey,pending);
+    }
+    let record;
+    try{record=await pending.promise;}
+    catch(error){
+      if(shared&&attempt===0&&creatorSignal?.aborted&&!exec.signal?.aborted)continue;
+      throw error;
+    }finally{if(cacheable&&s.pending.get(pendingKey)===pending)s.pending.delete(pendingKey);}
+    exec.signal?.throwIfAborted();
+    const current=await exec.nativeFiles.stat(root,file,exec.signal);
+    if(!current.exists||current.type!=='file'||(cacheable?current.version!==identity:current.bytes!==before.bytes)){
+      if(cacheable&&s.files.get(file)===record)s.files.delete(file);
+      fail('ARCHIVE_CHANGED','Archive changed before source delivery.');
+    }
+    if(cacheable){s.files.set(file,record);trim(s);}
+    return {record,cache:{hit:shared,observedAt:record.observedAt,validatedAt:cacheable?new Date().toISOString():null,
+      scope:cacheable?'session-and-workspace':'uncached-unversioned'}};
   }
-  s.files.delete(file);
-  const pendingKey=cacheable?file+'\0'+identity:null;
-  let promise=cacheable?s.pending.get(pendingKey):null,shared=!!promise;
-  if(!promise){
-    promise=(async()=>{
-      const buffer=(await exec.nativeFiles.readBytes(root,file,exec.signal,MAX_ARCHIVE)).bytes;
-      const entries=[],byName=new Map(),directory=archiveDirectory(buffer);
-      unzipper()(buffer,{filter:item=>{
-        if(entries.length>=150000)fail('ARCHIVE_ENTRY_LIMIT','Archive has more than 150000 entries.');
-        const metadata=directory[entries.length];
-        if(!metadata||metadata.name!==item.name||metadata.size!==item.size||metadata.originalSize!==item.originalSize||metadata.compression!==item.compression)
-          fail('ARCHIVE_DIRECTORY_INVALID','Archive decoder and directory metadata disagree.');
-        const entry=Object.assign(metadata,{name:normalize(item.name),raw:item.name});
-        entries.push(entry);const existing=byName.get(entry.name)||[];existing.push(entry);byName.set(entry.name,existing);return false;
-      }});
-      if(entries.length!==directory.length)fail('ARCHIVE_DIRECTORY_INVALID','Archive decoder omitted directory entries.');
-      const record={file,identity,buffer,entries,byName,texts:new Map(),
-        bytes:buffer.length+entries.reduce((total,entry)=>total+400+(entry.name.length+entry.raw.length)*2,0),observedAt:new Date().toISOString(),owner:s};
-      if(cacheable){s.files.set(file,record);trim(s);}return record;
-    })();
-    if(cacheable)s.pending.set(pendingKey,promise);
-  }
-  let record;try{record=await promise;}finally{if(s.pending.get(pendingKey)===promise)s.pending.delete(pendingKey);}
-  exec.signal?.throwIfAborted();
-  const current=await exec.nativeFiles.stat(root,file,exec.signal);
-  if(!current.exists||current.type!=='file'||(cacheable?current.version!==identity:current.bytes!==before.bytes))fail('ARCHIVE_CHANGED','Archive changed before source delivery.');
-  return {record,cache:{hit:shared,observedAt:record.observedAt,validatedAt:cacheable?new Date().toISOString():null,
-    scope:cacheable?'session-and-workspace':'uncached-unversioned'}};
+  fail('ARCHIVE_CHANGED','Archive read was repeatedly interrupted by another caller.');
 }
 function entryText(record,name,maxBytes=MAX_ENTRY){
   const matches=record.byName.get(name)||[];

@@ -606,6 +606,84 @@ test('concurrent unversioned archive reads do not share a pending read', async t
   assert.deepEqual(results.map(result => result.text), ['before', 'before']);
 });
 
+test('a versioned archive read retries after the sharing caller is cancelled', async t => {
+  const fixture = await makeArchive(t, [{name: 'source.txt', data: 'before'}]);
+  const stat = fixture.exec.nativeFiles.stat;
+  let statCount = 0;
+  let bothStated;
+  const bothStats = new Promise(resolve => { bothStated = resolve; });
+  fixture.exec.nativeFiles.stat = async (...args) => {
+    const result = await stat(...args);
+    if (++statCount === 2) bothStated();
+    return result;
+  };
+  const readBytes = fixture.exec.nativeFiles.readBytes;
+  let readCount = 0;
+  let firstStarted;
+  const firstRead = new Promise(resolve => { firstStarted = resolve; });
+  fixture.exec.nativeFiles.readBytes = async (...args) => {
+    const signal = args[2];
+    if (++readCount > 1) return readBytes(...args);
+    firstStarted();
+    return new Promise((resolve, reject) => {
+      const abort = () => reject(signal.reason ?? Object.assign(new Error('aborted'), {name: 'AbortError'}));
+      signal?.addEventListener('abort', abort, {once: true});
+    });
+  };
+
+  const controller = new AbortController();
+  const creator = readArchiveEntry(fixture.directory, fixture.archive, 'source.txt', {
+    ...fixture.exec,
+    signal: controller.signal
+  });
+  await firstRead;
+  const joiner = readArchiveEntry(fixture.directory, fixture.archive, 'source.txt', fixture.exec);
+  await bothStats;
+  await new Promise(resolve => setImmediate(resolve));
+  controller.abort();
+
+  await assert.rejects(creator, {name: 'AbortError'});
+  const result = await joiner;
+  assert.equal(result.state, 'observed');
+  assert.equal(result.text, 'before');
+  assert.equal(result.cache.hit, false);
+  assert.equal(readCount, 2);
+});
+
+test('archive reads reject a version change before their bytes are read', async t => {
+  const fixture = await makeArchive(t, [{name: 'source.txt', data: 'before'}]);
+  const stat = fixture.exec.nativeFiles.stat;
+  const readBytes = fixture.exec.nativeFiles.readBytes;
+  fixture.exec.nativeFiles.stat = async (...args) => ({...await stat(...args), version: 'before-version'});
+  fixture.exec.nativeFiles.readBytes = async (...args) => ({...await readBytes(...args), version: 'after-version'});
+
+  const result = await readArchiveEntry(fixture.directory, fixture.archive, 'source.txt', fixture.exec);
+  assert.equal(result.state, 'unavailable');
+  assert.equal(result.code, 'ARCHIVE_CHANGED');
+});
+
+test('an archive whose final version changes is not left in the cache', async t => {
+  const fixture = await makeArchive(t, [{name: 'source.txt', data: 'before'}]);
+  const stat = fixture.exec.nativeFiles.stat;
+  const readBytes = fixture.exec.nativeFiles.readBytes;
+  let mode = 'initial';
+  let statCount = 0;
+  fixture.exec.nativeFiles.stat = async (...args) => {
+    const result = await stat(...args);
+    const version = mode === 'initial' ? (++statCount === 2 ? 'changed-version' : 'before-version') : 'before-version';
+    return {...result, version};
+  };
+  fixture.exec.nativeFiles.readBytes = async (...args) => ({...await readBytes(...args), version: 'before-version'});
+
+  const first = await readArchiveEntry(fixture.directory, fixture.archive, 'source.txt', fixture.exec);
+  assert.equal(first.code, 'ARCHIVE_CHANGED');
+  mode = 'later';
+  const second = await readArchiveEntry(fixture.directory, fixture.archive, 'source.txt', fixture.exec);
+  assert.equal(second.state, 'observed');
+  assert.equal(second.text, 'before');
+  assert.equal(second.cache.hit, false);
+});
+
 test('archive operations limit concurrent buffers and release slots after failure or cancellation', async t => {
   const fixture = await makeArchive(t, [{name: 'source.txt', data: 'before'}]);
   const stat = fixture.exec.nativeFiles.stat;

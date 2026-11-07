@@ -265,7 +265,7 @@ export function normalizeDshEvents(input){
       /\.\.\. \(line truncated to \d+ chars\)$/mu.test(call.resultText));
     call.exitCode=Number.isInteger(exit)?exit:null;
     const readOnlyJava=call.name==='fastedit_java'&&['read','find','locate'].includes(call.arguments.mode??call.arguments.action);
-    const effect=value?.effectState;
+    const effect=value?.effectState;call.effectState=effect??null;
     if(WRITE.has(call.name)&&!readOnlyJava&&(call.outcome==='succeeded'||['applied','partial','unknown'].includes(effect))&&effect!=='none'){
     mutationEpoch++;changes.push({seq:call.resultSeq,callSeq:call.callSeq,path:fileOf(call.arguments),tool:call.name,
         status:effect??'native-operation-succeeded',currentState:'not-inferred'});
@@ -621,12 +621,12 @@ function constraintObservations(normal){
       const scriptTarget=runpy?.[1]??shell?.[1]??shell?.[2];
       if(scriptTarget){
         const target=scriptTarget.replaceAll('\\','/').split('/').at(-1),writes=normal.calls.filter(candidate=>candidate.callSeq<call.callSeq&&
+          WRITE.has(candidate.name)&&!(candidate.name==='fastedit_java'&&['read','find','locate'].includes(candidate.arguments.mode??candidate.arguments.action))&&
           String(fileOf(candidate.arguments)??'').replaceAll('\\','/').split('/').at(-1)===target);
-        // A failed or unconfirmed attempt did not change the file; only a recorded file
-        // effect may hide an earlier complete write.
         const changed=new Set(normal.changes.map(change=>change.callSeq));
-        const latest=writes.findLast(candidate=>candidate.outcome!=='failed'&&changed.has(candidate.callSeq));
-        if(!latest||latest.name!=='write'||typeof latest.arguments?.content!=='string')continue;
+        const latest=writes.findLast(candidate=>candidate.effectState!=='none');
+        if(!latest)continue;
+        if(latest.outcome!=='succeeded'||!changed.has(latest.callSeq)||latest.name!=='write'||typeof latest.arguments?.content!=='string')continue;
         code=latest.arguments.content;
       }
       if(typeof code!=='string')continue;

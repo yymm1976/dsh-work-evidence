@@ -655,7 +655,7 @@ test('temporary-read evidence ignores trailing secrets and only trusts recorded 
   {
     const {f,audit}=withRequirement();
     f.operation('write',{file_path:'check set keys.py',content:code},'written');
-    f.operation('edit',{file_path:'check set keys.py',old_string:'tempfile',new_string:'os'},'failed',{failed:true});
+    f.operation('edit',{file_path:'check set keys.py',old_string:'tempfile',new_string:'os'},JSON.stringify({effectState:'none'}),{failed:true});
     const shell=f.operation('pwsh',{command:'& "C:\\runtime\\python.exe" "check set keys.py"'},'completed');
     assert.equal(audit().constraints.items.at(-1).resultSeq,shell.resultSeq);
   }
@@ -669,6 +669,17 @@ test('temporary-read evidence ignores trailing secrets and only trusts recorded 
     f.operation('work_exec',{runtime:'python',code:'import tempfile\na=tempfile.mkdtemp(dir=".")\nb=tempfile.mkdtemp()\nopen(a+"/a.env").read()'},'completed');
     assert.equal(audit().constraints.items.length,1,'one local call does not exclude the script when another call uses the system temp root');
   }
+});
+
+test('an uncertain later write makes the executed script source unknown',()=>{
+  const {f,audit}=reviewedFixture();
+  f.events.find(event=>event.type==='user/message').data.message.content=[{type:'text',text:'不要读取项目外文件。'}];
+  f.operation('write',{file_path:'check.py',content:'import tempfile\np=tempfile.mkdtemp()\nopen(p+"/a.env").read()'},'written');
+  const id='uncertain-write';
+  f.add('tool/call',{callId:id,name:'write',arguments:{file_path:'check.py',content:'print(42)'}});
+  f.add('tool/result',{message:{role:'tool',source:{callId:id},content:[{type:'text',text:'not confirmed'}]}});
+  f.operation('pwsh',{command:'& "C:\\runtime\\python.exe" check.py'},'completed');
+  assert.equal(audit().constraints.items.length,0);
 });
 
 test('an unconfirmed later write does not hide the confirmed script or create a candidate',()=>{
