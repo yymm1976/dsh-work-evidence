@@ -118,6 +118,30 @@ test('plan-only detection preserves explicit authorization to continue',()=>{
   assert.equal(requestPausesContinuation('读取“只制定计划”的原文并完成任务。'),false);
 });
 
+test('plan words used as nouns stay eligible for continuation',()=>{
+  for(const request of[
+    '只按计划修改 a.txt','仅参考方案','只按计划执行','仅需方案，随后实施','按方案实施',
+    '只按计划实施：修改 a.txt','按这份方案实施','只实现方案 B','仅方案B','只需要方案B的实现',
+    '只参考计划里的顺序执行','仅按给出的计划开发','计划已经确认，继续实施','只按方案修改，无需再确认',
+    '仅计划中的规则需要实现，不要改动其他','只需要计划里的三条改动全部实现','仅方案中的 extglob 部分需要落地',
+    '只要计划批准就立即实施','仅方案中的内容需要落地','参考方案后修改 b.txt','不要把这次答复当作计划，继续实施',
+    '给出计划后无需确认直接开发','不用等我批准，直接实施','不要等用户确认后再修改文件','不用等我确认后再修改，直接按计划实施',
+    '计划：下一步修改 a.txt','先给方案并按方案修改文件','不要只给计划，直接做。','只要方案，马上实施',
+    '先写代码，核对确认后执行','跑一遍测试，确认无误后再交付','我确认过了，继续实施','不需要用户确认，直接实施'
+  ])assert.equal(requestPausesContinuation(request),false,request);
+});
+
+test('plan-only and confirmation-gate requests pause continuation',()=>{
+  for(const request of[
+    '只制定计划，不要实施或修改文件','只给一份计划，不要改代码','只需要一个方案，等我确认后再执行',
+    '只制定方案','仅制定计划','制定计划并经用户确认后执行','先出计划，我确认后你再实施',
+    '仅方案确认后实施','只写方案，不动代码','仅出一版计划给我','只需要一份计划，其他都别动',
+    '用户确认后我再让你实施，现在先给方案','未经我确认不得实施','等我确认后再实施','仅计划文档待我确认',
+    '写个计划，等我确认后再继续。','写个计划，等我确认后再改代码。','写个计划，确认后执行。','写个计划，获批后执行。',
+    '待授权后提交','获批后发布','先备份，确认后回滚'
+  ])assert.equal(requestPausesContinuation(request),true,request);
+});
+
 test('a request to plan and then implement can continue after its stage summary',async()=>{
   const host=await startHost({workspace:{qualityReview:false,completionNotice:true},script:(_options,number)=>
     [text(number===1?'## 阶段摘要\n计划已列出。\n下一步：修改 b.txt':'## 阶段摘要\n工作完成。\n下一步：无')]});
