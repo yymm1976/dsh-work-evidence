@@ -542,6 +542,24 @@ test('legacy ZIP directories can contain 65535 entries without a ZIP64 locator',
   assert.equal(result.text, '');
 });
 
+test('archive entry reads reject end-of-central-directory signatures in archive comments', async t => {
+  const directory = await temporaryDirectory(t);
+  const archive = 'ambiguous-comment.zip';
+  const base = buildZip([{name: 'source.txt', data: 'safe'}]);
+  const endOffset = base.length - 22;
+  const end = Buffer.from(base.subarray(endOffset));
+  const comment = Buffer.alloc(30);
+  comment.writeUInt32LE(0x06054b50, 0);
+  comment.writeUInt16LE(1, 8);
+  comment.writeUInt16LE(1, 10);
+  end.writeUInt16LE(comment.length, 20);
+  await fs.writeFile(path.join(directory, archive), Buffer.concat([base.subarray(0, endOffset), end, comment]));
+
+  const result = await readArchiveEntry(directory, archive, 'source.txt', archiveExec(directory));
+  assert.equal(result.state, 'unavailable');
+  assert.equal(result.code, 'ARCHIVE_DIRECTORY_INVALID');
+});
+
 test('an unversioned archive is reread when its contents change without a size change', async t => {
   const fixture = await makeArchive(t, [{name: 'source.txt', data: 'before'}]);
   const stat = fixture.exec.nativeFiles.stat;

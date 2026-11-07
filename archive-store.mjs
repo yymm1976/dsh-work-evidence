@@ -45,14 +45,21 @@ async function withArchiveSlot(signal,operation){
 const normalize=name=>name.replaceAll('\\','/');
 const unavailable=(archive,error)=>({state:'unavailable',archive,code:error.code||'ARCHIVE_READ_UNAVAILABLE',message:String(error.message).slice(0,1200)});
 function fail(code,message){const error=new Error(message);error.code=code;throw error;}
+function entryName(bytes,flags){
+  try{return flags&0x800?new TextDecoder('utf-8',{fatal:true}).decode(bytes):bytes.toString('latin1');}
+  catch{fail('ARCHIVE_NAME_INVALID','Archive entry name is not valid UTF-8.');}
+}
 function archiveDirectory(buffer){
   const data=Buffer.from(buffer.buffer,buffer.byteOffset,buffer.byteLength);
   const invalid=()=>fail('ARCHIVE_DIRECTORY_INVALID','Archive directory is incomplete or inconsistent.');
+  const ambiguous=()=>fail('ARCHIVE_DIRECTORY_AMBIGUOUS','Archive contains more than one end-of-central-directory record.');
   const inRange=(offset,length)=>Number.isSafeInteger(offset)&&Number.isSafeInteger(length)&&offset>=0&&length>=0&&offset+length<=data.length;
   const u64=offset=>{if(!inRange(offset,8))invalid();const value=data.readBigUInt64LE(offset);if(value>BigInt(Number.MAX_SAFE_INTEGER))invalid();return Number(value);};
-  let end=data.length-22;
-  for(;end>=Math.max(0,data.length-65557);end--)if(data.readUInt32LE(end)===0x06054b50&&end+22+data.readUInt16LE(end+20)===data.length)break;
-  if(end<Math.max(0,data.length-65557))invalid();
+  const first=data.length-22,minimum=Math.max(0,data.length-65557);
+  let end=first;
+  for(;end>=minimum;end--)if(end+4<=data.length&&data.readUInt32LE(end)===0x06054b50)break;
+  if(end<minimum||end+22+data.readUInt16LE(end+20)!==data.length)invalid();
+  for(let cursor=end+1;cursor+4<=data.length;cursor++)if(data.readUInt32LE(cursor)===0x06054b50)ambiguous();
   let count=data.readUInt16LE(end+10),offset=data.readUInt32LE(end+16);
   if(end>=20&&data.readUInt32LE(end-20)===0x07064b50){
     const zip64=u64(end-12);
@@ -85,8 +92,9 @@ function archiveDirectory(buffer){
       }
       if(!found)invalid();
     }
-    entries.push({size,originalSize,localOffset,crc:data.readUInt32LE(offset+16),flags:data.readUInt16LE(offset+8),
-      compression:data.readUInt16LE(offset+10),nameBytes:data.subarray(offset+46,offset+46+nameLength)});
+    const flags=data.readUInt16LE(offset+8),nameBytes=data.subarray(offset+46,offset+46+nameLength);
+    entries.push({size,originalSize,localOffset,crc:data.readUInt32LE(offset+16),flags,
+      compression:data.readUInt16LE(offset+10),nameBytes,name:entryName(nameBytes,flags)});
     offset=next;
   }
   return entries;
@@ -127,7 +135,7 @@ async function openArchive(root,archive,exec){
       unzipper()(buffer,{filter:item=>{
         if(entries.length>=150000)fail('ARCHIVE_ENTRY_LIMIT','Archive has more than 150000 entries.');
         const metadata=directory[entries.length];
-        if(!metadata||metadata.size!==item.size||metadata.originalSize!==item.originalSize||metadata.compression!==item.compression)
+        if(!metadata||metadata.name!==item.name||metadata.size!==item.size||metadata.originalSize!==item.originalSize||metadata.compression!==item.compression)
           fail('ARCHIVE_DIRECTORY_INVALID','Archive decoder and directory metadata disagree.');
         const entry=Object.assign(metadata,{name:normalize(item.name),raw:item.name});
         entries.push(entry);const existing=byName.get(entry.name)||[];existing.push(entry);byName.set(entry.name,existing);return false;

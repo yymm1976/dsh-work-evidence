@@ -34,6 +34,8 @@
 
 ## 最终验收命令
 
+以下路径是执行本机示例。运行前必须把 `DSH_APP`、`DSH_PROFILE`、`DSH_TEST_FASTEDIT_PYTHON` 和 `DSH_TEST_PYTHON` 换成待验收环境的实际路径。
+
 保存宿主：
 
 ```powershell
@@ -65,7 +67,7 @@ npm pack --json
 
 ## 已知非阻塞限制
 
-- 归档解码在内存中完成，单文件上限 128 MiB，未实现流式解压。
+- 归档解码在内存中完成，未实现流式解压。归档文件上限为 128 MiB；普通文本条目解压后上限为 8 MiB；`META-INF/MANIFEST.MF` 和 Maven `pom.properties` 的解析上限为 64 KiB。
 - 验证环境为 Windows 和 Node.js 22.19；其他平台不做未经验证的声明。
 - 真实账单、网关内部重试和底层模型权重不可见。
 - 历史轨迹来自旧版本和旧通道，没有独立留出集，不支持普遍精确率、召回率或 Token 收益结论。

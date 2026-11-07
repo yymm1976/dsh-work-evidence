@@ -3,10 +3,11 @@
 ## 从 1.0.1-dev 系列升级
 
 1. 停止使用旧版本的宿主会话或让宿主完成当前生命周期。
-2. 保留现有工作区的 `.dsh/work-evidence/config.json` 和会话策略文件；1.1.0 会读取已有 JSON，不要求重建。
-3. 用 1.1.0 发布包替换插件目录，并确认 `fflate` 可安装或已由宿主提供。
+2. 保留现有工作区的 `.dsh/work-evidence/config.json` 和会话策略文件；升级前另存一份 `config.json`，以便回退时恢复原始设置。1.1.0 会读取已有 JSON，不要求重建。
+3. 用 1.1.0 发布包替换插件目录。
 4. 重启宿主，先用 `/work-evidence status` 和 `/work-evidence features` 查看配置、依赖和有效状态。
-5. 需要完整工具面时显式执行 `/work-evidence feature toolSurface full`；默认仍为 compact。
+5. 确认 `dependencies.archiveDecoder.available` 为 `true`。仅确认 `fflate` 包可安装不够；插件或宿主无法实际加载解码器时，归档读取仍会返回 `ARCHIVE_DECODER_UNAVAILABLE`。
+6. 需要完整工具面时显式执行 `/work-evidence feature toolSurface full`；默认仍为 compact。
 
 ## 配置行为
 
