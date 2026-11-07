@@ -145,6 +145,40 @@ test('later file writes and opaque executions invalidate only historical file ap
   }
 });
 
+test('possible writes after judgment evidence invalidate overlapping and unresolved scopes',()=>{
+  for(const declaredStatus of ['challenged','superseded'])for(const failed of [false,true]){
+    for(const [filePath,affected] of [['src/a.mjs',true],['./src/a.mjs',true],['src/other.mjs',false],[undefined,true]]){
+      for(const withinReview of [true,false]){
+        const sample=fixture(),review={...sample.review,declaredStatus};
+        if(declaredStatus==='challenged'){delete review.replacementSeq;delete review.replacementQuote;}
+        const write=sample.tool('uncertain',{name:'write',args:{file_path:filePath,content:'later content'},failed});
+        if(!failed)delete sample.events.find(event=>event.seq===write.seq).data.message.isError;
+        const later=sample.tool('later read');
+        sample.assessment.throughSeq=withinReview?later.seq:(review.replacementSeq??review.counterSeq);
+        let row=audit(sample,review).judgmentReviews.items[0],invalid=affected&&withinReview;
+        assert.equal(row.status,invalid||!withinReview?'unknown':declaredStatus,JSON.stringify({declaredStatus,failed,filePath,withinReview}));
+        assert.equal(row.reasons?.includes('possible-file-change-after-evidence')??false,invalid);
+        if(!withinReview)assert.ok(row.reasons.includes('events-after-review'));
+        sample.events.find(event=>event.seq===write.seq).data.message.content=[{type:'text',text:JSON.stringify({effectState:'none'})}];
+        sample.assessment.throughSeq=later.seq;
+        row=audit(sample,review).judgmentReviews.items[0];
+        assert.equal(row.status,declaredStatus);assert.equal(row.reasons,undefined);
+      }
+    }
+  }
+});
+
+test('pending read-only Java operations do not invalidate judgment scopes',()=>{
+  for(const key of ['mode','action'])for(const mode of ['read','find','locate']){
+    const sample=fixture();
+    sample.add('tool/call',{callId:'pending-java',name:'fastedit_java',arguments:{file_path:'src/a.mjs',[key]:mode}});
+    sample.assessment.throughSeq=sample.events.at(-1).seq;
+    const result=audit(sample),row=result.judgmentReviews.items[0];
+    assert.equal(row.status,'superseded',`${key}=${mode}`);assert.equal(row.reasons,undefined);
+    assert.equal(result.events.toolCalls.at(-1).resultSeq,null);
+  }
+});
+
 test('nested tool counters, appended events and damaged sources remain explicit unknowns',()=>{
   const f=fixture(),nested=f.tool('nested parser failure',{type:'tool/ptc-dispatch',failed:true});f.assessment.throughSeq=nested.seq;
   f.review={...f.review,counterSeq:nested.seq,counterQuote:'nested parser failure',replacementSeq:undefined,replacementQuote:undefined,declaredStatus:'challenged'};

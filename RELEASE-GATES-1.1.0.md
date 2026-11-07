@@ -4,7 +4,7 @@
 
 模式策略：`pb001-v39`
 
-本文件随最终候选提交发布。候选身份以包含本文件的提交为准；测试日志记录该提交的完整 SHA。不得用较早提交的结果替代最终候选验收。
+本文件随最终候选提交发布。候选身份以包含本文件的提交为准；测试日志记录该提交的完整 SHA。不得用较早提交的结果替代最终候选验收。G6 的最终状态由同一候选 SHA 的审查台账记录，不在提交内预写通过。
 
 ## Gate 状态
 
@@ -16,7 +16,7 @@
 | G3 效率 | 默认在线开销有证据；重大负优化已处理；收益不夸大 | 默认提示和工具面开销已记录；`completionNotice`、`historyHygiene`、`contextProtocol`、`requestProjection` 的请求数与 Token 差额已量化；`completionNotice` 默认关闭；离线重放耗时有界；不宣称净节省 | 通过 |
 | G4 宿主与集成 | 两个声明宿主关键路径通过，声明与实测一致 | `0.2.1-rc.4` 与 `0.2.2-rc.1` 使用隔离工作区和 `fflate 0.8.3`；当前候选全量各 590 项通过，日志首行记录实测宿主版本 | 通过 |
 | G5 安全与可靠性 | 无已知 P0/P1 漏洞、越权或状态破坏；故障注入通过 | 路径、归档、非法参数、乱序、重复结果、未结束写入、共享读取取消和资源释放均有测试 | 通过 |
-| G6 CodeRabbit | 核心 PR 至少三轮有效审查，最终候选与集成复审覆盖 | PR #7 已完成至少 8 次正式 review；第 8 轮覆盖 `56f1824..15abac4`，没有新增 inline 问题。第 7 轮指出的显式关闭测试起点与旧工作区迁移说明已在 `15abac4` 修正。最新轮次、reviewed SHA 和处置见 PR 描述与本地审查台账；文档注释覆盖率警告保留 | 通过（文档覆盖率警告保留） |
+| G6 CodeRabbit | 核心 PR 至少三轮有效审查，最终候选与集成复审覆盖 | PR #7 的正式 review、实际选中文件、跳过记录和意见处置以同一候选 SHA 的审查台账为准；被跳过的文件不计作实质复核；文档注释覆盖率警告保留 | 待同 SHA 审查台账确认 |
 | G7 实验可信 | 代表试验与离线基线可复现，用量和 `unknown` 口径真实 | 40 会话离线重放；v1.4 首批 A/B、v1.5 短/中四单元、v1.6 长任务两单元均已执行并保留原始结果；三类对照合计参考费用 0.388112 USD。三对 A 臂均预算截断，只作方向性观察；没有独立留出集，不宣称普遍收益 | 通过 |
 | G8 构建与文档 | 安装包、依赖、版本、README、迁移、Release Notes 和回退指南一致 | `npm run check` 通过 139 个 JavaScript 文件；`npm pack` 生成 79 个文件；独立安装后 38 个入口全部加载、`blocked=[]` | 通过 |
 | G9 最终统一回归 | 从最终候选 SHA 重跑全套关口 | 对包含本表的最终候选提交执行双宿主全量、发布检查和独立安装 | 通过 |
@@ -24,7 +24,7 @@
 ## 证据定位
 
 - 运行日志、打包清单和独立加载结果保存在本地交付目录 `outputs/work-evidence-1.1.0/`。日志首行记录候选完整 Commit SHA、宿主版本、命令和开始时间。
-- 审查轮次、reviewed SHA、issue 处置和跳过记录见同目录 `coderabbit-review-ledger.md`；PR 描述记录最新正式 review。
+- 审查轮次、reviewed SHA、issue 处置和跳过记录见同目录 `coderabbit-review-ledger.md`；PR 描述记录最新正式 review。该台账确认最终候选的本文件已实际审阅且真实问题已处理后，G6 才通过；无需为回填状态再改本文件。
 - 私人原始会话、事件正文、真实账单和本机绝对路径不进入公开仓库。
 
 ## L0–L5 门禁
@@ -40,15 +40,15 @@
 
 ## 最终验收命令
 
-以下路径是执行本机示例。运行前必须把 `DSH_APP`、`DSH_PROFILE`、`DSH_TEST_FASTEDIT_PYTHON` 和 `DSH_TEST_PYTHON` 换成待验收环境的实际路径。
+以下路径均为占位符。运行前必须把 `DSH_APP`、`DSH_PROFILE`、`DSH_TEST_FASTEDIT_PYTHON` 和 `DSH_TEST_PYTHON` 换成待验收环境的实际路径。
 
 保存宿主：
 
 ```powershell
-$env:DSH_APP='C:/Users/杨铭/Desktop/DSH/real-projects/host-runtime-20261102'
-$env:DSH_PROFILE='C:/Users/杨铭/Documents/DSH Desktop/home/profiles/web'
-$env:DSH_TEST_FASTEDIT_PYTHON='C:/Users/杨铭/Documents/Codex/2026-10-19/wo/outputs/dsh-work-evidence-1.1.0/.fastedit-venv/Scripts/python.exe'
-$env:DSH_TEST_PYTHON='C:/Users/杨铭/Documents/DSH Desktop/runtime/python312/python.exe'
+$env:DSH_APP='<saved-host-0.2.1-rc.4>'
+$env:DSH_PROFILE='<dsh-profile>'
+$env:DSH_TEST_FASTEDIT_PYTHON='<candidate-checkout>/.fastedit-venv/Scripts/python.exe'
+$env:DSH_TEST_PYTHON='<test-python-3.12>'
 (Get-Content "$env:DSH_APP/node_modules/@deepseek-ai/dsh-tools/package.json" -Raw | ConvertFrom-Json).version
 node --test
 ```
@@ -56,10 +56,10 @@ node --test
 桌面宿主：
 
 ```powershell
-$env:DSH_APP='C:/Users/杨铭/AppData/Local/Programs/DSH Desktop/dsh-desktop'
-$env:DSH_PROFILE='C:/Users/杨铭/Documents/DSH Desktop/home/profiles/web'
-$env:DSH_TEST_FASTEDIT_PYTHON='C:/Users/杨铭/Documents/Codex/2026-10-19/wo/outputs/dsh-work-evidence-1.1.0/.fastedit-venv/Scripts/python.exe'
-$env:DSH_TEST_PYTHON='C:/Users/杨铭/Documents/DSH Desktop/runtime/python312/python.exe'
+$env:DSH_APP='<desktop-host-0.2.2-rc.1>'
+$env:DSH_PROFILE='<dsh-profile>'
+$env:DSH_TEST_FASTEDIT_PYTHON='<candidate-checkout>/.fastedit-venv/Scripts/python.exe'
+$env:DSH_TEST_PYTHON='<test-python-3.12>'
 (Get-Content "$env:DSH_APP/node_modules/@deepseek-ai/dsh-tools/package.json" -Raw | ConvertFrom-Json).version
 node --test
 ```
