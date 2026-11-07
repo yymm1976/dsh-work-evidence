@@ -71,9 +71,13 @@ test('the installed native adapter emits reasoning_content at its real request b
     const provider={api:'openai-completions',baseURL:'http://127.0.0.1:45998/v1',apiKeyEnv:envName,models:[{id:'deepseek-v4.1-flash',contextWindow:1000000,maxTokens:4096,reasoningEfforts:{max:'max'}}]};
     host=await startHost({extraMounts:[['dsh-llm-pi-ai',{providers:{'reasoning-probe':provider}}]],pluginConfig:{nativeReasoningReplay:true}});
     const agent=await host.createAgent('max');await host.command(agent,'detail');
-    const options=request();options.sessionId=agent.session.id;options.maxTokens=64;options.signal=AbortSignal.timeout(10000);
+    const options=request();options.sessionId=agent.session.id;options.maxTokens=64;
     const canonical=JSON.stringify(options.messages);
-    for await(const _chunk of host.ctx.llm.stream(options)){}
+    options.signal=AbortSignal.timeout(10000);
+    let enabledFinish;
+    for await(const chunk of host.ctx.llm.stream(options)){if(chunk.type==='finish')enabledFinish=chunk;}
+    assert.equal(enabledFinish?.reason.kind,'stop',JSON.stringify(enabledFinish));
+    assert.ok(wire,'the enabled adapter issued a request');
     const sent=wire.messages.find(message=>message.role==='assistant');
     assert.equal(sent.reasoning_content,options.messages[1].content[0].text);assert.equal(sent.reasoning_details,undefined);
     assert.equal(wire.reasoning_effort,'max');assert.equal(JSON.stringify(options.messages),canonical);
@@ -81,7 +85,11 @@ test('the installed native adapter emits reasoning_content at its real request b
     const feature=(await host.command(agent,'feature nativeReasoningReplay')).features[0];
     assert.equal(feature.effect.status,'applied');assert.ok(feature.effect.applied>=1);
     await host.command(agent,'off');wire=null;
-    for await(const _chunk of host.ctx.llm.stream(options)){}
+    options.signal=AbortSignal.timeout(10000);
+    let disabledFinish;
+    for await(const chunk of host.ctx.llm.stream(options)){if(chunk.type==='finish')disabledFinish=chunk;}
+    assert.equal(disabledFinish?.reason.kind,'stop',JSON.stringify(disabledFinish));
+    assert.ok(wire,'the disabled adapter issued a request');
     const disabled=wire.messages.find(message=>message.role==='assistant');
     assert.ok(Array.isArray(disabled.reasoning_details));assert.equal(disabled.reasoning_content,undefined);
     assert.equal(host.events.filter(event=>event.type==='tool/ptc-dispatch').length,0);

@@ -489,24 +489,25 @@ test('an uncertain write to an unrelated scoped file does not invalidate the che
 
 test('a pending operation started before a check cannot validate an overlapping scope',()=>{
   for(const [name,args,scoped,expected,expectedReasons] of [
-    ['write',{file_path:'a.txt',content:'new'},true,'stale'],
+    ['write',{file_path:'a.java',content:'new'},true,'stale'],
     ['write',{file_path:'other.txt',content:'new'},true,'supported'],
-    ['write',{file_path:'a.txt',content:'new'},false,'unknown'],
+    ['write',{file_path:'a.java',content:'new'},false,'unknown'],
     ['write',{content:'new'},true,'unknown',['file-scope-unresolved']],
     ['run_code',{code:'modifyProject()'},true,'stale'],
     ['run_code',{code:'modifyProject()'},false,'unknown'],
     ['verified_exec',{edits:[{file:'other.txt',mode:'create',content:'new'}]},true,'stale',
       ['opaque-execution-after-check','file-scope-unresolved']],
-    ['fastedit_java',{file_path:'a.txt',mode:'read'},true,'supported'],
-    ['fastedit_java',{file_path:'a.txt',mode:'read'},false,'supported']
+    ['fastedit_java',{file:'a.java',operation:'read_entity',symbol:'A.value'},true,'supported'],
+    ['fastedit_java',{file:'a.java',operation:'find_entity',symbol:'A.value'},true,'supported'],
+    ['fastedit_java',{file:'a.java',operation:'read_entity',symbol:'A.value'},false,'supported']
   ]){
     const f=fixture();
     f.add('tool/call',{callId:'pending',name,arguments:args});
-    const done=f.operation('read',{file_path:'a.txt'},'source');
+    const done=f.operation('read',{file_path:'a.java'},'source');
     const assessment={schema:ASSESSMENT_SCHEMA,sourceId:'recorded-session',throughSeq:done.resultSeq,reviewer:'human',
       allExplicitRequirementsCovered:true,criteria:[{id:'source',requirementSeqs:[1],eventSeqs:[done.resultSeq],outcome:'pass'}],
       checks:[recordedCheck(f,done,'source','addresses')]};
-    if(scoped)assessment.checks[0].coverage[0].scopePaths=['a.txt'];
+    if(scoped)assessment.checks[0].coverage[0].scopePaths=['a.java'];
     const row=auditDshSession(f.events,{sourceId:assessment.sourceId,assessment}).requirements.requirements[0];
     assert.equal(row.status,expected,`${name} ${JSON.stringify(args)} scoped=${scoped}`);
     if(expectedReasons)assert.deepEqual(row.nodes.currentValidity.unavailableReasons,expectedReasons);
@@ -753,7 +754,7 @@ test('change scope applicability accounts for overlapping operations and later r
     if(kind==='pending-write')f.add('tool/call',{callId:'pending',name:'write',arguments:{file_path:'a.txt',content:'later'}});
     if(kind==='pending-program')f.add('tool/call',{callId:'pending',name:'run_code',arguments:{code:'modifyProject()'}});
     if(kind==='pending-unrelated')f.add('tool/call',{callId:'pending',name:'write',arguments:{file_path:'other.txt',content:'later'}});
-    if(kind==='pending-read')f.add('tool/call',{callId:'pending',name:'fastedit_java',arguments:{file_path:'a.txt',mode:'read'}});
+    if(kind==='pending-read')f.add('tool/call',{callId:'pending',name:'fastedit_java',arguments:{file:'a.txt',operation:'read_entity',symbol:'A.value'}});
     const done=f.operation('edit',{file_path:'a.txt',old_string:'old',new_string:'new'},'applied');
     if(['unknown-write','unknown-unrelated','no-effect'].includes(kind)){
       const later=f.operation('write',{file_path:kind==='unknown-unrelated'?'other.txt':'a.txt',content:'later'},

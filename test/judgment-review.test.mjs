@@ -169,12 +169,13 @@ test('possible writes after judgment evidence invalidate overlapping and unresol
 });
 
 test('pending read-only Java operations do not invalidate judgment scopes',()=>{
-  for(const key of ['mode','action'])for(const mode of ['read','find','locate']){
+  for(const operation of ['read_entity','find_entity']){
     const sample=fixture();
-    sample.add('tool/call',{callId:'pending-java',name:'fastedit_java',arguments:{file_path:'src/a.mjs',[key]:mode}});
+    sample.review.scopePaths=['src/Parser.java'];
+    sample.add('tool/call',{callId:'pending-java',name:'fastedit_java',arguments:{file:'src/Parser.java',operation,symbol:'Parser.parse'}});
     sample.assessment.throughSeq=sample.events.at(-1).seq;
     const result=audit(sample),row=result.judgmentReviews.items[0];
-    assert.equal(row.status,'superseded',`${key}=${mode}`);assert.equal(row.reasons,undefined);
+    assert.equal(row.status,'superseded',operation);assert.equal(row.reasons,undefined);
     assert.equal(result.events.toolCalls.at(-1).resultSeq,null);
   }
 });

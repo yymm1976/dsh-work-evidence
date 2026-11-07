@@ -21,7 +21,7 @@ const forecastRoute=value=>Object.fromEntries(['provider','model','reasoningEffo
   [key,typeof value?.[key]==='string'&&value[key].trim()?value[key]:null]));
 const completeRoute=value=>['provider','model','reasoningEffort'].every(key=>typeof value?.[key]==='string'&&value[key].trim());
 const fileOf=args=>args.file_path??args.path??args.file??null;
-const isReadOnlyJava=call=>call.name==='fastedit_java'&&['read','find','locate'].includes(call.arguments.mode??call.arguments.action);
+const isReadOnlyJava=call=>call.name==='fastedit_java'&&['find_entity','read_entity'].includes(call.arguments.operation);
 const normalizeFile=value=>{
   if(typeof value!=='string'||!value.trim())return null;
   const windows=/^[A-Za-z]:[\\/]/u.test(value)||value.includes('\\');
