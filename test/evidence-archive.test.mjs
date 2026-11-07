@@ -34,7 +34,8 @@ function buildZip(entries) {
     const name = Buffer.from(item.name, 'utf8');
     const source = Buffer.from(item.data);
     const method = item.method ?? 0;
-    const packed = method === 8 ? deflateRawSync(source) : source;
+    const compressed = method === 8 ? deflateRawSync(source) : source;
+    const packed = item.padding ? Buffer.concat([compressed, item.padding]) : compressed;
     const checksum = crc32(source);
     const flags = 0x0800;
 
@@ -595,6 +596,35 @@ test('archive entry reads reject end-of-central-directory signatures in archive 
   const result = await readArchiveEntry(directory, archive, 'source.txt', archiveExec(directory));
   assert.equal(result.state, 'unavailable');
   assert.equal(result.code, 'ARCHIVE_DIRECTORY_INVALID');
+});
+
+test('a comment that is only the end-of-central-directory signature is reported ambiguous', async t => {
+  const directory = await temporaryDirectory(t);
+  const archive = 'ambiguous-short-comment.zip';
+  const base = buildZip([{name: 'source.txt', data: 'safe'}]);
+  const endOffset = base.length - 22;
+  const end = Buffer.from(base.subarray(endOffset));
+  const comment = Buffer.alloc(4);
+  comment.writeUInt32LE(0x06054b50, 0);
+  end.writeUInt16LE(comment.length, 20);
+  await fs.writeFile(path.join(directory, archive), Buffer.concat([base.subarray(0, endOffset), end, comment]));
+
+  const result = await readArchiveEntry(directory, archive, 'source.txt', archiveExec(directory));
+  assert.equal(result.state, 'unavailable');
+  assert.equal(result.code, 'ARCHIVE_DIRECTORY_AMBIGUOUS');
+});
+
+test('trailing bytes after a valid deflate stream fail the compressed-size check', async t => {
+  const directory = await temporaryDirectory(t);
+  const archive = 'padded-deflate.zip';
+  const source = 'safe payload for the padded deflate check';
+  await fs.writeFile(path.join(directory, archive), buildZip([
+    {name: 'source.txt', data: source, method: 8, padding: Buffer.from([0, 0, 0, 0])}
+  ]));
+
+  const result = await readArchiveEntry(directory, archive, 'source.txt', archiveExec(directory));
+  assert.equal(result.state, 'unavailable');
+  assert.equal(result.code, 'ARCHIVE_ENTRY_SIZE_MISMATCH');
 });
 
 test('an unversioned archive is reread when its contents change without a size change', async t => {

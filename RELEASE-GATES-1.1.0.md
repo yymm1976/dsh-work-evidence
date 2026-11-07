@@ -11,12 +11,12 @@
 | Gate | 条件 | 当前证据 | 状态 |
 |---|---|---|---|
 | G0 范围闭环 | 正式功能全部成熟采用或正式淘汰 | 38 个功能入口逐一记录；在线 EGC 和独立候选系统正式否决；未证明默认收益的能力保持默认关闭 | 通过 |
-| G1 正确性 | 全量功能、异常和恢复测试通过；无已知 P0/P1 阻塞逻辑错误 | 归档、轨迹、REV、生命周期和发布检查均有复现测试；最终候选两套宿主全量各 572 项通过 | 通过 |
+| G1 正确性 | 全量功能、异常和恢复测试通过；无已知 P0/P1 阻塞逻辑错误 | 归档、轨迹、REV、生命周期和发布检查均有复现测试；当前候选两套宿主全量各 589 项通过、0 失败 | 通过 |
 | G2 全功能成熟 | 保留入口、模式、启停、恢复、迁移和错误返回与文档一致 | 功能表、默认配置、退役设置、迁移和回退说明已更新并纳入发布清单 | 通过 |
 | G3 效率 | 默认在线开销有证据；重大负优化已处理；收益不夸大 | 默认提示和工具面开销已记录；未证明收益的机制默认关闭；离线重放耗时有界；不宣称净节省 | 通过 |
-| G4 宿主与集成 | 两个声明宿主关键路径通过，声明与实测一致 | `0.2.1-rc.4` 与 `0.2.2-rc.1` 使用隔离工作区和 `fflate 0.8.3`；最终候选全量各 572 项通过 | 通过 |
+| G4 宿主与集成 | 两个声明宿主关键路径通过，声明与实测一致 | `0.2.1-rc.4` 与 `0.2.2-rc.1` 使用隔离工作区和 `fflate 0.8.3`；当前候选全量各 589 项通过，日志首行记录实测宿主版本 | 通过 |
 | G5 安全与可靠性 | 无已知 P0/P1 漏洞、越权或状态破坏；故障注入通过 | 路径、归档、非法参数、乱序、重复结果、未结束写入、共享读取取消和资源释放均有测试 | 通过 |
-| G6 CodeRabbit | 核心 PR 至少三轮有效审查，最终候选与集成复审覆盖 | PR #3、#5、#6 已有各自多轮正式审查；PR #7 在 `3f01736`、`cc9dd30`、`c1b20b5` 完成三轮正式审查，意见已修复 | 通过 |
+| G6 CodeRabbit | 核心 PR 至少三轮有效审查，最终候选与集成复审覆盖 | PR #7 已完成 5 次正式 review，最新覆盖 `0c9d76d`；第 5 轮意见已在本候选修复。覆盖本候选的第 6 轮复审尚未返回 | 待第 6 轮 |
 | G7 实验可信 | 代表试验与离线基线可复现，用量和 `unknown` 口径真实 | 40 会话离线重放、v1.4 两个已授权单元和材料边界已记录；没有独立留出集，不宣称普遍收益 | 通过 |
 | G8 构建与文档 | 安装包、依赖、版本、README、迁移、Release Notes 和回退指南一致 | 发布文档已纳入包清单；最终候选执行 `npm pack`、独立安装、文件清单和插件加载验证 | 通过 |
 | G9 最终统一回归 | 从最终候选 SHA 重跑全套关口 | 对包含本表的最终候选提交执行双宿主全量、发布检查和独立安装 | 通过 |
@@ -43,6 +43,7 @@ $env:DSH_APP='C:/Users/杨铭/Desktop/DSH/real-projects/host-runtime-20261102'
 $env:DSH_PROFILE='C:/Users/杨铭/Documents/DSH Desktop/home/profiles/web'
 $env:DSH_TEST_FASTEDIT_PYTHON='C:/Users/杨铭/Documents/Codex/2026-10-19/wo/outputs/dsh-work-evidence-1.1.0/.fastedit-venv/Scripts/python.exe'
 $env:DSH_TEST_PYTHON='C:/Users/杨铭/Documents/DSH Desktop/runtime/python312/python.exe'
+(Get-Content "$env:DSH_APP/node_modules/@deepseek-ai/dsh-tools/package.json" -Raw | ConvertFrom-Json).version
 node --test
 ```
 
@@ -53,8 +54,11 @@ $env:DSH_APP='C:/Users/杨铭/AppData/Local/Programs/DSH Desktop/dsh-desktop'
 $env:DSH_PROFILE='C:/Users/杨铭/Documents/DSH Desktop/home/profiles/web'
 $env:DSH_TEST_FASTEDIT_PYTHON='C:/Users/杨铭/Documents/Codex/2026-10-19/wo/outputs/dsh-work-evidence-1.1.0/.fastedit-venv/Scripts/python.exe'
 $env:DSH_TEST_PYTHON='C:/Users/杨铭/Documents/DSH Desktop/runtime/python312/python.exe'
+(Get-Content "$env:DSH_APP/node_modules/@deepseek-ai/dsh-tools/package.json" -Raw | ConvertFrom-Json).version
 node --test
 ```
+
+G4 完成前必须同时保留两次运行各自的宿主版本与结果记录。宿主版本取自该宿主 `node_modules/@deepseek-ai/dsh-tools/package.json`，不是 `DSH_APP` 自身的 `package.json`（保存宿主的该文件没有 version 字段）。两次记录的版本相同时，不算覆盖两个受支持版本，必须换用另一版本重跑其中一次。
 
 发布包：
 
