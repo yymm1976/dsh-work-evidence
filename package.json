@@ -1,6 +1,6 @@
 {
   "name": "@local/dsh-work-evidence",
-  "version": "1.0.1-dev.112",
+  "version": "1.1.0",
   "private": true,
   "description": "DSH-native evidence, stable request working sets, history recovery and optional OPS CAS/Java adapters",
   "type": "module",
@@ -11,13 +11,15 @@
     "./icon": "./icon.svg"
   },
   "scripts": {
-    "check": "node --check runtime.mjs && node --check task-flow.mjs"
+    "check": "node scripts/check-syntax.mjs",
+    "test": "node --test"
   },
   "engines": {
     "node": ">=22.19",
-    "dsh": "0.2.1-rc.2 || 0.2.1-rc.3 || 0.2.1-rc.4 || 0.2.1-rc.5"
+    "dsh": "0.2.1-rc.4 || 0.2.2-rc.1"
   },
   "files": [
+    "scripts/check-syntax.mjs",
     "index.mjs",
     "tool-execution.mjs",
     "ultra-effort.mjs",
@@ -80,6 +82,11 @@
     "experiment-cli.mjs",
     "trajectory-audit.mjs",
     "README.md",
+    "RELEASE-NOTES-1.1.0.md",
+    "MIGRATION-1.1.0.md",
+    "ROLLBACK-1.1.0.md",
+    "1.1.0-SCOPE-FREEZE.md",
+    "RELEASE-GATES-1.1.0.md",
     "cordis.patch.yml",
     "locale/*.json",
     "icon.svg",
@@ -94,7 +101,7 @@
     "fflate": "^0.8.3"
   },
   "peerDependencies": {
-    "@deepseek-ai/dsh-session-reference": "0.2.1-rc.2 || 0.2.1-rc.3 || 0.2.1-rc.4 || 0.2.1-rc.5"
+    "@deepseek-ai/dsh-session-reference": "0.2.1-rc.4 || 0.2.2-rc.1"
   },
   "peerDependenciesMeta": {
     "@deepseek-ai/dsh-session-reference": {

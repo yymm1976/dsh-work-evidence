@@ -4,7 +4,8 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import {existsSync} from 'node:fs';
 import {startHost,text,tool} from './helpers/host.mjs';
-const PYTHON='C:/Users/杨铭/Documents/DSH Desktop/runtime/python312/python.exe';
+import {DSH_PYTHON} from './helpers/paths.mjs';
+const PYTHON=DSH_PYTHON;
 const lastValue=o=>JSON.parse(o.messages.findLast(message=>message.role==='tool').content.map(b=>b.text??'').join(''));
 const outputs=host=>host.events.filter(e=>e.type==='tool/result').map(e=>{const body=e.data.message.content.map(b=>b.text??'').join('');try{return JSON.parse(body);}catch{return {text:body,isError:e.data.message.isError};}});
 test('work_exec reuses an exact script version and rejects an ambiguous replacement',async()=>{

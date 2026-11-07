@@ -5,15 +5,16 @@ import path from 'node:path';
 import {existsSync} from 'node:fs';
 import {pathToFileURL} from 'node:url';
 import {startHost,text,tool} from './helpers/host.mjs';
+import {OPS_ROOT} from './helpers/paths.mjs';
 
 // OPS is a profile package, not part of the desktop runtime; skip when it is absent.
-const OPS_ROOT='C:/Users/杨铭/Documents/DSH Desktop/home/profiles/web/node_modules/dsh-ops/lib/components';
-const hasOps=existsSync(OPS_ROOT+'/file/index.js');
-const PYTHON=process.env.DSH_TEST_FASTEDIT_PYTHON??path.resolve(import.meta.dirname,'..','.fastedit-venv','Scripts','python.exe');
+const opsRoot=OPS_ROOT;
+const hasOps=existsSync(opsRoot+'/file/index.js');
+const PYTHON=process.env.DSH_TEST_FASTEDIT_PYTHON||path.resolve(import.meta.dirname,'..','.fastedit-venv','Scripts','python.exe');
 
 async function opsMounts(){
-  const file=await import(pathToFileURL(OPS_ROOT+'/file/index.js').href);
-  const discovery=await import(pathToFileURL(OPS_ROOT+'/discovery/index.js').href);
+  const file=await import(pathToFileURL(opsRoot+'/file/index.js').href);
+  const discovery=await import(pathToFileURL(opsRoot+'/discovery/index.js').href);
   return [[file,{promptPolicy:false,required:true}],[discovery,{enabled:true,alwaysLoaded:['stat','edit_file','write_file'],required:true}]];
 }
 const resultsOf=host=>host.events.filter(e=>e.type==='tool/result').map(e=>JSON.parse(e.data.message.content.map(b=>b.text??'').join('')));

@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import {startHost,text,tool,systemOf} from './helpers/host.mjs';
+import {DSH_PYTHON} from './helpers/paths.mjs';
 import {installStructuredCalls} from '../structured-calls.mjs';
 
 const rootValue=options=>JSON.parse(options.messages.findLast(message=>message.role==='tool').content.map(block=>block.text??'').join('').replace(/\nFile sandbox[^\r\n]*$/u,''));
@@ -70,7 +71,7 @@ test('structured script execution keeps native process output and script-referen
   const host=await startHost({...ptc,pluginConfig:{structuredCalls:true,stepPacing:false},script:(options,n)=>{
     if(n===1)return [tool('run_code',{calls:[{name:'work_exec',arguments:{runtime:'node',code:'console.log(42);'}}],description:'Run a complete program without a JavaScript string wrapper'})];
     results.push(rootValue(options));
-    if(n===2)return [tool('run_code',{calls:[{name:'work_exec',arguments:{runtime:'python',executable:'C:/Users/杨铭/Documents/DSH Desktop/runtime/python312/python.exe',code:'print(42)'}}],description:'Run the existing Python interpreter through the same native tool'})];
+    if(n===2)return [tool('run_code',{calls:[{name:'work_exec',arguments:{runtime:'python',executable:DSH_PYTHON,code:'print(42)'}}],description:'Run the existing Python interpreter through the same native tool'})];
     return [text('42')];
   }});
   try{

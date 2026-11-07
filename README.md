@@ -1,10 +1,10 @@
 # DSH 工程证据插件
 
-当前开发版本为 1.0.1-dev.112，模式策略为 pb001-v39。原 1.0.0 用于真实任务对照。
+当前发布候选版本为 1.1.0，模式策略为 pb001-v39。原 1.0.0 用于真实任务对照。
 桌面加载目录独立维护。运行中的会话采用哪个版本，取决于宿主加载时间。
 插件提供任务指引、观察账本、历史取回和按需工程工具。
 插件直接使用原生 DSH，不依赖 PTC Plus。
-历史说明见 [HISTORY.md](HISTORY.md)。历史结果不代表当前版本的实际效果。
+历史说明见 [HISTORY.md](HISTORY.md)。1.1.0 的改动和边界见 [Release Notes](RELEASE-NOTES-1.1.0.md)、[迁移说明](MIGRATION-1.1.0.md) 和 [回退说明](ROLLBACK-1.1.0.md)。历史结果不代表当前版本的实际效果。
 
 ## 模式与开关
 
@@ -55,7 +55,7 @@ mode 只查询状态。旧的 mode <名称> 和 workspace-mode 命令不再设�
 
 功能状态含义：`off` 表示有效开关关闭；`blocked` 表示缺少配套设置、依赖或插件未启用；`waiting` 表示等待适用档位或任务；`ready` 表示当前可检查的条件已满足。
 例如质量复核须选 Ultra；结构化调用须用原生 TypeScript 函数体运行时；PTC 程序引用须同时开启执行恢复。
-归档读取和 Maven 归档来源还需 `fflate`。`dependencies.archiveDecoder` 显示加载状态，缺失时功能显示 `archive-decoder-unavailable:fflate`，实际读取返回 `ARCHIVE_DECODER_UNAVAILABLE`。
+归档读取和 Maven 归档来源还需 `fflate`。`dependencies.archiveDecoder` 显示加载状态，缺失时功能显示 `archive-decoder-unavailable:fflate`，实际读取返回 `ARCHIVE_DECODER_UNAVAILABLE`。读取成员时会核对目录与本地头的文件名、标志位、压缩方式，以及解压长度和 CRC；不一致时返回不可用，不将截断正文当作完整来源。支持存储、deflate、数据描述符和 ZIP64 目录。
 `fastEditPython` 指向带有所需包的现有 Python 环境，包版本见 `requirements-fastedit.txt`。状态确认运行文件可访问，桥接调用确认包能导入。
 这些状态说明本地可用条件。实际触发、任务质量和资源效果仍按各功能记录判断。
 
@@ -82,7 +82,7 @@ mode 只查询状态。旧的 mode <名称> 和 workspace-mode 命令不再设�
 `responseModelEcho` 在同一 assistant 请求内读取 `source.replayState` 的 `responseModel`；没有消息来源时可读该请求自身 finish chunk 的 replayState，不从相邻请求借用。分别统计已回显、未回显、适配器不支持和未知。该字段通常只在服务商回报名称与请求身份不同时出现，未回显不等于名称相同或记录缺失。输出不含 replay blocks、签名或响应 ID；回显仍只是提供方名称声明，不改变 `modelBuild`，也不证明实际权重。
 工作集的 `candidateAssessment` 保留最近一次完成扫描时各结果的来源、字符数及拒绝或候选原因；上限和未列数量一并显示。`reviewed` 和 `largestRejected` 不复制命令和网址的原文，但计划、指针、恢复正文、详情和原事件仍可能保留这些内容。依赖提取或遍历受限时，依赖数量只是已观察到的下限。恢复记录保留匹配到的原因。记录缺失不表示没有结果，字符数也不代表模型用量或费用。
 同一次请求关联多个 W/Q 标签时只计 1 次消耗；关联量不等于可节省量。重复内部读取不证明正文曾交付给模型，后台状态查询不进入重复正文候选。完整任务结果须另有全部明确要求的审阅依据，单项通过不会自动得到全任务成功结论。
-`constraints` 仅在原用户明确禁止项目外读取，且同一请求内的 `work_exec` 源码同时使用系统临时目录 API 与 `open()` 时，生成项目外临时读取候选。源码可来自内联 `code`、能准确还原的 `scriptRef` 链，或 `runpy.run_path` / `pwsh` Python 命令执行的最近一次完整同名原生 `write`；后续有编辑、无法还原或路径不一致时保持未知。`dir="."`、`dir=ROOT`、`PROJECT_ROOT`、`PROJECT_DIR` 或 `WORKSPACE` 明确指定项目内临时目录时不生成候选。候选按相关调用计数，不等于独立缺陷数。结果中含 `AppData\Local\Temp` 的驱动器路径若存在，仅复制该路径（两种分隔符均可），不复制同一行的其他文本；超过 240 个字符时保留首尾并省略中段，其他临时目录路径不复制。成功运行不打印路径也不排除候选。候选绑定要求、调用和结果序号；`open()` 可能与临时目录无关，仍需人工核对，不阻断操作、不改变任务结果，也不证明完整覆盖。
+`constraints` 在原用户明确禁止项目外读取，且 `work_exec` 或 `pwsh` 的源码同时使用系统临时目录 API 与 `open()`、`.read_bytes()` 或 `.read_text()` 时，生成项目外临时读取候选。源码可来自内联 `code`、能准确还原的 `scriptRef` 链，或 `runpy.run_path` / `pwsh` Python 命令执行的最近一次完整同名原生 `write`；后续有编辑、无法还原或路径不一致时保持未知。`dir="."` 等能确认在项目内的临时目录不生成候选；变量名称本身不能证明位置。候选按相关调用计数，不等于独立缺陷数。结果中含 `AppData\Local\Temp` 的驱动器路径若存在，仅复制该路径（两种分隔符均可），不复制同一行的其他文本；超过 240 个字符时保留首尾并省略中段，其他临时目录路径不复制。成功运行不打印路径也不排除候选。候选绑定要求、调用和结果序号；读取可能与临时目录无关，仍需人工核对，不阻断操作、不改变任务结果，也不证明完整覆盖。
 
 `--assessment assessment.json` 接入调用者提供的要求审阅。文件使用下列格式；`sourceId` 对应审计结果中的原文件地址，事件编号取自该文件：
 
@@ -127,7 +127,10 @@ mode 只查询状态。旧的 mode <名称> 和 workspace-mode 命令不再设�
 `callSeq` 与 `resultSeq` 必须准确对应同一次原生或嵌套调用。相同操作只能列 1 次，同一检查可关联多项要求。`reach` 为审阅者核对的 `addresses`、`misses` 或 `unknown`，分别表示覆盖指定风险、遗漏指定风险和未确定；检查执行成功不等于覆盖风险，覆盖风险也不等于要求已满足。
 输出的 `verification` 保留原调用、结果地址、工具返回状态 `toolOutcome`、命令状态 `processOutcome` 及逐项覆盖。命令状态按已知退出码区分 `exited-zero`、`exited-nonzero` 与 `unknown`，采用结构化退出码或准确关联的宿主生产者结束记录。宿主的 `completed` 表示进程结束，可以携带非零退出码。工具返回成功不能替代命令成功，打印的退出码文字不单独作为依据。两种退出码矛盾时列为来源问题。
 `allListedCriteriaAddressed` 只针对已列要求，不代表完整任务成功。来源不完整、审阅之后有新事件、结果截断、工具结果未知或检查早于对应要求时，有效覆盖保留未知。嵌套工具结果不证明模型收到该结果。该功能沿用离线命令，不新增模型调用、在线提示或自动跳过动作。
-覆盖关系可用 `scopePaths` 声明审阅者判断涉及的文件。检查后这些文件再修改或仍有未结束的写入时，旧覆盖降为 `unknown`，不改判 `misses`。省略路径表示不推断后续有效性；空路径、路径风格不可比或检查后有任意程序执行时，同样保留未知。多个不确定原因会同时列出。注释修改也可能不影响行为，文件范围仍由审阅者限定。
+覆盖关系可用 `scopePaths` 声明审阅者判断涉及的文件。检查后这些文件再修改，或有关写入在检查时仍未结束时，旧覆盖降为 `unknown`，不改判 `misses`。写入开始于检查前也适用。省略路径时，后续修改或未结束的写入使要求视图的有效性变为未知。空路径、路径风格不可比或与检查重叠的任意程序执行，也会使覆盖保留未知。多个不确定原因会同时列出。注释修改也可能不影响行为，文件范围仍由审阅者限定。
+
+`requirements` 按已审阅的要求输出七节点视图：用户要求、来源范围、相关修改、检查执行、结果、当前有效性和交付声明。`supported` 要求当前审阅判定通过，且关联的有效检查成功；命令还须有零退出码。`contradicted` 表示审阅者有事件依据的失败判断。没有关联检查或没有覆盖该要求的检查时可显示 `gap`；有其他当前检查关系时，单个遗漏检查不一定产生 `gap`。来源损坏或结果不足时为 `unknown`；审阅或检查失效时为 `stale`。未声明文件范围的检查之后有修改时，视图不推断该修改与检查无关。相同范围、相同工具及调用参数的较新检查可替代旧检查；未声明范围的检查各按自身标识区分，不会互相替代。无法判断路径归属的修改事件列在 `unresolvedEventSeqs`。交付文本没有经过语义审阅，交付声明保持 `unknown`。视图不会证明完整任务已交付，也不会读取当前磁盘状态。
+写入结果未知或失败且未明确报告无副作用时，相关检查的有效性保持未知。事件是否属于实际文件修改仍需核对。
 
 同一个审阅文件可附 `scopeReviews`，记录单次文件修改与原要求的关系。例如：
 
@@ -150,7 +153,7 @@ mode 只查询状态。旧的 mode <名称> 和 workspace-mode 命令不再设�
 
 每项只绑定一次文件操作和一个路径。调用、结果、要求和依赖编号必须属于所选会话；用户要求和依赖依据都必须早于操作，不能用被审调用或其结果自证。`declaredRelation` 可为 `direct-requirement`、`necessary-dependency`、`unsupported` 或 `unknown`。只有 `direct-requirement` 必须附用户要求；`necessary-dependency` 须附依赖依据，否则有效关系为未知。`unsupported` 和 `unknown` 可以没有两类依据。`unsupported` 表示审阅者没有找到支持依据，不表示违规；若同时填写任一类支持依据，声明仍保留，但有效关系以 `unknown` 和 `conflicting-support-basis` 标注冲突。
 
-输出的 `changeScopeReviews` 保留历史审阅判断及来源。来源在审阅后新增事件时顶层状态为 `stale`，来源破损时为 `incomplete-source`，不会继续显示为现行 `reviewed`。文件操作、路径或效果不能确认时，有效关系为 `unknown`；程序内部直接写入不自动算作已记录的逐文件效果。后续文件变化影响当前适用性，不自动否定历史判断。已审阅声明和可匹配的已记录修改分别计数；该结果不证明全部文件效果已被观察，也不改变任务结果。
+输出的 `changeScopeReviews` 保留历史审阅判断及来源。来源在审阅后新增事件时顶层状态为 `stale`，来源破损时为 `incomplete-source`，不会继续显示为现行 `reviewed`。文件操作、路径或效果不能确认时，有效关系为 `unknown`；程序内部直接写入不自动算作已记录的逐文件效果。后续文件变化、效果未知的相关写入、未结束的相关操作或后续用户要求使当前适用性变为未知，不自动否定历史判断。已审阅声明和可匹配的已记录修改分别计数；该结果不证明全部文件效果已被观察，也不改变任务结果。
 
 同一个审阅文件可附 `judgmentReviews`，关联原助手判断、反证和后续替代声明。例如：
 
@@ -370,9 +373,11 @@ OPS 的预览和失败修改不作为成功片段。ops_read_files 与 ops_inspe
 复核返回空问题列表只表示没有报告可证实缺口，不证明交付正确。
 复核意见注明引用编号是会话事件。已有原文可直接核对；需要补取时使用 `work_recall({kind:"event",seq:事件编号})`。
 
-completionNotice 独立控制阶段摘要后的继续提醒，默认开启。
+completionNotice 独立控制阶段摘要后的继续提醒，默认关闭。显式开启后，触发时增加一次主模型请求。
 插件启用的档位均可使用。提醒要求模型继续已授权且能执行的工作。
 用户暂停、等待用户决定或存在阻碍时结束。“下一步：无”不触发提醒。
+明确只要求制定计划或方案时，不将计划中的下一步当作继续执行的授权；同时明确要求实施时仍可继续。“只按计划修改”“仅方案B”这类把计划、方案当名词使用的要求照常继续。用户确认之后才执行的表述（如“等我确认后再实施”“制定计划并经用户确认后执行”）视为暂停；明确说明不必等待确认时照常继续。该判断基于有限的文字模式，不能识别所有表达。
+代码围栏中的阶段摘要和下一步作为示例处理，不触发继续提醒。
 提醒和质量复核使用各自的状态，不互相替代。
 
 ## 用量与参考费用
@@ -490,7 +495,7 @@ FastEdit Python 路径由 fastEditPython 设置。
 ```js
 await tools.work_status({config: {
   aggressiveMode: true,
-  completionNotice: true,
+  completionNotice: false,
   qualityReview: false,
   qualityReviewEffort: 'auto',
   qualityReviewScope: 'auto',
@@ -534,14 +539,14 @@ stubSummary 保留问题处理标记、事件指针和原文取回。
 
 ## 开发与桌面加载
 
-开发目录：C:/Users/杨铭/Documents/Codex/2026-10-19/wo/outputs/dsh-work-evidence。
-桌面加载目录：C:/Users/杨铭/Documents/DSH Desktop/home/tools/dsh-work-evidence。
+开发目录：当前仓库根目录。测试和实验工具可使用 `DSH_APP`、`DSH_PROFILE`、`DSH_TEST_PYTHON` 指向本机运行时和可选组件。
+桌面加载目录：由桌面 profile 决定。需要同步时使用 `node sync-desktop.mjs`，不要写死本机绝对路径。
 桌面 web profile 的包依赖和目录联接指向加载目录。
 加载目录保存独立源码与 Python 环境；宿主依赖来自已安装的桌面运行时。
 插件直接引用桌面宿主提供的 `@deepseek-ai/dsh-llm`、`@deepseek-ai/cordis`、DSH PTC 运行时和应用启动模块。`dsh-ops` 只用于可选来源和精确编辑适配器，不是核心历史与交接功能的必需依赖。
 修改开发目录不会自动更新桌面加载目录。
-同步使用 node sync-desktop.mjs。正在运行的会话是否采用新代码取决于宿主生命周期。
-node sync-desktop.mjs --code-only 同步包内代码与说明，并修正独立目录的加载联接及锁文件路径。
+同步使用 `node sync-desktop.mjs`。正在运行的会话是否采用新代码取决于宿主生命周期。
+`node sync-desktop.mjs --code-only` 同步包内代码与说明，并修正独立目录的加载联接及锁文件路径。
 该选项保留桌面模型配置、依赖环境及 Python 环境。
 
 index.mjs 负责组装和会话事件。
@@ -549,9 +554,11 @@ plugin-command.mjs 负责命令；source-tools.mjs 负责源码和报告入口�
 
 当前开发版已在本机桌面宿主运行时独立加载声明的发布文件，并完成来源读取、结构化调用、保留计算、程序引用、精确编辑、交接及关闭后的原生读取。`node --test test/host-package-load.test.mjs test/host-workflow-combinations.test.mjs` 覆盖这些路径；`node --test test/trajectory-audit.test.mjs` 覆盖审计行为。宿主核对使用脚本化模型，需要本机 DSH Desktop 运行时、现有 OPS 组件和配套 Python 环境，不调用在线模型。`test/helpers/host.mjs` 可用 `DSH_APP` 指定桌面运行时目录。当前结果不表示桌面目录已加载开发版，也不证明每项模型质量和费用效果。
 
-当前安装的桌面运行时 `dsh-tools@0.2.2-rc.1` 已移除 `mode` 配置。dev.107 增加 `tool-execution.mjs` 的批量执行兼容与 `toolModeFor`，并让测试宿主按版本挂载拆分执行器；旧运行时保持原行为。dev.109 修完新宿主的主要适配点：批量执行不再把内部执行写成会话事件，内部嵌套调用保留 `parent` 并走所选执行器的 pipeline，`systemPrompt.assemble` 的包装按 Cordis 真实服务去重，工具面声明改为幂等，并给仍读取 waterfall 工具列表的 OPS 组件补上只读 shim。dev.111 核对出先前记录的 OPS PTC 缺口其实是用例启动竞态：OPS 异步发布作用域定义，用例等待原生工具可见及 PTC SDK 出现后再发送，两个 OPS 复核用例在新旧宿主均通过。dev.111 时当前安装版全量测试 514/514 通过，0 失败、0 跳过。标准验证仍需设置 `DSH_APP=C:/Users/杨铭/Desktop/DSH/real-projects/host-runtime-20261102`，指向 2026-11-02 保存的宿主运行时；插件全量 514/514 在该运行时复验通过。桌面配置没有改动。
+运行完整测试时，Java 精确编辑检查需要能导入 `requirements-fastedit.txt` 所列依赖的 Python。将 `DSH_TEST_FASTEDIT_PYTHON` 设置为该解释器的绝对路径；未设置或设为空时，测试使用开发目录的 `.fastedit-venv/Scripts/python.exe`。
 
-dev.112 处理 PR #2 首次 CodeRabbit 审查中仍有效的问题：stub 摘要的 applied 效果改为在 `compaction/end` 确认提交后记录，拒绝时记 failed；恢复观测记录时把旧的 `compactionHandoff` 摘要决策和结果修复决策分别归入 `stubSummary`、`finalJsonResult`；尚无主请求时产生的决策在 agent 释放前持久化，恢复时按决策 id 去重；轨迹审计不再把路径后的 `token=...` 写入证据，能识别带引号（含空格）的 Python 脚本参数，失败或未确认的 edit 不再遮蔽此前完整写入的脚本，临时目录只有逐调用证明在项目内时才排除；源码解析尝试失败记 failed、运行时缺失记 unavailable、Maven 坐标拒绝记 failed，archive member 读取也记录解析结果；用户点名但未声明“已安装”的解释器路径失败后，不再建议改用 PATH。修复后当前安装版全量测试 522/522 通过，0 失败、0 跳过；保存运行时同样 522/522 通过。桌面配置没有改动。
+当前安装的桌面运行时 `dsh-tools@0.2.2-rc.1` 已移除 `mode` 配置。1.1.0 保留 `tool-execution.mjs` 的批量执行兼容与 `toolModeFor`，并让测试宿主按版本挂载拆分执行器；旧运行时保持原行为。1.1.0 只声明实际验证过的 `dsh-tools@0.2.1-rc.4` 和 `0.2.2-rc.1`。开发过程中记录的历史 514/514、522/522 等结果属于旧版本，不是 1.1.0 的最终验收。
+
+1.1.0 修复了无版本归档的同长度陈旧缓存、归档解码截断和本地头不一致，乱序/重复事件、非法参数崩溃、未结束写入的证据失效，以及会话状态回收。归档读取使用受限原生 deflate 解码并核对实际解压长度、压缩长度、CRC、目录和本地头；双宿主最终结果见集成分支验收记录。1.1.0 不宣称历史去除建议带来的 Token 净收益，不把测试通过或字符缩减当作发布效果。
 
 `dsh-work-evidence --help` 列出审计和实验命令。`pair --off SESSION_ID --on SESSION_ID --task TASK_KEY --context KEY` 导入并比较两个已有会话；`show --run RUN_ID` 读取一份实验记录；`label --session SESSION_ID --file assessment.json` 保存带来源的人工判断。实验命令不自动调用模型。
 
@@ -562,10 +569,7 @@ dev.112 处理 PR #2 首次 CodeRabbit 审查中仍有效的问题：stub 摘要
 正式实验使用 auto/deepseek-v4.1-flash / max。新增效率候选须解决已观察到的重复传输或实际交付问题；不重复启动没有新机制的提示词、经验注入或压缩候选。
 正确读取、拒绝错误修改和状态准确按各自用途判断。Token 与完整参考费用单独核算；缓存正文可能比新交接便宜。Ultra 行为保留。
 比较结果、采用条件和未完事项分别记录在现行迭代实验页与功能核查页。
-本机现行交接位于 C:/Users/杨铭/Desktop/DSH/Codex-2026-10-23/outputs/Work-Evidence-当前交接-2026-10-31.md；该文件不随公开仓库上传。
-旧运行目录清理后，历史说明里的原始记录路径可能已不可用。
-
-费用比较和未证实的效果见同目录的 Work-Evidence-功能核查-2026-11.md 和 Work-Evidence-迭代实验-2026-11.md。
+私人交接、原始会话和本机实验记录不进入公开仓库，也不在本文提供绝对路径。公开版本只保留可复现的方法、汇总结果和证据边界。
 
 ## GitHub PR 开发与 CodeRabbit 审查规范
 

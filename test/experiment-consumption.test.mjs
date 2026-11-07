@@ -12,6 +12,7 @@ import {trialsFor,compareTrials} from '../experiment-cli.mjs';
 import {nativeChildInventory,importSession} from '../experiment-native.mjs';
 import {summarizeAttempts} from '../experiment-attempts.mjs';
 import {startHost,text} from './helpers/host.mjs';
+import {DSH_APP} from './helpers/paths.mjs';
 import {createEffectObserver} from '../effect-observer.mjs';
 
 const usage=total=>({inputTokens:total-10,cacheReadTokens:0,cacheWriteTokens:0,outputTokens:10,totalTokens:total});
@@ -112,7 +113,7 @@ test('explicit file import and readRun retain session accounting without upgradi
   await fs.writeFile(file,JSON.stringify({sessionId:f.sessionId,workspace:folder,events:f.events}));
   await fs.writeFile(observations,f.rows.map(row=>JSON.stringify(row)).join('\n')+'\n');
   const imported=await importSession({directory:folder,sessionId:f.sessionId,variant:'work-evidence',file,observations,
-    home:folder,app:'C:/Users/杨铭/AppData/Local/Programs/DSH Desktop/dsh-desktop'});
+    home:folder,app:DSH_APP});
   const saved=await readRun(path.join(folder,imported.runId));assert.equal(saved.requestAccounting.complete,true);
   assert.equal(saved.preset,'ptc');assert.equal(saved.recordedPluginAvailability,null);
   assert.equal(saved.variantSource,'operator-label','A shared PTC preset does not prove the plugin was disabled.');

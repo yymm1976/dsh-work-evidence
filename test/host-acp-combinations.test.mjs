@@ -4,8 +4,9 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import {pathToFileURL} from 'node:url';
 import {startHost,text,tool,requestText} from './helpers/host.mjs';
+import {ACP_ENTRY} from './helpers/paths.mjs';
 
-const acpFile='C:/Users/杨铭/Documents/DSH Desktop/home/profiles/web/node_modules/billion-context-dsh/dist/index.js';
+const acpFile=ACP_ENTRY;
 const source=(tag,count)=>Array.from({length:count},(_,line)=>`${tag} row ${line} `+'q'.repeat(100)).join('\n');
 const read=file=>tool('run_code',{code:'console.log(JSON.stringify(await tools.read('+JSON.stringify({file_path:file})+')));',description:'Read the required source'});
 

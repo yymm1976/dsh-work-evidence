@@ -34,7 +34,8 @@ function buildZip(entries) {
     const name = Buffer.from(item.name, 'utf8');
     const source = Buffer.from(item.data);
     const method = item.method ?? 0;
-    const packed = method === 8 ? deflateRawSync(source) : source;
+    const compressed = method === 8 ? deflateRawSync(source) : source;
+    const packed = item.padding ? Buffer.concat([compressed, item.padding]) : compressed;
     const checksum = crc32(source);
     const flags = 0x0800;
 
@@ -387,6 +388,483 @@ test('archive entry reading supports stored and deflate compression', async t =>
   assert.equal(deflated.state, 'observed');
   assert.equal(deflated.text, 'repeat me\n'.repeat(40));
   assert.equal(deflated.lines.length, 40);
+});
+
+test('archive entries with understated decoded size are not reported as complete', async t => {
+  const directory = await temporaryDirectory(t);
+  const archive = 'understated.zip';
+  const zip = buildZip([{name: 'source.txt', data: 'abcdefghijk', method: 8}]);
+  const central = zip.indexOf(Buffer.from([0x50, 0x4b, 0x01, 0x02]));
+  assert.notEqual(central, -1);
+  zip.writeUInt32LE(2, 22);
+  zip.writeUInt32LE(2, central + 24);
+  zip.writeUInt32LE(crc32(Buffer.from('ab')), 14);
+  zip.writeUInt32LE(crc32(Buffer.from('ab')), central + 16);
+  await fs.writeFile(path.join(directory, archive), zip);
+
+  const result = await readArchiveEntry(directory, archive, 'source.txt', archiveExec(directory));
+  assert.equal(result.state, 'unavailable');
+});
+
+test('archive entry reads reject an incorrect checksum', async t => {
+  const directory = await temporaryDirectory(t);
+  for (const method of [0, 8]) {
+    const archive = `checksum-${method}.zip`;
+    const zip = buildZip([{name: 'source.txt', data: 'intact', method}]);
+    const central = zip.indexOf(Buffer.from([0x50, 0x4b, 0x01, 0x02]));
+    zip.writeUInt32LE(0, 14);
+    zip.writeUInt32LE(0, central + 16);
+    await fs.writeFile(path.join(directory, archive), zip);
+    const result = await readArchiveEntry(directory, archive, 'source.txt', archiveExec(directory));
+    assert.equal(result.state, 'unavailable');
+    assert.equal(result.code, 'ARCHIVE_ENTRY_CHECKSUM_MISMATCH');
+  }
+});
+
+test('archive entry reads reject local sizes or checksum that conflict with the directory', async t => {
+  const directory = await temporaryDirectory(t);
+  const cases = [
+    {name: 'checksum', offset: 14},
+    {name: 'compressed-size', offset: 18},
+    {name: 'original-size', offset: 22}
+  ];
+  for (const item of cases) {
+    const archive = `${item.name}.zip`;
+    const zip = buildZip([{name: 'source.txt', data: 'intact', method: 8}]);
+    zip.writeUInt32LE(zip.readUInt32LE(item.offset) + 1, item.offset);
+    await fs.writeFile(path.join(directory, archive), zip);
+    const result = await readArchiveEntry(directory, archive, 'source.txt', archiveExec(directory));
+    assert.equal(result.state, 'unavailable', item.name);
+  }
+});
+
+test('archive entry reads accept data descriptors after compressed data', async t => {
+  const directory = await temporaryDirectory(t);
+  const archive = 'descriptor.zip';
+  const zip = buildZip([{name: 'source.txt', data: 'descriptor content', method: 8}]);
+  const centralOffset = zip.indexOf(Buffer.from([0x50, 0x4b, 0x01, 0x02]));
+  const local = Buffer.from(zip.subarray(0, centralOffset));
+  const central = Buffer.from(zip.subarray(centralOffset, zip.length - 22));
+  const descriptor = Buffer.alloc(16);
+  descriptor.writeUInt32LE(0x08074b50, 0);
+  descriptor.writeUInt32LE(central.readUInt32LE(16), 4);
+  descriptor.writeUInt32LE(central.readUInt32LE(20), 8);
+  descriptor.writeUInt32LE(central.readUInt32LE(24), 12);
+  local.writeUInt16LE(local.readUInt16LE(6) | 8, 6);
+  local.fill(0, 14, 26);
+  central.writeUInt16LE(central.readUInt16LE(8) | 8, 8);
+  const end = Buffer.from(zip.subarray(zip.length - 22));
+  end.writeUInt32LE(centralOffset + descriptor.length, 16);
+  await fs.writeFile(path.join(directory, archive), Buffer.concat([local, descriptor, central, end]));
+
+  const result = await readArchiveEntry(directory, archive, 'source.txt', archiveExec(directory));
+  assert.equal(result.state, 'observed');
+  assert.equal(result.text, 'descriptor content');
+});
+
+test('archive entry reads support ZIP64 directory sizes and offsets', async t => {
+  const directory = await temporaryDirectory(t);
+  const archive = 'zip64.zip';
+  const zip = buildZip([{name: 'source.txt', data: 'zip64 content', method: 8}]);
+  const centralOffset = zip.indexOf(Buffer.from([0x50, 0x4b, 0x01, 0x02]));
+  const endOffset = zip.length - 22;
+  const central = Buffer.from(zip.subarray(centralOffset, endOffset));
+  const compressedSize = central.readUInt32LE(20), originalSize = central.readUInt32LE(24);
+  const extra = Buffer.alloc(28);
+  extra.writeUInt16LE(1, 0);
+  extra.writeUInt16LE(24, 2);
+  extra.writeBigUInt64LE(BigInt(originalSize), 4);
+  extra.writeBigUInt64LE(BigInt(compressedSize), 12);
+  extra.writeBigUInt64LE(0n, 20);
+  central.writeUInt32LE(0xffffffff, 20);
+  central.writeUInt32LE(0xffffffff, 24);
+  central.writeUInt32LE(0xffffffff, 42);
+  central.writeUInt16LE(extra.length, 30);
+  const zip64End = Buffer.alloc(56);
+  zip64End.writeUInt32LE(0x06064b50, 0);
+  zip64End.writeBigUInt64LE(44n, 4);
+  zip64End.writeUInt16LE(45, 12);
+  zip64End.writeUInt16LE(45, 14);
+  zip64End.writeBigUInt64LE(1n, 24);
+  zip64End.writeBigUInt64LE(1n, 32);
+  zip64End.writeBigUInt64LE(BigInt(central.length + extra.length), 40);
+  zip64End.writeBigUInt64LE(BigInt(centralOffset), 48);
+  const locator = Buffer.alloc(20);
+  locator.writeUInt32LE(0x07064b50, 0);
+  locator.writeBigUInt64LE(BigInt(centralOffset + central.length + extra.length), 8);
+  locator.writeUInt32LE(1, 16);
+  const end = Buffer.from(zip.subarray(endOffset));
+  end.writeUInt16LE(0xffff, 8);
+  end.writeUInt16LE(0xffff, 10);
+  end.writeUInt32LE(0xffffffff, 12);
+  end.writeUInt32LE(0xffffffff, 16);
+  await fs.writeFile(path.join(directory, archive), Buffer.concat([zip.subarray(0, centralOffset), central, extra, zip64End, locator, end]));
+
+  const result = await readArchiveEntry(directory, archive, 'source.txt', archiveExec(directory));
+  assert.equal(result.state, 'observed');
+  assert.equal(result.text, 'zip64 content');
+});
+
+test('archive entry reads validate ZIP64 sizes in the local header', async t => {
+  const directory = await temporaryDirectory(t);
+  const zip = buildZip([{name: 'source.txt', data: 'zip64 local content', method: 8}]);
+  const centralOffset = zip.indexOf(Buffer.from([0x50, 0x4b, 0x01, 0x02]));
+  const localNameEnd = 30 + zip.readUInt16LE(26);
+  const extra = Buffer.alloc(20);
+  extra.writeUInt16LE(1, 0);
+  extra.writeUInt16LE(16, 2);
+  extra.writeBigUInt64LE(BigInt(zip.readUInt32LE(22)), 4);
+  extra.writeBigUInt64LE(BigInt(zip.readUInt32LE(18)), 12);
+  const local = Buffer.from(zip.subarray(0, localNameEnd));
+  local.writeUInt32LE(0xffffffff, 18);
+  local.writeUInt32LE(0xffffffff, 22);
+  local.writeUInt16LE(extra.length, 28);
+  const end = Buffer.from(zip.subarray(zip.length - 22));
+  end.writeUInt32LE(centralOffset + extra.length, 16);
+  const contents = Buffer.concat([local, extra, zip.subarray(localNameEnd, zip.length - 22), end]);
+  for (const [archive, mismatch] of [['local-zip64.zip', false], ['mismatch-zip64.zip', true]]) {
+    const fixture = Buffer.from(contents);
+    if (mismatch) fixture.writeBigUInt64LE(1n, localNameEnd + 4);
+    await fs.writeFile(path.join(directory, archive), fixture);
+    const result = await readArchiveEntry(directory, archive, 'source.txt', archiveExec(directory));
+    assert.equal(result.state, mismatch ? 'unavailable' : 'observed');
+    if (!mismatch) assert.equal(result.text, 'zip64 local content');
+  }
+});
+
+test('ZIP64 entry sizes work without a ZIP64 end record', async t => {
+  const directory = await temporaryDirectory(t);
+  const archive = 'entry-zip64.zip';
+  const zip = buildZip([
+    {name: 'source.txt', data: 'zip64 entry', method: 8},
+    {name: 'small.txt', data: 'small'}
+  ]);
+  const centralOffset = zip.indexOf(Buffer.from([0x50, 0x4b, 0x01, 0x02]));
+  const endOffset = zip.length - 22;
+  const firstLength = 46 + zip.readUInt16LE(centralOffset + 28) + zip.readUInt16LE(centralOffset + 30) +
+    zip.readUInt16LE(centralOffset + 32);
+  const first = Buffer.from(zip.subarray(centralOffset, centralOffset + firstLength));
+  const extra = Buffer.alloc(28);
+  extra.writeUInt16LE(1, 0);
+  extra.writeUInt16LE(24, 2);
+  extra.writeBigUInt64LE(BigInt(first.readUInt32LE(24)), 4);
+  extra.writeBigUInt64LE(BigInt(first.readUInt32LE(20)), 12);
+  extra.writeBigUInt64LE(BigInt(first.readUInt32LE(42)), 20);
+  first.writeUInt32LE(0xffffffff, 20);
+  first.writeUInt32LE(0xffffffff, 24);
+  first.writeUInt32LE(0xffffffff, 42);
+  first.writeUInt16LE(extra.length, 30);
+  const rest = zip.subarray(centralOffset + firstLength, endOffset);
+  const end = Buffer.from(zip.subarray(endOffset));
+  end.writeUInt32LE(first.length + extra.length + rest.length, 12);
+  await fs.writeFile(path.join(directory, archive), Buffer.concat([
+    zip.subarray(0, centralOffset), first, extra, rest, end
+  ]));
+
+  const listed = await listArchiveEntries(directory, archive, archiveExec(directory));
+  assert.equal(listed.state, 'observed');
+  assert.deepEqual(listed.entries, ['source.txt', 'small.txt']);
+  const result = await readArchiveEntry(directory, archive, 'small.txt', archiveExec(directory));
+  assert.equal(result.state, 'observed');
+  assert.equal(result.text, 'small');
+});
+
+test('legacy ZIP directories can contain 65535 entries without a ZIP64 locator', async t => {
+  const directory = await temporaryDirectory(t);
+  const archive = 'many-entries.zip';
+  const entries = Array.from({length: 65535}, (_, index) => ({name: `${index}.txt`, data: ''}));
+  await fs.writeFile(path.join(directory, archive), buildZip(entries));
+
+  const result = await readArchiveEntry(directory, archive, '65534.txt', archiveExec(directory));
+  assert.equal(result.state, 'observed');
+  assert.equal(result.text, '');
+});
+
+test('archive entry reads reject end-of-central-directory signatures in archive comments', async t => {
+  const directory = await temporaryDirectory(t);
+  const archive = 'ambiguous-comment.zip';
+  const base = buildZip([{name: 'source.txt', data: 'safe'}]);
+  const endOffset = base.length - 22;
+  const end = Buffer.from(base.subarray(endOffset));
+  const comment = Buffer.alloc(30);
+  comment.writeUInt32LE(0x06054b50, 0);
+  comment.writeUInt16LE(1, 8);
+  comment.writeUInt16LE(1, 10);
+  end.writeUInt16LE(comment.length, 20);
+  await fs.writeFile(path.join(directory, archive), Buffer.concat([base.subarray(0, endOffset), end, comment]));
+
+  const result = await readArchiveEntry(directory, archive, 'source.txt', archiveExec(directory));
+  assert.equal(result.state, 'unavailable');
+  assert.equal(result.code, 'ARCHIVE_DIRECTORY_INVALID');
+});
+
+test('a comment that is only the end-of-central-directory signature is reported ambiguous', async t => {
+  const directory = await temporaryDirectory(t);
+  const archive = 'ambiguous-short-comment.zip';
+  const base = buildZip([{name: 'source.txt', data: 'safe'}]);
+  const endOffset = base.length - 22;
+  const end = Buffer.from(base.subarray(endOffset));
+  const comment = Buffer.alloc(4);
+  comment.writeUInt32LE(0x06054b50, 0);
+  end.writeUInt16LE(comment.length, 20);
+  await fs.writeFile(path.join(directory, archive), Buffer.concat([base.subarray(0, endOffset), end, comment]));
+
+  const result = await readArchiveEntry(directory, archive, 'source.txt', archiveExec(directory));
+  assert.equal(result.state, 'unavailable');
+  assert.equal(result.code, 'ARCHIVE_DIRECTORY_AMBIGUOUS');
+});
+
+test('trailing bytes after a valid deflate stream fail the compressed-size check', async t => {
+  const directory = await temporaryDirectory(t);
+  const archive = 'padded-deflate.zip';
+  const source = 'safe payload for the padded deflate check';
+  await fs.writeFile(path.join(directory, archive), buildZip([
+    {name: 'source.txt', data: source, method: 8, padding: Buffer.from([0, 0, 0, 0])}
+  ]));
+
+  const result = await readArchiveEntry(directory, archive, 'source.txt', archiveExec(directory));
+  assert.equal(result.state, 'unavailable');
+  assert.equal(result.code, 'ARCHIVE_ENTRY_SIZE_MISMATCH');
+});
+
+test('an unversioned archive is reread when its contents change without a size change', async t => {
+  const fixture = await makeArchive(t, [{name: 'source.txt', data: 'before'}]);
+  const stat = fixture.exec.nativeFiles.stat;
+  fixture.exec.nativeFiles.stat = async (...args) => ({...await stat(...args), version: null});
+  const first = await readArchiveEntry(fixture.directory, fixture.archive, 'source.txt', fixture.exec);
+  assert.equal(first.text, 'before');
+  await fs.writeFile(path.join(fixture.directory, fixture.archive), buildZip([{name: 'source.txt', data: 'after!'}]));
+  const second = await readArchiveEntry(fixture.directory, fixture.archive, 'source.txt', fixture.exec);
+  assert.equal(second.state, 'observed');
+  assert.equal(second.text, 'after!');
+  assert.equal(second.cache.hit, false);
+});
+
+test('concurrent unversioned archive reads do not share a pending read', async t => {
+  const fixture = await makeArchive(t, [{name: 'source.txt', data: 'before'}]);
+  const stat = fixture.exec.nativeFiles.stat;
+  let statCount = 0;
+  let bothStated;
+  const bothStats = new Promise(resolve => { bothStated = resolve; });
+  fixture.exec.nativeFiles.stat = async (...args) => {
+    const result = await stat(...args);
+    if (++statCount === 2) bothStated();
+    return {...result, version: null};
+  };
+  const readBytes = fixture.exec.nativeFiles.readBytes;
+  let readCount = 0;
+  let releaseReads;
+  const gate = new Promise(resolve => { releaseReads = resolve; });
+  fixture.exec.nativeFiles.readBytes = async (...args) => {
+    readCount++;
+    await gate;
+    return readBytes(...args);
+  };
+  const reads = [
+    readArchiveEntry(fixture.directory, fixture.archive, 'source.txt', fixture.exec),
+    readArchiveEntry(fixture.directory, fixture.archive, 'source.txt', fixture.exec)
+  ];
+  await bothStats;
+  await new Promise(resolve => setImmediate(resolve));
+  releaseReads();
+  const results = await Promise.all(reads);
+  assert.equal(readCount, 2);
+  assert.deepEqual(results.map(result => result.cache?.hit), [false, false]);
+  assert.deepEqual(results.map(result => result.text), ['before', 'before']);
+});
+
+test('a versioned archive read retries after the sharing caller is cancelled', async t => {
+  const fixture = await makeArchive(t, [{name: 'source.txt', data: 'before'}]);
+  const stat = fixture.exec.nativeFiles.stat;
+  let statCount = 0;
+  let bothStated;
+  const bothStats = new Promise(resolve => { bothStated = resolve; });
+  fixture.exec.nativeFiles.stat = async (...args) => {
+    const result = await stat(...args);
+    if (++statCount === 2) bothStated();
+    return result;
+  };
+  const readBytes = fixture.exec.nativeFiles.readBytes;
+  let readCount = 0;
+  let firstStarted;
+  const firstRead = new Promise(resolve => { firstStarted = resolve; });
+  fixture.exec.nativeFiles.readBytes = async (...args) => {
+    const signal = args[2];
+    if (++readCount > 1) return readBytes(...args);
+    firstStarted();
+    return new Promise((resolve, reject) => {
+      const abort = () => reject(signal.reason ?? Object.assign(new Error('aborted'), {name: 'AbortError'}));
+      signal?.addEventListener('abort', abort, {once: true});
+    });
+  };
+
+  const controller = new AbortController();
+  const creator = readArchiveEntry(fixture.directory, fixture.archive, 'source.txt', {
+    ...fixture.exec,
+    signal: controller.signal
+  });
+  await firstRead;
+  const joiner = readArchiveEntry(fixture.directory, fixture.archive, 'source.txt', fixture.exec);
+  await bothStats;
+  await new Promise(resolve => setImmediate(resolve));
+  controller.abort();
+
+  await assert.rejects(creator, {name: 'AbortError'});
+  const result = await joiner;
+  assert.equal(result.state, 'observed');
+  assert.equal(result.text, 'before');
+  assert.equal(result.cache.hit, false);
+  assert.equal(readCount, 2);
+});
+
+test('a cancelled archive joiner releases its slot before the creator finishes', async t => {
+  const fixture = await makeArchive(t, [{name: 'source.txt', data: 'before'}]);
+  await fs.writeFile(path.join(fixture.directory, 'other.zip'), buildZip([{name: 'other.txt', data: 'other'}]));
+  const stat = fixture.exec.nativeFiles.stat;
+  const readBytes = fixture.exec.nativeFiles.readBytes;
+  let openStats = 0;
+  let bothStated;
+  const bothStats = new Promise(resolve => { bothStated = resolve; });
+  fixture.exec.nativeFiles.stat = async (...args) => {
+    const result = await stat(...args);
+    if (++openStats === 2) bothStated();
+    return result;
+  };
+  let firstStarted;
+  let releaseFirst;
+  const firstRead = new Promise(resolve => { firstStarted = resolve; });
+  const firstGate = new Promise(resolve => { releaseFirst = resolve; });
+  t.after(() => releaseFirst());
+  fixture.exec.nativeFiles.readBytes = async (...args) => {
+    if (args[1].endsWith('fixture.zip')) {
+      firstStarted();
+      await firstGate;
+    }
+    return readBytes(...args);
+  };
+
+  const creator = readArchiveEntry(fixture.directory, fixture.archive, 'source.txt', fixture.exec);
+  await firstRead;
+  const controller = new AbortController();
+  const joiner = readArchiveEntry(fixture.directory, fixture.archive, 'source.txt', {
+    ...fixture.exec,
+    signal: controller.signal
+  });
+  await bothStats;
+  await new Promise(resolve => setImmediate(resolve));
+  const third = readArchiveEntry(fixture.directory, 'other.zip', 'other.txt', fixture.exec);
+  await new Promise(resolve => setImmediate(resolve));
+  controller.abort();
+  await assert.rejects(joiner, {name: 'AbortError'});
+
+  let timer;
+  const thirdResult = await Promise.race([
+    third,
+    new Promise((_, reject) => {
+      timer = setTimeout(() => reject(new Error('archive slot was not released')), 1000);
+    })
+  ]);
+  clearTimeout(timer);
+  assert.equal(thirdResult.state, 'observed');
+  assert.equal(thirdResult.text, 'other');
+  releaseFirst();
+  const creatorResult = await creator;
+  assert.equal(creatorResult.state, 'observed');
+  assert.equal(creatorResult.text, 'before');
+});
+
+test('archive reads reject a version change before their bytes are read', async t => {
+  const fixture = await makeArchive(t, [{name: 'source.txt', data: 'before'}]);
+  const stat = fixture.exec.nativeFiles.stat;
+  const readBytes = fixture.exec.nativeFiles.readBytes;
+  fixture.exec.nativeFiles.stat = async (...args) => ({...await stat(...args), version: 'before-version'});
+  fixture.exec.nativeFiles.readBytes = async (...args) => ({...await readBytes(...args), version: 'after-version'});
+
+  const result = await readArchiveEntry(fixture.directory, fixture.archive, 'source.txt', fixture.exec);
+  assert.equal(result.state, 'unavailable');
+  assert.equal(result.code, 'ARCHIVE_CHANGED');
+});
+
+test('an archive whose final version changes is not left in the cache', async t => {
+  const fixture = await makeArchive(t, [{name: 'source.txt', data: 'before'}]);
+  const stat = fixture.exec.nativeFiles.stat;
+  const readBytes = fixture.exec.nativeFiles.readBytes;
+  let mode = 'initial';
+  let statCount = 0;
+  fixture.exec.nativeFiles.stat = async (...args) => {
+    const result = await stat(...args);
+    const version = mode === 'initial' ? (++statCount === 2 ? 'changed-version' : 'before-version') : 'before-version';
+    return {...result, version};
+  };
+  fixture.exec.nativeFiles.readBytes = async (...args) => ({...await readBytes(...args), version: 'before-version'});
+
+  const first = await readArchiveEntry(fixture.directory, fixture.archive, 'source.txt', fixture.exec);
+  assert.equal(first.code, 'ARCHIVE_CHANGED');
+  mode = 'later';
+  const second = await readArchiveEntry(fixture.directory, fixture.archive, 'source.txt', fixture.exec);
+  assert.equal(second.state, 'observed');
+  assert.equal(second.text, 'before');
+  assert.equal(second.cache.hit, false);
+});
+
+test('archive operations limit concurrent buffers and release slots after failure or cancellation', async t => {
+  const fixture = await makeArchive(t, [{name: 'source.txt', data: 'before'}]);
+  const stat = fixture.exec.nativeFiles.stat;
+  let statCount = 0;
+  let releaseSecondStat;
+  const secondStatGate = new Promise(resolve => { releaseSecondStat = resolve; });
+  fixture.exec.nativeFiles.stat = async (...args) => {
+    if (++statCount === 2) await secondStatGate;
+    return {...await stat(...args), version: null};
+  };
+  const readBytes = fixture.exec.nativeFiles.readBytes;
+  let active = 0;
+  let peak = 0;
+  let started = 0;
+  let signalStarted;
+  const twoStarted = new Promise(resolve => { signalStarted = resolve; });
+  let releaseReads;
+  const gate = new Promise(resolve => { releaseReads = resolve; });
+  t.after(() => releaseReads());
+  fixture.exec.nativeFiles.readBytes = async (...args) => {
+    active++;
+    peak = Math.max(peak, active);
+    const readNumber = ++started;
+    if (readNumber === 1) releaseSecondStat();
+    if (readNumber === 2) signalStarted();
+    try {
+      await gate;
+      if (readNumber === 1) throw Object.assign(new Error('read failed'), {code: 'READ_FAILED'});
+      return await readBytes(...args);
+    } finally {
+      active--;
+    }
+  };
+  const first = readArchiveEntry(fixture.directory, fixture.archive, 'source.txt', fixture.exec);
+  const second = readArchiveEntry(fixture.directory, fixture.archive, 'source.txt', fixture.exec);
+  await twoStarted;
+  const controller = new AbortController();
+  const cancelled = readArchiveEntry(fixture.directory, fixture.archive, 'source.txt', {...fixture.exec, signal: controller.signal});
+  const last = readArchiveEntry(fixture.directory, fixture.archive, 'source.txt', fixture.exec);
+  await new Promise(resolve => setTimeout(resolve, 40));
+  assert.equal(started, 2);
+  controller.abort();
+  await assert.rejects(cancelled, {name: 'AbortError'});
+  releaseReads();
+  const results = await Promise.all([first, second, last]);
+  assert.equal(results[0].code, 'READ_FAILED');
+  assert.equal(results[2].text, 'before');
+  assert.equal(started, 3);
+  assert.equal(peak, 2);
+});
+
+test('a versioned archive reuses its cached contents while its version is unchanged', async t => {
+  const fixture = await makeArchive(t, [{name: 'source.txt', data: 'unchanged'}]);
+  const first = await readArchiveEntry(fixture.directory, fixture.archive, 'source.txt', fixture.exec);
+  const second = await readArchiveEntry(fixture.directory, fixture.archive, 'source.txt', fixture.exec);
+  assert.equal(first.text, 'unchanged');
+  assert.equal(second.text, 'unchanged');
+  assert.equal(second.cache.hit, true);
 });
 
 test('archive entry paths normalize backslashes without allowing traversal', async t => {

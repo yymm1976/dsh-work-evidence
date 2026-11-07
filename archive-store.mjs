@@ -1,5 +1,6 @@
 import path from 'node:path';
 import {createRequire} from 'node:module';
+import {crc32,inflateRawSync} from 'node:zlib';
 
 const require=createRequire(import.meta.url);
 let unzip;
@@ -19,9 +20,87 @@ export function archiveDecoderStatus(){
 }
 const MAX_ARCHIVE=128*1024*1024,MAX_ENTRY=8*1024*1024,MAX_SESSION=128*1024*1024,MAX_TOTAL=256*1024*1024;
 const sessions=new Map();
+let activeArchives=0;
+const archiveWaiters=[];
+async function withArchiveSlot(signal,operation){
+  signal?.throwIfAborted();
+  if(activeArchives<2)activeArchives++;
+  else await new Promise((resolve,reject)=>{
+    const waiter={resolve,signal,abort:null};
+    waiter.abort=()=>{
+      const index=archiveWaiters.indexOf(waiter);
+      if(index>=0)archiveWaiters.splice(index,1);
+      reject(signal.reason);
+    };
+    archiveWaiters.push(waiter);
+    signal?.addEventListener('abort',waiter.abort,{once:true});
+  });
+  try{signal?.throwIfAborted();return await operation();}
+  finally{
+    const next=archiveWaiters.shift();
+    if(next){next.signal?.removeEventListener('abort',next.abort);next.resolve();}
+    else activeArchives--;
+  }
+}
 const normalize=name=>name.replaceAll('\\','/');
 const unavailable=(archive,error)=>({state:'unavailable',archive,code:error.code||'ARCHIVE_READ_UNAVAILABLE',message:String(error.message).slice(0,1200)});
 function fail(code,message){const error=new Error(message);error.code=code;throw error;}
+function entryName(bytes,flags){
+  try{return flags&0x800?new TextDecoder('utf-8',{fatal:true}).decode(bytes):bytes.toString('latin1');}
+  catch{fail('ARCHIVE_NAME_INVALID','Archive entry name is not valid UTF-8.');}
+}
+function archiveDirectory(buffer){
+  const data=Buffer.from(buffer.buffer,buffer.byteOffset,buffer.byteLength);
+  const invalid=()=>fail('ARCHIVE_DIRECTORY_INVALID','Archive directory is incomplete or inconsistent.');
+  const ambiguous=()=>fail('ARCHIVE_DIRECTORY_AMBIGUOUS','Archive contains more than one end-of-central-directory record.');
+  const inRange=(offset,length)=>Number.isSafeInteger(offset)&&Number.isSafeInteger(length)&&offset>=0&&length>=0&&offset+length<=data.length;
+  const u64=offset=>{if(!inRange(offset,8))invalid();const value=data.readBigUInt64LE(offset);if(value>BigInt(Number.MAX_SAFE_INTEGER))invalid();return Number(value);};
+  const first=data.length-22,minimum=Math.max(0,data.length-65557);
+  let end=first;
+  for(;end>=minimum;end--)if(end+4<=data.length&&data.readUInt32LE(end)===0x06054b50)break;
+  if(end<minimum||end+22+data.readUInt16LE(end+20)!==data.length)invalid();
+  for(let cursor=end+1;cursor+4<=data.length;cursor++)if(data.readUInt32LE(cursor)===0x06054b50)ambiguous();
+  let count=data.readUInt16LE(end+10),offset=data.readUInt32LE(end+16);
+  if(end>=20&&data.readUInt32LE(end-20)===0x07064b50){
+    const zip64=u64(end-12);
+    if(!inRange(zip64,56)||data.readUInt32LE(zip64)!==0x06064b50)invalid();
+    count=u64(zip64+32);offset=u64(zip64+48);
+  }else if(offset===0xffffffff||data.readUInt32LE(end+12)===0xffffffff)invalid();
+  if(count>150000)fail('ARCHIVE_ENTRY_LIMIT','Archive has more than 150000 entries.');
+  const entries=[];
+  for(let index=0;index<count;index++){
+    if(!inRange(offset,46)||data.readUInt32LE(offset)!==0x02014b50)invalid();
+    const nameLength=data.readUInt16LE(offset+28),extraLength=data.readUInt16LE(offset+30),commentLength=data.readUInt16LE(offset+32);
+    const next=offset+46+nameLength+extraLength+commentLength;
+    if(!inRange(offset,next-offset))invalid();
+    let size=data.readUInt32LE(offset+20),originalSize=data.readUInt32LE(offset+24),localOffset=data.readUInt32LE(offset+42);
+    const zip64Size=size===0xffffffff,zip64OriginalSize=originalSize===0xffffffff,zip64LocalOffset=localOffset===0xffffffff;
+    if(size===0xffffffff||originalSize===0xffffffff||localOffset===0xffffffff){
+      let extra=offset+46+nameLength,found=false;
+      const extraEnd=extra+extraLength;
+      while(extra+4<=extraEnd){
+        const kind=data.readUInt16LE(extra),length=data.readUInt16LE(extra+2),payload=extra+4;
+        if(payload+length>extraEnd)invalid();
+        if(kind===1){
+          let cursor=payload;
+          const field=()=>{if(cursor+8>payload+length)invalid();const value=u64(cursor);cursor+=8;return value;};
+          if(originalSize===0xffffffff)originalSize=field();
+          if(size===0xffffffff)size=field();
+          if(localOffset===0xffffffff)localOffset=field();
+          found=true;break;
+        }
+        extra=payload+length;
+      }
+      if(!found)invalid();
+    }
+    const flags=data.readUInt16LE(offset+8),nameBytes=data.subarray(offset+46,offset+46+nameLength);
+    entries.push({size,originalSize,localOffset,crc:data.readUInt32LE(offset+16),flags,
+      compression:data.readUInt16LE(offset+10),nameBytes,name:entryName(nameBytes,flags),
+      zip64:{size:zip64Size,originalSize:zip64OriginalSize,localOffset:zip64LocalOffset}});
+    offset=next;
+  }
+  return entries;
+}
 function session(root,exec){
   const key=String(exec.agent?.sessionId||exec.agent?.id||'unscoped')+'\0'+path.resolve(root);
   let s=sessions.get(key);if(!s){s={files:new Map(),pending:new Map()};sessions.set(key,s);}
@@ -39,36 +118,79 @@ function trim(s){
 async function openArchive(root,archive,exec){
   exec.signal?.throwIfAborted();
   if(typeof archive!=='string'||!/\.(jar|zip)$/i.test(archive))fail('ARCHIVE_PATH_INVALID','Expected a workspace jar/zip path.');
-  const file=path.resolve(root,archive),before=await exec.nativeFiles.stat(root,file,exec.signal);
-  if(!before.exists||before.type!=='file')fail('ARCHIVE_UNAVAILABLE','Archive is not a regular file.');
-  if(before.bytes>MAX_ARCHIVE)fail('ARCHIVE_SIZE_LIMIT','Archive exceeds the 128 MiB in-memory limit.');
-  const identity=String(before.version??before.bytes),s=session(root,exec),cached=s.files.get(file);
-  if(cached?.identity===identity){
-    s.files.delete(file);s.files.set(file,cached);
-    return {record:cached,cache:{hit:true,observedAt:cached.observedAt,validatedAt:new Date().toISOString(),scope:'session-and-workspace'}};
+  const file=path.resolve(root,archive),s=session(root,exec);
+  for(let attempt=0;attempt<2;attempt++){
+    const before=await exec.nativeFiles.stat(root,file,exec.signal);
+    if(!before.exists||before.type!=='file')fail('ARCHIVE_UNAVAILABLE','Archive is not a regular file.');
+    if(before.bytes>MAX_ARCHIVE)fail('ARCHIVE_SIZE_LIMIT','Archive exceeds the 128 MiB in-memory limit.');
+    const cacheable=typeof before.version==='string'&&before.version.length>0;
+    const identity=cacheable?before.version:null,cached=s.files.get(file);
+    if(cacheable&&cached?.identity===identity){
+      s.files.delete(file);s.files.set(file,cached);
+      return {record:cached,cache:{hit:true,observedAt:cached.observedAt,validatedAt:new Date().toISOString(),scope:'session-and-workspace'}};
+    }
+    s.files.delete(file);
+    const pendingKey=cacheable?file+'\0'+identity:null;
+    let pending=cacheable?s.pending.get(pendingKey):null,shared=!!pending;
+    const creatorSignal=pending?.signal??exec.signal;
+    if(!pending){
+      const promise=(async()=>{
+        const read=await exec.nativeFiles.readBytes(root,file,exec.signal,MAX_ARCHIVE),buffer=read.bytes;
+        if(cacheable&&read.version!==identity)fail('ARCHIVE_CHANGED','Archive changed before its bytes were read.');
+        const entries=[],byName=new Map(),directory=archiveDirectory(buffer);
+        unzipper()(buffer,{filter:item=>{
+          if(entries.length>=150000)fail('ARCHIVE_ENTRY_LIMIT','Archive has more than 150000 entries.');
+          const metadata=directory[entries.length];
+          const sameZip64=(decoded,actual,enabled)=>decoded===actual||(enabled&&decoded===0xffffffff);
+          if(!metadata||metadata.name!==item.name||!sameZip64(item.size,metadata.size,metadata.zip64.size)||
+            !sameZip64(item.originalSize,metadata.originalSize,metadata.zip64.originalSize)||metadata.compression!==item.compression)
+            fail('ARCHIVE_DIRECTORY_INVALID','Archive decoder and directory metadata disagree.');
+          const entry=Object.assign(metadata,{name:normalize(item.name),raw:item.name});
+          entries.push(entry);const existing=byName.get(entry.name)||[];existing.push(entry);byName.set(entry.name,existing);return false;
+        }});
+        if(entries.length!==directory.length)fail('ARCHIVE_DIRECTORY_INVALID','Archive decoder omitted directory entries.');
+        return {file,identity,buffer,entries,byName,texts:new Map(),
+          bytes:buffer.length+entries.reduce((total,entry)=>total+400+(entry.name.length+entry.raw.length)*2,0),observedAt:new Date().toISOString(),owner:s};
+      })();
+      pending={promise,signal:creatorSignal};
+      if(cacheable){
+        s.pending.set(pendingKey,pending);
+        promise.then(
+          ()=>{if(s.pending.get(pendingKey)===pending)s.pending.delete(pendingKey);},
+          ()=>{if(s.pending.get(pendingKey)===pending)s.pending.delete(pendingKey);}
+        );
+      }
+    }
+    let record;
+    try{
+      if(!shared||!exec.signal)record=await pending.promise;
+      else record=await new Promise((resolve,reject)=>{
+        const signal=exec.signal;
+        const abort=()=>{cleanup();reject(signal.reason??Object.assign(new Error('Archive read aborted'),{name:'AbortError'}));};
+        const cleanup=()=>signal.removeEventListener('abort',abort);
+        if(signal.aborted){abort();return;}
+        signal.addEventListener('abort',abort,{once:true});
+        pending.promise.then(value=>{cleanup();resolve(value);},error=>{cleanup();reject(error);});
+      });
+    }
+    catch(error){
+      if(shared&&attempt===0&&creatorSignal?.aborted&&!exec.signal?.aborted){
+        if(cacheable&&s.pending.get(pendingKey)===pending)s.pending.delete(pendingKey);
+        continue;
+      }
+      throw error;
+    }
+    exec.signal?.throwIfAborted();
+    const current=await exec.nativeFiles.stat(root,file,exec.signal);
+    if(!current.exists||current.type!=='file'||(cacheable?current.version!==identity:current.bytes!==before.bytes)){
+      if(cacheable&&s.files.get(file)===record)s.files.delete(file);
+      fail('ARCHIVE_CHANGED','Archive changed before source delivery.');
+    }
+    if(cacheable){s.files.set(file,record);trim(s);}
+    return {record,cache:{hit:shared,observedAt:record.observedAt,validatedAt:cacheable?new Date().toISOString():null,
+      scope:cacheable?'session-and-workspace':'uncached-unversioned'}};
   }
-  s.files.delete(file);
-  const pendingKey=file+'\0'+identity;
-  let promise=s.pending.get(pendingKey),shared=!!promise;
-  if(!promise){
-    promise=(async()=>{
-      const buffer=(await exec.nativeFiles.readBytes(root,file,exec.signal,MAX_ARCHIVE)).bytes;
-      const entries=[],byName=new Map();
-      unzipper()(buffer,{filter:item=>{
-        if(entries.length>=150000)fail('ARCHIVE_ENTRY_LIMIT','Archive has more than 150000 entries.');
-        const entry={name:normalize(item.name),raw:item.name,size:item.size,originalSize:item.originalSize,compression:item.compression};
-        entries.push(entry);const existing=byName.get(entry.name)||[];existing.push(entry);byName.set(entry.name,existing);return false;
-      }});
-      const record={file,identity,buffer,entries,byName,texts:new Map(),bytes:buffer.length+entries.length*180,observedAt:new Date().toISOString(),owner:s};
-      s.files.set(file,record);trim(s);return record;
-    })();
-    s.pending.set(pendingKey,promise);
-  }
-  let record;try{record=await promise;}finally{if(s.pending.get(pendingKey)===promise)s.pending.delete(pendingKey);}
-  exec.signal?.throwIfAborted();
-  const current=await exec.nativeFiles.stat(root,file,exec.signal);
-  if(!current.exists||String(current.version??current.bytes)!==identity)fail('ARCHIVE_CHANGED','Archive changed before source delivery.');
-  return {record,cache:{hit:shared,observedAt:record.observedAt,validatedAt:new Date().toISOString(),scope:'session-and-workspace'}};
+  fail('ARCHIVE_CHANGED','Archive read was repeatedly interrupted by another caller.');
 }
 function entryText(record,name,maxBytes=MAX_ENTRY){
   const matches=record.byName.get(name)||[];
@@ -78,10 +200,52 @@ function entryText(record,name,maxBytes=MAX_ENTRY){
   if(!Number.isSafeInteger(entry.originalSize)||entry.originalSize>maxBytes)fail('ARCHIVE_ENTRY_SIZE_LIMIT','Entry exceeds the in-memory text budget.');
   if(![0,8].includes(entry.compression))fail('ARCHIVE_COMPRESSION_UNSUPPORTED','Only stored and deflated entries are supported.');
   if(record.texts.has(name))return record.texts.get(name);
-  const files=unzipper()(record.buffer,{filter:item=>item.name===entry.raw});
-  if(!Object.hasOwn(files,entry.raw))fail('ARCHIVE_ENTRY_UNAVAILABLE','Entry could not be decoded.');
-  const buffer=files[entry.raw];
+  const archive=Buffer.from(record.buffer.buffer,record.buffer.byteOffset,record.buffer.byteLength),offset=entry.localOffset;
+  if(entry.flags&1||offset<0||offset+30>archive.length||archive.readUInt32LE(offset)!==0x04034b50)
+    fail('ARCHIVE_ENTRY_UNAVAILABLE','Entry local header is unavailable or encrypted.');
+  const nameLength=archive.readUInt16LE(offset+26),extraLength=archive.readUInt16LE(offset+28),start=offset+30+nameLength+extraLength,end=start+entry.size;
+  if(!Number.isSafeInteger(end)||end>archive.length||!archive.subarray(offset+30,offset+30+nameLength).equals(entry.nameBytes)||
+    archive.readUInt16LE(offset+6)!==entry.flags||archive.readUInt16LE(offset+8)!==entry.compression)
+    fail('ARCHIVE_ENTRY_UNAVAILABLE','Entry local header differs from its directory.');
+  if(!(entry.flags&8)){
+    let size=archive.readUInt32LE(offset+18),originalSize=archive.readUInt32LE(offset+22);
+    if(size===0xffffffff||originalSize===0xffffffff){
+      let cursor=offset+30+nameLength,found=false;
+      const extraEnd=cursor+extraLength;
+      while(cursor+4<=extraEnd){
+        const kind=archive.readUInt16LE(cursor),length=archive.readUInt16LE(cursor+2),payload=cursor+4;
+        if(payload+length>extraEnd)break;
+        if(kind===1){
+          let position=payload;
+          const field=()=>{
+            if(position+8>payload+length)fail('ARCHIVE_ENTRY_UNAVAILABLE','Entry ZIP64 local header is incomplete.');
+            const value=archive.readBigUInt64LE(position);position+=8;
+            if(value>BigInt(Number.MAX_SAFE_INTEGER))fail('ARCHIVE_ENTRY_UNAVAILABLE','Entry ZIP64 local header is invalid.');
+            return Number(value);
+          };
+          if(originalSize===0xffffffff)originalSize=field();
+          if(size===0xffffffff)size=field();
+          found=true;break;
+        }
+        cursor=payload+length;
+      }
+      if(!found)fail('ARCHIVE_ENTRY_UNAVAILABLE','Entry ZIP64 local header is missing.');
+    }
+    if(archive.readUInt32LE(offset+14)!==entry.crc||size!==entry.size||originalSize!==entry.originalSize)
+      fail('ARCHIVE_ENTRY_UNAVAILABLE','Entry local header differs from its directory.');
+  }
+  let buffer;
+  if(entry.compression===0)buffer=archive.subarray(start,end);
+  else try{
+    const output=inflateRawSync(archive.subarray(start,end),{maxOutputLength:Math.min(maxBytes,entry.originalSize)+1,info:true});
+    if(output.engine.bytesWritten!==entry.size)fail('ARCHIVE_ENTRY_SIZE_MISMATCH','Entry compressed size differs from archive metadata.');
+    buffer=output.buffer;
+  }catch(error){
+    if(error.code==='ARCHIVE_ENTRY_SIZE_MISMATCH')throw error;
+    fail('ARCHIVE_ENTRY_UNAVAILABLE','Entry could not be decoded within the text budget.');
+  }
   if(buffer.length!==entry.originalSize||buffer.length>maxBytes)fail('ARCHIVE_ENTRY_SIZE_MISMATCH','Entry output size differs from archive metadata.');
+  if(crc32(buffer)!==entry.crc)fail('ARCHIVE_ENTRY_CHECKSUM_MISMATCH','Entry checksum differs from archive metadata.');
   let text;
   try{text=new TextDecoder('utf-8',{fatal:true}).decode(buffer);}catch{fail('ARCHIVE_ENCODING_UNSUPPORTED','Source entry is not valid UTF-8.');}
   if(text.includes('\0'))fail('ARCHIVE_NOT_TEXT','Source entry contains NUL bytes.');
@@ -116,15 +280,17 @@ function mavenDescriptors(record){
 }
 export async function listArchiveEntries(root,archive,exec,{mavenMetadata=false}={}){
   try{
-    const {record,cache}=await openArchive(root,archive,exec);let manifestText='',manifestError=null;
-    if(record.byName.has('META-INF/MANIFEST.MF'))try{manifestText=entryText(record,'META-INF/MANIFEST.MF',65536).text;}catch(error){manifestError={code:error.code,message:error.message};}
-    return {state:'observed',archive:record.file,entries:record.entries.map(entry=>entry.name),manifestText,manifestError,cache,
-      ...(mavenMetadata?{mavenMetadata:mavenDescriptors(record)}:{})};
+    return await withArchiveSlot(exec.signal,async()=>{
+      const {record,cache}=await openArchive(root,archive,exec);let manifestText='',manifestError=null;
+      if(record.byName.has('META-INF/MANIFEST.MF'))try{manifestText=entryText(record,'META-INF/MANIFEST.MF',65536).text;}catch(error){manifestError={code:error.code,message:error.message};}
+      return {state:'observed',archive:record.file,entries:record.entries.map(entry=>entry.name),manifestText,manifestError,cache,
+        ...(mavenMetadata?{mavenMetadata:mavenDescriptors(record)}:{})};
+    });
   }catch(error){if(exec.signal?.aborted)throw error;return unavailable(archive,error);}
 }
 export async function readArchiveEntry(root,archive,entry,exec){
   const name=typeof entry==='string'?normalize(entry):'';
   if(!name||name.length>2000||name.includes('\0')||name.startsWith('/')||/^[A-Za-z]:/.test(name)||name.split('/').includes('..'))return unavailable(archive,{code:'ARCHIVE_ENTRY_INVALID',message:'Entry must be a relative archive path.'});
-  try{const {record,cache}=await openArchive(root,archive,exec);const value=entryText(record,name);return {state:'observed',archive:record.file,entry:name,...value,cache};}
+  try{return await withArchiveSlot(exec.signal,async()=>{const {record,cache}=await openArchive(root,archive,exec);const value=entryText(record,name);return {state:'observed',archive:record.file,entry:name,...value,cache};});}
   catch(error){if(exec.signal?.aborted)throw error;return {...unavailable(archive,error),entry:name};}
 }

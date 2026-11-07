@@ -181,6 +181,29 @@ test('duplicate native call identifiers remain separate observations with explic
   assert.ok(normalized.problems.some(problem=>problem.reason==='duplicate-tool-call-id'));
 });
 
+test('duplicate results for one call cannot replace the recorded failure with success',()=>{
+  const f=fixture();
+  const done=f.operation('pwsh',{command:'node check.mjs'},'failed',{failed:true});
+  const original=f.events.find(event=>event.seq===done.resultSeq);
+  f.add('tool/result',{message:{...original.data.message,isError:false,content:[{type:'text',text:'passed'}]}});
+  const normalized=normalizeDshEvents(f.events);
+  const call=normalized.calls.find(item=>item.resultSeq===done.resultSeq);
+  assert.ok(normalized.problems.some(problem=>problem.reason==='duplicate-tool-result'));
+  assert.equal(call.outcome,'failed');
+  assert.equal(call.resultText,'failed');
+});
+
+test('out-of-order source events cannot support a completed task or budget result',()=>{
+  const {f,done,assessment,audit}=reviewedFixture();
+  assessment.consumption={scope:'all-task-requests',complete:true,eventSeqs:[done.requestSeq]};
+  assert.equal(audit().fullSuccessAtBudget.success,1);
+  [f.events[1],f.events[2]]=[f.events[2],f.events[1]];
+  const result=audit();
+  assert.ok(result.problems.some(problem=>problem.reason==='out-of-order-source-seq'));
+  assert.equal(result.taskOutcome,'unknown');
+  assert.equal(result.fullSuccessAtBudget.unknown,1);
+});
+
 test('invalid budget usage, incomplete source and unsupported assessment claims remain unknown',()=>{
   const assessment={allExplicitRequirementsCovered:true,reviewer:'human',criteria:[{outcome:'pass',evidence:['event:4']}]};
   for(const row of [{assessment,usage:{totalTokens:-1}},{assessment,usage:{}},{assessment,usage:{totalTokens:1},problems:[{reason:'invalid-json-row'}]},
@@ -291,6 +314,7 @@ test('a damaged source keeps a supplied failure judgment unknown and native-only
   assessment.criteria[0].outcome='fail';
   const result=auditDshSession(f.events,{sourceId:assessment.sourceId,assessment,tokenBudget:10,problems:[{line:2,reason:'invalid-json-row'}]});
   assert.equal(result.taskOutcome,'unknown');assert.equal(result.fullSuccessAtBudget.unknown,1);
+  assert.equal(result.requirements.requirements[0].status,'unknown');
 });
 
 test('a later operation invalidates an older review even without another human message',()=>{
@@ -309,6 +333,49 @@ function recordedCheck(f,done,criterionId,reach){
     coverage:[{criterionId,reach,reason:'Reviewed the recorded operation against this explicit requirement.'}]};
 }
 
+test('the requirement evidence view links seven nodes without claiming unobserved delivery',()=>{
+  const {f,assessment,audit,done}=reviewedFixture();
+  assessment.checks=[recordedCheck(f,done,'source','addresses')];
+  assessment.checks[0].coverage[0].scopePaths=['a.txt'];
+  const result=audit(),view=result.requirements;
+  assert.equal(view.counts.supported,1);
+  const row=view.requirements[0],nodes=row.nodes;
+  assert.deepEqual(nodes.humanRequirement.eventSeqs,[1]);
+  assert.deepEqual(nodes.sourceScope.paths,['a.txt']);
+  assert.equal(nodes.relevantMutation.status,'none-recorded');
+  assert.equal(nodes.checkExecution.checks[0].seq,result.verification.checks[0].resultSeq);
+  assert.equal(nodes.result.outcomes[0].toolOutcome,'succeeded');
+  assert.equal(nodes.currentValidity.status,'supported');
+  assert.equal(nodes.deliveryClaim.status,'unknown');
+  assert.equal(nodes.humanRequirement.textRetained,false);
+});
+
+test('the requirement view keeps gaps, contradictions and stale checks distinct',()=>{
+  const gapFixture=reviewedFixture();
+  assert.equal(gapFixture.audit().requirements.requirements[0].status,'gap');
+  const missFixture=reviewedFixture();
+  missFixture.assessment.checks=[recordedCheck(missFixture.f,missFixture.done,'source','misses')];
+  assert.equal(missFixture.audit().requirements.requirements[0].status,'gap');
+  const staleFixture=reviewedFixture();
+  staleFixture.assessment.checks=[recordedCheck(staleFixture.f,staleFixture.done,'source','addresses')];
+  staleFixture.assessment.checks[0].coverage[0].scopePaths=['a.txt'];
+  staleFixture.assessment.throughSeq=staleFixture.f.events.at(-1).seq;
+  staleFixture.f.operation('write',{file_path:'a.txt',content:'changed after check'},'written');
+  const stale=staleFixture.audit().requirements.requirements[0];
+  assert.equal(stale.status,'stale');
+  assert.equal(stale.nodes.currentValidity.reason,'events-after-review');
+});
+
+test('the requirement view stays empty without an explicit review and does not infer an undeclared scope',()=>{
+  const f=fixture();f.operation('read',{file_path:'a.txt'},'source');
+  assert.equal(auditDshSession(f.events).requirements.reason,'no-source-linked-review');
+  const reviewed=reviewedFixture();
+  reviewed.assessment.checks=[recordedCheck(reviewed.f,reviewed.done,'source','addresses')];
+  const row=reviewed.audit().requirements.requirements[0];
+  assert.equal(row.nodes.sourceScope.status,'unknown');
+  assert.equal(row.nodes.relevantMutation.status,'unknown');
+});
+
 test('a successful recorded check that misses a requirement cannot turn a reviewed failure into success',()=>{
   const {f,assessment,audit}=reviewedFixture();
   const check=f.operation('pwsh',{command:'node check_regex.js'},JSON.stringify({exitCode:0,stdout:'16/16'}));
@@ -318,6 +385,7 @@ test('a successful recorded check that misses a requirement cannot turn a review
   assert.equal(result.verification.checks[0].toolOutcome,'succeeded');
   assert.equal(result.verification.missedCriteria,1);assert.equal(result.verification.allListedCriteriaAddressed,false);
   assert.equal(result.taskOutcome,'fail');assert.equal(result.fullSuccessAtBudget.failed,1);
+  assert.equal(result.requirements.requirements[0].status,'contradicted');
   assert.equal(JSON.stringify(f.events),original);assert.equal(result.verification.criteria[0].outcome,'fail');
 });
 
@@ -329,6 +397,174 @@ test('a failing check can address a risk without proving that its requirement wa
   const result=audit();assert.equal(result.verification.checks[0].toolOutcome,'failed');
   assert.equal(result.verification.allListedCriteriaAddressed,true);assert.equal(result.taskOutcome,'unknown');
   assert.equal(result.fullSuccessAtBudget.success,0);assert.equal(result.fullSuccessAtBudget.unknown,1);
+  assert.equal(result.requirements.requirements[0].status,'unknown');
+});
+
+test('requirement support requires a current review and a successful applicable check',()=>{
+  const {f,assessment,audit}=reviewedFixture();
+  const failed=f.operation('pwsh',{command:'node regression.js'},JSON.stringify({exitCode:1}),{failed:true});
+  assessment.throughSeq=f.events.at(-1).seq;
+  assessment.checks=[recordedCheck(f,failed,'source','addresses')];
+  assessment.checks[0].coverage[0].scopePaths=['a.txt'];
+  assert.notEqual(audit().requirements.requirements[0].status,'supported');
+
+  const passed=f.operation('pwsh',{command:'node regression.js'},JSON.stringify({exitCode:0}));
+  assessment.throughSeq=f.events.at(-1).seq;
+  assessment.criteria[0].eventSeqs=[passed.resultSeq];
+  assessment.checks.push(recordedCheck(f,passed,'source','addresses'));
+  assessment.checks[1].coverage[0].scopePaths=['a.txt'];
+  assert.equal(audit().requirements.requirements[0].status,'supported');
+
+  assessment.criteria[0].outcome='unknown';
+  assert.equal(audit().requirements.requirements[0].status,'unknown');
+});
+
+test('a different successful check cannot replace a failed check in the same file scope',()=>{
+  const {f,assessment,audit}=reviewedFixture();
+  const failed=f.operation('read',{file_path:'a.txt'},'failed',{failed:true});
+  const passed=f.operation('read',{file_path:'./a.txt'},'source');
+  assessment.throughSeq=f.events.at(-1).seq;
+  assessment.criteria[0].eventSeqs=[passed.resultSeq];
+  assessment.checks=[recordedCheck(f,failed,'source','addresses'),recordedCheck(f,passed,'source','addresses')];
+  for(const check of assessment.checks)check.coverage[0].scopePaths=['a.txt'];
+  assert.equal(audit().requirements.requirements[0].status,'unknown');
+  const result=f.events.find(event=>event.seq===failed.resultSeq).data.message;
+  result.isError=false;result.content=[{type:'text',text:'source'}];
+  assert.equal(audit().requirements.requirements[0].status,'supported');
+});
+
+test('unknown mutation paths remain visible in the requirement view',()=>{
+  const {f,assessment,audit}=reviewedFixture();
+  const mutation=f.operation('write',{content:'changed'},'written');
+  const check=f.operation('read',{file_path:'a.txt'},'current');
+  assessment.throughSeq=f.events.at(-1).seq;
+  assessment.criteria[0].eventSeqs=[check.resultSeq];
+  assessment.checks=[recordedCheck(f,check,'source','addresses')];
+  assessment.checks[0].coverage[0].scopePaths=['a.txt'];
+  const node=audit().requirements.requirements[0].nodes.relevantMutation;
+  assert.equal(node.status,'unknown');
+  assert.ok(node.unresolvedEventSeqs.includes(mutation.resultSeq));
+});
+
+test('an unscoped check cannot remain supported after an unclassified mutation',()=>{
+  const {f,done,assessment,audit}=reviewedFixture();
+  f.operation('write',{file_path:'other.txt',content:'changed'},'written');
+  assessment.throughSeq=f.events.at(-1).seq;
+  assessment.checks=[recordedCheck(f,done,'source','addresses')];
+  assert.equal(audit().requirements.requirements[0].status,'unknown');
+});
+
+test('an uncertain settled write cannot preserve check validity without a no-effect result',()=>{
+  for(const scoped of [false,true]){
+    for(const error of [undefined,true]){
+      const {f,done,assessment,audit}=reviewedFixture();
+      const write=f.operation('write',{file_path:'a.txt',content:'possibly changed'},'uncertain');
+      const result=f.events.find(event=>event.seq===write.resultSeq).data.message;
+      result.isError=error;
+      assessment.throughSeq=f.events.at(-1).seq;
+      assessment.checks=[recordedCheck(f,done,'source','addresses')];
+      if(scoped)assessment.checks[0].coverage[0].scopePaths=['a.txt'];
+      assert.notEqual(audit().requirements.requirements[0].status,'supported');
+      if(scoped){
+        f.events.find(event=>event.seq===write.resultSeq-1).data.arguments.file_path='/workspace/other.txt';
+        const row=audit().requirements.requirements[0];
+        assert.equal(row.status,'unknown');
+        assert.equal(row.reason,'possible-file-change-after-check');
+      }
+      result.content=[{type:'text',text:JSON.stringify({effectState:'none'})}];
+      assert.equal(audit().requirements.requirements[0].status,'supported');
+    }
+  }
+});
+
+test('an uncertain write to an unrelated scoped file does not invalidate the check',()=>{
+  const {f,done,assessment,audit}=reviewedFixture();
+  const write=f.operation('write',{file_path:'other.txt',content:'possibly changed'},'uncertain');
+  delete f.events.find(event=>event.seq===write.resultSeq).data.message.isError;
+  assessment.throughSeq=f.events.at(-1).seq;
+  assessment.checks=[recordedCheck(f,done,'source','addresses')];
+  assessment.checks[0].coverage[0].scopePaths=['a.txt'];
+  assert.equal(audit().requirements.requirements[0].status,'supported');
+});
+
+test('a pending operation started before a check cannot validate an overlapping scope',()=>{
+  for(const [name,args,scoped,expected,expectedReasons] of [
+    ['write',{file_path:'a.java',content:'new'},true,'stale'],
+    ['write',{file_path:'other.txt',content:'new'},true,'supported'],
+    ['write',{file_path:'a.java',content:'new'},false,'unknown'],
+    ['write',{content:'new'},true,'unknown',['file-scope-unresolved']],
+    ['run_code',{code:'modifyProject()'},true,'stale'],
+    ['run_code',{code:'modifyProject()'},false,'unknown'],
+    ['verified_exec',{edits:[{file:'other.txt',mode:'create',content:'new'}]},true,'stale',
+      ['opaque-execution-after-check','file-scope-unresolved']],
+    ['fastedit_java',{file:'a.java',operation:'read_entity',symbol:'A.value'},true,'supported'],
+    ['fastedit_java',{file:'a.java',operation:'find_entity',symbol:'A.value'},true,'supported'],
+    ['fastedit_java',{file:'a.java',operation:'read_entity',symbol:'A.value'},false,'supported']
+  ]){
+    const f=fixture();
+    f.add('tool/call',{callId:'pending',name,arguments:args});
+    const done=f.operation('read',{file_path:'a.java'},'source');
+    const assessment={schema:ASSESSMENT_SCHEMA,sourceId:'recorded-session',throughSeq:done.resultSeq,reviewer:'human',
+      allExplicitRequirementsCovered:true,criteria:[{id:'source',requirementSeqs:[1],eventSeqs:[done.resultSeq],outcome:'pass'}],
+      checks:[recordedCheck(f,done,'source','addresses')]};
+    if(scoped)assessment.checks[0].coverage[0].scopePaths=['a.java'];
+    const row=auditDshSession(f.events,{sourceId:assessment.sourceId,assessment}).requirements.requirements[0];
+    assert.equal(row.status,expected,`${name} ${JSON.stringify(args)} scoped=${scoped}`);
+    if(expectedReasons)assert.deepEqual(row.nodes.currentValidity.unavailableReasons,expectedReasons);
+  }
+});
+
+test('malformed recorded tool arguments cannot crash an audit or support a requirement',()=>{
+  for(const args of ['null','[]','1','"text"','{bad',null]){
+    const {f,done,assessment,audit}=reviewedFixture();
+    f.add('tool/call',{callId:'pending',name:'fastedit_java',arguments:args});
+    assessment.throughSeq=f.events.at(-1).seq;
+    assessment.checks=[recordedCheck(f,done,'source','addresses')];
+    assessment.checks[0].coverage[0].scopePaths=['a.txt'];
+    const result=audit();
+    assert.ok(result.problems.some(problem=>problem.reason==='invalid-tool-call-arguments'),String(args));
+    assert.equal(result.requirements.requirements[0].status,'unknown',String(args));
+  }
+});
+
+test('settled writes with malformed arguments leave source validity unknown',()=>{
+  for(const args of ['null','[]','1','"text"','{bad',null]){
+    const {f,done,assessment,audit}=reviewedFixture();
+    f.operation('write',args,'written');
+    assessment.throughSeq=f.events.at(-1).seq;
+    assessment.checks=[recordedCheck(f,done,'source','addresses')];
+    assessment.checks[0].coverage[0].scopePaths=['a.txt'];
+    const result=audit();
+    assert.ok(result.problems.some(problem=>problem.reason==='invalid-tool-call-arguments'),String(args));
+    assert.equal(result.requirements.requirements[0].status,'unknown',String(args));
+  }
+});
+
+test('a repeated check is identified independently of argument property order',()=>{
+  const {f,assessment,audit}=reviewedFixture();
+  const failed=f.operation('read',{file_path:'a.txt',offset:1},'failed',{failed:true});
+  const passed=f.operation('read',{offset:1,file_path:'a.txt'},'source');
+  assessment.throughSeq=f.events.at(-1).seq;
+  assessment.criteria[0].eventSeqs=[passed.resultSeq];
+  assessment.checks=[recordedCheck(f,failed,'source','addresses'),recordedCheck(f,passed,'source','addresses')];
+  for(const check of assessment.checks)check.coverage[0].scopePaths=['a.txt'];
+  assert.equal(audit().requirements.requirements[0].status,'supported');
+});
+
+test('a check that misses a requirement does not itself contradict it',()=>{
+  const {f,done,assessment,audit}=reviewedFixture();
+  assessment.checks=[recordedCheck(f,done,'source','misses')];
+  assert.equal(audit().requirements.requirements[0].status,'gap');
+});
+
+test('an unsuccessful producer completion cannot support a requirement',()=>{
+  const {f,call,result}=processFixture();
+  const assessment={schema:ASSESSMENT_SCHEMA,sourceId:'process-source',throughSeq:result.seq,reviewer:'human',allExplicitRequirementsCovered:true,
+    criteria:[{id:'source',requirementSeqs:[1],eventSeqs:[result.seq],outcome:'pass'}],
+    checks:[{id:'process-check',callSeq:call.seq,resultSeq:result.seq,coverage:[{criterionId:'source',reach:'addresses',reason:'Reviewed operation.'}]}]};
+  const audited=auditDshSession(f.events,{sourceId:assessment.sourceId,assessment});
+  assert.equal(audited.verification.checks[0].processOutcome,'exited-nonzero');
+  assert.notEqual(audited.requirements.requirements[0].status,'supported');
 });
 
 test('check review rejects unrelated event pairs, duplicate operation counts and unknown criteria',()=>{
@@ -386,6 +622,24 @@ test('outside workspace temporary reads stay source-bound candidates',()=>{
   assert.equal(project.audit().constraints.items.length,0,'an explicit project-local temporary directory is not an outside-read candidate');
 });
 
+test('pathlib temporary file reads remain candidates without assuming their location',()=>{
+  for(const method of ['read_bytes','read_text']){
+    const {f,audit}=reviewedFixture();
+    f.events.find(event=>event.type==='user/message').data.message.content=[{type:'text',text:'不要读取项目外文件。'}];
+    const code=`import pathlib, tempfile\nwith tempfile.TemporaryDirectory() as tmp:\n    path=pathlib.Path(tmp)/"a.env"\n    path.${method}()`;
+    f.operation('write',{file_path:'check.py',content:code},'written');
+    const shell=f.operation('pwsh',{command:'python check.py'},'completed');
+    const item=audit().constraints.items.at(-1);
+    assert.equal(item?.classification,'candidate');
+    assert.equal(item?.violation,'not-inferred');
+    assert.equal(item?.resultSeq,shell.resultSeq);
+    const local=reviewedFixture();
+    local.f.events.find(event=>event.type==='user/message').data.message.content=[{type:'text',text:'不要读取项目外文件。'}];
+    local.f.operation('work_exec',{runtime:'python',code:code.replace('TemporaryDirectory()','TemporaryDirectory(dir=".")')},'completed');
+    assert.equal(local.audit().constraints.items.length,0);
+  }
+});
+
 test('temporary-read evidence ignores trailing secrets and only trusts recorded script effects',()=>{
   const withRequirement=()=>{
     const {f,audit}=reviewedFixture();
@@ -402,7 +656,7 @@ test('temporary-read evidence ignores trailing secrets and only trusts recorded 
   {
     const {f,audit}=withRequirement();
     f.operation('write',{file_path:'check set keys.py',content:code},'written');
-    f.operation('edit',{file_path:'check set keys.py',old_string:'tempfile',new_string:'os'},'failed',{failed:true});
+    f.operation('edit',{file_path:'check set keys.py',old_string:'tempfile',new_string:'os'},JSON.stringify({effectState:'none'}),{failed:true});
     const shell=f.operation('pwsh',{command:'& "C:\\runtime\\python.exe" "check set keys.py"'},'completed');
     assert.equal(audit().constraints.items.at(-1).resultSeq,shell.resultSeq);
   }
@@ -416,6 +670,17 @@ test('temporary-read evidence ignores trailing secrets and only trusts recorded 
     f.operation('work_exec',{runtime:'python',code:'import tempfile\na=tempfile.mkdtemp(dir=".")\nb=tempfile.mkdtemp()\nopen(a+"/a.env").read()'},'completed');
     assert.equal(audit().constraints.items.length,1,'one local call does not exclude the script when another call uses the system temp root');
   }
+});
+
+test('an uncertain later write makes the executed script source unknown',()=>{
+  const {f,audit}=reviewedFixture();
+  f.events.find(event=>event.type==='user/message').data.message.content=[{type:'text',text:'不要读取项目外文件。'}];
+  f.operation('write',{file_path:'check.py',content:'import tempfile\np=tempfile.mkdtemp()\nopen(p+"/a.env").read()'},'written');
+  const id='uncertain-write';
+  f.add('tool/call',{callId:id,name:'write',arguments:{file_path:'check.py',content:'print(42)'}});
+  f.add('tool/result',{message:{role:'tool',source:{callId:id},content:[{type:'text',text:'not confirmed'}]}});
+  f.operation('pwsh',{command:'& "C:\\runtime\\python.exe" check.py'},'completed');
+  assert.equal(audit().constraints.items.length,0);
 });
 
 test('an unconfirmed later write does not hide the confirmed script or create a candidate',()=>{
@@ -480,6 +745,32 @@ test('change scope review status becomes stale when the source advances',()=>{
   const result=audit().changeScopeReviews;
   assert.equal(result.status,'stale');assert.equal(result.items[0].declaredRelation,'direct-requirement');
   assert.equal(result.items[0].relation,'direct-requirement');
+});
+
+test('change scope applicability accounts for overlapping operations and later requirements',()=>{
+  for(const kind of ['pending-write','pending-program','unknown-write','later-requirement',
+    'pending-unrelated','pending-read','unknown-unrelated','no-effect']){
+    const f=fixture();
+    if(kind==='pending-write')f.add('tool/call',{callId:'pending',name:'write',arguments:{file_path:'a.txt',content:'later'}});
+    if(kind==='pending-program')f.add('tool/call',{callId:'pending',name:'run_code',arguments:{code:'modifyProject()'}});
+    if(kind==='pending-unrelated')f.add('tool/call',{callId:'pending',name:'write',arguments:{file_path:'other.txt',content:'later'}});
+    if(kind==='pending-read')f.add('tool/call',{callId:'pending',name:'fastedit_java',arguments:{file:'a.txt',operation:'read_entity',symbol:'A.value'}});
+    const done=f.operation('edit',{file_path:'a.txt',old_string:'old',new_string:'new'},'applied');
+    if(['unknown-write','unknown-unrelated','no-effect'].includes(kind)){
+      const later=f.operation('write',{file_path:kind==='unknown-unrelated'?'other.txt':'a.txt',content:'later'},
+        kind==='no-effect'?JSON.stringify({effectState:'none'}):'uncertain');
+      delete f.events.find(event=>event.seq===later.resultSeq).data.message.isError;
+    }
+    if(kind==='later-requirement')f.add('user/message',{message:{role:'user',source:{kind:'user'},content:[{type:'text',text:'Change the requirement.'}]}});
+    const call=normalizeDshEvents(f.events).calls.find(row=>row.resultSeq===done.resultSeq);
+    const assessment={schema:ASSESSMENT_SCHEMA,sourceId:'recorded-session',throughSeq:f.events.at(-1).seq,reviewer:'human',
+      allExplicitRequirementsCovered:true,criteria:[{id:'source',requirementSeqs:[1],eventSeqs:[done.resultSeq],outcome:'pass'}],
+      scopeReviews:[{id:'change',callSeq:call.callSeq,resultSeq:done.resultSeq,path:'a.txt',declaredRelation:'direct-requirement',
+        requirementSeqs:[1],dependencyEvidenceSeqs:[],reviewer:'human',reason:'Requested.',counterexample:'The request may change.'}]};
+    const item=auditDshSession(f.events,{sourceId:assessment.sourceId,assessment}).changeScopeReviews.items[0];
+    assert.equal(item.currentApplicability,
+      ['pending-unrelated','pending-read','unknown-unrelated','no-effect'].includes(kind)?'historical-events-only':'unknown',kind);
+  }
 });
 
 test('new operations and damaged source preserve declared check coverage but make effective reach unknown',()=>{

@@ -2,6 +2,12 @@
 
 本文件保留 0.28.11 整理前的说明。版本、命令、路径和运行记录只描述当时条件；当前用法见 [README](README.md)。
 
+## 1.1.0
+
+1.1.0 是 `1.0.1-dev.112` 之后的发布候选。主要改动包括：无版本归档不再按文件大小复用旧正文；归档读取核对受限解压长度、压缩长度、CRC、中央目录、本地头、数据描述符及 ZIP64，并支持没有 ZIP64 结束记录的成员级 ZIP64 大小字段；共享归档读取在其他调用者取消后按本调用者的信号重试，读取版本或最终文件版本变化时不建立缓存；乱序或重复事件、非法工具参数、未结束写入、未知效果写入和状态不明的后续脚本写入不再支持成功结论或旧正文回退；无活动 agent 的会话事件不再创建运行态，`session/disposed` 释放对应状态；稳定默认值不再读取隐藏实验环境变量；宿主声明收窄为实际验证的 `0.2.1-rc.4` 和 `0.2.2-rc.1`。
+
+需求—证据—验证视图保留确定性离线部分，交付文本完整性仍为 `unknown`。在线 EGC 和独立候选系统正式否决，重复检测只作为人工审计线索。当前版本不宣称 Token 净节省；历史版本的效果、费用和兼容数字不属于 1.1.0 的验收证据。
+
 # DSH 工程证据插件
 
 当前版本为 0.28.11，模式策略为 pb001-v24。Ultra 使用质量模式和原生 max。其他档位在 `aggressiveMode` 开启时使用激进模式，关闭时交给宿主。切换从下一次模型请求生效。旧模式设置不再决定当前模式。
@@ -504,7 +510,7 @@ Shell 未指定等待时间时为 10,000 ms；该入口的上限为 60,000 ms。
 
 `finishAdvice` 的条件见上节：已有原生观察或合格报告，计划完整，并且没有已知未决项。提醒允许继续处理明确缺口，不替代最终答复。缺少这些依据时不提示，也不要求为了获得提醒新增报告或计划。
 
-`executionTriage`、`stageWorkingSet` 和 `stepPacing` 默认 true；`executionAdvice` 和 `finishAdvice` 默认 false。上述设置都服从会话总开关。两个已退出功能的有效值固定为 false。
+`executionTriage`、`stageWorkingSet` 和 `stepPacing` 默认 true；`completionNotice`、`executionAdvice` 和 `finishAdvice` 默认 false。上述设置都服从会话总开关。两个已退出功能的有效值固定为 false。
 
 `work_status`、`/work-evidence status` 和 `work_state` 返回 `taskFlow/nativeExecution`；detail 还返回工作集阶段和采用计划的边界。
 

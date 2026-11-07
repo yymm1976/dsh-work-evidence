@@ -120,6 +120,10 @@ export function createFeatureControl(ctx,runtime,{available,canRecall,workingSet
           if(!['pwsh','ops_bash','bash'].some(tool=>available(agent,tool)))reasons.push('authorized-shell-unavailable');
         }
         if(['requestProjection','projectionRestore'].includes(key)&&workingSet.metrics(agent).adapter==='unavailable')reasons.push('projection-adapter-unavailable');
+        // Projection is off, work_state is hidden and executionTriage already records
+        // executions, so this setting has no consumer the current session can reach.
+        if(key==='stageWorkingSet'&&config.executionTriage&&!(config.requestProjection&&config.projectionRestore)&&
+          !available(agent,'work_state'))reasons.push('inactive-without-reachable-consumer');
         if(key==='qualityReview'&&(!selection?.provider||!selection?.model))reasons.push('main-model-route-unavailable');
         if(key==='retainedCompute')for(const name of retained.missingDependencies)reasons.push('native-service-unavailable:'+name);
         if(reasons.length)status='blocked';

@@ -5,7 +5,8 @@ import path from 'node:path';
 import {existsSync} from 'node:fs';
 import {pathToFileURL} from 'node:url';
 import {startHost,text,tool} from './helpers/host.mjs';
-const ENTRY='C:/Users/杨铭/Documents/DSH Desktop/home/profiles/web/node_modules/billion-context-dsh/dist/index.js';
+import {ACP_ENTRY} from './helpers/paths.mjs';
+const ENTRY=ACP_ENTRY;
 test('installed ACP compresses a real host range alongside Work Evidence and recovers its source',{skip:!existsSync(ENTRY)},async()=>{
   const acp=await import(pathToFileURL(ENTRY).href);
   let host;

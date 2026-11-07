@@ -1,8 +1,11 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
+import os from 'node:os';
 import {FLASH_PRESET_RULES} from './flash-preset-rules.mjs';
 
-const profile=process.argv.find(value=>value.endsWith('cordis.patch.yml'))||'C:/Users/杨铭/Documents/DSH Desktop/home/profiles/web/cordis.patch.yml';
+const profile=process.argv.find(value=>value.endsWith('cordis.patch.yml'))||
+  (process.env.DSH_PROFILE?.trim()&&path.join(process.env.DSH_PROFILE.trim(),'cordis.patch.yml'))||
+  path.join(os.homedir(),'Documents','DSH Desktop','home','profiles','web','cordis.patch.yml');
 const original=await fs.readFile(profile,'utf8'),text=original.replace(/\r\n/g,'\n');
 let preset=/^- id: preset-ptc\n[\s\S]*?(?=^- id: |$(?![\s\S]))/m.exec(text)?.[0]?.trimEnd();
 if(!preset||!/^          mode: ptc$/m.test(preset))throw new Error('Current native PTC composition is unavailable');

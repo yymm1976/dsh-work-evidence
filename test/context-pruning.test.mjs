@@ -45,18 +45,6 @@ function dedupMarkers(text) {
   )].map(match => ({reference: JSON.parse(match[1]), chars: Number(match[2])}));
 }
 
-function withEnv(name, value, callback) {
-  const previous = process.env[name];
-  if (value === undefined) delete process.env[name];
-  else process.env[name] = value;
-  try {
-    return callback();
-  } finally {
-    if (previous === undefined) delete process.env[name];
-    else process.env[name] = previous;
-  }
-}
-
 test('prunableMessage rejects errors and hasPruneProblem marks failure text', () => {
   const body = generated(9000, 3);
   const errorResult = {isError: true, content: [{type: 'text', text: body}]};
@@ -187,25 +175,23 @@ test('long-segment dedup is enabled by default and locates the later original du
   const tail = generated(1000, 37);
   const text = `${prefix}${segment}${middle}${segment}${tail}`;
 
-  withEnv('DSH_EXPERIMENT_STUB_DEDUP', undefined, () => {
-    const result = planContextPrune(textMessage(text), [], options());
-    assert.ok(result);
-    assert.equal(result.dedupStats.length, 1);
-    assert.equal(result.dedupStats[0].seq, 41);
-    assert.equal(result.dedupStats[0].segments, 1);
-    assert.equal(result.content[0].text.includes('characters identical to earlier content'), true);
+  const result = planContextPrune(textMessage(text), [], options());
+  assert.ok(result);
+  assert.equal(result.dedupStats.length, 1);
+  assert.equal(result.dedupStats[0].seq, 41);
+  assert.equal(result.dedupStats[0].segments, 1);
+  assert.equal(result.content[0].text.includes('characters identical to earlier content'), true);
 
-    const [marker] = dedupMarkers(result.content[0].text);
-    assert.ok(marker);
-    const repeated = text.slice(marker.reference.offset, marker.reference.offset + marker.chars);
-    const source = text.lastIndexOf(repeated, marker.reference.offset - 1);
-    assert.equal(source >= 0, true);
-    assert.equal(text.slice(source, source + marker.chars), repeated);
-    assert.equal(result.charsAfter < 8000, true);
-  });
+  const [marker] = dedupMarkers(result.content[0].text);
+  assert.ok(marker);
+  const repeated = text.slice(marker.reference.offset, marker.reference.offset + marker.chars);
+  const source = text.lastIndexOf(repeated, marker.reference.offset - 1);
+  assert.equal(source >= 0, true);
+  assert.equal(text.slice(source, source + marker.chars), repeated);
+  assert.equal(result.charsAfter < 8000, true);
 });
 
-test('dedupSegments false and DSH_EXPERIMENT_STUB_DEDUP=0 both disable long-segment dedup', () => {
+test('dedupSegments false disables long-segment dedup', () => {
   const prefix = generated(2048, 41);
   const segment = generated(3000, 43);
   const middle = generated(1200, 47);
@@ -224,19 +210,6 @@ test('dedupSegments false and DSH_EXPERIMENT_STUB_DEDUP=0 both disable long-segm
     false,
   );
 
-  withEnv('DSH_EXPERIMENT_STUB_DEDUP', '0', () => {
-    const disabledByEnvironment = planContextPrune(
-      textMessage(text),
-      [],
-      options({dedupSegments: true}),
-    );
-    assert.ok(disabledByEnvironment);
-    assert.equal(disabledByEnvironment.dedupStats, undefined);
-    assert.equal(
-      disabledByEnvironment.content[0].text.includes('characters identical to earlier content'),
-      false,
-    );
-  });
 });
 
 test('dedup triggers for an unaligned internal duplicate of exactly 2048 characters', () => {
@@ -246,20 +219,18 @@ test('dedup triggers for an unaligned internal duplicate of exactly 2048 charact
   const tail = generated(1600, 71);
   const text = `${prefix}${segment}${middle}${segment}${tail}`;
 
-  withEnv('DSH_EXPERIMENT_STUB_DEDUP', '1', () => {
-    const result = planContextPrune(
-      textMessage(text),
-      [],
-      options({dedupSegments: true}),
-    );
-    assert.ok(result);
-    assert.equal(result.dedupStats?.[0]?.segments, 1);
-    const [marker] = dedupMarkers(result.content[0].text);
-    assert.ok(marker);
-    const repeated = text.slice(marker.reference.offset, marker.reference.offset + marker.chars);
-    assert.equal(repeated.length >= 2048, true);
-    assert.equal(text.lastIndexOf(repeated, marker.reference.offset - 1) >= 0, true);
-  });
+  const result = planContextPrune(
+    textMessage(text),
+    [],
+    options({dedupSegments: true}),
+  );
+  assert.ok(result);
+  assert.equal(result.dedupStats?.[0]?.segments, 1);
+  const [marker] = dedupMarkers(result.content[0].text);
+  assert.ok(marker);
+  const repeated = text.slice(marker.reference.offset, marker.reference.offset + marker.chars);
+  assert.equal(repeated.length >= 2048, true);
+  assert.equal(text.lastIndexOf(repeated, marker.reference.offset - 1) >= 0, true);
 });
 
 test('dedup scans a 200K-character result in under one second', () => {
@@ -271,11 +242,9 @@ test('dedup scans a 200K-character result in under one second', () => {
   const text = `${prefix}${segment}${middle}${segment}${suffix}`;
   assert.equal(text.length, 200000);
 
-  const {result, elapsedMs} = withEnv('DSH_EXPERIMENT_STUB_DEDUP', '1', () => {
-    const started = performance.now();
-    const result = planContextPrune(textMessage(text), [], options({dedupSegments: true}));
-    return {result, elapsedMs: performance.now() - started};
-  });
+  const started = performance.now();
+  const result = planContextPrune(textMessage(text), [], options({dedupSegments: true}));
+  const elapsedMs = performance.now() - started;
 
   assert.ok(result);
   assert.equal(elapsedMs < 1000, true, `dedup scan took ${elapsedMs.toFixed(1)}ms`);
