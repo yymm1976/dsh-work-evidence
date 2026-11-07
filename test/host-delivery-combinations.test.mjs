@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import {startHost,text,tool,lastUserText} from './helpers/host.mjs';
+import {requestPausesContinuation} from '../completion-notice.mjs';
 
 const notices=host=>host.events.filter(event=>event.type==='user/message'&&
   ['work-evidence-final-json','work-evidence-completion','work-evidence-quality-review'].includes(event.data?.source?.kind));
@@ -59,6 +60,73 @@ test('an explicit request to pause and report receives no delivery review or con
     }
   }finally{await host.close();}
   }
+});
+
+test('a plan-only request does not resume to implement the proposed next step',async()=>{
+  const host=await startHost({workspace:{qualityReview:false,completionNotice:true},script:()=>[text('## 阶段摘要\n计划已列出。\n下一步：修改 b.txt')]});
+  try{
+    const agent=await host.createAgent('max');
+    await host.send(agent,'只制定计划，不要实施或修改文件。');
+    assert.equal(host.requests.length,1);
+    assert.equal(notices(host).length,0);
+  }finally{await host.close();}
+});
+
+test('a stage-summary example in a fenced code block does not resume the task',async()=>{
+  for(const fence of ['```','~~~']){
+    const host=await startHost({workspace:{qualityReview:false,completionNotice:true},script:()=>
+      [text('下面是模板：\n'+fence+'markdown\n## 阶段摘要\n下一步：修改 b.txt\n'+fence)]});
+    try{
+      const agent=await host.createAgent('max');
+      await host.send(agent,'展示一个 Markdown 阶段摘要模板。');
+      assert.equal(host.requests.length,1);
+      assert.equal(notices(host).length,0);
+    }finally{await host.close();}
+  }
+});
+
+test('a real stage summary does not use a next step inside a code example',async()=>{
+  const host=await startHost({workspace:{qualityReview:false,completionNotice:true},script:()=>
+    [text('## 阶段摘要\n已展示模板。\n```markdown\n下一步：修改 b.txt\n```')]});
+  try{
+    const agent=await host.createAgent('max');
+    await host.send(agent,'展示一个 Markdown 模板。');
+    assert.equal(host.requests.length,1);
+    assert.equal(notices(host).length,0);
+  }finally{await host.close();}
+});
+
+test('a real stage summary after a fenced example can still continue',async()=>{
+  const host=await startHost({workspace:{qualityReview:false,completionNotice:true},script:(_options,number)=>
+    [text(number===1?'```markdown\n## 阶段摘要\n下一步：示例\n```\n## 阶段摘要\n下一步：修改 b.txt':'## 阶段摘要\n已完成。\n下一步：无')]});
+  try{
+    const agent=await host.createAgent('max');
+    await host.send(agent,'修改 a.txt 和 b.txt。');
+    assert.equal(host.requests.length,2);
+    assert.deepEqual(notices(host).map(event=>event.data.source.kind),['work-evidence-completion']);
+  }finally{await host.close();}
+});
+
+test('plan-only detection preserves explicit authorization to continue',()=>{
+  assert.equal(requestPausesContinuation('只制定计划，然后不要实施。'),true);
+  assert.equal(requestPausesContinuation('只制定计划，然后不实施。'),true);
+  assert.equal(requestPausesContinuation('只制定计划，经用户确认后再实施。'),true);
+  assert.equal(requestPausesContinuation('只制定计划，然后询问我是否实施。'),true);
+  assert.equal(requestPausesContinuation('只制定计划，然后实施。'),false);
+  assert.equal(requestPausesContinuation('只制定计划，然后无需确认直接实施。'),false);
+  assert.equal(requestPausesContinuation('不只制定计划，还要开发。'),false);
+  assert.equal(requestPausesContinuation('读取“只制定计划”的原文并完成任务。'),false);
+});
+
+test('a request to plan and then implement can continue after its stage summary',async()=>{
+  const host=await startHost({workspace:{qualityReview:false,completionNotice:true},script:(_options,number)=>
+    [text(number===1?'## 阶段摘要\n计划已列出。\n下一步：修改 b.txt':'## 阶段摘要\n工作完成。\n下一步：无')]});
+  try{
+    const agent=await host.createAgent('max');
+    await host.send(agent,'先制定计划，然后实施并修改文件。');
+    assert.equal(host.requests.length,2);
+    assert.deepEqual(notices(host).map(event=>event.data.source.kind),['work-evidence-completion']);
+  }finally{await host.close();}
 });
 
 test('a paused report can repair its explicitly requested JSON without resuming project work',async()=>{

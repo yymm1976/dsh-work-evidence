@@ -16,7 +16,16 @@ const withoutNegatedStop=text=>String(text??'')
 
 const continuationText=text=>withoutNegatedStop(String(text??'').replace(
   /```[\s\S]*?```|`[^`\n]*`|“[^”\n]*”|「[^」\n]*」|"[^"\n]*"|'[^'\n]*'/gu,' '));
-export const requestPausesContinuation=text=>REQUEST_PAUSE.test(continuationText(text));
+export const requestPausesContinuation=text=>{
+  const request=continuationText(text);
+  if(REQUEST_PAUSE.test(request))return true;
+  const planOnly=/(?<!不)(?:只|仅)(?:需要|要|需)?(?:制定|编写|拟定|写|提供|给出|输出)?(?:一份|一个)?(?:计划|方案)/u.test(request);
+  if(planOnly&&/(?:经|获得|等|等待)[^。；;\n]{0,12}(?:用户|我|您|你)[^。；;\n]{0,8}(?:确认|授权|批准)/u.test(request))return true;
+  const steps=[...request.matchAll(/(?:然后|随后|接着|之后|并且|并|再|还要|还需|也要)([^。；;\n]{0,16}?)(?:执行|实施|实现|修改|开发|修复)/gu)];
+  const proceed=steps.some(step=>!/(?:不(?:要|得|必|能|允许)?|无需|无须|禁止|避免)\s*(?:(?:再|去|继续|立即|立刻)\s*)?$/u.test(step[1])&&
+    !/(?:询问|请示|确认|决定|批准|授权|同意|是否|能否|可否)/u.test(step[1]));
+  return planOnly&&!proceed;
+};
 
 function actionableNextStep(value){
   const text=String(value??'').trim().replace(/^[\s>*_`~]+|[\s*_`~]+$/gu,'');
@@ -26,8 +35,21 @@ function actionableNextStep(value){
   return true;
 }
 
+function withoutFencedCode(text){
+  let fence=null;
+  return text.split('\n').map(line=>{
+    const match=/^ {0,3}(`{3,}|~{3,})(.*)$/u.exec(line);
+    if(!fence&&match){fence=match[1];return '';}
+    if(fence){
+      if(match&&match[1][0]===fence[0]&&match[1].length>=fence.length&&!match[2].trim())fence=null;
+      return '';
+    }
+    return line;
+  }).join('\n');
+}
+
 function hasCompletionCandidate(current,requestText){
-  const answer=textOf(messageOf(current.assistant)).trim();
+  const answer=withoutFencedCode(textOf(messageOf(current.assistant))).trim();
   if(!answer||!requestText.trim()||requestPausesContinuation(requestText))return false;
   const headings=[...answer.matchAll(SUMMARY_HEADING)];
   if(!headings.length)return false;
