@@ -531,7 +531,7 @@ deferPressureCompaction 也保持默认关闭。
 - `stateInform`：默认开启。账本维护发现适用状态时，在后续请求中注入一次有界提醒；依赖 `stateLedger`，默认组合之外没有独立数据源。
 - `archiveReadRouting`：默认开启。把 `.jar`、`.zip` 等归档路径转入受限解码读取，需要原生文件系统与 `fflate`；解码器缺失时返回明确的不可用原因，不退化为直接读取二进制。
 - `requestAccounting`：默认开启。分别记录主请求、压缩请求和辅助请求的用量及未知消费；关闭只影响统计口径，不停止或改写实际请求。
-- `memberParsing`：默认开启。按语法实体定位类和方法范围；解析器不可用时退回词法扫描，并把本次解析失败记录为不可用而不是成功。
+- `memberParsing`：默认开启。按语法实体定位 Java 类和方法范围；解析器不可用时退回词法扫描，并把本次解析失败记录为不可用而不是成功。其他语言使用文本窗口，不提供语法完整的成员范围。
 - `mavenSourceBinding`：默认开启。按 Maven 坐标匹配 `sources` 归档并绑定其中的源码条目；依赖归档解码，坐标或条目不一致时不采用猜测来源。
 - `ledgerReceipt`：默认开启。同一正文已在当前上下文可见时返回短回执而不是重复全文；依赖 `evidenceViews` 与历史取回。关闭 `evidenceViews` 后回执行为同时停用，状态显示 `requires-setting:evidenceViews`。
 - `compressionControl`：默认开启。在既有 `compress` 工具上阻止等体积或重复且无进展的摘要，并协调来源恢复；不制造摘要，溢出恢复和手动压缩仍由宿主处理，会话结束时释放本会话状态。

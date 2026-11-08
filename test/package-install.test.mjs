@@ -6,10 +6,11 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import {pathToFileURL} from 'node:url';
+import {DSH_APP} from './helpers/paths.mjs';
 
 const source=path.resolve(import.meta.dirname,'..');
 const npmCli=process.env.npm_execpath??path.join(path.dirname(process.execPath),'node_modules','npm','bin','npm-cli.js');
-const host=process.env.DSH_APP?.trim()||path.join(os.homedir(),'AppData','Local','Programs','DSH Desktop','dsh-desktop');
+const host=DSH_APP;
 const hostScope=path.join(host,'node_modules','@deepseek-ai');
 
 const runNpm=(args,{cwd,env})=>spawnSync(process.execPath,[npmCli,...args],{cwd,env,encoding:'utf8',windowsHide:true});
@@ -21,7 +22,7 @@ test('packed tarball installs without host peers and loads with the installed ho
   const fflate=path.join(source,'node_modules','fflate');
   assert.ok(existsSync(path.join(fflate,'package.json')),'fflate must be installed for the isolated package check');
   if(!existsSync(path.join(hostScope,'dsh-llm','package.json'))){
-    if(process.env.DSH_APP)assert.fail(`No DSH host runtime found at DSH_APP: ${host}`);
+    if(process.env.DSH_APP?.trim())assert.fail(`No DSH host runtime found at DSH_APP: ${host}`);
     t.skip('No DSH host runtime is installed for the isolated load check.');
     return;
   }

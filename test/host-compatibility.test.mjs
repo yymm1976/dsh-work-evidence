@@ -5,8 +5,10 @@ import {existsSync} from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
+import {DSH_APP} from './helpers/paths.mjs';
+
 const root=path.resolve(import.meta.dirname,'..');
-const app=process.env.DSH_APP??path.join(os.homedir(),'AppData','Local','Programs','DSH Desktop','dsh-desktop');
+const app=DSH_APP;
 
 async function versionOf(app,packageName){
   const file=path.join(app,'node_modules',...packageName.split('/'),'package.json');
@@ -28,7 +30,7 @@ test('the package declaration exactly matches the two verified host runtimes',as
   }
   const tools=await versionOf(app,'@deepseek-ai/dsh-tools');
   if(!tools){
-    if(process.env.DSH_APP)assert.fail(`No DSH host runtime found at DSH_APP: ${app}`);
+    if(process.env.DSH_APP?.trim())assert.fail(`No DSH host runtime found at DSH_APP: ${app}`);
     t.skip('No DSH host runtime is installed for this compatibility check.');
     return;
   }

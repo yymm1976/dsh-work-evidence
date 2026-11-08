@@ -111,3 +111,16 @@ test('ledgerReceipt follows evidenceViews instead of shortening behind a blocked
     'disabling evidenceViews must not leave receipts active while the panel calls the reference view blocked');
   assert.equal(disabled.filter(value=>value.includes('the quick brown fox')).length,2);
 });
+
+test('an explicit reference view cannot bypass disabled evidenceViews receipts',async()=>{
+  const host=await startHost({workspace:{toolSurface:'full',evidenceViews:false},script:async(_options,index)=>index<=2?
+    [tool('project_evidence',{mode:'read',files:[{path:'a.txt'}],responseView:'reference-if-visible'})]:[text('完成。')]});
+  try{
+    await fs.writeFile(path.join(host.cwd,'a.txt'),BODY);
+    const agent=await host.createAgent('max');
+    await host.send(agent,'按参考视图读取 a.txt 两次');
+    const results=host.events.filter(event=>event.type==='tool/result').map(event=>textOf(messageOf(event)));
+    assert.ok(!results.some(value=>value.includes('[work-evidence ledger receipt]')),
+      'an explicit reference-if-visible request must not shorten a body while evidenceViews is blocked');
+  }finally{await host.close();}
+});

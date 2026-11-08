@@ -364,6 +364,10 @@ export function createObservationLedger(ctx,runtime,nativeFiles=null){
     const original=textBlocks(result.content);
     const prepared={source,windows,stats,priorById:new Map(),receipt:null,original,bodyHash:hashOf(original)};
     if(!config(agent).ledgerReceipt)return skip('disabled',prepared);
+    // A receipt shortens a body that the reference view must still be able to show.
+    // Disabling evidenceViews therefore disables receipts even for an explicit
+    // responseView:"reference-if-visible" request.
+    if(!config(agent).evidenceViews)return skip('disabled',prepared);
     if(runtime.canRecall?.(agent)!==true)return skip('historical-recall-unavailable',prepared);
     // The panel blocks the reference view without evidenceViews; receipts must not
     // keep shortening bodies behind that blocked view.
