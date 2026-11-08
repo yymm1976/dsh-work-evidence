@@ -9,6 +9,14 @@ import {startHost,text,tool} from './helpers/host.mjs';
 import {OPS_ROOT} from './helpers/paths.mjs';
 
 const source=path.resolve(import.meta.dirname,'..');
+const FEATURE_KEYS=['enabled','aggressiveMode','selfIndex','fastEditEnabled','stateLedger','stateInform','completionNotice',
+  'archiveReadRouting','readArgumentRecovery','requestAccounting','evidenceViews','memberParsing','mavenSourceBinding','contextProtocol',
+  'historyHygiene','ledgerReceipt','ledgerUnresolved','swLedger','swEviction','requestProjection','projectionRestore',
+  'compressionControl','deferPressureCompaction','stubSummary','executionTriage','nativeProgramReuse','structuredCalls','nativeReasoningReplay',
+  'stageWorkingSet','stepPacing','retainedCompute','finalJsonGuard','finalJsonResultGuard','qualityReview','qualityReviewEffort',
+  'qualityReviewScope','toolSurface','defaultResponseView'];
+const TOOL_NAMES=['project_evidence','work_exec','work_recall','work_status','work_state','work_report','work_probe','evidence_index',
+  'candidate_select','ptc_patterns','ptc_fastpath','verified_exec','fastedit_java','work_compute'];
 const contained=(root,relative)=>{
   const full=path.resolve(root,relative),part=path.relative(root,full);
   assert.ok(part&&!part.startsWith('..')&&!path.isAbsolute(part),'Package files remain inside their directory.');return full;
@@ -50,8 +58,11 @@ test('declared package files independently load all retained controls and preser
     const features=await host.command(agent,'features');assert.equal(features.version,VERSION);
     assert.equal(features.pluginEffective,true);assert.ok(features.dependencies.archiveDecoder.available);
     assert.ok(features.dependencies.nativeCompactionAttached);
-    assert.equal(features.features.length,38);
-    assert.equal(features.tools.length,14);
+    assert.deepEqual(features.features.map(item=>item.key),FEATURE_KEYS);
+    assert.equal(new Set(features.features.map(item=>item.key)).size,38);
+    assert.deepEqual(features.tools.map(item=>item.name),TOOL_NAMES);
+    assert.equal(new Set(features.tools.map(item=>item.name)).size,14);
+    assert.ok(features.tools.every(item=>item.exposed===true),JSON.stringify(features.tools.filter(item=>!item.exposed)));
     assert.ok(features.features.filter(item=>typeof item.configured==='boolean').every(item=>item.configured));
     assert.equal(features.features.find(item=>item.key==='fastEditEnabled').status,'ready');
     assert.equal(features.features.find(item=>item.key==='nativeReasoningReplay').status,'waiting');

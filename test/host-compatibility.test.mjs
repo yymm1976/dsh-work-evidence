@@ -33,6 +33,12 @@ test('the package declaration exactly matches the two verified host runtimes',as
     return;
   }
   assert.ok(dshVersions.includes(tools),`${app} dsh-tools ${tools} is not declared in engines.dsh`);
+  // peerDependenciesMeta marks dsh-llm optional so non-host consumers can install
+  // the package without the desktop runtime. Host tests always load dsh-llm, so a
+  // missing host implementation is a configuration failure, not a skipped check.
+  const llm=await versionOf(app,'@deepseek-ai/dsh-llm');
+  assert.ok(llm,`${app} is missing the runtime-required @deepseek-ai/dsh-llm`);
+  assert.ok(supportedHosts.includes(llm),`${app} @deepseek-ai/dsh-llm ${llm} is not declared in peerDependencies`);
   for(const name of peers){
     const version=await versionOf(app,name);
     if(version)assert.ok(supportedHosts.includes(version),`${app} ${name} ${version} is not declared in peerDependencies`);

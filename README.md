@@ -575,21 +575,32 @@ plugin-command.mjs 负责命令；source-tools.mjs 负责源码和报告入口�
 
 ## 并行子代理调用
 
-Codex 中新增并行子代理必须调用平台的多 Agent 工具 `multi_agent_v1__spawn_agent`。调用参数固定为：
+Codex 中新增并行子代理必须调用平台的多 Agent 工具 `multi_agent_v1__spawn_agent`。
+首次使用时，先调用 `tool_search` 查出 `multi_agent_v1__spawn_agent`、`multi_agent_v1__wait_agent` 和 `multi_agent_v1__send_input`，再按下列参数逐项填写。
+每个并行任务单独创建会话，调用参数固定为：
 
 ```js
 multi_agent_v1__spawn_agent({
   agent_type: "worker",
   model: "opencode-go/deepseek-v4.1-flash",
   reasoning_effort: "high",
-  message: "互不重叠的完整任务范围；明确禁止递归派工",
-  fork_context: false
+  fork_context: false,
+  message: "互不重叠的完整任务范围；写明绝对路径、证据要求、禁改范围、完成条件，并明确禁止递归派工"
 })
 ```
 
-不得省略 `agent_type`、模型或档位，不得继承默认模型，不得使用 GPT、OpenDesign、`codex exec` 或其他替代路由。每次创建一个仍由用户界面可见的独立子会话；返回后必须核对 `agent_id` 与 `nickname`，并使用 `multi_agent_v1__wait_agent`、`multi_agent_v1__send_input` 继续同一会话。
+不得省略 `agent_type`、`model`、`reasoning_effort`、`fork_context` 或 `message`。
+不得继承默认模型，不得使用 GPT、OpenDesign、`codex exec` 或后台进程启动子代理。
 
-`codex exec` 不能替代多 Agent 工具：它创建的后台进程不出现在 Codex 子代理列表，即使命令行能运行也不能计为已启动的并行子代理。常驻复审也复用 `multi_agent_v1__spawn_agent` 创建的会话，不在每次复审时新建匿名后台进程。
+启动结果必须同时包含 `agent_id` 和 `nickname`，并在 Codex 子代理列表可见。
+只收到排队、空返回或命令行输出时，不能记为已启动。
+启动成功后使用 `multi_agent_v1__wait_agent` 等待结果；后续追问使用 `multi_agent_v1__send_input`，保持原会话和 `fork_context:false` 的范围。
+模型身份按实际调用参数和返回记录核对 `provider`、`model`、`reasoning_effort`、`route` 与 `request ID`；缺少任一项时，该运行不计为指定模型证据。
+
+工具不可用、达到会话上限或调用报错时，记录 `subagent-unavailable` 和完整错误，改用主 Agent 串行完成。
+不得把 `codex exec`、后台 Node/PowerShell 进程、`create_thread` 或另开用户聊天当成并行子代理。
+`codex exec` 不能替代多 Agent 工具。
+常驻复审复用已创建的多个 Agent 会话，不在每次复审时新建匿名进程。
 
 ## GitHub PR 开发与 CodeRabbit 审查规范
 

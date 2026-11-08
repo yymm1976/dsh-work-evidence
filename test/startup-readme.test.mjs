@@ -20,14 +20,21 @@ function fixture(files,{blocked=[],stepPacing=true}={}){
   return {lookups,globs,decisions,run:value=>flow.startupPaths({session:{id:'source-location'}},pending(value),AbortSignal.timeout(10000))};
 }
 
-test('README hard-codes the visible multi-agent invocation instead of codex exec',async()=>{
+test('README hard-codes the exact visible multi-agent invocation and unavailable fallback',async()=>{
   const readme=await fs.readFile(path.resolve(import.meta.dirname,'..','README.md'),'utf8');
   assert.match(readme,/multi_agent_v1__spawn_agent\(\{/u);
-  assert.match(readme,/agent_type: "worker"/u);
-  assert.match(readme,/model: "opencode-go\/deepseek-v4\.1-flash"/u);
-  assert.match(readme,/reasoning_effort: "high"/u);
+  for(const line of [
+    'agent_type: "worker"',
+    'model: "opencode-go/deepseek-v4.1-flash"',
+    'reasoning_effort: "high"',
+    'fork_context: false',
+    'message: "互不重叠的完整任务范围；写明绝对路径、证据要求、禁改范围、完成条件，并明确禁止递归派工"'
+  ])assert.ok(readme.includes(line),line);
+  assert.match(readme,/`tool_search` 查出 `multi_agent_v1__spawn_agent`、`multi_agent_v1__wait_agent` 和 `multi_agent_v1__send_input`/u);
+  assert.match(readme,/启动结果必须同时包含 `agent_id` 和 `nickname`/u);
+  assert.match(readme,/`subagent-unavailable`/u);
+  assert.match(readme,/不得把 `codex exec`、后台 Node\/PowerShell 进程、`create_thread` 或另开用户聊天当成并行子代理/u);
   assert.match(readme,/`codex exec`\s+不能替代多 Agent 工具/u);
-  assert.match(readme,/核对 `agent_id` 与 `nickname`/u);
   assert.doesNotMatch(readme,/正式实验使用 auto\/deepseek-v4\.1-flash \/ max/u);
 });
 
