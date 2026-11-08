@@ -128,7 +128,9 @@ export function createFeatureControl(ctx,runtime,{available,canRecall,workingSet
           !available(agent,'work_state'))reasons.push('inactive-without-reachable-consumer');
         if(key==='qualityReview'&&(!selection?.provider||!selection?.model))reasons.push('main-model-route-unavailable');
         if(key==='retainedCompute')for(const name of retained.missingDependencies)reasons.push('native-service-unavailable:'+name);
-        if(reasons.length)status='blocked';
+        // A request projection exists only after a source body was actually hidden. Before that,
+        // deferPressureCompaction has no budget view yet, but it is not permanently blocked.
+        if(reasons.length)status=key==='deferPressureCompaction'&&reasons.length===1&&reasons[0]==='request-budget-view-unavailable'?'waiting':'blocked';
         else if(key==='retainedCompute'&&retained.loadFailure){status='waiting';reasons.push('retained-runtime-retry-on-next-call');}
         else if(key==='nativeReasoningReplay'&&!/(?:^|\/)deepseek-/iu.test(selection?.model??'')){status='waiting';reasons.push('requires-matching-deepseek-tool-history');}
         else if(key==='qualityReview'&&runtime.modeStatus(agent).selected!=='quality'){status='waiting';reasons.push('requires-ultra-quality-mode');}

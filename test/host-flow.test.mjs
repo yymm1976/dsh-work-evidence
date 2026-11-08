@@ -24,8 +24,11 @@ test('compact tool definitions stay within the fixed schema budget',async()=>{
     const workRecall=tools.find(item=>item.name==='work_recall');
     assert.ok(workExec,'work_exec remains available on the compact writable surface');
     assert.ok(workRecall,'work_recall remains available on the compact writable surface');
-    assert.ok(JSON.stringify(workExec).length<=1600,'work_exec schema stays within its documentation-backed budget');
-    assert.ok(JSON.stringify(workRecall).length<=1100,'work_recall schema stays within its documentation-backed budget');
+    // The 2026-11-08 v4 samples rejected shorter descriptions: the saved tokens per request
+    // were outweighed by extra retries and reads. Keep the complete documented definitions
+    // inside their measured ceilings instead of re-compressing them without fresh evidence.
+    assert.ok(JSON.stringify(workExec).length<=2700,'work_exec schema stays within its documentation-backed budget');
+    assert.ok(JSON.stringify(workRecall).length<=1850,'work_recall schema stays within its documentation-backed budget');
   }finally{await host.close();}
 });
 
