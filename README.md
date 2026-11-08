@@ -571,6 +571,12 @@ plugin-command.mjs 负责命令；source-tools.mjs 负责源码和报告入口�
 比较结果、采用条件和未完事项分别记录在现行迭代实验页与功能核查页。
 私人交接、原始会话和本机实验记录不进入公开仓库，也不在本文提供绝对路径。公开版本只保留可复现的方法、汇总结果和证据边界。
 
+## 并行子代理调用
+
+Codex 中新增并行子代理必须调用平台的多 Agent 工具 `spawn_agent`。在工具参数里显式填写 `model="opencode-go/deepseek-v4.1-flash"` 与 `reasoning_effort="high"`；不得省略模型、继承默认模型、使用 GPT、OpenDesign 或其他替代路由。每次创建一个仍由用户界面可见的独立子会话，分配互不重叠的完整任务范围，明确禁止递归派工。
+
+`codex exec` 不能替代多 Agent 工具：它创建的后台进程不出现在 Codex 子代理列表，即使命令行能运行也不能计为已启动的并行子代理。调用后须逐一核对返回的 `agent_id` 与 `nickname`，再按该 ID 使用工具继续同一会话。常驻复审也复用 `spawn_agent` 创建的会话，不在每次复审时新建匿名后台进程。
+
 ## GitHub PR 开发与 CodeRabbit 审查规范
 
 本节适用于所有参与 `dsh-work-evidence` 开发的编程 Agent，包括 DSH、Codex 及其他具备 Git/GitHub 操作能力的 Agent。
