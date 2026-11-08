@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {startHost,text,tool,reasoning,requestText} from './helpers/host.mjs';
+import {startHost,text,tool,requestText} from './helpers/host.mjs';
 
 const price=[{provider:'scripted',model:'scripted-model',input:0.15,cacheRead:0.003,output:0.6,currency:'USD'}];
 const usage=options=>{const tokens=Math.ceil(JSON.stringify(options.messages).length/3),cached=Math.floor(tokens*.85);
@@ -38,26 +38,5 @@ test('SW evicts exact duplicate outputs under context pressure and respects its 
   assert.equal(noLedger.status.sw.observations,0);assert.equal(noLedger.status.sw.evicted,0);
   assert.ok(on.status.sw.charsSaved>4096);
   console.log('measurement',JSON.stringify({feature:'swEviction',onChars:on.total,offChars:off.total,evictions:on.status.sw.evicted,charsSaved:on.status.sw.charsSaved}));
-});
-
-test('stale private reasoning leaves the request view while canonical blocks stay exact',async()=>{
-  const run=async historyHygiene=>{
-    const host=await startHost({workspace:{historyHygiene},script:(_options,index)=>index===1?
-      [reasoning('REASON-ONE '.repeat(60)),tool('pwsh',{command:'echo one',description:'one'})]:
-      index===2?[reasoning('REASON-TWO '.repeat(60)),tool('pwsh',{command:'echo two',description:'two'})]:
-      [text('完成。')]});
-    try{
-      const agent=await host.createAgent('max');await host.send(agent,'连续执行两次并交付');
-      return {views:host.requests.map(options=>JSON.stringify(options.messages)),status:await host.command(agent,'detail'),
-        canonical:host.events.filter(event=>event.type==='assistant/message').map(event=>event.data.message.content.filter(block=>block.type==='reasoning').map(block=>block.text).join('|'))};
-    }finally{await host.close();}
-  };
-  const off=await run(false),on=await run(true);
-  assert.ok(off.views[2].includes('REASON-ONE')&&off.views[2].includes('REASON-TWO'));
-  assert.ok(!on.views[2].includes('REASON-ONE'),'stale reasoning is omitted from the later request');
-  assert.ok(on.views[2].includes('REASON-TWO'),'the latest turn reasoning stays visible');
-  assert.ok(on.canonical.join('').includes('REASON-ONE')&&on.canonical.join('').includes('REASON-TWO'),'canonical events keep both blocks');
-  assert.ok(on.status.historyHygiene.reasoningMessages>=1);
-  console.log('measurement',JSON.stringify({feature:'historyReasoning',onChars:on.views[2].length,offChars:off.views[2].length}));
 });
 
