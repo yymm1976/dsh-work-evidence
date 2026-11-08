@@ -4,8 +4,11 @@ import {planContextPrune,readDispatch,hasPruneProblem} from './context-pruning.m
 import {resultText,surfaceReferences} from './visible-results.mjs';
 import {renderedReads} from './observation-ledger.mjs';
 import {messageTokens} from './context-economics.mjs';
+import {reportedCheckFailure} from './recovery.mjs';
 
 const AGE=2,MIN_SAVING=512;
+const TEST_MIN_CHARS=8000,TEST_TAIL_CHARS=1800,TEST_DIGEST_MAX=4000;
+const TEST_COMMAND=/^(?:python(?:\.exe)?\s+-m\s+(?:pytest|compileall)|node\s+--test|ruff\s+check)\b/iu;
 const messageOf=event=>event.data?.message??(event.data?.role?event.data:null);
 const callIdOf=message=>message?.source?.callId??message?.toolCallId;
 const fileKey=(root,file)=>{
@@ -22,13 +25,34 @@ export function recallCall(agent,{seq,offset=0,maxChars=16000}={}){
     complete:end>=text.length,...(event.type.endsWith('-start')?{executionOutcome:'not-observed-from-call-start'}:{}),note:'Original recorded arguments. The operation was not rerun.'};
 }
 
+/** Compact request-view receipt for a completed test/check run; canonical output stays exact. */
+export function testOutputDigest(command,text,{seq=null,truncated=false}={}){
+  if(typeof command!=='string'||!TEST_COMMAND.test(command.trim()))return null;
+  if(typeof text!=='string'||text.length<TEST_MIN_CHARS||truncated)return null;
+  const failure=reportedCheckFailure(text),summary=failure?.summary??null,entries=failure?.failureEntries??[];
+  const failedLines=text.split(/\r?\n/u).filter(line=>/^\s*(?:FAILED|ERROR|not ok|\d+\s+(?:failed|failures))\b/iu.test(line)).slice(0,8);
+  const detailLines=failure?[]:text.split(/\r?\n/u).filter(line=>/(?:Error|Exception|assert|AssertionError|File "|line \d+|Traceback)/iu.test(line)).slice(-10);
+  const tail=text.slice(-TEST_TAIL_CHARS).split(/\r?\n/u).filter(line=>line.trim()).slice(-18).join('\n');
+  const lines=['[work-evidence test receipt] command='+command.trim().slice(0,180)];
+  if(summary&&Number.isInteger(summary.failed))lines.push('result: '+(summary.passed??'?')+' passed, '+summary.failed+' failed'+(summary.total?(' of '+summary.total):''));
+  else if(entries.length)lines.push('result: '+entries.length+' named failures');
+  if(entries.length)lines.push('failing: '+entries.slice(0,8).join(' | '));
+  else if(failedLines.length)lines.push('failing: '+failedLines.join(' | '));
+  if(detailLines.length)lines.push('details: '+detailLines.join(' | '));
+  if(tail)lines.push('tail:\n'+tail);
+  lines.push('The canonical output is unchanged and recoverable with work_recall kind=result'+(seq!==null?(' seq='+seq):'')+'.');
+  const digest=lines.join('\n');
+  return {text:digest.length<=TEST_DIGEST_MAX?digest:digest.slice(0,TEST_DIGEST_MAX-40)+'\n[receipt truncated; use work_recall for the full output]',
+    signature:failure?.signature??null,summary,originalChars:text.length};
+}
+
 /** A request view only; canonical events and reasoning remain complete. */
 export function createHistoryHygiene(runtime,taskFlow,{isProtected=()=>false,retainedSource=()=>false,canRecall=()=>false,referenceContext=null}={}){
   const states=new Map();
   function get(agent){
     let state=states.get(agent.session.id);
     if(!state){state={cursor:0,step:0,results:new Map(),failures:new Set(),pinnedCalls:new Set(),pinnedResults:new Set(),retainedSources:new Set(),
-      outputPlans:new Map(),hiddenResults:new Set(),omittedSources:new Set(),liveReads:new Map(),observedPaths:new Map(),requests:0,outputs:0,chars:0,restores:0,rereadPromotions:0};states.set(agent.session.id,state);}
+      outputPlans:new Map(),hiddenResults:new Set(),omittedSources:new Set(),liveReads:new Map(),observedPaths:new Map(),commands:new Map(),requests:0,outputs:0,chars:0,testOutputViews:0,testOutputChars:0,restores:0,rereadPromotions:0};states.set(agent.session.id,state);}
     return state;
   }
   function rememberRead(state,root,read){
@@ -51,6 +75,8 @@ export function createHistoryHygiene(runtime,taskFlow,{isProtected=()=>false,ret
       if(event.type==='step/start')state.step++;
       if(['tool/call','tool/ptc-dispatch','tool/code-dispatch'].includes(event.type)){
         const args=argsOf(data.arguments);
+        if(['pwsh','bash','ops_bash'].includes(data.name)&&typeof args?.command==='string'&&state.commands.size<64)
+          state.commands.set(data.callId,{name:data.name,command:args.command});
         if((data.name==='work_recall'&&args.kind!=='reference'&&(args.sourceSessionId===undefined||args.sourceSessionId===agent.session.id))||data.name==='work_state'&&args.mode==='recall'){
           const pins=args.kind==='call'?state.pinnedCalls:state.pinnedResults;
           if(Number.isSafeInteger(args.seq)&&!pins.has(args.seq)){
@@ -73,10 +99,12 @@ export function createHistoryHygiene(runtime,taskFlow,{isProtected=()=>false,ret
         state.observedPaths.set(root,paths);
       }
       if(event.type==='tool/result'&&event.surfaceOp?.op!=='replace'&&message){
-        const id=callIdOf(message);
+        const id=callIdOf(message),text=resultText(message.content),command=state.commands.get(id)?.command??null;
+        const digest=command?testOutputDigest(command,text,{seq:event.seq,truncated:event.data?.meta?.truncated===true}):null;
+        state.commands.delete(id);
         const failed=!!message.isError||hasPruneProblem(message.content??[])||state.failures.has(id)||isProtected(agent,id);
         const record={seq:event.seq,step:state.step,callId:id,failed,reads:[...(state.liveReads.get(id)?.values()??[])],
-          paths:[...(state.observedPaths.get(id)??[])]};
+          paths:[...(state.observedPaths.get(id)??[])],testDigest:digest?.text??null,testSignature:digest?.signature??null,testOriginalChars:digest?.originalChars??0};
         state.results.set(message.id,record);
         if(!failed&&record.reads.length){
           const printed=renderedReads(record.reads,resultText(message.content));
@@ -106,10 +134,23 @@ export function createHistoryHygiene(runtime,taskFlow,{isProtected=()=>false,ret
     const pruneSettings={thresholdChars:config.contextPruneMinChars,headChars:config.contextPruneHeadChars,tailChars:config.contextPruneTailChars};
     const settingsKey=JSON.stringify(pruneSettings),state=sync(agent),pins=surfaceReferences(agent.session),root=runtime.get(agent).root,flow=taskFlow.phase(agent),focus=new Set((flow.focus??[]).map(file=>fileKey(root,file)));
     if(state.settingsKey!==settingsKey){state.outputPlans.clear();state.settingsKey=settingsKey;}
-    let outputs=0,saved=0;const hidden=new Set();
+    let outputs=0,saved=0,testViews=0,testSaved=0;const hidden=new Set();
     const result=messages.map(message=>{
       if(message.role!=='tool')return message;
       const entry=state.results.get(message.id);
+      if(entry?.testDigest&&state.step-entry.step>=1&&!state.pinnedResults.has(entry.seq)&&!pins.opaque&&!pins.targets.has(entry.seq)){
+        const reduction=resultText(message.content).length-entry.testDigest.length;
+        if(reduction>=MIN_SAVING){
+          const after={...message,content:[{type:'text',text:entry.testDigest}]};
+          outputs++;saved+=reduction;testViews++;testSaved+=reduction;hidden.add(entry.seq);
+          if(record){
+            state.outputPlans.set(entry.seq,{test:true,content:after.content});
+            runtime.effects?.rewrite(agent,{feature:'historyTestOutput',afterMessage:after,beforeMessages:[message],sourceSeqs:[entry.seq]});
+            runtime.effects?.decide(agent,'historyTestOutput','applied','test-output-receipt',{seq:entry.seq,saved});
+          }
+          return after;
+        }
+      }
       if(!entry||entry.failed||isProtected(agent,entry.callId)||state.step-entry.step<AGE||state.pinnedResults.has(entry.seq)||pins.opaque||pins.targets.has(entry.seq))return message;
       // Reading is not evidence that the middle of a source is disposable.
       // Leave source windows to the existing larger, recoverable protocol.
@@ -135,7 +176,7 @@ export function createHistoryHygiene(runtime,taskFlow,{isProtected=()=>false,ret
       }
       return after;
     });
-    if(record){state.hiddenResults=hidden;state.requests++;state.outputs+=outputs;state.chars+=saved;}
+    if(record){state.hiddenResults=hidden;state.requests++;state.outputs+=outputs;state.chars+=saved;state.testOutputViews+=testViews;state.testOutputChars+=testSaved;}
     const toolView=outputs?result:messages;
     return referenceContext?.project(agent,toolView,{record,allowed})??toolView;
   }
@@ -152,8 +193,8 @@ export function createHistoryHygiene(runtime,taskFlow,{isProtected=()=>false,ret
     bodyVisible(agent,seq){return !runtime.isEnabled(agent)||!runtime.get(agent).config.historyHygiene||get(agent).suspended||!get(agent).hiddenResults.has(seq)&&referenceContext?.bodyVisible(agent,seq)!==false;},
     manages(agent,seq){return runtime.isEnabled(agent)&&runtime.get(agent).config.historyHygiene&&!get(agent).suspended&&(get(agent).hiddenResults.has(seq)||referenceContext?.manages(agent,seq)===true);},
     retainsSource(agent,file){return get(agent).retainedSources.has(fileKey(runtime.get(agent).root,file));},
-    summary(agent){const s=sync(agent),references=referenceContext?.summary(agent)??null;return {enabled:runtime.isEnabled(agent)&&runtime.get(agent).config.historyHygiene,requestViews:s.requests,outputViews:s.outputs,
-      charsRemovedAcrossViews:s.chars+(references?.charsRemovedAcrossViews??0),toolOutputCharsRemovedAcrossViews:s.chars,
+    summary(agent){const s=sync(agent),references=referenceContext?.summary(agent)??null;return {enabled:runtime.isEnabled(agent)&&runtime.get(agent).config.historyHygiene,requestViews:s.requests,outputViews:s.outputs,testOutputViews:s.testOutputViews,
+      charsRemovedAcrossViews:s.chars+(references?.charsRemovedAcrossViews??0),toolOutputCharsRemovedAcrossViews:s.chars-s.testOutputChars,testOutputCharsRemoved:s.testOutputChars,
       explicitRecoveries:s.restores,rereadPromotions:s.rereadPromotions,retainedCalls:s.pinnedCalls.size,retainedResults:s.pinnedResults.size,suspended:!!s.suspended,
       referenceContext:references,reasoning:'unchanged',canonicalHistory:'unchanged'};},
     disposeAgent(agent){referenceContext?.disposeAgent(agent);states.delete(agent.session.id);},dispose(){referenceContext?.dispose();states.clear();}};
