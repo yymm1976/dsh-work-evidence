@@ -1,12 +1,12 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {createCompressionControl} from '../compression-control.mjs';
-function harness(){
+function harness({runtimeEnabled=true}={}){
   const hooks={},state={step:1,turn:1,config:{compressionControl:true}},events=new Map([[1,{data:{message:{content:[{type:'text',text:'source text '.repeat(100)}]}}}]]);
   const agent={session:{id:'external-compression',seq:2,surface:{nodes:[1],contentGeneration:0},eventAt:seq=>events.get(seq)}};
   const ctx={on:(name,fn)=>{hooks[name]=fn;},tools:{get:()=>true},agents:{get:()=>agent}};
   const economics={pressure:()=>({emergency:false}),remember:(_a,d)=>d,assess:()=>({allowed:true})};
-  const control=createCompressionControl(ctx,{isEnabled:()=>true,get:()=>state},economics);
+  const control=createCompressionControl(ctx,{isEnabled:()=>runtimeEnabled,get:()=>state},economics);
   let executions=0;
   const next=async()=>{executions++;return {isError:false,content:[{type:'text',text:'unchanged'}]};};
   const execute=arguments_=>hooks['tools/execute']({name:'compress',agent,arguments:arguments_},next);
@@ -24,4 +24,9 @@ test('external compression cooperation blocks an unchanged repeated proposal and
   await h.hooks['agent/request-error']({agent:h.agent,failure:{code:'CONTEXT_WINDOW_EXCEEDED'}},async()=>({kind:'continue'}));
   assert.equal((await h.execute(args)).isError,false);assert.equal(h.executions(),2);
   assert.equal(h.control.metrics(h.agent).emergencyPasses,1);
+});
+test('external compression cooperation bypasses when the plugin is disabled',async()=>{
+  const h=harness({runtimeEnabled:false}),args={content:[{startSeq:1,endSeq:1,summary:'short'}]};
+  assert.equal((await h.execute(args)).isError,false);
+  assert.equal(h.executions(),1);
 });

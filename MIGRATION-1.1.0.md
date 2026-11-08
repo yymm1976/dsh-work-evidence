@@ -11,7 +11,8 @@
 
 ## 配置行为
 
-- `qualityReview`、`completionNotice`、`requestProjection`、`projectionRestore`、`swLedger`、`swEviction`、`deferPressureCompaction`、`stubSummary`、`structuredCalls`、`nativeProgramReuse`、`nativeReasoningReplay` 和 `finalJsonResultGuard` 默认关闭。需要阶段摘要后的自动继续时，显式开启 `completionNotice`。升级前已显式写入 `completionNotice: true` 的工作区会保留该值；用 `/work-evidence feature completionNotice` 查看当前配置，用 `/work-evidence feature completionNotice off` 关闭。
+- `qualityReview`、`completionNotice`、`requestProjection`、`projectionRestore`、`swLedger`、`swEviction`、`deferPressureCompaction`、`stubSummary`、`structuredCalls`、`nativeProgramReuse`、`nativeReasoningReplay`、`stageWorkingSet` 和 `finalJsonResultGuard` 默认关闭。需要阶段摘要后的自动继续时，显式开启 `completionNotice`。`stageWorkingSet` 只在请求投影、显式 `work_state` stage 或关闭 `executionTriage` 时有可达消费者；默认关闭避免展示没有实际作用的阶段状态。升级前的显式值保留。
+- `fastEditEnabled` 关闭时，`fastedit_java` 返回 `deopt` 和 `fastedit-disabled`，不改文件；在同一会话重新开启后恢复调用。`defaultResponseView` 默认 `reference-if-visible`，需要完整来源正文时设置 `full`，设置值同样保留到后续会话。
 - `contextPruningPolicy` 只接受 `forecast`；`compactionTiming` 只接受 `native`；旧值会安全归一到这两个有效值。
 - `mode` 不再设置运行模式。Ultra 使用质量模式，非 Ultra 在 `aggressiveMode` 开启时使用激进模式。
 - 旧布尔设置 `programHistory`、`reasoningHistory`、`ledgerFoldPlan`、`ledgerFoldWrite`、`executionAdvice`、`finishAdvice`、`taskEffort`、`nativeReadView`、`nativeExecutionEvidence`、`cacheOrderedStub` 和 `archiveEntries` 保留读取兼容并固定为关闭，不会重新接线。

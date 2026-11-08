@@ -14,7 +14,7 @@ test('folding, projection, native compaction and disabled-state recall preserve 
   const host=await startHost({contextWindow:60000,usage,workspace:{
     contextProtocol:true,historyHygiene:true,swLedger:true,swEviction:true,swEvictionSteps:3,
     requestProjection:true,projectionRestore:true,projectionMinChars:16000,projectionPricing:price,
-    compressionControl:true,deferPressureCompaction:true,stubSummary:true,
+    compressionControl:true,deferPressureCompaction:true,stubSummary:true,stageWorkingSet:true,
   },script:()=>plan.shift()??[text('当前来源已处理。')]});
   try{
     for(let i=0;i<8;i++)await fs.writeFile(path.join(host.cwd,`o${i}.txt`),source(`o${i}`,120));

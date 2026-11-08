@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import {startHost,text,tool,requestText} from './helpers/host.mjs';
+import {STAGE_CHECKPOINT_GUIDANCE} from '../stage-checkpoints.mjs';
 
 async function scenario(workspace,request,steps,{setup,extraMounts=[],usage}={}){
   const host=await startHost({workspace,extraMounts,usage,script:(_o,n)=>steps[n-1]??[text('完成。')]});
@@ -14,6 +15,11 @@ async function scenario(workspace,request,steps,{setup,extraMounts=[],usage}={})
   }finally{await host.close();}
 }
 const resultTexts=run=>run.events.filter(e=>e.type==='tool/result').map(e=>e.data.message.content.map(b=>b.text??'').join(''));
+
+test('stage checkpoint guidance keeps the facts needed to resume after compaction',()=>{
+  for(const phrase of ['摘要是中途进度','不得单独结束或等待用户发送“继续”','保留文件修改状态','仍在运行的任务 ID','下一项依赖和排除理由','新结论标明替代关系'])
+    assert.ok(STAGE_CHECKPOINT_GUIDANCE.includes(phrase),phrase);
+});
 
 test('executionTriage identifies repeated failures and repeated successful calls only when enabled',async()=>{
   const bad=tool('pwsh',{command:"node -e \"throw new Error('boom 42')\"",description:'run'});

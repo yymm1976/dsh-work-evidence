@@ -79,6 +79,23 @@ test('fastedit_java finds, reads and replaces one method through the native pwsh
   assert.equal(results[4].status,'deopt');
 });
 
+test('fastEditEnabled disables fastedit_java and restores it in the same host session', {skip:!hasOps||!existsSync(PYTHON)}, async()=>{
+  const java='public class Calc {\n  public int add(int a, int b) {\n    return a + b;\n  }\n}\n';
+  const host=await startHost({workspace:{toolSurface:'full',fastEditEnabled:false,fastEditPython:PYTHON},extraMounts:await opsMounts(),
+    script:(_o,n)=>n===1||n===3?[tool('fastedit_java',{file:'Calc.java',operation:'find_entity',symbol:'Calc.add'})]:[text('已记录结果。')]});
+  try{
+    await fs.writeFile(path.join(host.cwd,'Calc.java'),java);
+    const agent=await host.createAgent('max');
+    await host.send(agent,'定位 Calc.add。');
+    assert.equal(resultsOf(host).at(-1).reason,'fastedit-disabled');
+    const changed=await host.command(agent,'feature fastEditEnabled on');
+    assert.equal(changed.readiness.features[0].configured,true);
+    await host.send(agent,'再次定位 Calc.add。');
+    const restored=resultsOf(host).at(-1);
+    assert.equal(restored.status,'found',JSON.stringify(restored));
+  }finally{await host.close();}
+});
+
 test('readArgumentRecovery corrects a flat OPS read once and can be disabled', {skip:!hasOps}, async()=>{
   for(const readArgumentRecovery of [true,false]){
     const host=await startHost({workspace:{toolSurface:'full',readArgumentRecovery},extraMounts:await opsMounts(),

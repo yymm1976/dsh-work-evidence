@@ -88,7 +88,7 @@ test('quality review runs only under Ultra, steers on a gap and re-reviews the r
 
 for(const [efforts,choice,expected]of [
   [['low','high','max'],'auto','low'],[['max'],'auto','max'],[['low','high','max'],'inherit','max'],
-  [['low','high','max'],'high','high'],[['max'],'low',null],
+  [['low','high','max'],'high','high'],[['low','medium','max'],'medium','medium'],[['low','medium','max'],'max','max'],[['max'],'low',null],
 ])test(`review effort ${choice} uses declared ${efforts.join('/')} without changing the main request`,async()=>{
   const host=await startHost({efforts,workspace:{qualityReview:true,qualityReviewEffort:choice},
     script:()=>[text('当前交付已完成。')],auxiliary:()=>[text('{"issues":[]}')]});

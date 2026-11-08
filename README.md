@@ -57,6 +57,7 @@ mode 只查询状态。旧的 mode <名称> 和 workspace-mode 命令不再设�
 例如质量复核须选 Ultra；结构化调用须用原生 TypeScript 函数体运行时；PTC 程序引用须同时开启执行恢复。
 归档读取和 Maven 归档来源还需 `fflate`。`dependencies.archiveDecoder` 显示加载状态，缺失时功能显示 `archive-decoder-unavailable:fflate`，实际读取返回 `ARCHIVE_DECODER_UNAVAILABLE`。读取成员时会核对目录与本地头的文件名、标志位、压缩方式，以及解压长度和 CRC；不一致时返回不可用，不将截断正文当作完整来源。支持存储、deflate、数据描述符和 ZIP64 目录。
 `fastEditPython` 指向带有所需包的现有 Python 环境，包版本见 `requirements-fastedit.txt`。状态确认运行文件可访问，桥接调用确认包能导入。
+`fastEditEnabled` 默认开启。关闭后 `fastedit_java` 返回 `deopt` 和 `fastedit-disabled`，不读取或修改 Java 文件；在同一会话重新开启后恢复调用。
 这些状态说明本地可用条件。实际触发、任务质量和资源效果仍按各功能记录判断。
 
 ## 原生思考回传候选
@@ -512,6 +513,7 @@ SW 只替换旧的完整成功输出，要求后续仍有相同正文可见。
 替换后的地址能取回原始事件。
 没有相同正文时，SW 与外层协调器不遍历历史或评估缓存费用。
 
+stageWorkingSet 默认关闭。请求投影、显式 `work_state` stage 或关闭 executionTriage 时才启用它，避免默认展示没有实际消费者的阶段状态。
 requestProjection、projectionRestore、stubSummary 默认关闭，尚无稳定费用收益结论。投影费用预测只在当前请求完整延续上一请求时扣除既有后缀暴露；指针或前缀错位时保留新增重填成本，不按零成本处理。预测步数是配置假设，不代表实际剩余请求数。
 deferPressureCompaction 也保持默认关闭。
 开启后，先恢复当前需要的旧来源，再按有效请求视图判断宿主压力阈值。
@@ -573,9 +575,20 @@ plugin-command.mjs 负责命令；source-tools.mjs 负责源码和报告入口�
 
 ## 并行子代理调用
 
-Codex 中新增并行子代理必须调用平台的多 Agent 工具 `spawn_agent`。在工具参数里显式填写 `model="opencode-go/deepseek-v4.1-flash"` 与 `reasoning_effort="high"`；不得省略模型、继承默认模型、使用 GPT、OpenDesign 或其他替代路由。每次创建一个仍由用户界面可见的独立子会话，分配互不重叠的完整任务范围，明确禁止递归派工。
+Codex 中新增并行子代理必须调用平台的多 Agent 工具 `multi_agent_v1__spawn_agent`。调用参数固定为：
 
-`codex exec` 不能替代多 Agent 工具：它创建的后台进程不出现在 Codex 子代理列表，即使命令行能运行也不能计为已启动的并行子代理。调用后须逐一核对返回的 `agent_id` 与 `nickname`，再按该 ID 使用工具继续同一会话。常驻复审也复用 `spawn_agent` 创建的会话，不在每次复审时新建匿名后台进程。
+```js
+multi_agent_v1__spawn_agent({
+  model: "opencode-go/deepseek-v4.1-flash",
+  reasoning_effort: "high",
+  message: "互不重叠的完整任务范围；明确禁止递归派工",
+  fork_context: false
+})
+```
+
+不得省略模型或档位，不得继承默认模型，不得使用 GPT、OpenDesign 或其他替代路由。每次创建一个仍由用户界面可见的独立子会话；返回后必须核对 `agent_id` 与 `nickname`，并使用 `multi_agent_v1__wait_agent`、`multi_agent_v1__send_input` 继续同一会话。
+
+`codex exec` 不能替代多 Agent 工具：它创建的后台进程不出现在 Codex 子代理列表，即使命令行能运行也不能计为已启动的并行子代理。常驻复审也复用 `multi_agent_v1__spawn_agent` 创建的会话，不在每次复审时新建匿名后台进程。
 
 ## GitHub PR 开发与 CodeRabbit 审查规范
 

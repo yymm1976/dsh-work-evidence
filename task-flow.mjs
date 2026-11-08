@@ -48,7 +48,7 @@ export function taskFlowGuidance(mode,surface='writable'){
     (mode!=='default'&&surface==='read-only'?'当前任务只读，不扩大文件或执行权限。\n':'')+STAGE_GUIDANCE+'\n'+STAGE_CHECKPOINT_GUIDANCE;
 }
 const newPacing=()=>({steps:new Set(),operations:0,outputTokens:0,lastOutputTokens:0,missingOutputUsage:0,progressOutputTokens:0,noticeOutputTokens:0,noticeSteps:-1,
-  lastProgress:0,nextConvergence:6,notices:new Set(),startup:false,sourceFocus:false,economy:false,computeCalls:0,computeAdvised:false,validationAdvised:false});
+  lastProgress:0,nextConvergence:6,notices:new Set(),startup:false,sourceFocus:false,computeCalls:0,computeAdvised:false,validationAdvised:false});
 function progress(state){const pacing=state.pacing;pacing.lastProgress=pacing.steps.size;pacing.progressOutputTokens=pacing.outputTokens;
   pacing.nextConvergence=Math.max(pacing.nextConvergence,pacing.steps.size+4);}
 function rememberPacing(state,key,outputTokens=state.pacing.outputTokens,noticeSteps=state.pacing.steps.size){
@@ -59,8 +59,7 @@ function rememberPacing(state,key,outputTokens=state.pacing.outputTokens,noticeS
   pacing.noticeSteps=Math.max(pacing.noticeSteps,steps);
   pacing.noticeOutputTokens=Math.max(pacing.noticeOutputTokens,Number.isSafeInteger(outputTokens)&&outputTokens>=0?Math.min(outputTokens,pacing.outputTokens):pacing.outputTokens);
   if(stage==='startup')pacing.startup=true;
-  else if(stage==='focus'){pacing.sourceFocus=true;pacing.economy=true;pacing.nextConvergence=Math.max(pacing.nextConvergence,steps+4);}
-  else if(stage==='economy'){pacing.economy=true;pacing.nextConvergence=Math.max(pacing.nextConvergence,steps+4);}
+  else if(stage==='focus'){pacing.sourceFocus=true;pacing.nextConvergence=Math.max(pacing.nextConvergence,steps+4);}
   else pacing.nextConvergence=Math.max(steps+6,steps*2);
 }
 const messageOf=event=>event?.data?.message??(event?.data?.role?event.data:null);
