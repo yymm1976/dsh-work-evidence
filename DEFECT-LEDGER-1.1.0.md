@@ -22,7 +22,7 @@
 | D13 | H8 旧推理请求视图省略被证实为负优化 | 本会话 H8 开发实验 | Python 三对均值 B0 `235,985` vs C `225,087`（改善 `4.6%`，未达 10%），两对 C 请求更多；代码回退，测试撤回 | `results/dev-python-v6-h8-*.json`、`OPTIMIZATION-REGISTER-1.1.0.md` H8 判定、`5355c64`/`399c33b` | 否决 |
 | D14 | 全量套件在回退 H8 后仍保留其测试，rc4 `602/1` | 本会话回归 | `399c33b` 恢复 pre-H8 测试文件 | `verification/node-test-rc4-399c33b.log` | 关闭 |
 | D15 | G3/G7 效率门禁：C_final 对 B0 未观察到 ≥10% 改善 | 生产实验 | H1–H8 均未形成可复现净收益；H3/H8 为负，其他未证明 | `ACTIVE-PROGRESS.md`、`OPTIMIZATION-REGISTER-1.1.0.md`、`results/` | 未关闭（发布阻断） |
-| D16 | G6 CodeRabbit 最终候选三轮实质覆盖 | PR #7 | 三轮实质正文：`5817854228`（`d7fb48c`）、`5817950552`（`5355c64`）、`5817997957`（`5355c64..b69b468`）；第三轮在 PR head `b69b468` 上，并发现 D03 的 `agent/disposed` 缺口。修复后 SHA 变化，需再做一次覆盖最终代码的增量 Review | `coderabbit-review-ledger.md`、PR reviews | 未关闭（最终 SHA 覆盖待确认） |
+| D16 | G6 CodeRabbit 最终候选三轮实质覆盖 | PR #7 | 四轮实质正文：`5817854228`（`d7fb48c`）、`5817950552`（`5355c64`）、`5817997957`（`5355c64..b69b468`）、`5818275842`（`6acc52d`）；第四轮发现轨迹证据缺公开位置、G9 误用旧 SHA，已修复。H13 后最终 SHA 仍需增量 Review | `coderabbit-review-ledger.md`、PR reviews | 未关闭（最终 SHA 覆盖待确认） |
 
 ## 说明
 

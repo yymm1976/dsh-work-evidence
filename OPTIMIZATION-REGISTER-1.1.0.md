@@ -24,9 +24,9 @@
 
 ## 研究轮次 v7 轨迹证据（2026-11-08）
 
-对象：`analysis/trajectory-analysis.md` / `.json`，H3/H8 与高 Token 样本。计数只认原始 `tool/call`、`tool/result` 与 `requestControls`。
+对象：`TRAJECTORY-ANALYSIS-1.1.0.md`（脱敏公开摘要；原始结果 JSON 在交付证据目录 `results/`，不进入发布包）。计数只认原始 `tool/call`、`tool/result` 与 `requestControls`。
 
-- 高 Token 主因是验证循环，不是重复读文件：有效样本测试命令 2–7 次；`dev-python-v5-c3-1` 19 请求、4 次 pytest、6 次测试后编辑；`dev-python-v6-h8-b0-3` 16 请求、6 次测试或检查；`dev-picomatch-v5-b0-3` 17 请求、3 次测试、3 次测试文件编辑。
+- 高 Token 主因是全量 `python -m pytest` 的失败输出（约 63.6–64.1k 字符）在后续每个请求中重发，不是重复读文件或重复测试：有效样本测试命令 2–7 次，但多数为编辑后的聚焦验证；`dev-python-v5-c3-1` 19 请求中第 13–19 请求占 71.2%，`dev-python-v6-h8-b0-3` 第 10–16 请求占 73.6%，`dev-python-v5-b0-1` 第 6–12 请求占 84.8%。
 - 每样本 1–3 次被任务命令契约拒绝的探索命令（`Command is not a predeclared task check`），浪费 1 轮；这是实验宿主约束，必须由任务提示暴露允许命令，B0/C 同条件修复。
 - 真正重复读取 1–2 次，多数是写后重读；读取插件自身 session 仅 `dev-python-v5-c3-1` 2 次。
 - `dev-picomatch-v5-b0-2`、`dev-picomatch-v5-c3-1` 首请求为 8 工具面（含 `work_exec`），触发 `toolSurfaceViolation`；`completeSuccess=false` 不是任务失败，应从配对统计排除，不计入成功或失败分母。
