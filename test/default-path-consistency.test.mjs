@@ -44,19 +44,19 @@ test('an authored write without a stale search clears the notice and asks for no
     'a known-write invalidation must not be reported as an unresolved reread requirement');
 });
 
-test('stageWorkingSet is opt-in and reports no reachable consumer instead of ready',async()=>{
+test('stageWorkingSet is enabled by default but reports no reachable consumer instead of ready',async()=>{
   const host=await startHost({script:async()=>[text('完成。')]});
   try{
     const agent=await host.createAgent('max');
     await host.send(agent,'读取 a.txt 并报告');
     let feature=(await host.command(agent,'feature stageWorkingSet')).features[0];
+    assert.equal(feature.configured,true);
+    assert.notEqual(feature.status,'ready','projection is off, work_state is hidden and executionTriage records executions');
+    assert.ok(feature.reasons.includes('inactive-without-reachable-consumer'));
+    await host.command(agent,'feature stageWorkingSet off');
+    feature=(await host.command(agent,'feature stageWorkingSet')).features[0];
     assert.equal(feature.configured,false);
     assert.equal(feature.status,'off');
-    await host.command(agent,'feature stageWorkingSet on');
-    feature=(await host.command(agent,'feature stageWorkingSet')).features[0];
-    assert.equal(feature.configured,true);
-    assert.notEqual(feature.status,'ready','projection is off, work_state is hidden and executionTriage already records executions');
-    assert.ok(feature.reasons.includes('inactive-without-reachable-consumer'));
   }finally{await host.close();}
 });
 

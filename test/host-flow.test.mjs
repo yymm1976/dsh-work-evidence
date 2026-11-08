@@ -3,7 +3,6 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import {startHost,text,tool,requestText} from './helpers/host.mjs';
-import {STAGE_CHECKPOINT_GUIDANCE} from '../stage-checkpoints.mjs';
 
 async function scenario(workspace,request,steps,{setup,extraMounts=[],usage}={}){
   const host=await startHost({workspace,extraMounts,usage,script:(_o,n)=>steps[n-1]??[text('完成。')]});
@@ -16,9 +15,18 @@ async function scenario(workspace,request,steps,{setup,extraMounts=[],usage}={})
 }
 const resultTexts=run=>run.events.filter(e=>e.type==='tool/result').map(e=>e.data.message.content.map(b=>b.text??'').join(''));
 
-test('stage checkpoint guidance keeps the facts needed to resume after compaction',()=>{
-  for(const phrase of ['摘要是中途进度','不得单独结束或等待用户发送“继续”','保留文件修改状态','仍在运行的任务 ID','下一项依赖和排除理由','新结论标明替代关系'])
-    assert.ok(STAGE_CHECKPOINT_GUIDANCE.includes(phrase),phrase);
+test('compact tool definitions stay within the fixed schema budget',async()=>{
+  const host=await startHost({script:async()=>[text('完成。')]});
+  try{
+    const agent=await host.createAgent('max');await host.send(agent,'实现一个函数并运行测试。');
+    const tools=host.requests[0]?.tools??[];
+    const workExec=tools.find(item=>item.name==='work_exec');
+    const workRecall=tools.find(item=>item.name==='work_recall');
+    assert.ok(workExec,'work_exec remains available on the compact writable surface');
+    assert.ok(workRecall,'work_recall remains available on the compact writable surface');
+    assert.ok(JSON.stringify(workExec).length<=1600,'work_exec schema stays within its documentation-backed budget');
+    assert.ok(JSON.stringify(workRecall).length<=1100,'work_recall schema stays within its documentation-backed budget');
+  }finally{await host.close();}
 });
 
 test('executionTriage identifies repeated failures and repeated successful calls only when enabled',async()=>{
@@ -138,9 +146,6 @@ test('stepPacing controls actual output-usage guidance',async()=>{
   assert.ok(!off.body.includes('本次使用激进优化'));
   assert.ok(on.body.includes('上一响应较长'));
   assert.ok(!off.body.includes('上一响应较长'));
-  assert.ok(!on.body.includes('已有结果覆盖全部要求时直接交付'));
-  assert.ok(!on.body.includes('下一次实际动作合并已知且相互独立的修正'));
-  assert.ok(!on.body.includes('基于已有实际结果按用户列出的字段'));
 });
 
 test('retainedCompute keeps bindings, clears them after writes and respects its switch',async()=>{

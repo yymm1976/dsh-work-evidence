@@ -16,7 +16,7 @@
 - 正式否决在线 EGC 与独立候选系统；既有重复候选只作为离线审计线索。
 - 稳定默认值不再受隐藏实验环境变量影响；退出的设置继续按旧布尔配置安全忽略。
 - `completionNotice` 改为默认关闭，显式开启后仍可在阶段摘要缺少工具调用时续跑；脚本宿主实测一次触发会增加一次主请求，输入费用估算为 0.000036948 至 0.0008331 USD，输出费用未知。
-- `stageWorkingSet` 改为默认关闭；请求投影、显式 stage 或关闭 executionTriage 时才启用，避免默认路径保留没有消费者的阶段状态。
+- `stageWorkingSet` 保持默认开启；请求投影与投影恢复、`toolSurface:full` 下的显式 stage 或关闭 executionTriage 时才产生可达消费者，缺少消费者时报告不适用而不展示空状态。
 - `fastEditEnabled` 关闭时 `fastedit_java` 返回 deopt 且不改文件，同一会话重新开启后恢复；该行为由宿主集成测试覆盖。
 - 会话状态在 `agent/disposed` 和 `session/disposed` 释放；没有活动 agent 的事件不再创建运行态。
 - 宿主声明缩减为实际验证的 `dsh-tools@0.2.1-rc.4` 与 `0.2.2-rc.1`。

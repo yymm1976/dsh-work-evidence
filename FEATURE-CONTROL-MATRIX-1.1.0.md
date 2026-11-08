@@ -32,7 +32,7 @@
 | `nativeProgramReuse` | 成熟显式开启 | 默认关闭；仅 PTC TypeScript 函数体 | `program-reference.test.mjs`、`host-workflow-combinations.test.mjs` | `README.md`、`MIGRATION-1.1.0.md` |
 | `structuredCalls` | 成熟显式开启 | 默认关闭；仅 PTC TypeScript 函数体 | `host-structured-calls.test.mjs` 验证参数和普通路径 | `README.md`、`MIGRATION-1.1.0.md` |
 | `nativeReasoningReplay` | 成熟显式开启 | 默认关闭；要求匹配 DeepSeek 工具历史 | `native-reasoning-replay.test.mjs` 验证未知、加密、回放和禁用恢复 | `README.md`、`MIGRATION-1.1.0.md` |
-| `stageWorkingSet` | 成熟显式开启 | 默认关闭；投影、显式 stage 或关闭 executionTriage 时才有可达消费者 | `host-flow.test.mjs`、`default-path-consistency.test.mjs`、`host-context-combinations.test.mjs` | `README.md`、`MIGRATION-1.1.0.md` |
+| `stageWorkingSet` | 成熟默认开启 | 请求投影与投影恢复、`toolSurface:full` 下的显式 stage 或关闭 executionTriage 时才有可达消费者 | `host-flow.test.mjs`、`default-path-consistency.test.mjs`、`host-context-combinations.test.mjs` | `README.md`、`MIGRATION-1.1.0.md` |
 | `stepPacing` | 成熟默认开启 | 阶段缺口指引；最小任务不强行插入 | `host-flow.test.mjs`、`startup-readme.test.mjs` | `README.md` |
 | `retainedCompute` | 成熟默认开启 | 缺失原生服务时报告并延后重试 | `host-retained-dependencies.test.mjs`、双宿主日志 | `README.md` |
 | `finalJsonGuard` | 成熟默认开启 | 用户明确要求 JSON 时启用校验 | `final-json-result.test.mjs` | `README.md` |

@@ -513,7 +513,7 @@ SW 只替换旧的完整成功输出，要求后续仍有相同正文可见。
 替换后的地址能取回原始事件。
 没有相同正文时，SW 与外层协调器不遍历历史或评估缓存费用。
 
-stageWorkingSet 默认关闭。请求投影、显式 `work_state` stage 或关闭 executionTriage 时才启用它，避免默认展示没有实际消费者的阶段状态。
+stageWorkingSet 默认开启，但只在请求投影与投影恢复同时开启、`toolSurface:full` 下显式 `work_state` stage，或关闭 executionTriage 时才产生可达消费者；这些条件都不满足时状态入口显示 `inactive-without-reachable-consumer`，不会展示没有实际用途的阶段状态。
 requestProjection、projectionRestore、stubSummary 默认关闭，尚无稳定费用收益结论。投影费用预测只在当前请求完整延续上一请求时扣除既有后缀暴露；指针或前缀错位时保留新增重填成本，不按零成本处理。预测步数是配置假设，不代表实际剩余请求数。
 deferPressureCompaction 也保持默认关闭。
 开启后，先恢复当前需要的旧来源，再按有效请求视图判断宿主压力阈值。

@@ -3,7 +3,7 @@ import {isDeepStrictEqual} from 'node:util';
 import {hasPruneProblem,historyReferences,planContextPrune,readDispatch} from './context-pruning.mjs';
 import {surfaceReferences} from './visible-results.mjs';
 
-export const STAGE_CHECKPOINT_GUIDANCE='需要报告关键阶段时，用“阶段摘要”依次写“当前目标：”“约束与决定：”“已完成与依据：”“未完成：”“下一步：”，只写实际结论、准确来源位置和待办，不写内部思考。摘要是中途进度；尚有可执行未完成工作时，同一回复附上下一项实际工具调用，不得单独结束或等待用户发送“继续”。保留文件修改状态、仍在运行的任务 ID、下一项依赖和排除理由；新结论标明替代关系。任务完成、用户要求暂停或存在无法自行处理的真实阻碍时，可用纯文本说明状态。没有新事实不重复。用户禁止中途输出或要求仅最终工件时遵守用户格式。';
+export const STAGE_CHECKPOINT_GUIDANCE='适合报告关键阶段判断时，用可独立接续的“阶段摘要”说明本次任务至今仍有效的累计状态，包含“当前目标：”“约束与决定：”“已完成与依据：”“未完成：”“下一步：”五项；写实际结论、来源位置和仍需处理的事项，不写内部思考。阶段摘要是中途进度。尚有可执行的未完成工作时，必须在同一助手回复中附上下一项实际工具调用，不得用单独摘要结束请求或等待用户发送“继续”。任务完成、用户要求暂停或存在无法自行处理的实际阻碍时，可用纯文本结束并说明真实状态。沿用仍有效的先前决定、未决问题和重要失败路线及排除理由；新结论明确替代哪条旧结论。依据保留准确的文件路径、符号、输入、错误或事件位置；文件修改状态、仍运行的任务ID和下一项依赖须能接续。没有新事实时不重复生成摘要；用户禁止中途输出或规定仅最终工件时遵守用户格式。';
 const FIELDS=['当前目标','约束与决定','已完成与依据','未完成','下一步'];
 const MAX_CHECKPOINT_CHARS=8000,MAX_TAIL_CHARS=12000;
 const READ_ONLY=new Set(['read','glob','grep','ops_read_files','ops_inspect_local_file','ops_glob','ops_grep']);
