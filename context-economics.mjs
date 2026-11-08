@@ -167,6 +167,12 @@ export function createContextEconomics(ctx,runtime){
         allowed=perStep>0&&futureSaving>required;
         reason=allowed?'predicted-cache-cost-positive':'predicted-cache-cost-insufficient';
       }
+    }else if(cachedSuffixTokens!==null&&!price){
+      // Without an exact route price the task contract uses total tokens as the
+      // comparison basis. Cache reads remain part of that total, so a lower
+      // repeat prompt is a token reduction even when the cache composition
+      // changes. Do not invent a monetary saving or a refill cost here.
+      allowed=true;reason='token-only-positive-without-route-pricing';
     }else if(cachedSuffixTokens!==null)reason='route-pricing-unavailable';
     return {allowed,reason,savedTokensEstimate:savedTokens,cachedSuffixTokensEstimate:cachedSuffixTokens,
       oldSuffixTokensEstimate:oldSuffixTokens,
@@ -174,6 +180,8 @@ export function createContextEconomics(ctx,runtime){
       horizonSteps:remainingSteps,refillCostEstimate:refillCost,futureSavingEstimate:futureSaving,breakEvenStepsEstimate:breakEvenSteps,
       auxiliaryCostEstimate:auxiliaryCost,auxiliaryMargin:auxiliaryUsage?auxiliaryMargin:null,
       currency:price?.currency??null,pricingSource:price?'explicit-exact-route-setting':'unavailable',
+      costBasis:price?'configured-price':'total-tokens',tokenSavingEstimate:savedTokens,
+      futureTokenSavingEstimate:savedTokens*remainingSteps,
       tokenMethod:firstReplayAssistant?'text-density calibrated to previous generated output':same?'text-density calibrated to previous adapter usage':'text-density estimate',
       forecast:true,emergency,route:forecastRoute(route)};
   }

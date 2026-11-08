@@ -76,6 +76,25 @@ test('a prior pointer mismatch cannot erase the additional projection refill exp
   assert.match(result.cachedExposureMethod,/only when the current request is a complete continuation/);
 });
 
+test('without route pricing a token reduction is allowed on the total-token basis',()=>{
+  const {agent,economics,finish,options}=harness();
+  options.tools=[];options.system='system';
+  const system={id:'system',role:'system',content:[{type:'text',text:'rules'}]},user={id:'user',role:'user',content:[{type:'text',text:'request'}]};
+  const old={id:'old-result',role:'tool',content:[{type:'text',text:'old result body '.repeat(60)}]};
+  const next={id:'new-result',role:'tool',content:[{type:'text',text:'new result body'}]};
+  options.messages=[system,user,old];
+  finish(false,{inputTokens:100,cacheReadTokens:900,cacheWriteTokens:0,outputTokens:20,totalTokens:1020});
+  const result=economics.assess(agent,{messages:options.messages,proposedMessages:[system,user,next],tools:[],system:'system'});
+  assert.ok(result.savedTokensEstimate>0);
+  assert.ok(result.cachedSuffixTokensEstimate>0);
+  assert.equal(result.allowed,true);
+  assert.equal(result.reason,'token-only-positive-without-route-pricing');
+  assert.equal(result.pricingSource,'unavailable');
+  assert.equal(result.costBasis,'total-tokens');
+  assert.equal(result.currency,null);
+  assert.equal(result.futureSavingEstimate,null);
+});
+
 test('capacity pressure uses the optional service getter when direct property access requires inject',()=>{
   const {agent}=harness(),state={config:{projectionPricing:[],projectionHorizonSteps:16}};
   const ctx={get:name=>name==='tokenMeter'?{measure:()=>({totalTokens:9500})}:undefined,
