@@ -4,7 +4,7 @@
 桌面加载目录独立维护。运行中的会话采用哪个版本，取决于宿主加载时间。
 插件提供任务指引、观察账本、历史取回和按需工程工具。
 插件直接使用原生 DSH，不依赖 PTC Plus。
-历史说明见 [HISTORY.md](HISTORY.md)。1.1.0 的改动和边界见 [Release Notes](RELEASE-NOTES-1.1.0.md)、[迁移说明](MIGRATION-1.1.0.md) 和 [回退说明](ROLLBACK-1.1.0.md)。历史结果不代表当前版本的实际效果。
+1.1.0 的改动和边界见 [Release Notes](RELEASE-NOTES-1.1.0.md)、[迁移说明](MIGRATION-1.1.0.md) 和 [回退说明](ROLLBACK-1.1.0.md)。历史结果不代表当前版本的实际效果。
 
 ## 模式与开关
 
@@ -545,7 +545,7 @@ stubSummary 保留问题处理标记、事件指针和原文取回。
 桌面加载目录：由桌面 profile 决定。需要同步时使用 `node sync-desktop.mjs`，不要写死本机绝对路径。
 桌面 web profile 的包依赖和目录联接指向加载目录。
 加载目录保存独立源码与 Python 环境；宿主依赖来自已安装的桌面运行时。
-插件直接引用桌面宿主提供的 `@deepseek-ai/dsh-llm`、`@deepseek-ai/cordis`、DSH PTC 运行时和应用启动模块。`dsh-ops` 只用于可选来源和精确编辑适配器，不是核心历史与交接功能的必需依赖。
+插件直接引用桌面宿主提供的 `@deepseek-ai/dsh-llm`、`@deepseek-ai/cordis`、DSH PTC 运行时和应用启动模块。`@deepseek-ai/dsh-llm` 在安装元数据中是可选 peer，只表示包管理器不会替宿主安装它；插件加载和宿主测试仍要求该包实际存在。`dsh-ops` 只用于可选来源和精确编辑适配器，不是核心历史与交接功能的必需依赖。
 修改开发目录不会自动更新桌面加载目录。
 同步使用 `node sync-desktop.mjs`。正在运行的会话是否采用新代码取决于宿主生命周期。
 `node sync-desktop.mjs --code-only` 同步包内代码与说明，并修正独立目录的加载联接及锁文件路径。
