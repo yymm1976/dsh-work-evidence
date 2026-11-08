@@ -15,3 +15,12 @@ test('every repository JavaScript file parses with the current Node runtime',asy
     await fs.access(path.join(root,entry));
   }
 });
+
+test('bundle presets give every work-evidence route plugin an explicit package name',async()=>{
+  const lines=(await fs.readFile(path.join(root,'cordis.patch.yml'),'utf8')).split(/\r?\n/);
+  const routes=lines.filter(line=>/^\s*- id: work-evidence-flash1017-route\s*$/u.test(line));
+  assert.equal(routes.length,3,'the bundle declares the route preset in three named workflow presets');
+  const unnamed=lines.filter((line,index)=>/^\s*- id: work-evidence-flash1017-route\s*$/u.test(line)&&
+    !/^\s+name: '@local\/dsh-work-evidence\/flash1017-preset'\s*$/u.test(lines[index+1]??''));
+  assert.deepEqual(unnamed,[],'a preset route without a package name cannot load');
+});

@@ -89,6 +89,7 @@ export function createCompressionControl(ctx,runtime,economics){
     if(payload.agent&&/CONTEXT_WINDOW_EXCEEDED|context.*(?:overflow|limit|length)/i.test(String(payload.failure?.code??payload.failure?.message??'')))get(payload.agent).pressureFailure=true;
     return next();
   });
+  ctx.on('session/disposed',session=>states.delete(session.id));
   return {metrics(agent){
     const state=get(agent);let compressAvailable=false;try{compressAvailable=!!ctx.tools.get('compress',agent);}catch{}
     return {enabled:runtime.isEnabled(agent)&&runtime.get(agent).config.compressionControl,compressAvailable,

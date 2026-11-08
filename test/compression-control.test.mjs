@@ -30,3 +30,12 @@ test('external compression cooperation bypasses when the plugin is disabled',asy
   assert.equal((await h.execute(args)).isError,false);
   assert.equal(h.executions(),1);
 });
+test('external compression cooperation releases per-session state when the session is disposed',async()=>{
+  const h=harness(),args={content:[{startSeq:1,endSeq:1,summary:'short'}]};
+  assert.equal((await h.execute(args)).isError,false);
+  assert.equal(h.control.metrics(h.agent).attempts,1);
+  h.hooks['session/disposed']({id:'external-compression'});
+  assert.equal(h.control.metrics(h.agent).attempts,0);
+  assert.equal(h.control.metrics(h.agent).blocked,0);
+  assert.equal(h.control.metrics(h.agent).emergencyPasses,0);
+});
