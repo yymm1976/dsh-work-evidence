@@ -9,7 +9,7 @@
 |---|---|---|---|---|---|
 | D01 | rc4 全量中 3 个 ACP 测试报 `dsh-llm` 缺 `CallId` | `after-readiness-fix` 日志 | 根因是 `DSH_PROFILE` 指向含旧 0.1.5-rc.2 嵌套 `@deepseek-ai/dsh` 的桌面 profile；改用隔离 profile 后 3 项全过 | `verification/node-test-rc4-d7fb48c.log`、`node-test-rc1-d7fb48c.log`、本目录 `ACCEPTANCE-d7fb48c.md` | 环境关闭 |
 | D02 | `deferPressureCompaction` readiness 未检查 `hasRequestBudgetView` | 功能终审 | `0af6e62` 增加依赖原因；`d7fb48c` 把仅缺预算视图时标为 `waiting` | `test/feature-control.test.mjs` | 关闭 |
-| D03 | `compressionControl` 缺 agent 级状态释放 | 功能终审 | `0af6e62` 监听 `session/disposed` 清理 per-session 状态 | `test/compression-control.test.mjs` | 关闭 |
+| D03 | `compressionControl` 缺 agent 级状态释放 | 功能终审 / CodeRabbit `5817997957` | `0af6e62` 监听 `session/disposed`；本轮增加 `agent/disposed` 清理同一 session 状态 | `test/compression-control.test.mjs`（session 与 agent 两条回归） | 关闭 |
 | D04 | `ledgerReceipt` 在 `evidenceViews` 关闭时仍可被显式 `responseView:"reference-if-visible"` 触发 | CodeRabbit #4506189044 | `15d83da` 在 receipt 入口先判 `evidenceViews`；新增显式视图回归 | `test/default-path-consistency.test.mjs` | 关闭 |
 | D05 | README 把 `memberParsing` 写成通用语法解析 | CodeRabbit #4506189041 | `15d83da` 限定 Java 语法范围，其他语言明确为文本窗口 | `README.md:534` | 关闭 |
 | D06 | Release Gates 链接的 CodeRabbit 台账不在发布包内 | CodeRabbit #4506189046 | `15d83da` 把台账、功能矩阵和优化登记加入 `files`；`644019b` 再加入缺陷账本 | `package.json`、`verification/pack-b69b468.json`（81 项含全部文档） | 关闭 |
@@ -22,7 +22,7 @@
 | D13 | H8 旧推理请求视图省略被证实为负优化 | 本会话 H8 开发实验 | Python 三对均值 B0 `235,985` vs C `225,087`（改善 `4.6%`，未达 10%），两对 C 请求更多；代码回退，测试撤回 | `results/dev-python-v6-h8-*.json`、`OPTIMIZATION-REGISTER-1.1.0.md` H8 判定、`5355c64`/`399c33b` | 否决 |
 | D14 | 全量套件在回退 H8 后仍保留其测试，rc4 `602/1` | 本会话回归 | `399c33b` 恢复 pre-H8 测试文件 | `verification/node-test-rc4-399c33b.log` | 关闭 |
 | D15 | G3/G7 效率门禁：C_final 对 B0 未观察到 ≥10% 改善 | 生产实验 | H1–H8 均未形成可复现净收益；H3/H8 为负，其他未证明 | `ACTIVE-PROGRESS.md`、`OPTIMIZATION-REGISTER-1.1.0.md`、`results/` | 未关闭（发布阻断） |
-| D16 | G6 CodeRabbit 最终候选三轮实质覆盖 | PR #7 | 第 1 轮已完成并修复；第 2/3 轮待 CodeRabbit 在最终 SHA 上产出正文 | `coderabbit-review-ledger.md`、PR reviews | 未关闭（发布阻断） |
+| D16 | G6 CodeRabbit 最终候选三轮实质覆盖 | PR #7 | 三轮实质正文：`5817854228`（`d7fb48c`）、`5817950552`（`5355c64`）、`5817997957`（`5355c64..b69b468`）；第三轮在 PR head `b69b468` 上，并发现 D03 的 `agent/disposed` 缺口。修复后 SHA 变化，需再做一次覆盖最终代码的增量 Review | `coderabbit-review-ledger.md`、PR reviews | 未关闭（最终 SHA 覆盖待确认） |
 
 ## 说明
 

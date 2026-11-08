@@ -39,3 +39,12 @@ test('external compression cooperation releases per-session state when the sessi
   assert.equal(h.control.metrics(h.agent).blocked,0);
   assert.equal(h.control.metrics(h.agent).emergencyPasses,0);
 });
+test('external compression cooperation releases per-agent state when the agent is disposed',async()=>{
+  const h=harness(),args={content:[{startSeq:1,endSeq:1,summary:'short'}]};
+  assert.equal((await h.execute(args)).isError,false);
+  assert.equal(h.control.metrics(h.agent).attempts,1);
+  h.hooks['agent/disposed']({agent:h.agent});
+  assert.equal(h.control.metrics(h.agent).attempts,0);
+  assert.equal(h.control.metrics(h.agent).blocked,0);
+  assert.equal(h.control.metrics(h.agent).emergencyPasses,0);
+});

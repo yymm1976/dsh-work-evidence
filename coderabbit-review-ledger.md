@@ -69,5 +69,8 @@ Docstring Coverage `10.34%`（29/35 文件，阈值 80%）是保留警告，不�
 - 第二轮 Review `5817950552`（`12:50:27Z`，reviewed `5355c64`）正文有 3 条 actionable：
   - `test/host-history.test.mjs:57,60`：回退 H8 后遗留的旧推理断言和 `reasoningMessages` 状态字段不成立。该文件已在 `399c33b` 恢复为 pre-H8 版本，两项随之消失。
   - `test/default-path-consistency.test.mjs:124`：显式视图测试只验证“没有 receipt”，未验证两次读取都拿到完整正文。已在本轮修复中加入 `the quick brown fox` 两处正文断言。
-- 覆盖计数：最终代码目前有 2 轮实质 Review（`5817854228`、`5817950552`）；第三轮需覆盖本次正文断言修复后的最终 SHA。G6 仍为 `2/3`。
-- 待办：对最终 SHA 再请求 full review，处理新增意见，确认全部线程 resolved；不得用空正文回复或相似文件跳过充数。
+- 第三轮 Review `5817997957`（`13:06:07Z`，reviewed `5355c64..b69b468`）正文有 2 条 actionable：
+  - `DEFECT-LEDGER-1.1.0.md:12`：`compressionControl` 只监听 `session/disposed`，缺 `agent/disposed` 的同 session 状态清理。已在本轮加入 `agent/disposed` 清理并新增 agent 级回归；`test/compression-control.test.mjs` 5/5 通过。
+  - `DEFECT-LEDGER-1.1.0.md:25`：D16 需区分“较早候选的 Review”与“最终 SHA 覆盖”。已改写为三轮实际记录，并明确最终代码增量复审仍待做。
+- 覆盖计数：已有 3 轮实质正文（`5817854228`、`5817950552`、`5817997957`）；第三轮覆盖到 PR head `b69b468`。但因本轮 D03 修复会产生新 SHA，G6 的最终代码覆盖仍需一次增量 Review，当前不记为通过。
+- 待办：推送当前修复与新 SHA，请求覆盖最终代码的增量 Review；处理新增意见并确认全部线程 resolved。不得用空正文回复或相似文件跳过充数。
