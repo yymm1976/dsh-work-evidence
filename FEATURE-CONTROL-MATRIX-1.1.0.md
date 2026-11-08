@@ -15,7 +15,7 @@
 | `readArgumentRecovery` | 成熟默认开启 | 本地读取参数校正 | `host-source.test.mjs` 验证别名和拒绝分支 | `README.md` |
 | `requestAccounting` | 成熟默认开启 | 记录主、压缩和辅助请求 | `host-state.test.mjs`、实验原始账本 | `README.md` |
 | `evidenceViews` | 成熟默认开启 | 来源正文可见时提供引用视图 | `host-source-options.test.mjs` 验证正文和引用切换 | `README.md` |
-| `memberParsing` | 成熟默认开启 | 依赖文件系统和可用解析器，支持词法回退 | `host-source-options.test.mjs`、Java 成员测试 | `README.md` |
+| `memberParsing` | 成熟默认开启 | 依赖文件系统和可用解析器；Java 语法范围，解析器不可用时词法回退；其他语言使用文本窗口 | `host-source-options.test.mjs`、Java 成员测试 | `README.md` |
 | `mavenSourceBinding` | 成熟默认开启 | 依赖归档解码和坐标匹配 | `host-source-options.test.mjs`、Maven 来源测试 | `README.md` |
 | `contextProtocol` | 成熟默认开启 | 处理可恢复旧工具正文 | 上下文、压缩和恢复回归测试 | `README.md` |
 | `historyHygiene` | 成熟默认开启 | 依赖历史回收入口；异常时停用自身折叠 | `host-history.test.mjs` 验证折叠和恢复 | `README.md` |

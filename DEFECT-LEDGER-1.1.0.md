@@ -12,7 +12,7 @@
 | D03 | `compressionControl` 缺 agent 级状态释放 | 功能终审 | `0af6e62` 监听 `session/disposed` 清理 per-session 状态 | `test/compression-control.test.mjs` | 关闭 |
 | D04 | `ledgerReceipt` 在 `evidenceViews` 关闭时仍可被显式 `responseView:"reference-if-visible"` 触发 | CodeRabbit #4506189044 | `15d83da` 在 receipt 入口先判 `evidenceViews`；新增显式视图回归 | `test/default-path-consistency.test.mjs` | 关闭 |
 | D05 | README 把 `memberParsing` 写成通用语法解析 | CodeRabbit #4506189041 | `15d83da` 限定 Java 语法范围，其他语言明确为文本窗口 | `README.md:534` | 关闭 |
-| D06 | Release Gates 链接的 CodeRabbit 台账不在发布包内 | CodeRabbit #4506189046 | `15d83da` 把台账、功能矩阵和优化登记加入 `files` | `package.json`、`verification/pack-d7fb48c.json` | 关闭（最终 SHA 需重打包确认） |
+| D06 | Release Gates 链接的 CodeRabbit 台账不在发布包内 | CodeRabbit #4506189046 | `15d83da` 把台账、功能矩阵和优化登记加入 `files`；`644019b` 再加入缺陷账本 | `package.json`、`verification/pack-b69b468.json`（81 项含全部文档） | 关闭 |
 | D07 | `DSH_APP` 在两处测试中使用不同的空值/空白处理 | CodeRabbit nitpick | `15d83da` 统一使用 `test/helpers/paths.mjs` 的 trim 值 | `test/package-install.test.mjs`、`test/host-compatibility.test.mjs` | 关闭 |
 | D08 | 仓库根 `local-dsh-work-evidence-1.1.0.tgz` 含已删除旧文档 | 功能终审 | 删除旧工件；当前工件由 `npm pack` 重新生成 | `artifacts/local-dsh-work-evidence-1.1.0.tgz` 哈希 `891466...13abf` | 关闭 |
 | D09 | `workflow012` route 缺 `name` | 功能终审 P1 | `0af6e62` 增加 `@local/dsh-work-evidence/flash1017-preset` | `cordis.patch.yml`、`test/release-syntax.test.mjs` | 关闭 |
