@@ -56,3 +56,15 @@
 4. 全部线程 resolved 后，才可把 G6 记为通过。
 
 Docstring Coverage `10.34%`（29/35 文件，阈值 80%）是保留警告，不当作功能正确性证明。
+
+## 2026-11-08 最终候选复审
+
+- PR head `4978b31` → `d7fb48c` 后提交 `@coderabbitai review`（comment `6721352082`）。CodeRabbit 于 `12:22:20Z` 产出 Review `5817854228`，正文有 3 条 actionable 和 1 条 nitpick：
+  - `README.md:534`：`memberParsing` 只能声明 Java 语法范围，其他语言是文本窗口。
+  - `README.md:536` / `observation-ledger.mjs`：`evidenceViews` 关闭时，显式 `responseView:"reference-if-visible"` 仍能触发 receipt。
+  - `RELEASE-GATES-1.1.0.md:27`：门禁链接的 `coderabbit-review-ledger.md` 不在发布包内。
+  - nitpick：`DSH_APP` 在 `package-install.test.mjs` 与 `host-compatibility.test.mjs` 中的空白处理不一致。
+- 处置提交 `15d83da`：receipt 入口在 `ledgerReceipt` 之后先判 `evidenceViews`；新增显式视图回归；README 限定 Java；`package.json files` 加入 CodeRabbit 台账、功能矩阵和优化登记；两处测试统一使用 `test/helpers/paths.mjs` 的 trim 值。`npm run check` 通过，相关 19 项定向测试通过。
+- 处置后 head 为 `399c33b`（`5355c64` 回退 H8，`399c33b` 撤回遗留 H8 测试）。`5355c64` 与 `399c33b` 尚无 CodeRabbit 正文；最终 SHA 仍需覆盖 `5817854228` 之后差异的增量 Review。
+- 覆盖计数：最终代码目前只有 1 轮实质 Review（`5817854228` 覆盖 `d7fb48c`）；`15d83da` 的三个修复和 `399c33b` 的测试回退需要新的实质正文。G6 仍为 `1/3`。
+- 待办：对最终 SHA 再请求 full review，处理新增意见，确认全部线程 resolved；不得用空正文回复或相似文件跳过充数。

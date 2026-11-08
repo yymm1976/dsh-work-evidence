@@ -88,6 +88,7 @@
     "RELEASE-GATES-1.1.0.md",
     "FEATURE-CONTROL-MATRIX-1.1.0.md",
     "OPTIMIZATION-REGISTER-1.1.0.md",
+    "DEFECT-LEDGER-1.1.0.md",
     "coderabbit-review-ledger.md",
     "cordis.patch.yml",
     "locale/*.json",
