@@ -23,10 +23,12 @@ function fixture(files,{blocked=[],stepPacing=true}={}){
 test('README hard-codes the visible multi-agent invocation instead of codex exec',async()=>{
   const readme=await fs.readFile(path.resolve(import.meta.dirname,'..','README.md'),'utf8');
   assert.match(readme,/multi_agent_v1__spawn_agent\(\{/u);
+  assert.match(readme,/agent_type: "worker"/u);
   assert.match(readme,/model: "opencode-go\/deepseek-v4\.1-flash"/u);
   assert.match(readme,/reasoning_effort: "high"/u);
   assert.match(readme,/`codex exec`\s+不能替代多 Agent 工具/u);
   assert.match(readme,/核对 `agent_id` 与 `nickname`/u);
+  assert.doesNotMatch(readme,/正式实验使用 auto\/deepseek-v4\.1-flash \/ max/u);
 });
 
 test('reStructuredText paths are recognized alongside the existing source extensions',()=>{

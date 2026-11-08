@@ -568,7 +568,7 @@ plugin-command.mjs 负责命令；source-tools.mjs 负责源码和报告入口�
 
 当前开发围绕准确来源、文件状态和连续交接。原始事件保存正文，状态与交接从现有记录生成；不新增可独立修改的综合事实层。
 交接、来源页复用、SW 和压缩共用来源地址与完整性含义，各自保留采用条件。增量交接继续按需调用。
-正式实验使用 auto/deepseek-v4.1-flash / max。新增效率候选须解决已观察到的重复传输或实际交付问题；不重复启动没有新机制的提示词、经验注入或压缩候选。
+正式实验和所有子代理统一使用显式 `opencode-go/deepseek-v4.1-flash` 与 `reasoning_effort: "high"`，逐请求核对 provider、model、档位、路由和响应 ID。不得使用默认路由、`auto` 分组、`max` 档位、OpenDesign 或其他替代模型。新增效率候选须解决已观察到的重复传输或实际交付问题；不重复启动没有新机制的提示词、经验注入或压缩候选。
 正确读取、拒绝错误修改和状态准确按各自用途判断。Token 与完整参考费用单独核算；缓存正文可能比新交接便宜。Ultra 行为保留。
 比较结果、采用条件和未完事项分别记录在现行迭代实验页与功能核查页。
 私人交接、原始会话和本机实验记录不进入公开仓库，也不在本文提供绝对路径。公开版本只保留可复现的方法、汇总结果和证据边界。
@@ -579,6 +579,7 @@ Codex 中新增并行子代理必须调用平台的多 Agent 工具 `multi_agent
 
 ```js
 multi_agent_v1__spawn_agent({
+  agent_type: "worker",
   model: "opencode-go/deepseek-v4.1-flash",
   reasoning_effort: "high",
   message: "互不重叠的完整任务范围；明确禁止递归派工",
@@ -586,7 +587,7 @@ multi_agent_v1__spawn_agent({
 })
 ```
 
-不得省略模型或档位，不得继承默认模型，不得使用 GPT、OpenDesign 或其他替代路由。每次创建一个仍由用户界面可见的独立子会话；返回后必须核对 `agent_id` 与 `nickname`，并使用 `multi_agent_v1__wait_agent`、`multi_agent_v1__send_input` 继续同一会话。
+不得省略 `agent_type`、模型或档位，不得继承默认模型，不得使用 GPT、OpenDesign、`codex exec` 或其他替代路由。每次创建一个仍由用户界面可见的独立子会话；返回后必须核对 `agent_id` 与 `nickname`，并使用 `multi_agent_v1__wait_agent`、`multi_agent_v1__send_input` 继续同一会话。
 
 `codex exec` 不能替代多 Agent 工具：它创建的后台进程不出现在 Codex 子代理列表，即使命令行能运行也不能计为已启动的并行子代理。常驻复审也复用 `multi_agent_v1__spawn_agent` 创建的会话，不在每次复审时新建匿名后台进程。
 
