@@ -66,5 +66,8 @@ Docstring Coverage `10.34%`（29/35 文件，阈值 80%）是保留警告，不�
   - nitpick：`DSH_APP` 在 `package-install.test.mjs` 与 `host-compatibility.test.mjs` 中的空白处理不一致。
 - 处置提交 `15d83da`：receipt 入口在 `ledgerReceipt` 之后先判 `evidenceViews`；新增显式视图回归；README 限定 Java；`package.json files` 加入 CodeRabbit 台账、功能矩阵和优化登记；两处测试统一使用 `test/helpers/paths.mjs` 的 trim 值。`npm run check` 通过，相关 19 项定向测试通过。
 - 处置后 head 为 `399c33b`（`5355c64` 回退 H8，`399c33b` 撤回遗留 H8 测试）。`5355c64` 与 `399c33b` 尚无 CodeRabbit 正文；最终 SHA 仍需覆盖 `5817854228` 之后差异的增量 Review。
-- 覆盖计数：最终代码目前只有 1 轮实质 Review（`5817854228` 覆盖 `d7fb48c`）；`15d83da` 的三个修复和 `399c33b` 的测试回退需要新的实质正文。G6 仍为 `1/3`。
+- 第二轮 Review `5817950552`（`12:50:27Z`，reviewed `5355c64`）正文有 3 条 actionable：
+  - `test/host-history.test.mjs:57,60`：回退 H8 后遗留的旧推理断言和 `reasoningMessages` 状态字段不成立。该文件已在 `399c33b` 恢复为 pre-H8 版本，两项随之消失。
+  - `test/default-path-consistency.test.mjs:124`：显式视图测试只验证“没有 receipt”，未验证两次读取都拿到完整正文。已在本轮修复中加入 `the quick brown fox` 两处正文断言。
+- 覆盖计数：最终代码目前有 2 轮实质 Review（`5817854228`、`5817950552`）；第三轮需覆盖本次正文断言修复后的最终 SHA。G6 仍为 `2/3`。
 - 待办：对最终 SHA 再请求 full review，处理新增意见，确认全部线程 resolved；不得用空正文回复或相似文件跳过充数。

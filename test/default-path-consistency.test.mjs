@@ -122,5 +122,7 @@ test('an explicit reference view cannot bypass disabled evidenceViews receipts',
     const results=host.events.filter(event=>event.type==='tool/result').map(event=>textOf(messageOf(event)));
     assert.ok(!results.some(value=>value.includes('[work-evidence ledger receipt]')),
       'an explicit reference-if-visible request must not shorten a body while evidenceViews is blocked');
+    assert.equal(results.filter(value=>value.includes('the quick brown fox')).length,2,
+      'both explicit reads must return the requested full body');
   }finally{await host.close();}
 });
