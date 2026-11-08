@@ -588,42 +588,22 @@ plugin-command.mjs 负责命令；source-tools.mjs 负责源码和报告入口�
 
 ## 并行子代理调用
 
-Codex 中新增并行子代理必须调用平台的多 Agent 工具 `multi_agent_v1__spawn_agent`。
-首次使用时，先调用 `tool_search` 查出 `multi_agent_v1__spawn_agent`、`multi_agent_v1__wait_agent` 和 `multi_agent_v1__send_input`，再按下列参数逐项填写。
-每个并行任务单独创建会话，调用参数固定为：
+所有并行子代理（包括复审、实验驱动和只读审查）必须使用 ZCode 的 Agent 工具启动。不得使用 Codex CLI、`codex exec`、`multi_agent_v1__spawn_agent`、`spawn_agent`、后台 Node/PowerShell 进程或另开用户聊天来替代。
 
-```js
-multi_agent_v1__spawn_agent({
-  agent_type: "worker",
-  model: "opencode-go/deepseek-v4.1-flash",
-  reasoning_effort: "high",
-  fork_context: false,
-  message: "互不重叠的完整任务范围；写明绝对路径、证据要求、禁改范围、完成条件，并明确禁止递归派工"
-})
-```
-
-不得省略 `agent_type`、`model`、`reasoning_effort`、`fork_context` 或 `message`。
-不得继承默认模型，不得使用 GPT、OpenDesign、`codex exec` 或后台进程启动子代理。
-
-启动结果必须同时包含 `agent_id` 和 `nickname`，并在 Codex 子代理列表可见。
-只收到排队、空返回或命令行输出时，不能记为已启动。
-启动成功后使用 `multi_agent_v1__wait_agent` 等待结果；后续追问使用 `multi_agent_v1__send_input`，保持原会话和 `fork_context:false` 的范围。
-模型身份按实际调用参数和返回记录核对 `provider`、`model`、`reasoning_effort`、`route` 与 `request ID`；缺少任一项时，该运行不计为指定模型证据。
-
-工具不可用、达到会话上限或调用报错时，记录 `subagent-unavailable` 和完整错误，改用主 Agent 串行完成。
-不得把 `codex exec`、后台 Node/PowerShell 进程、`create_thread` 或另开用户聊天当成并行子代理。
-`codex exec` 不能替代多 Agent 工具。
-常驻复审复用已创建的多个 Agent 会话，不在每次复审时新建匿名进程。
+- 每个任务范围必须互不重叠，写明绝对路径、证据要求、禁改范围和完成条件，并明确禁止递归派工。
+- 复审子代理只读，必须直接读取原始代码、日志和结果，不得采信主 Agent 摘要；没有报告不能记为已复审。
+- 不得通过 `~/.codex` 配置、`.codex/.sandbox-bin` 或独立 CODEX_HOME 派生复审；历史 Codex 复审尝试已作废。
+- 工具不可用、达到会话上限或调用报错时，记录 `subagent-unavailable` 和完整错误，改由主 Agent 串行完成；不得用 Codex 子代理或 `codex exec` 顶替。
 
 ## GitHub PR 开发与 CodeRabbit 审查规范
 
-本节适用于所有参与 `dsh-work-evidence` 开发的编程 Agent，包括 DSH、Codex 及其他具备 Git/GitHub 操作能力的 Agent。
+本节适用于所有参与 `dsh-work-evidence` 开发的编程 Agent，包括 ZCode、DSH 及其他具备 Git/GitHub 操作能力的 Agent。
 
 **核心原则：独立分支开发、PR 审查、证据驱动修复、用户最终决定合并。**
 
 ### 1. 角色与职责
 
-- **开发 Agent（DSH / Codex）：** 负责理解需求、编写代码、运行测试、创建 PR、验证评审意见及实施必要修复。
+- **开发 Agent（ZCode / DSH）：** 负责理解需求、编写代码、运行测试、创建 PR、验证评审意见及实施必要修复。
 - **CodeRabbit：** 作为独立 AI 代码审查员，分析 PR 变更并报告可能的 Bug、安全风险、边界条件缺陷及可维护性问题。
 - **GitHub：** 管理分支、Commit、PR、评审记录及可用的自动化检查。
 - **用户：** 拥有最终验收权，决定是否合并、关闭 PR 或删除分支。
