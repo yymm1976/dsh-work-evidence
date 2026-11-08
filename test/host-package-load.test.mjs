@@ -50,6 +50,8 @@ test('declared package files independently load all retained controls and preser
     const features=await host.command(agent,'features');assert.equal(features.version,VERSION);
     assert.equal(features.pluginEffective,true);assert.ok(features.dependencies.archiveDecoder.available);
     assert.ok(features.dependencies.nativeCompactionAttached);
+    assert.equal(features.features.length,38);
+    assert.equal(features.tools.length,14);
     assert.ok(features.features.filter(item=>typeof item.configured==='boolean').every(item=>item.configured));
     assert.equal(features.features.find(item=>item.key==='fastEditEnabled').status,'ready');
     assert.equal(features.features.find(item=>item.key==='nativeReasoningReplay').status,'waiting');
