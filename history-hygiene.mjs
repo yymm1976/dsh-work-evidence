@@ -28,8 +28,12 @@ export function recallCall(agent,{seq,offset=0,maxChars=16000}={}){
 /** Compact request-view receipt for a completed test/check run; canonical output stays exact. */
 export function testOutputDigest(command,text,{seq=null,truncated=false}={}){
   if(typeof command!=='string'||!TEST_COMMAND.test(command.trim()))return null;
-  if(typeof text!=='string'||text.length<TEST_MIN_CHARS||truncated)return null;
+  if(typeof text!=='string'||text.length<TEST_MIN_CHARS||truncated||!Number.isSafeInteger(seq))return null;
+  // A spill marker means this request view never held the complete output;
+  // work_recall cannot recover a host-spilled body, so it must not be hidden.
+  if(/\[output truncated; full output:|\[truncated\]/iu.test(text))return null;
   const failure=reportedCheckFailure(text),summary=failure?.summary??null,entries=failure?.failureEntries??[];
+  if(!failure&&!/(?:^|\n)\s*(?:\d+\s+)?(?:passed|failed|ok|tests?|checks?)\b|(?:passed|failed|ok)\s+in\s+[\d.]+s/iu.test(text))return null;
   const failedLines=text.split(/\r?\n/u).filter(line=>/^\s*(?:FAILED|ERROR|not ok|\d+\s+(?:failed|failures))\b/iu.test(line)).slice(0,8);
   const detailLines=failure?[]:text.split(/\r?\n/u).filter(line=>/(?:Error|Exception|assert|AssertionError|File "|line \d+|Traceback)/iu.test(line)).slice(-10);
   const tail=text.slice(-TEST_TAIL_CHARS).split(/\r?\n/u).filter(line=>line.trim()).slice(-18).join('\n');
@@ -52,7 +56,7 @@ export function createHistoryHygiene(runtime,taskFlow,{isProtected=()=>false,ret
   function get(agent){
     let state=states.get(agent.session.id);
     if(!state){state={cursor:0,step:0,results:new Map(),failures:new Set(),pinnedCalls:new Set(),pinnedResults:new Set(),retainedSources:new Set(),
-      outputPlans:new Map(),hiddenResults:new Set(),omittedSources:new Set(),liveReads:new Map(),observedPaths:new Map(),commands:new Map(),requests:0,outputs:0,chars:0,testOutputViews:0,testOutputChars:0,restores:0,rereadPromotions:0};states.set(agent.session.id,state);}
+      outputPlans:new Map(),hiddenResults:new Set(),omittedSources:new Set(),liveReads:new Map(),observedPaths:new Map(),commands:new Map(),fullOutputRequested:false,requests:0,outputs:0,chars:0,testOutputViews:0,testOutputChars:0,restores:0,rereadPromotions:0};states.set(agent.session.id,state);}
     return state;
   }
   function rememberRead(state,root,read){
@@ -72,6 +76,7 @@ export function createHistoryHygiene(runtime,taskFlow,{isProtected=()=>false,ret
     while(state.cursor<events.length){
       const event=events[state.cursor++],data=event.data??{},message=messageOf(event);
       referenceContext?.consume(agent,event);
+      if(event.type==='user/message'&&message)state.fullOutputRequested=/完整输出|全部输出|原始输出|full output/iu.test(resultText(message.content));
       if(event.type==='step/start')state.step++;
       if(['tool/call','tool/ptc-dispatch','tool/code-dispatch'].includes(event.type)){
         const args=argsOf(data.arguments);
@@ -138,7 +143,7 @@ export function createHistoryHygiene(runtime,taskFlow,{isProtected=()=>false,ret
     const result=messages.map(message=>{
       if(message.role!=='tool')return message;
       const entry=state.results.get(message.id);
-      if(entry?.testDigest&&state.step-entry.step>=1&&!state.pinnedResults.has(entry.seq)&&!pins.opaque&&!pins.targets.has(entry.seq)){
+      if(entry?.testDigest&&state.step-entry.step>=1&&!state.fullOutputRequested&&!state.pinnedResults.has(entry.seq)&&!pins.opaque&&!pins.targets.has(entry.seq)){
         const reduction=resultText(message.content).length-entry.testDigest.length;
         if(reduction>=MIN_SAVING){
           const after={...message,content:[{type:'text',text:entry.testDigest}]};
