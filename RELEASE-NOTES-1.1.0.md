@@ -1,4 +1,6 @@
-# DSH Work Evidence 1.1.0
+# Work Evidence 1.1.0 Release Notes（RC only）
+
+> **RC ONLY — 未稳定发布。** 本文档只描述发布候选；稳定 `v1.1.0` 未创建。阻断原因见 `RELEASE-GATES-1.1.0.md` 的 G3/G7：Python 留出方向反转，且短任务收益不能全部归因于实际生效机制。
 
 版本：`1.1.0`
 
