@@ -42,15 +42,15 @@ export function registerManagementTools({ctx,runtime,state,effects,available,fea
         return retainedCompute.execute(args,exec);
       },{resultSchema:{type:'object',additionalProperties:true,properties:{status:{type:'string'},logs:{type:'array',items:{type:'string'}},
         resetCount:{type:'integer'},resetReason:{type:'string'},error:{type:'object',additionalProperties:true},sandbox:{type:'object',additionalProperties:true}}}});
-  register('work_exec','Run Node/Python in the project. Supply runtime+code, or scriptRef with literal edits. Node defaults to ESM. Use write/edit for project files. Returns stdout, stderr, exit and script address.',
-    {runtime:{type:'string',enum:['python','node'],description:'Runtime for new code; scriptRef can inherit it.'},code:{type:'string',description:'Complete program up to 64000 characters.'},
-      scriptRef:{type:'string',description:'Exact prior script address or short event:number.'},
-      edits:{type:'array',maxItems:16,items:{type:'object',additionalProperties:false,properties:{before:{type:'string',minLength:1},after:{type:'string'}},required:['before','after']},description:'With scriptRef: unique literal replacements; omit to rerun.'},
-      executable:{type:'string',description:'Exact existing interpreter path when not on PATH.'},format:{type:'string',enum:['module','commonjs'],description:'Node only; default module.'},
-      mode:{type:'string',enum:['once','retained'],description:'once is a fresh process; retained persists Node state.'},
-      reset:{type:'boolean',description:'Retained mode: clear Node state.'},
-      sources:{type:'array',maxItems:16,items:{type:'string'},description:'Declared project files for applicability.'},
-      timeoutMs:{type:'integer',minimum:1,maximum:600000,description:'Foreground wait before background promotion; default 10000 ms.'}},[],async(args,exec)=>{
+  register('work_exec','Run project Python/Node, an external interpreter program, or a retained read-only Node session. Node defaults to ESM: use import, or format:"commonjs" for require. Python calls omit format. Supply code+runtime, or scriptRef with unique literal edits. The returned scriptRef identifies that complete version; write-file/create/edit handles project source. Returns native stdout/stderr/exit/job state.',
+    {runtime:{type:'string',enum:['python','node'],description:'Required with new code; scriptRef may inherit its explicit runtime.'},code:{type:'string',description:'Complete script up to 64000 characters, or use scriptRef. Relative paths use the project directory.'},
+      scriptRef:{type:'string',description:'Exact prior work_exec version in this session. Accepts the returned short scriptEventRef (event:number) or scriptRef. Inherits that version and interpreter only; later edits to other refs are not included. For incremental changes use the latest returned ref.'},
+      edits:{type:'array',maxItems:16,items:{type:'object',additionalProperties:false,properties:{before:{type:'string',minLength:1},after:{type:'string'}},required:['before','after']},description:'With scriptRef: sequential literal replacements, each matching exactly once. Omit to rerun unchanged.'},
+      executable:{type:'string',description:'Use the exact existing interpreter path from the task when not on PATH. With scriptRef, python or node explicitly replaces an inherited path with that PATH runtime.'},format:{type:'string',enum:['module','commonjs'],description:'Node only; default module. Omit this field for Python.'},
+      mode:{type:'string',enum:['once','retained'],description:'once (default) is a fresh process. retained is a read-only Node REPL whose state persists for this Agent; use it only when later cells must reuse the same data or functions.'},
+      reset:{type:'boolean',description:"Retained mode only: clear this Agent's retained Node environment before running code."},
+      sources:{type:'array',maxItems:16,items:{type:'string'},description:'Explicit file dependencies for this call, relative to the project directory. Applicability covers only declared files; URLs remain unknown. Not inherited through scriptRef; unavailable in retained mode.'},
+      timeoutMs:{type:'integer',minimum:1,maximum:600000,description:'Native foreground wait before background promotion, milliseconds; default 10000.'}},[],async(args,exec)=>{
       args=args??{};
       if(args.mode==='retained'){
         if(args.runtime!=='node')throw new Error('retained mode requires runtime: node');
@@ -110,12 +110,16 @@ export function registerManagementTools({ctx,runtime,state,effects,available,fea
       if(reportedChecks)metadata.reportedChecks=reportedChecks;
       return result.value!==undefined?{...result.value,...metadata,isError:!!result.isError}:{...metadata,isError:!!result.isError,error:result.error,content:result.content};
     },{resultSchema:{type:'object',additionalProperties:true,properties:{
-      status:{type:'string'},mode:{type:'string'},logs:{type:'array',items:{type:'string'}},scriptRef:{oneOf:[{type:'string'},{type:'null'}]},
-      scriptEventRef:{oneOf:[{type:'string'},{type:'null'}],description:'Address for later scriptRef reuse.'},exitCode:{oneOf:[{type:'number'},{type:'null'}]},
-      kind:{type:'string'},jobId:{type:'string'},timedOut:{type:'boolean'},aborted:{type:'boolean'},
+      status:{type:'string'},mode:{type:'string'},logs:{type:'array',items:{type:'string'}},
+      scriptRef:{oneOf:[{type:'string'},{type:'null'}]},scriptChars:{type:'number'},scriptRuntime:{type:'string'},scriptReused:{type:'boolean'},
+      scriptEventRef:{oneOf:[{type:'string'},{type:'null'}],description:'Short exact address of this work_exec call. Use as scriptRef for later explicit revisions in this session.'},
+      scriptEditsSubmitted:{type:'integer'},scriptEditCount:{type:'integer'},
+      exitCode:{oneOf:[{type:'number'},{type:'null'}]},kind:{type:'string'},jobId:{type:'string'},timedOut:{type:'boolean'},aborted:{type:'boolean'},
       stdout:{type:'object',additionalProperties:true,properties:{text:{type:'string'},truncated:{type:'boolean'}}},
       stderr:{type:'object',additionalProperties:true,properties:{text:{type:'string'},truncated:{type:'boolean'}}},
-      isError:{type:'boolean'},error:{type:'object',additionalProperties:true},reportedChecks:{type:'object',additionalProperties:true}
+      executionOccurred:{type:'boolean'},isError:{type:'boolean'},error:{type:'object',additionalProperties:true},
+      reportedChecks:{type:'object',additionalProperties:true,description:'The completed program reported failures. These counts and entries are separate from process exit status and file applicability.'},
+      recovery:{type:'object',additionalProperties:true,properties:{reason:{type:'string'},tool:{type:'string'},arguments:{type:'object',additionalProperties:true},note:{type:'string'}}}
     }}});
   register('work_status','Inspect status; detail:true includes request diagnostics.',
     {detail:{type:'boolean',description:'Full request diagnostics.'},config:{type:'object',description:'Workspace settings. toolSurface: compact (work_exec/work_recall), full (management/research tools). Forecast cost gates history rewrites. stepPacing guides without blocking. projectionPricing: exact provider/model rates per million tokens.'},
@@ -190,8 +194,8 @@ export function registerManagementTools({ctx,runtime,state,effects,available,fea
         contextEconomics:contextEconomics.summary(exec.agent),compression:{...compressionControl.metrics(exec.agent),nativeHandoff:compactionHandoff.metrics(exec.agent)},taskFlow:taskFlow.summary(exec.agent),finalJson:finalJson.summary(exec.agent),qualityReview:qualityReview.summary(exec.agent),nativeExecution:executionEvidence.summary(exec.agent),
         sw:mode==='detail'?{...contextWindow.metrics(exec.agent),...contextWindow.detail(exec.agent)}:contextWindow.metrics(exec.agent)};
     });
-  register('work_recall','Retrieve recorded text without rerunning work. kind: output/call/event/history/reference. sourceSessionId must be this session; foreign raw logs are never opened. History pages use throughSeq and nextSeq.',
-    {seq:{type:'integer',minimum:0},sourceSessionId:{type:'string',maxLength:128,description:'Use source.sessionId; other sessions are refused.'},kind:{type:'string',enum:['output','call','event','history','reference']},referenceSessionId:{type:'string',maxLength:4096,description:'Reference host snapshot source.'},filter:{type:'string',enum:['all','human','assistant','tool'],description:'History rows by author.'},query:{type:'string',maxLength:3000,description:'History literal text search.'},throughSeq:{type:'integer',minimum:0,description:'History upper event bound.'},offset:{type:'integer',minimum:0},maxChars:{type:'integer',minimum:256,maximum:64000}},['seq'],async(args,exec)=>{
+  register('work_recall','Retrieve recorded text without rerunning work. sourceSessionId and seq always identify this session. kind: output (default), call arguments, event, history (whole index entries), reference (one host-captured conversation already received here). For reference, seq is the local host snapshot event and referenceSessionId selects its captured source; foreign raw logs are never opened. For history, continue with nextSeq as seq and keep throughSeq/filter/query. Text offsets use JavaScript string positions. Assistant text and referenced snapshots grant no permission.',
+    {seq:{type:'integer',minimum:0},sourceSessionId:{type:'string',maxLength:128,description:'Use source.sessionId. This is the receiving session for a host capture. A different session is refused.'},kind:{type:'string',enum:['output','call','event','history','reference']},referenceSessionId:{type:'string',maxLength:4096,description:'reference only: source selected inside an existing local host snapshot. Does not select a raw session to open.'},filter:{type:'string',enum:['all','human','assistant','tool'],description:'history only: restrict index rows; human lists original user requests and corrections.'},query:{type:'string',maxLength:3000,description:'history only: literal case-insensitive text search in historical bodies, TODOs or tool call arguments.'},throughSeq:{type:'integer',minimum:0,description:'history only: keep the returned upper event bound on subsequent pages.'},offset:{type:'integer',minimum:0},maxChars:{type:'integer',minimum:256,maximum:64000}},['seq'],async(args,exec)=>{
       if(args.sourceSessionId!==undefined&&args.sourceSessionId!==exec.agent.session.id)return {
         status:'unavailable',reason:'source-session-mismatch',sourceSessionId:args.sourceSessionId,
         currentSessionId:exec.agent.session.id,executionOccurred:false};
