@@ -19,4 +19,5 @@ test('test output digest keeps failure identity and stays bounded',()=>{
   assert.equal(testOutputDigest('python -m pytest','short output'),null);
   assert.equal(testOutputDigest('git status','x'.repeat(9000)),null);
   assert.equal(testOutputDigest('node --test suite.mjs','x'.repeat(9000),{truncated:true}),null);
+  assert.ok(testOutputDigest('.\\gradlew.bat --offline --no-daemon compileTestJava','x'.repeat(9000)));
 });

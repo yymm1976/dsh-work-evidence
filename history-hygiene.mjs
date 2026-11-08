@@ -8,7 +8,7 @@ import {reportedCheckFailure} from './recovery.mjs';
 
 const AGE=2,MIN_SAVING=512;
 const TEST_MIN_CHARS=8000,TEST_TAIL_CHARS=1800,TEST_DIGEST_MAX=4000;
-const TEST_COMMAND=/^(?:python(?:\.exe)?\s+-m\s+(?:pytest|compileall)|node\s+--test|ruff\s+check)\b/iu;
+const TEST_COMMAND=/^(?:python(?:\.exe)?\s+-m\s+(?:pytest|compileall)|node\s+--test|ruff\s+check|(?:\.\\|\.\/)?gradlew(?:\.bat)?|gradle(?:\.bat)?|mvn(?:\.cmd)?)\b/iu;
 const messageOf=event=>event.data?.message??(event.data?.role?event.data:null);
 const callIdOf=message=>message?.source?.callId??message?.toolCallId;
 const fileKey=(root,file)=>{
