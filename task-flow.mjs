@@ -812,21 +812,6 @@ export function createTaskFlow(ctx,runtime,{nativeFiles,call,executionDependenci
         rememberPacing(state,lastResponseKey);
         return emit('pacing',lastResponseKey,'[work-evidence] 上一响应较长。下一步只执行仍未决的实际动作，或直接整理已有结果；不要重述分析、重演计算或增加同义检查。用户明确要求或实际错误仍须处理。');
       }
-      const economyKey=JSON.stringify([user.seq,'economy']);
-      if(steps>=2&&!pacing.notices.has(economyKey)){
-        rememberPacing(state,economyKey);
-        return emit('pacing',economyKey,'[work-evidence] 已有结果覆盖全部要求时直接交付，不为整理已知值另开程序。仍缺读取、解析或独立计算时同轮合并；工具调用前不预演完整任务或重述数据。');
-      }
-      const strictKey=JSON.stringify([user.seq,'strict']);
-      if(steps>=4&&!pacing.notices.has(strictKey)){
-        rememberPacing(state,strictKey);
-        return emit('pacing',strictKey,'[work-evidence] 下一次实际动作合并已知且相互独立的修正、未覆盖输入和交付字段；有依赖时先处理阻塞项。不重读已见来源，不新增同义实现。全部明确要求及验证已有成功依据时交付，仍有缺口则继续。');
-      }
-      const finalizeKey=JSON.stringify([user.seq,'finalize']);
-      if(steps>=8&&!pacing.notices.has(finalizeKey)){
-        rememberPacing(state,finalizeKey);
-        return emit('pacing',finalizeKey,'[work-evidence] 基于已有实际结果按用户列出的字段、边界、错误分支、排序和禁止项逐项核对；只修复未覆盖点后交付，不新增仅由既有结果自行引出的检查。该提醒不宣告完成。');
-      }
       const reminderKey=JSON.stringify([user.seq,'finalize-reminder']);
       if(steps>=12&&(outputStalled||!currentWriteObserved&&outputSinceNotice>=8000)&&!pacing.notices.has(reminderKey)){
         rememberPacing(state,reminderKey);

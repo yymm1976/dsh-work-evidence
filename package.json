@@ -101,9 +101,14 @@
     "fflate": "^0.8.3"
   },
   "peerDependencies": {
+    "@deepseek-ai/dsh-llm": "0.2.1-rc.4 || 0.2.2-rc.1",
+    "@deepseek-ai/dsh-ptc-runtime-node": "0.2.1-rc.4 || 0.2.2-rc.1",
     "@deepseek-ai/dsh-session-reference": "0.2.1-rc.4 || 0.2.2-rc.1"
   },
   "peerDependenciesMeta": {
+    "@deepseek-ai/dsh-ptc-runtime-node": {
+      "optional": true
+    },
     "@deepseek-ai/dsh-session-reference": {
       "optional": true
     }

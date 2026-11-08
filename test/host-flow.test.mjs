@@ -132,6 +132,9 @@ test('stepPacing controls actual output-usage guidance',async()=>{
   assert.ok(!off.body.includes('本次使用激进优化'));
   assert.ok(on.body.includes('上一响应较长'));
   assert.ok(!off.body.includes('上一响应较长'));
+  assert.ok(!on.body.includes('已有结果覆盖全部要求时直接交付'));
+  assert.ok(!on.body.includes('下一次实际动作合并已知且相互独立的修正'));
+  assert.ok(!on.body.includes('基于已有实际结果按用户列出的字段'));
 });
 
 test('retainedCompute keeps bindings, clears them after writes and respects its switch',async()=>{
