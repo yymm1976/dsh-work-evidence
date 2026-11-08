@@ -174,7 +174,7 @@ async function openArchive(root,archive,exec){
       });
     }
     catch(error){
-      if(shared&&attempt===0&&creatorSignal?.aborted&&!exec.signal?.aborted){
+      if(shared&&creatorSignal?.aborted&&!exec.signal?.aborted){
         if(cacheable&&s.pending.get(pendingKey)===pending)s.pending.delete(pendingKey);
         continue;
       }

@@ -80,8 +80,10 @@ export function createHistoryHygiene(runtime,taskFlow,{isProtected=()=>false,ret
       if(event.type==='step/start')state.step++;
       if(['tool/call','tool/ptc-dispatch','tool/code-dispatch'].includes(event.type)){
         const args=argsOf(data.arguments);
-        if(['pwsh','bash','ops_bash'].includes(data.name)&&typeof args?.command==='string'&&state.commands.size<64)
+        if(['pwsh','bash','ops_bash'].includes(data.name)&&typeof args?.command==='string'){
+          if(state.commands.size>=64)state.commands.delete(state.commands.keys().next().value);
           state.commands.set(data.callId,{name:data.name,command:args.command});
+        }
         if((data.name==='work_recall'&&args.kind!=='reference'&&(args.sourceSessionId===undefined||args.sourceSessionId===agent.session.id))||data.name==='work_state'&&args.mode==='recall'){
           const pins=args.kind==='call'?state.pinnedCalls:state.pinnedResults;
           if(Number.isSafeInteger(args.seq)&&!pins.has(args.seq)){

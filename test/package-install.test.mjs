@@ -9,7 +9,7 @@ import {pathToFileURL} from 'node:url';
 import {DSH_APP} from './helpers/paths.mjs';
 
 const source=path.resolve(import.meta.dirname,'..');
-const npmCli=process.env.npm_execpath??path.join(path.dirname(process.execPath),'node_modules','npm','bin','npm-cli.js');
+const npmCli=process.env.npm_execpath?.trim()?path.resolve(process.env.npm_execpath):path.join(path.dirname(process.execPath),'node_modules','npm','bin','npm-cli.js');
 const host=DSH_APP;
 const hostScope=path.join(host,'node_modules','@deepseek-ai');
 

@@ -717,6 +717,77 @@ test('a versioned archive read retries after the sharing caller is cancelled', a
   assert.equal(readCount, 2);
 });
 
+test('a second foreign cancellation ends as ARCHIVE_CHANGED instead of leaking the abort', async t => {
+  const fixture = await makeArchive(t, [{name: 'source.txt', data: 'before'}]);
+  const stat = fixture.exec.nativeFiles.stat;
+  const readBytes = fixture.exec.nativeFiles.readBytes;
+  let noSignalStats = 0;
+  let joinerFirstStatDone;
+  const joinerFirstStat = new Promise(resolve => { joinerFirstStatDone = resolve; });
+  let releaseJoinerRetry;
+  const joinerRetryGate = new Promise(resolve => { releaseJoinerRetry = resolve; });
+  let joinerRetryStarted;
+  const joinerRetry = new Promise(resolve => { joinerRetryStarted = resolve; });
+  fixture.exec.nativeFiles.stat = async (...args) => {
+    const result = await stat(...args);
+    if (!args[2]) {
+      noSignalStats += 1;
+      if (noSignalStats === 1) joinerFirstStatDone();
+      if (noSignalStats === 2) {
+        joinerRetryStarted();
+        await joinerRetryGate;
+      }
+    }
+    return result;
+  };
+  let readCount = 0;
+  let firstStarted;
+  const firstRead = new Promise(resolve => { firstStarted = resolve; });
+  let secondStarted;
+  const secondRead = new Promise(resolve => { secondStarted = resolve; });
+  fixture.exec.nativeFiles.readBytes = async (...args) => {
+    const signal = args[2];
+    readCount += 1;
+    if (readCount === 1) firstStarted();
+    if (readCount === 2) secondStarted();
+    if (readCount <= 2) {
+      return new Promise((_resolve, reject) => {
+        const abort = () => reject(signal?.reason ?? Object.assign(new Error('aborted'), {name: 'AbortError'}));
+        signal?.addEventListener('abort', abort, {once: true});
+      });
+    }
+    return readBytes(...args);
+  };
+
+  const firstController = new AbortController();
+  const first = readArchiveEntry(fixture.directory, fixture.archive, 'source.txt', {
+    ...fixture.exec,
+    signal: firstController.signal
+  });
+  await firstRead;
+  const joiner = readArchiveEntry(fixture.directory, fixture.archive, 'source.txt', fixture.exec);
+  await joinerFirstStat;
+  await new Promise(resolve => setImmediate(resolve));
+  firstController.abort();
+  await assert.rejects(first, {name: 'AbortError'});
+  await joinerRetry;
+
+  const secondController = new AbortController();
+  const third = readArchiveEntry(fixture.directory, fixture.archive, 'source.txt', {
+    ...fixture.exec,
+    signal: secondController.signal
+  });
+  await secondRead;
+  releaseJoinerRetry();
+  await new Promise(resolve => setImmediate(resolve));
+  secondController.abort();
+  await assert.rejects(third, {name: 'AbortError'});
+
+  const result = await joiner;
+  assert.equal(result.state, 'unavailable');
+  assert.equal(result.code, 'ARCHIVE_CHANGED');
+});
+
 test('a cancelled archive joiner releases its slot before the creator finishes', async t => {
   const fixture = await makeArchive(t, [{name: 'source.txt', data: 'before'}]);
   await fs.writeFile(path.join(fixture.directory, 'other.zip'), buildZip([{name: 'other.txt', data: 'other'}]));

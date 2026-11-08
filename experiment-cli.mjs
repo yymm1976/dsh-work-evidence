@@ -7,7 +7,7 @@ import {readRun,tokenFields,writeJson,VERSION} from './experiment-store.mjs';
 import {taskRequestConsumption} from './experiment-consumption.mjs';
 
 const safeId=value=>typeof value==='string'&&/^[-a-zA-Z0-9_][-.a-zA-Z0-9_]{0,127}$/.test(value);
-const desktopApp=value=>value?.trim()||process.env.DSH_APP?.trim()||path.join(os.homedir(),'AppData','Local','Programs','DSH Desktop','dsh-desktop');
+const desktopApp=value=>path.resolve(value?.trim()||process.env.DSH_APP?.trim()||path.join(os.homedir(),'AppData','Local','Programs','DSH Desktop','dsh-desktop'));
 export function checkedLabel(value) {
   const allowed=['taskKey','contextKey','variant','rubric','evaluator','outcome','score','evidence','notes','recordedAt'];
   if(!value||typeof value!=='object'||Array.isArray(value)||Object.keys(value).some(key=>!allowed.includes(key)))throw new Error('Unrecognized assessment fields');

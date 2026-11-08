@@ -81,3 +81,14 @@ Docstring Coverage `10.34%`（29/35 文件，阈值 80%）是保留警告，不�
   - `OPTIMIZATION-REGISTER-1.1.0.md:27`：v7 轨迹证据引用的文件不在仓库/发布包。已新增脱敏公开摘要 `TRAJECTORY-ANALYSIS-1.1.0.md`，并改引用；原始结果 JSON 留在交付证据目录，不进入发布包，不含凭据。
   - `RELEASE-GATES-1.1.0.md:22`：G9 把 `b69b468` 写成通过，但候选随后已改动；同 SHA 要求不满足。已把 G0/G1/G2/G4/G5/G8/G9 改回“待最终 SHA”，`b69b468` 仅作历史证据。
 - 覆盖计数：四轮实质正文（`5817854228`、`5817950552`、`5817997957`、`5818275842`）；最终 SHA 增量 Review 仍待做。G6 不记为通过。
+
+## 2026-11-09 第五轮（最终候选 05582be）
+
+- Review `5819028970`（`2026-11-08T18:11:16Z`，reviewed `05582bec1eda62897e88937771f323eea1a7a042`），正文 11,662 字符；7 条 actionable + 1 nitpick；覆盖最终候选全部变更文件。
+- Major：`RELEASE-GATES-1.1.0.md` G3/G7 不应标通过，D15 需回退。已改为 pending，D15 重新打开。
+- `archive-store.mjs`：第二次外部取消绕过 `ARCHIVE_CHANGED`，line 193 不可达。已去掉 `attempt===0` 限制，并新增“第二次外部取消返回 ARCHIVE_CHANGED”回归。
+- `history-hygiene.mjs`：命令记录达到 64 后静默停止追踪。已改为淘汰最旧项；新增行为不改变 H13 的 8k/4k 触发逻辑。
+- `experiment-cli.mjs`、`test/helpers/paths.mjs`、`test/package-install.test.mjs`：相对路径与空 `npm_execpath` 未解析。已统一 `path.resolve`/空值保护。
+- `ROLLBACK-1.1.0.md`：回退时只替换插件目录会保留 1.1.0 归一化配置。已要求恢复升级前 config 备份并处理退役设置。
+- Nitpick（history-hygiene 正结果正则过宽）保留为非阻塞；receipt 始终带尾部与 recall 指针，不丢失正文。
+- 处置后的新 SHA 尚需一次增量 Review；全部线程 resolved 后 G6 才能通过。
