@@ -18,7 +18,7 @@
 | `memberParsing` | 成熟默认开启 | 依赖文件系统和可用解析器；Java 语法范围，解析器不可用时词法回退；其他语言使用文本窗口 | `host-source-options.test.mjs`、Java 成员测试 | `README.md` |
 | `mavenSourceBinding` | 成熟默认开启 | 依赖归档解码和坐标匹配 | `host-source-options.test.mjs`、Maven 来源测试 | `README.md` |
 | `contextProtocol` | 成熟默认开启 | 处理可恢复旧工具正文 | 上下文、压缩和恢复回归测试 | `README.md` |
-| `historyHygiene` | 成熟默认开启 | 依赖历史回收入口；异常时停用自身折叠 | `host-history.test.mjs` 验证折叠和恢复 | `README.md` |
+| `historyHygiene` | 成熟默认开启 | 依赖历史回收入口；异常时停用自身折叠 | `host-history.test.mjs` 验证折叠和恢复；`test-output-hygiene.test.mjs` 验证测试输出回执、截断与召回边界 | `README.md` |
 | `ledgerReceipt` | 成熟默认开启 | 依赖可回收历史和来源正文 | `host-source-options.test.mjs`、`host-acp-combinations.test.mjs` 验证短回执 | `README.md` |
 | `ledgerUnresolved` | 成熟默认开启 | 保留真实未解决项，不推断完成 | `host-state.test.mjs` 验证状态传播 | `README.md` |
 | `swLedger` | 成熟显式开启 | 默认关闭；为重复结果折叠提供记录 | `sw-default.test.mjs`、上下文组合测试 | `README.md`、`MIGRATION-1.1.0.md` |

@@ -287,6 +287,8 @@ PTC 程序只在内部读取、输出省略或分页不全时，保留原快照�
 来源投影需达到 contextPruneMinChars；替换后至少减少 512 个 UTF-16 单元。
 预算计算与实际发送使用同一请求装配入口，处理不会增加来源读取或模型调用。
 
+测试/检查命令（pytest、node --test、ruff、compileall、gradlew/gradle/mvn）输出完整且超过 4,000 个 UTF-16 单元时，后续请求视图使用有界的测试回执：命令、退出/失败计数、最多 8 个失败用例、关键错误行和尾部；规范事件保留完整输出，可用 `work_recall` 取回。输出被宿主截断或 spill 到临时文件、没有可解析的失败/计数、用户要求完整输出、或历史取回不可用时，不做回执。
+
 状态中的 `historyHygiene.referenceContext` 列出当前要求、追踪页、采用的来源、字符差和保留原因。
 `charsRemovedAcrossViews` 按请求视图累计，不能当成单次减少量或费用收益。
 原始事件的跨会话读取继续使用宿主授权的 `session_event_read` 地址。
