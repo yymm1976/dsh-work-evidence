@@ -208,7 +208,9 @@ test('work_status keeps a disabled session disabled until a user command enables
 // A small window forces native compaction after a few large reads.
 const compactionHost=(stubSummary,summaries)=>startHost({
   contextWindow:30000,
-  workspace:{stubSummary},
+  // This fixture isolates compaction: it fills the window with reads that the
+  // default context protocol may instead fold before pressure is reached.
+  workspace:{stubSummary,contextProtocol:false},
   extraMounts:[['dsh-compaction-basic',{thresholdRatio:0.5,retainTokens:2000,maxTokens:4000,headroomTokens:4000}]],
   usage:options=>{
     const chars=JSON.stringify(options.messages).length;

@@ -80,11 +80,11 @@ test('without route pricing a token reduction is allowed on the total-token basi
   const {agent,economics,finish,options}=harness();
   options.tools=[];options.system='system';
   const system={id:'system',role:'system',content:[{type:'text',text:'rules'}]},user={id:'user',role:'user',content:[{type:'text',text:'request'}]};
-  const old={id:'old-result',role:'tool',content:[{type:'text',text:'old result body '.repeat(60)}]};
+  const old={id:'old-result',role:'tool',content:[{type:'text',text:'old result body '.repeat(600)}]};
   const next={id:'new-result',role:'tool',content:[{type:'text',text:'new result body'}]};
   options.messages=[system,user,old];
   finish(false,{inputTokens:100,cacheReadTokens:900,cacheWriteTokens:0,outputTokens:20,totalTokens:1020});
-  const result=economics.assess(agent,{messages:options.messages,proposedMessages:[system,user,next],tools:[],system:'system'});
+  const result=economics.assess(agent,{messages:options.messages,proposedMessages:[system,user,next],tools:[],system:'system',allowTokenOnly:true});
   assert.ok(result.savedTokensEstimate>0);
   assert.ok(result.cachedSuffixTokensEstimate>0);
   assert.equal(result.allowed,true);
@@ -93,6 +93,25 @@ test('without route pricing a token reduction is allowed on the total-token basi
   assert.equal(result.costBasis,'total-tokens');
   assert.equal(result.currency,null);
   assert.equal(result.futureSavingEstimate,null);
+  assert.ok(result.netTokenSavingEstimate>0);
+});
+
+test('token-only pruning stays blocked below the cache-refill margin or without explicit opt-in',()=>{
+  const {agent,economics,finish,options}=harness();
+  options.tools=[];options.system='system';
+  const system={id:'system',role:'system',content:[{type:'text',text:'rules'}]},user={id:'user',role:'user',content:[{type:'text',text:'request'}]};
+  const body='old result body '.repeat(60);
+  const old={id:'old-result',role:'tool',content:[{type:'text',text:body}]};
+  const next={id:'new-result',role:'tool',content:[{type:'text',text:body.slice(0,-40)}]};
+  options.messages=[system,user,old];
+  finish(false,{inputTokens:100,cacheReadTokens:900,cacheWriteTokens:0,outputTokens:20,totalTokens:1020});
+  const small=economics.assess(agent,{messages:options.messages,proposedMessages:[system,user,next],tools:[],system:'system',allowTokenOnly:true});
+  assert.ok(small.savedTokensEstimate<small.cachedSuffixTokensEstimate*1.25);
+  assert.equal(small.allowed,false);
+  assert.equal(small.reason,'token-only-saving-below-refill-budget');
+  const explicit=economics.assess(agent,{messages:options.messages,proposedMessages:[system,user,next],tools:[],system:'system'});
+  assert.equal(explicit.allowed,false);
+  assert.equal(explicit.reason,'route-pricing-unavailable');
 });
 
 test('capacity pressure uses the optional service getter when direct property access requires inject',()=>{

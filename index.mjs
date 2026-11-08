@@ -296,10 +296,11 @@ export function apply(ctx,config={}){
           if(!prunableMessage(originalEvent.data?.message)||
             preserveContextResults.has(session.id+':'+(originalEvent.data.message.source?.callId??originalEvent.data.message.toolCallId)))continue;
           const original=session.deriveEventMessage(originalEvent);
+          const focus=new Set((taskFlow.phase(agent).focus??[]).map(file=>sourceKey(agent,file)));
           const result=planContextPrune(original,item.reads,{
             seq,thresholdChars:s.config.contextPruneMinChars,
             headChars:s.config.contextPruneHeadChars,tailChars:s.config.contextPruneTailChars,
-            retainSource:file=>retainedSources(agent).has(sourceKey(agent,file))||historyHygiene.retainsSource(agent,file),
+            retainSource:file=>retainedSources(agent).has(sourceKey(agent,file))||historyHygiene.retainsSource(agent,file)||focus.has(sourceKey(agent,file)),
           });
           if(!result){effects.decide(agent,'contextPrune','not-applicable','no-safe-source-reduction',{seq});continue;}
           if(!canRecall(agent)){
@@ -308,7 +309,7 @@ export function apply(ctx,config={}){
           const economics=contextEconomics.remember(agent,contextEconomics.assess(agent,{
             savedChars:result.charsBefore-result.charsAfter,changedSeq:seq,
             savedTokensEstimate:Math.max(0,messageTokens(original)-messageTokens({...original,content:result.content})),
-            emergency:contextEconomics.pressure(agent).emergency,
+            emergency:contextEconomics.pressure(agent).emergency,allowTokenOnly:true,
           }),'contextPrune');
           effects.decide(agent,'contextPrune',economics.allowed?'approved':'deferred',economics.reason,{seq,economics});
           if(!economics.allowed)continue;
