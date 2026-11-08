@@ -309,7 +309,7 @@ export function apply(ctx,config={}){
           const economics=contextEconomics.remember(agent,contextEconomics.assess(agent,{
             savedChars:result.charsBefore-result.charsAfter,changedSeq:seq,
             savedTokensEstimate:Math.max(0,messageTokens(original)-messageTokens({...original,content:result.content})),
-            emergency:contextEconomics.pressure(agent).emergency,allowTokenOnly:true,
+            emergency:contextEconomics.pressure(agent).emergency,
           }),'contextPrune');
           effects.decide(agent,'contextPrune',economics.allowed?'approved':'deferred',economics.reason,{seq,economics});
           if(!economics.allowed)continue;

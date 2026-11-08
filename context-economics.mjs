@@ -85,7 +85,7 @@ export function createContextEconomics(ctx,runtime){
   function pricing(agent,route){
     return runtime.get(agent).config.projectionPricing.find(row=>sameRoute(row,route))??null;
   }
-  function assess(agent,{messages,proposedMessages,savedChars=0,savedTokensEstimate=null,changedSeq=null,changedMessageId=null,route=null,tools,system,emergency=false,horizon,allowTokenOnly=false,
+  function assess(agent,{messages,proposedMessages,savedChars=0,savedTokensEstimate=null,changedSeq=null,changedMessageId=null,route=null,tools,system,emergency=false,horizon,
     auxiliaryUsage=null,auxiliaryMargin=1.5}={}){
     const state=get(agent),config=runtime.get(agent).config;
     route??=agent.session.requestHeader()?.config??{};
@@ -167,17 +167,6 @@ export function createContextEconomics(ctx,runtime){
         allowed=perStep>0&&futureSaving>required;
         reason=allowed?'predicted-cache-cost-positive':'predicted-cache-cost-insufficient';
       }
-    }else if(cachedSuffixTokens!==null&&!price){
-      // Without an exact route price the task contract uses total tokens as the
-      // comparison basis. Cache reads remain part of that total, so a lower
-      // repeat prompt is a token reduction even when the cache composition
-      // changes. Require a 25% margin over the previously cached suffix so a
-      // tiny edit cannot pay for a larger rewritten suffix, and only opt in
-      // from features that have a bounded, recallable rewrite.
-      const required=cachedSuffixTokens*1.25;
-      allowed=allowTokenOnly&&savedTokens>required;
-      reason=allowed?'token-only-positive-without-route-pricing':
-        allowTokenOnly?'token-only-saving-below-refill-budget':'route-pricing-unavailable';
     }else if(cachedSuffixTokens!==null)reason='route-pricing-unavailable';
     return {allowed,reason,savedTokensEstimate:savedTokens,cachedSuffixTokensEstimate:cachedSuffixTokens,
       oldSuffixTokensEstimate:oldSuffixTokens,
@@ -185,9 +174,6 @@ export function createContextEconomics(ctx,runtime){
       horizonSteps:remainingSteps,refillCostEstimate:refillCost,futureSavingEstimate:futureSaving,breakEvenStepsEstimate:breakEvenSteps,
       auxiliaryCostEstimate:auxiliaryCost,auxiliaryMargin:auxiliaryUsage?auxiliaryMargin:null,
       currency:price?.currency??null,pricingSource:price?'explicit-exact-route-setting':'unavailable',
-      costBasis:price?'configured-price':allowTokenOnly?'total-tokens':'unavailable',tokenSavingEstimate:savedTokens,
-      netTokenSavingEstimate:cachedSuffixTokens===null?null:savedTokens-cachedSuffixTokens,
-      futureTokenSavingEstimate:cachedSuffixTokens===null?null:Math.max(0,savedTokens-cachedSuffixTokens)*remainingSteps,
       tokenMethod:firstReplayAssistant?'text-density calibrated to previous generated output':same?'text-density calibrated to previous adapter usage':'text-density estimate',
       forecast:true,emergency,route:forecastRoute(route)};
   }
