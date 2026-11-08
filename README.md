@@ -287,6 +287,8 @@ PTC 程序只在内部读取、输出省略或分页不全时，保留原快照�
 来源投影需达到 contextPruneMinChars；替换后至少减少 512 个 UTF-16 单元。
 预算计算与实际发送使用同一请求装配入口，处理不会增加来源读取或模型调用。
 
+历史请求视图还会省略两轮以前的 assistant 私有 reasoning 块，只保留最近一轮；规范事件和原始消息保留完整推理。该处理属于 `historyHygiene` 的请求视图，关闭该开关即停止省略；会话状态在禁用、异常和释放时清除。
+
 状态中的 `historyHygiene.referenceContext` 列出当前要求、追踪页、采用的来源、字符差和保留原因。
 `charsRemovedAcrossViews` 按请求视图累计，不能当成单次减少量或费用收益。
 原始事件的跨会话读取继续使用宿主授权的 `session_event_read` 地址。
@@ -538,7 +540,7 @@ deferPressureCompaction 也保持默认关闭。
 
 以下可选路径已移除：
 
-- reasoningHistory：不再编辑私有推理，原生消息保持原文。
+- reasoningHistory：不再改写私有推理正文；`historyHygiene` 仅在请求视图省略两轮以前的旧推理块，规范历史保留原文。
 - programHistory：不再缩短历史工具程序；原始调用仍可取回。
 - ledgerFoldPlan、ledgerFoldWrite：不再扫描或写入账本折叠；读取回执、失效和问题标记保留。
 - cacheOrderedStub、archiveEntries：不再提供独立模式。

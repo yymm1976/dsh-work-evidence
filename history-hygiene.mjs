@@ -5,7 +5,7 @@ import {resultText,surfaceReferences} from './visible-results.mjs';
 import {renderedReads} from './observation-ledger.mjs';
 import {messageTokens} from './context-economics.mjs';
 
-const AGE=2,MIN_SAVING=512;
+const AGE=2,MIN_SAVING=512,REASONING_MIN_CHARS=256;
 const messageOf=event=>event.data?.message??(event.data?.role?event.data:null);
 const callIdOf=message=>message?.source?.callId??message?.toolCallId;
 const fileKey=(root,file)=>{
@@ -28,7 +28,7 @@ export function createHistoryHygiene(runtime,taskFlow,{isProtected=()=>false,ret
   function get(agent){
     let state=states.get(agent.session.id);
     if(!state){state={cursor:0,step:0,results:new Map(),failures:new Set(),pinnedCalls:new Set(),pinnedResults:new Set(),retainedSources:new Set(),
-      outputPlans:new Map(),hiddenResults:new Set(),omittedSources:new Set(),liveReads:new Map(),observedPaths:new Map(),requests:0,outputs:0,chars:0,restores:0,rereadPromotions:0};states.set(agent.session.id,state);}
+      outputPlans:new Map(),hiddenResults:new Set(),omittedSources:new Set(),liveReads:new Map(),observedPaths:new Map(),requests:0,outputs:0,chars:0,restores:0,rereadPromotions:0,reasoningViews:0,reasoningMessages:0,reasoningChars:0};states.set(agent.session.id,state);}
     return state;
   }
   function rememberRead(state,root,read){
@@ -90,6 +90,35 @@ export function createHistoryHygiene(runtime,taskFlow,{isProtected=()=>false,ret
     }
     return state;
   }
+  /** Omit stale private reasoning from the request view; canonical events keep every block. */
+  function projectReasoning(agent,messages,{record=true}={}){
+    const state=get(agent);
+    let latest=-1;
+    for(let index=messages.length-1;index>=0;index--){
+      const message=messages[index];
+      if(message?.role==='assistant'&&Array.isArray(message.content)&&message.content.some(block=>block?.type==='reasoning')){latest=index;break;}
+    }
+    let count=0,chars=0;
+    const view=messages.map((message,index)=>{
+      if(index===latest||message?.role!=='assistant'||!Array.isArray(message.content))return message;
+      const dropped=message.content.flatMap((block,at)=>block?.type==='reasoning'?[at]:[]);
+      if(!dropped.length)return message;
+      const removed=dropped.reduce((total,at)=>total+(typeof message.content[at].text==='string'?message.content[at].text.length:0),0);
+      if(removed<REASONING_MIN_CHARS)return message;
+      const content=message.content.filter((_block,at)=>!dropped.includes(at));
+      const replay=message.source?.replayState;
+      const source=replay?.blocks&&Array.isArray(replay.blocks)&&replay.blocks.length===message.content.length?
+        {...message.source,replayState:{...replay,blocks:replay.blocks.filter((_block,at)=>!dropped.includes(at))}}:message.source;
+      count++;chars+=removed;
+      return {...message,content,...(source?{source}:{})};
+    });
+    if(!count)return messages;
+    if(record){
+      state.reasoningViews++;state.reasoningMessages+=count;state.reasoningChars+=chars;
+      runtime.effects?.decide(agent,'historyReasoning','applied','stale-private-reasoning-omitted',{messages:count,chars});
+    }
+    return view;
+  }
   function project(agent,messages,{record=true}={}){
     if(!runtime.isEnabled(agent)||!runtime.get(agent).config.historyHygiene)return messages;
     if(!canRecall(agent)){if(record)get(agent).hiddenResults.clear();return messages;}
@@ -137,7 +166,8 @@ export function createHistoryHygiene(runtime,taskFlow,{isProtected=()=>false,ret
     });
     if(record){state.hiddenResults=hidden;state.requests++;state.outputs+=outputs;state.chars+=saved;}
     const toolView=outputs?result:messages;
-    return referenceContext?.project(agent,toolView,{record,allowed})??toolView;
+    const reasoningView=projectReasoning(agent,toolView,{record});
+    return referenceContext?.project(agent,reasoningView,{record,allowed})??reasoningView;
   }
   return {project(agent,messages,options){
       if(get(agent).suspended)return messages;
@@ -154,7 +184,8 @@ export function createHistoryHygiene(runtime,taskFlow,{isProtected=()=>false,ret
     retainsSource(agent,file){return get(agent).retainedSources.has(fileKey(runtime.get(agent).root,file));},
     summary(agent){const s=sync(agent),references=referenceContext?.summary(agent)??null;return {enabled:runtime.isEnabled(agent)&&runtime.get(agent).config.historyHygiene,requestViews:s.requests,outputViews:s.outputs,
       charsRemovedAcrossViews:s.chars+(references?.charsRemovedAcrossViews??0),toolOutputCharsRemovedAcrossViews:s.chars,
+      reasoningViews:s.reasoningViews,reasoningMessages:s.reasoningMessages,reasoningCharsRemoved:s.reasoningChars,
       explicitRecoveries:s.restores,rereadPromotions:s.rereadPromotions,retainedCalls:s.pinnedCalls.size,retainedResults:s.pinnedResults.size,suspended:!!s.suspended,
-      referenceContext:references,reasoning:'unchanged',canonicalHistory:'unchanged'};},
+      referenceContext:references,reasoning:'latest-turn-kept;stale-blocks-omitted',canonicalHistory:'unchanged'};},
     disposeAgent(agent){referenceContext?.disposeAgent(agent);states.delete(agent.session.id);},dispose(){referenceContext?.dispose();states.clear();}};
 }
