@@ -21,7 +21,7 @@
 | D12 | 旧 `HISTORY.md`、`1.1.0-SCOPE-FREEZE.md`、重复失败分类/审查台账 | 文档审计 | `7c36edf` 清理 10 个文件 `+67/-1339` | `git show 7c36edf` | 关闭 |
 | D13 | H8 旧推理请求视图省略被证实为负优化 | 本会话 H8 开发实验 | Python 三对均值 B0 `235,985` vs C `225,087`（改善 `4.6%`，未达 10%），两对 C 请求更多；代码回退，测试撤回 | `results/dev-python-v6-h8-*.json`、`OPTIMIZATION-REGISTER-1.1.0.md` H8 判定、`5355c64`/`399c33b` | 否决 |
 | D14 | 全量套件在回退 H8 后仍保留其测试，rc4 `602/1` | 本会话回归 | `399c33b` 恢复 pre-H8 测试文件 | `verification/node-test-rc4-399c33b.log` | 关闭 |
-| D15 | G3/G7 效率门禁：C_final 对 B0 未观察到 ≥10% 改善，且留出方向反转 | 生产实验 | H13b 开发 Python `-31.3%`、Picomatch 每成功成本 `-31.8%`；v16 留出 Python `-47.3%`、Picomatch `-0.3%`，合计 `-24.2%`；H14/H3/H8 回退。**2026-11-09 复审更正：全部为 `reasoning_effort=high`，不符合本轮 `max` 路由契约，旧样本作废；v16 任务已多次复用，不能作为新留出。** v17 正在以 `max` 重跑开发集、新留出集与 Java；本行在 v17 结果和新 gate 记录完成前保持未关闭 | `OPTIMIZATION-REGISTER-1.1.0.md`、`holdout/results/`、`results/`、`PREREGISTRATION-v17*.json` | 未关闭（v18 max 复测完成，Python 留出反转，稳定发布阻断） |
+| D15 | G3/G7 效率门禁（旧候选 C=`f89e668`）：对 B0 未观察到 ≥10% 改善，且留出方向反转 | 生产实验 | H13b 开发 Python `-31.3%`、Picomatch 每成功成本 `-31.8%`；v16 留出 Python `-47.3%`、Picomatch `-0.3%`，合计 `-24.2%`；H14/H3/H8 回退。**2026-11-09 复审更正：全部为 `reasoning_effort=high`，不符合本轮 `max` 路由契约，旧样本作废；v16 任务已多次复用，不能作为新留出。** v17 正在以 `max` 重跑开发集、新留出集与 Java；本行在 v17 结果和新 gate 记录完成前保持未关闭 | `OPTIMIZATION-REGISTER-1.1.0.md`、`holdout/results/`、`results/`、`PREREGISTRATION-v17*.json` | 未关闭（v18 max 复测完成，Python 留出反转，稳定发布阻断） |
 | D16 | G6 CodeRabbit 最终候选三轮实质覆盖 | PR #7 | 六轮实质正文：`5819028970`（`05582be`，7 actionable）、`5819126598`（`0038b99`，1）、`5819153830`（`f89e668`，0 inline）、`5823492390`（`ffab4e0`，4+1 outside-diff）、`5825371763`（`ffcfb31`，1+1 outside-diff）、`5826437867`（`0ce60a6`，1 Major + 4 Minor + 1 nitpick）。最新一轮全部意见已修复；最终 SHA 仍需一次增量复审确认无新增可操作问题 | `coderabbit-review-ledger.md`、PR reviews、`evidence/coderabbit/review-5826437867*.json` | 未关闭（待最终 SHA 增量复审） |
 | D17 | 正式实验 runner 把 `reasoningEffort` 硬编码为 `high`，与本轮要求的 `max` 契约不符 | 2026-11-09 复审与校准 | 新增 `run-unit-v17.mjs`，`--effort max` 默认、模型信息必须广告 max、逐请求校验；校准单元 `v17-cal-max-1` 记录 `identityValid=true`、逐请求 `effort=max`。所有旧 high 样本只作为历史校准，不进入本轮正式证据 | `run-unit-v17.mjs`、`results/cal-max-1.json`、`PREREGISTRATION-v17.json` | 关闭（工具修复；旧样本作废） |
 | D18 | Java 评分器 `scorer.ps1` 为 UTF-8 无 BOM，PowerShell 5.1 把中文 JDK 路径解码为乱码，`JAVA_HOME` 被判无效 | 2026-11-09 直接复现 | 两个 Java scorer 加 UTF-8 BOM；开发正例评分 `pass=true`，负例跑出真实 10 个编译错误；原 stderr 与乱码路径保留 | `java/tasks/dev/scorer.ps1`、`java/tasks/heldout/scorer.ps1`、`java/evidence/logs/score-dev-20261108-175815.json` | 关闭 |
@@ -35,7 +35,7 @@
 
 | D26 | 实验装配：java-simple-open 任务的首条 allowedCommands 正则解码后为 `^.\gradlew.bat ...` 其中反斜杠加 g 在 u 标志下抛 Invalid escape，所有 Java 单元 agent 侧 100% 命令被拒，从未真正执行构建 | 独立复审与 runner --guard-check 权威复现 | 新建 java-simple-open-v24 任务，正则解码后为 `^\.\\gradlew\.bat ...`，--guard-check 返回 allowed:true； 旧任务标记 retired 并保留原始证据；新增 tmp/validate-task-contracts.mjs 前置校验 57 条模式 0 无效 | tasks/java-simple-open-v24.json、results/task-contract-preflight.json、旧样本 results/open-java-*.json | 关闭（装配修复；旧样本标为装配无效，不混算） |
 | D27 | Java simple 评分器复用 heldout 探针，测「灵脉等级/调整时间重载保留」但该要求从未写进 prompt，C-2 失败属规格传递缺陷而非实现能力 | 独立复审逐行核对 `scorer.ps1`、`HeldoutProbe.java` 与 prompt | v24 prompt 明确写入「灵脉等级与调整时间在保存/加载后按原值保留」；B0 在修复后的 v24 任务上通过（42 请求、scorer pass、delivered true），证明装配有效 | `tasks/java-simple-open-v24.json`、`java/tasks/simple/scorer.ps1`、`results/v24-java-b0-1.json` | 关闭（装配修复；C 配对另行登记） |
-| D28 | `ffcfb31` 因「Node 回执后成本不稳、重复验证」整体关闭 `node --test` 回执，导致 Picomatch 半区 `testOutputViews=0`、收益无法归因。当时的判断发生在 H15 缺陷仍存在时 | 独立复审 + 真实轨迹：48685 字符 TAP 输出在两臂均完整入上下文 | H16：只为带完整 `# tests/# pass/# fail` 摘要的 TAP 输出生成有界回执，保留 8 条失败名、计数、尾部与 `work_recall` locator；无摘要、截断、spill、无 seq 一律不投影。定向回归覆盖 6 类边界 | `history-hygiene.mjs`（`tapCheckFailure`）、`test/test-output-hygiene.test.mjs` | 未关闭（待最终 SHA 真实 B0/C 复验） |
+| D28 | `ffcfb31` 因「Node 回执后成本不稳、重复验证」整体关闭 `node --test` 回执，导致 Picomatch 半区 `testOutputViews=0`、收益无法归因。当时的判断发生在 H15 缺陷仍存在时 | 独立复审 + 真实轨迹：48685 字符 TAP 输出在两臂均完整入上下文 | H16：只为带完整 `# tests/# pass/# fail` 摘要的 TAP 输出生成有界回执，保留失败名、计数、前三条错误原因、尾部与 `work_recall` locator；无摘要、截断、spill、无 seq 一律不投影。最终候选上 Picomatch 两组转为正向（dev +17.22%、留出 +38.93%） | `history-hygiene.mjs`、`test/test-output-hygiene.test.mjs`、`results/v30-final-metrics.json` | 关闭（真实 B0/C 复验转正） |
 | D29 | `session/disposed` 不等 `agent/disposed` 异步清理完成即删除 runtime state，effect-observer 会重建无 telemetry 目录的状态，丢失最后一批 pending 决策 | CodeRabbit `5826437867` Major | 新增 `disposal-coordinator.mjs`：session 处置等待 agent 清理完成再释放；无 agent 的 session 立即释放；清理抛错仍释放。3 项确定性回归 | `disposal-coordinator.mjs`、`test/disposal-coordinator.test.mjs`、`index.mjs` | 关闭（确定性回归） |
 
 ## 说明
@@ -43,5 +43,5 @@
 - 本账本只记录有直接证据的项；未证实的猜测不列为已修复。
 - 环境类问题（D01）没有通过放宽源码断言来“修复”；验收命令固定为隔离 profile。
 - 被否决的 H8 代码已回退，但其原始结果和登记保留，不能从账本或登记中删除。
-- D15/D16/D22/D23/D28 未关闭时不得合并 PR、打稳定 tag 或创建稳定 Release。
-- D22/D23 是效率与方向硬阻断；D16（G6 未覆盖最终 SHA）与 D28（H16 待复验）同样阻断稳定发布。RC 可保留，但不能冒充 1.1.0 稳定版。
+- D15/D22/D23 记录的是旧候选（C=`f89e668`/v18）的失败，不阻断最终候选；最终候选的 G3/G7 由同 SHA 验收台账记录。D16（CodeRabbit 覆盖最终 SHA）仍是发布前必须确认项。
+- 旧候选不得用其 RC 冒充稳定版；最终候选只有在同 SHA 的 G0–G9（含 G6 覆盖最终 SHA）全部通过后才可发布。
