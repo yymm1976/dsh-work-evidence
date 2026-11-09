@@ -146,3 +146,17 @@
 2. Picomatch dev 零 H13 触发却贡献 50.5% 加权收益；剔除后仅 +6.38%，机制归因门禁失败。
 
 结论：不得登记为稳定 1.1.0；保留为 RC 与负结果。short-task 机制与新的独立 Python 留出任务仍需开发。
+
+## H15 真实机制缺陷修复（2026-11-09，待真实复验）
+
+| 项 | 内容 |
+|---|---|
+| 具体证据 | 最终 SHA `c0dd3f2` 的 5 个 C 样本全部出现插件 `work-evidence-task-flow` 消息含「原始输出报告了失败」；旧 `sync()` 对任何 `user/message` 都检测 `/完整输出\|全部输出\|原始输出\|full output/`，把它当作用户请求完整输出。`final4-run-c-2` step 19 因此 `fullOutputRequested=true`，该步 12 个测试回执投影全部关闭，89221 字符 pytest 输出重入上下文：输入 477→59466 token、缓存 21376→10752、单请求 0.0095 USD（整次 51%）。真实用户消息 5 条中 0 条请求完整输出，属纯误判。 |
+| 触发条件 | 仅 `user/message` 且 `source.kind==='user'`（或缺失 source）的真实用户消息，正文匹配 `FULL_OUTPUT_REQUEST` 时设置标志；插件注入、runtime-context、工具结果一律不改变该标志。 |
+| 预期效果 | 插件 diagnostic 不再关闭测试回执；完整测试输出保持在请求视图之外，避免缓存失效与重复验证循环；Python run 留出成本下降、方向可能转正。不新增提示词、不新增请求、不新增工具。 |
+| 质量风险 | 真实用户明确要求完整输出时仍可关闭回执（已回归）；canonical 事件与 `work_recall kind=output` 完全不变；测试摘要保留失败名与数量，不隐藏失败。风险是标志现在持续到用户下一次发言，若用户中途要求完整输出，后续回执会持续关闭，直到用户再次发言。 |
+| 额外开销 | 每事件一次类型/来源判断，无额外 Token、无额外请求、无状态同步。 |
+| 失败回退 | 回退 `history-hygiene.mjs` 中 `fullOutputRequest` 与 `sync` 两处，保留负面结果与原始轨迹；不改动评分器或任务。 |
+| 否决标准 | 同 SHA 双宿主全量不通过；或预注册 B0/C 配对中 Python 留出仍反转且总体 <10%；或出现新的完整任务质量失败/测试回执隐藏失败。 |
+
+已实施：`history-hygiene.mjs` 导出 `fullOutputRequest(event)`；`test/history-full-output-request.test.mjs` 8/8 通过（含真实轨迹事件重放）。用 5 个真实结果 JSON 重放旧/新规则：旧规则禁用 2 个请求的回执，新规则 0 个。**尚未做真实 B0/C 复验，不登记任何收益。** 由于 `final4-run`（run-override-v20）结果已用于设计本机制，该留出降为开发集，最终确认必须更换新的独立留出任务。

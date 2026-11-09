@@ -8,8 +8,20 @@ import {reportedCheckFailure} from './recovery.mjs';
 
 const AGE=2,MIN_SAVING=512;
 const TEST_MIN_CHARS=4000,TEST_TAIL_CHARS=1800,TEST_DIGEST_MAX=4000;
+const FULL_OUTPUT_REQUEST=/完整输出|全部输出|原始输出|full output/iu;
 const TEST_COMMAND=/^(?:python(?:\.exe)?\s+-m\s+(?:pytest|compileall)|node\s+--test|ruff\s+check|(?:\.\\|\.\/)?gradlew(?:\.bat)?|gradle(?:\.bat)?|mvn(?:\.cmd)?)\b/iu;
 const messageOf=event=>event.data?.message??(event.data?.role?event.data:null);
+/** Only a genuine user request may suspend request-view receipts. Plugin-injected
+ *  guidance can mention "原始输出" while describing a failure; treating that as a
+ *  user request silently restores every canonical test output into the next request. */
+export function fullOutputRequest(event){
+  if(!event||event.type!=='user/message')return {applies:false,requested:false};
+  const message=messageOf(event);
+  if(!message)return {applies:false,requested:false};
+  const kind=message.source?.kind;
+  if(kind!==undefined&&kind!=='user')return {applies:false,requested:false};
+  return {applies:true,requested:FULL_OUTPUT_REQUEST.test(resultText(message.content))};
+}
 const callIdOf=message=>message?.source?.callId??message?.toolCallId;
 const fileKey=(root,file)=>{
   const value=path.resolve(root??'.',file).replaceAll('\\','/');
@@ -90,7 +102,8 @@ export function createHistoryHygiene(runtime,taskFlow,{isProtected=()=>false,ret
     while(state.cursor<events.length){
       const event=events[state.cursor++],data=event.data??{},message=messageOf(event);
       referenceContext?.consume(agent,event);
-      if(event.type==='user/message'&&message)state.fullOutputRequested=/完整输出|全部输出|原始输出|full output/iu.test(resultText(message.content));
+      const fullOutput=fullOutputRequest(event);
+      if(fullOutput.applies)state.fullOutputRequested=fullOutput.requested;
       if(event.type==='step/start')state.step++;
       if(['tool/call','tool/ptc-dispatch','tool/code-dispatch'].includes(event.type)){
         const args=argsOf(data.arguments);

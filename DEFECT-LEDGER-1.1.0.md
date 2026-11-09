@@ -32,6 +32,7 @@
 | D22 | Python tilde 留出任务 C 比 B0 贵 28.9%，3/3 对全部反转；旧 prompt-a 版本也 +19.8% | v18 max 实验 | 任务/评分器/route 均已冻结，提示词两次修正后仍同向；按现行“开发集与留出集均不反向”门禁阻断稳定发布。未通过合并 dev+holdout 或换标签吸收。需要新的短任务机制或新独立留出任务，不能降门槛 | `results/v18-python-tilde-*.json`、`archive/v18-tilde-prompt-a/results`、`PREREGISTRATION-v18-addendum-tilde-b.json` | 未关闭（发布阻断） |
 | D23 | Picomatch dev 的 +26.1% 来自 H13 零触发子集（3 个 C 运行 testOutputViews=0），占加权收益 50.5% | v18 max 实验 | 剔除该子集后 H13 实际触发收益仅 +6.38%，低于 10%；该子集差异归因于输入/缓存结构与模型轮次，不能登记为机制收益。需要短任务真实机制 | `results/v18-picomatch-dev-c-*.json`、`results/v18-final-metrics.json` | 未关闭（G7 阻断） |
 | D24 | Java 跨模块留出评分器 `:48` 在 Gradle 首次编译后缺 `Continue`，任何 stderr 都会终止，C 首轮未评分 | v18 max 实验 / 复审F3 | 已在 `java/tasks/heldout/scorer.ps1` 首次 Gradle 调用前加 `Continue`，正例/负例校准通过；C 重测 67 请求/134 工具、16.8 分钟，真实评分仍失败（探针编译失败、3 处存在性检查缺失）；B0 也失败且有评分。该任务当前为任务难度/模型能力缺口，非插件回归 | `java/tasks/heldout/scorer.ps1`、`java/evidence/logs/score-heldout-20261108-205814.log`、`results/v18-java-heldout-c-2.json` | 关闭（工具修复；任务未解决） |
+| D25 | `history-hygiene.mjs` 把插件自身 diagnostic 中的「原始输出」误判为用户请求完整输出，关闭该步全部测试回执投影，导致完整 pytest 输出重入上下文与缓存失效 | 最终 SHA `c0dd3f2` 的 5 个 C 样本原始轨迹；`final4-run-c-2` step 19 单请求 59466 input token / 0.0095 USD（占 51%） | H15：新增 `fullOutputRequest(event)`，仅真实用户消息可设置该标志；canonical 输出与 `work_recall` 恢复不变。定向回归 8/8，真实轨迹重放旧 2 / 新 0 次误禁用。真实 B0/C 复验待做 | `history-hygiene.mjs`、`test/history-full-output-request.test.mjs`、`results/INDEX-all-units.json`、`results/INDEX-pairs.json` | 未关闭（待同 SHA 真实复验） |
 
 ## 说明
 
