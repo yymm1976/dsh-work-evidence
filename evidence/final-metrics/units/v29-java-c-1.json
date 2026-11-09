@@ -1,0 +1,142 @@
+{
+ "file": "v29-java-c-1.json",
+ "arm": "c",
+ "task": "dsh-java-simple-001-zero-time-presence-open-v24",
+ "candidate": "C:\\Users\\杨铭\\Documents\\Codex\\2026-10-19\\wo\\dsh-work-evidence-1.1.0-active",
+ "pluginHash": "12560a8956ba974d65b3f21c5e83ab23fec5a985213caf5da452be3622a4a291",
+ "pluginHashAlgorithm": "sha256-sorted-relative-files-v1; excludes .git/node_modules/.fastedit-venv",
+ "hostToolsVersion": "0.2.1-rc.4",
+ "node": "v22.19.0",
+ "maxTokens": 8000,
+ "reasoningEffort": "max",
+ "identityValid": true,
+ "completeSuccess": true,
+ "delivered": true,
+ "scorerStatus": "pass",
+ "requests": 20,
+ "toolCalls": 58,
+ "wallMs": 503143,
+ "usages": [
+  {
+   "inputTokens": 609,
+   "cacheReadTokens": 2688,
+   "outputTokens": 158,
+   "totalTokens": 3455
+  },
+  {
+   "inputTokens": 16753,
+   "cacheReadTokens": 3200,
+   "outputTokens": 266,
+   "totalTokens": 20219
+  },
+  {
+   "inputTokens": 2346,
+   "cacheReadTokens": 19840,
+   "outputTokens": 729,
+   "totalTokens": 22915
+  },
+  {
+   "inputTokens": 8706,
+   "cacheReadTokens": 22144,
+   "outputTokens": 2363,
+   "totalTokens": 33213
+  },
+  {
+   "inputTokens": 2574,
+   "cacheReadTokens": 30848,
+   "outputTokens": 3170,
+   "totalTokens": 36592
+  },
+  {
+   "inputTokens": 3972,
+   "cacheReadTokens": 33408,
+   "outputTokens": 416,
+   "totalTokens": 37796
+  },
+  {
+   "inputTokens": 517,
+   "cacheReadTokens": 37376,
+   "outputTokens": 367,
+   "totalTokens": 38260
+  },
+  {
+   "inputTokens": 961,
+   "cacheReadTokens": 37888,
+   "outputTokens": 228,
+   "totalTokens": 39077
+  },
+  {
+   "inputTokens": 437,
+   "cacheReadTokens": 38784,
+   "outputTokens": 3156,
+   "totalTokens": 42377
+  },
+  {
+   "inputTokens": 3271,
+   "cacheReadTokens": 39168,
+   "outputTokens": 212,
+   "totalTokens": 42651
+  },
+  {
+   "inputTokens": 1049,
+   "cacheReadTokens": 42368,
+   "outputTokens": 1608,
+   "totalTokens": 45025
+  },
+  {
+   "inputTokens": 1684,
+   "cacheReadTokens": 43392,
+   "outputTokens": 4392,
+   "totalTokens": 49468
+  },
+  {
+   "inputTokens": 4802,
+   "cacheReadTokens": 45056,
+   "outputTokens": 3630,
+   "totalTokens": 53488
+  },
+  {
+   "inputTokens": 6804,
+   "cacheReadTokens": 49792,
+   "outputTokens": 1573,
+   "totalTokens": 58169
+  },
+  {
+   "inputTokens": 1901,
+   "cacheReadTokens": 56576,
+   "outputTokens": 2101,
+   "totalTokens": 60578
+  },
+  {
+   "inputTokens": 4165,
+   "cacheReadTokens": 58368,
+   "outputTokens": 2451,
+   "totalTokens": 64984
+  },
+  {
+   "inputTokens": 2923,
+   "cacheReadTokens": 62464,
+   "outputTokens": 3391,
+   "totalTokens": 68778
+  },
+  {
+   "inputTokens": 3581,
+   "cacheReadTokens": 65280,
+   "outputTokens": 833,
+   "totalTokens": 69694
+  },
+  {
+   "inputTokens": 2800,
+   "cacheReadTokens": 68736,
+   "outputTokens": 1605,
+   "totalTokens": 73141
+  },
+  {
+   "inputTokens": 1800,
+   "cacheReadTokens": 71424,
+   "outputTokens": 1783,
+   "totalTokens": 75007
+  }
+ ],
+ "cost": 0.033893849999999996
+}

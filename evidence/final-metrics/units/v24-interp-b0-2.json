@@ -1,0 +1,106 @@
+{
+ "file": "v24-interp-b0-2.json",
+ "arm": "b0",
+ "task": "holdout-python-dotenv-1.2.3-interp-defaults-v24",
+ "candidate": "C:\\Users\\杨铭\\Documents\\Codex\\2026-10-19\\wo\\outputs\\dsh-1.1.0-b0-4978b31",
+ "pluginHash": "e6f297ff1f28297adc09f2bf6006b4377d883d14ed5e8618ca35474b6293e8e9",
+ "pluginHashAlgorithm": "sha256-sorted-relative-files-v1; excludes .git/node_modules/.fastedit-venv",
+ "hostToolsVersion": "0.2.1-rc.4",
+ "node": "v22.19.0",
+ "maxTokens": 8000,
+ "reasoningEffort": "max",
+ "identityValid": true,
+ "completeSuccess": true,
+ "delivered": true,
+ "scorerStatus": "pass",
+ "requests": 14,
+ "toolCalls": 18,
+ "wallMs": 250164,
+ "usages": [
+  {
+   "inputTokens": 3639,
+   "cacheReadTokens": 0,
+   "outputTokens": 188,
+   "totalTokens": 3827
+  },
+  {
+   "inputTokens": 5915,
+   "cacheReadTokens": 3584,
+   "outputTokens": 151,
+   "totalTokens": 9650
+  },
+  {
+   "inputTokens": 693,
+   "cacheReadTokens": 9472,
+   "outputTokens": 3113,
+   "totalTokens": 13278
+  },
+  {
+   "inputTokens": 6226,
+   "cacheReadTokens": 10112,
+   "outputTokens": 4587,
+   "totalTokens": 20925
+  },
+  {
+   "inputTokens": 4868,
+   "cacheReadTokens": 16256,
+   "outputTokens": 4794,
+   "totalTokens": 25918
+  },
+  {
+   "inputTokens": 30125,
+   "cacheReadTokens": 21120,
+   "outputTokens": 2850,
+   "totalTokens": 54095
+  },
+  {
+   "inputTokens": 3039,
+   "cacheReadTokens": 51200,
+   "outputTokens": 3934,
+   "totalTokens": 58173
+  },
+  {
+   "inputTokens": 4100,
+   "cacheReadTokens": 54144,
+   "outputTokens": 113,
+   "totalTokens": 58357
+  },
+  {
+   "inputTokens": 630,
+   "cacheReadTokens": 58240,
+   "outputTokens": 298,
+   "totalTokens": 59168
+  },
+  {
+   "inputTokens": 487,
+   "cacheReadTokens": 58752,
+   "outputTokens": 98,
+   "totalTokens": 59337
+  },
+  {
+   "inputTokens": 231,
+   "cacheReadTokens": 59136,
+   "outputTokens": 813,
+   "totalTokens": 60180
+  },
+  {
+   "inputTokens": 987,
+   "cacheReadTokens": 59264,
+   "outputTokens": 173,
+   "totalTokens": 60424
+  },
+  {
+   "inputTokens": 359,
+   "cacheReadTokens": 60160,
+   "outputTokens": 257,
+   "totalTokens": 60776
+  },
+  {
+   "inputTokens": 1755,
+   "cacheReadTokens": 60416,
+   "outputTokens": 856,
+   "totalTokens": 63027
+  }
+ ],
+ "cost": 0.024358667999999997
+}

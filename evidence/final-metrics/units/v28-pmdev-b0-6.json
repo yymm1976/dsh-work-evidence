@@ -1,0 +1,82 @@
+{
+ "file": "v28-pmdev-b0-6.json",
+ "arm": "b0",
+ "task": "picomatch-dev-filter-paths-v7",
+ "candidate": "C:\\Users\\杨铭\\Documents\\Codex\\2026-10-19\\wo\\outputs\\dsh-1.1.0-b0-4978b31",
+ "pluginHash": "e6f297ff1f28297adc09f2bf6006b4377d883d14ed5e8618ca35474b6293e8e9",
+ "pluginHashAlgorithm": "sha256-sorted-relative-files-v1; excludes .git/node_modules/.fastedit-venv",
+ "hostToolsVersion": "0.2.1-rc.4",
+ "node": "v22.19.0",
+ "maxTokens": 8000,
+ "reasoningEffort": "max",
+ "identityValid": true,
+ "completeSuccess": true,
+ "delivered": true,
+ "scorerStatus": "pass",
+ "requests": 10,
+ "toolCalls": 12,
+ "wallMs": 85534,
+ "usages": [
+  {
+   "inputTokens": 1050,
+   "cacheReadTokens": 2048,
+   "outputTokens": 76,
+   "totalTokens": 3174
+  },
+  {
+   "inputTokens": 213,
+   "cacheReadTokens": 3072,
+   "outputTokens": 70,
+   "totalTokens": 3355
+  },
+  {
+   "inputTokens": 1204,
+   "cacheReadTokens": 3200,
+   "outputTokens": 115,
+   "totalTokens": 4519
+  },
+  {
+   "inputTokens": 1545,
+   "cacheReadTokens": 4352,
+   "outputTokens": 366,
+   "totalTokens": 6263
+  },
+  {
+   "inputTokens": 4421,
+   "cacheReadTokens": 5888,
+   "outputTokens": 433,
+   "totalTokens": 10742
+  },
+  {
+   "inputTokens": 1075,
+   "cacheReadTokens": 10240,
+   "outputTokens": 574,
+   "totalTokens": 11889
+  },
+  {
+   "inputTokens": 1036,
+   "cacheReadTokens": 11264,
+   "outputTokens": 3516,
+   "totalTokens": 15816
+  },
+  {
+   "inputTokens": 3710,
+   "cacheReadTokens": 12288,
+   "outputTokens": 2355,
+   "totalTokens": 18353
+  },
+  {
+   "inputTokens": 2622,
+   "cacheReadTokens": 15872,
+   "outputTokens": 133,
+   "totalTokens": 18627
+  },
+  {
+   "inputTokens": 870,
+   "cacheReadTokens": 18432,
+   "outputTokens": 389,
+   "totalTokens": 19691
+  }
+ ],
+ "cost": 0.007738067999999999
+}

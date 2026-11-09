@@ -1,0 +1,116 @@
+{
+ "schema": "dsh-work-evidence.final-metrics-plan.1.1.0",
+ "releasedTag": "v1.1.0",
+ "releasedSha": "7a049c50bb22342f88f7790fc978bfe0f231c7dc",
+ "acceptanceCandidate": "a2329f0ea2ace144c0d91567dc4bf4b7c34cea0c",
+ "baseline": "4978b31d017412214319bcd4ae8fa889492ed9fa",
+ "pricePerMillionUSD": {
+  "input": 0.15,
+  "cacheRead": 0.003,
+  "output": 0.6
+ },
+ "primaryMetric": "perSuccessCost = sum(cost of all valid allocated runs) / count(completeSuccess === true)",
+ "replacements": {
+  "v30-pmdev-c-3.json": "v31b-pmdev-c-3.json",
+  "v24b-capneg-b0-2.json": "v31-capneg-b0-3.json"
+ },
+ "invalidUnits": [
+  "v25-capneg-c-2.json (18)",
+  "v25-interp-c-2.json (11)",
+  "v27-pmdev-c-2.json (11)",
+  "v27-pydev-c-3.json (5)",
+  "v27-javadev-c-1.json (3)",
+  "v29-capneg-c-1.json (15)",
+  "v29-pydev-c-3.json (13)",
+  "v24b-capneg-b0-2.json (8)"
+ ],
+ "sourceAggregate": "v30-final-metrics.json plus the preregistered replacements above",
+ "groups": {
+  "python-dev": {
+   "weight": 0.25,
+   "task": "tasks/python-dev-v11.json",
+   "maxTokens": 16000,
+   "b0": [
+    "v26-pydev-b0-1.json",
+    "v26-pydev-b0-2.json",
+    "v26-pydev-b0-3.json"
+   ],
+   "c": [
+    "v29-pydev-c-1.json",
+    "v29-pydev-c-2.json",
+    "v29b-pydev-c-4.json"
+   ]
+  },
+  "python-interp-defaults": {
+   "weight": 0.25,
+   "task": "holdout/new-20261109/tasks/python-dotenv-interp-defaults-v24.json",
+   "maxTokens": 8000,
+   "b0": [
+    "v24-interp-b0-1.json",
+    "v24-interp-b0-2.json"
+   ],
+   "c": [
+    "v29-interp-c-1.json",
+    "v29-interp-c-2.json"
+   ]
+  },
+  "picomatch-dev": {
+   "weight": 0.25,
+   "task": "tasks/picomatch-dev-v7.json",
+   "maxTokens": 8000,
+   "b0": [
+    "v24-pmdev-b0-1.json",
+    "v24-pmdev-b0-2.json",
+    "v24-pmdev-b0-3.json",
+    "v28-pmdev-b0-4.json",
+    "v28-pmdev-b0-5.json",
+    "v28-pmdev-b0-6.json"
+   ],
+   "c": [
+    "v30-pmdev-c-1.json",
+    "v30-pmdev-c-2.json",
+    "v30-pmdev-c-3.json"
+   ]
+  },
+  "picomatch-capture-negate": {
+   "weight": 0.25,
+   "task": "holdout/new-20261109/tasks/picomatch-capture-negate-v24.json",
+   "maxTokens": 16000,
+   "b0": [
+    "v24b-capneg-b0-1.json",
+    "v24b-capneg-b0-2.json"
+   ],
+   "c": [
+    "v30-capneg-c-1.json",
+    "v30-capneg-c-2.json"
+   ]
+  },
+  "java-dev": {
+   "weight": null,
+   "qualityOnly": true,
+   "task": "tasks/java-dev.json",
+   "maxTokens": null,
+   "b0": [
+    "v28-javadev-b0-5.json",
+    "v28-javadev-b0-6.json",
+    "v29-javadev-b0-1.json"
+   ],
+   "c": [
+    "v29b-javadev-c-2.json",
+    "v29b-javadev-c-3.json"
+   ]
+  },
+  "java-holdout": {
+   "weight": null,
+   "qualityOnly": true,
+   "task": "tasks/java-simple-open-v24.json",
+   "maxTokens": null,
+   "b0": [
+    "v24-java-b0-1.json"
+   ],
+   "c": [
+    "v29-java-c-1.json"
+   ]
+  }
+ }
+}

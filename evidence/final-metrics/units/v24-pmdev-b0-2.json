@@ -1,0 +1,172 @@
+{
+ "file": "v24-pmdev-b0-2.json",
+ "arm": "b0",
+ "task": "picomatch-dev-filter-paths-v7",
+ "candidate": "C:\\Users\\杨铭\\Documents\\Codex\\2026-10-19\\wo\\outputs\\dsh-1.1.0-b0-4978b31",
+ "pluginHash": "e6f297ff1f28297adc09f2bf6006b4377d883d14ed5e8618ca35474b6293e8e9",
+ "pluginHashAlgorithm": "sha256-sorted-relative-files-v1; excludes .git/node_modules/.fastedit-venv",
+ "hostToolsVersion": "0.2.1-rc.4",
+ "node": "v22.19.0",
+ "maxTokens": 8000,
+ "reasoningEffort": "max",
+ "identityValid": true,
+ "completeSuccess": true,
+ "delivered": true,
+ "scorerStatus": "pass",
+ "requests": 25,
+ "toolCalls": 29,
+ "wallMs": 153735,
+ "usages": [
+  {
+   "inputTokens": 422,
+   "cacheReadTokens": 2688,
+   "outputTokens": 81,
+   "totalTokens": 3191
+  },
+  {
+   "inputTokens": 145,
+   "cacheReadTokens": 3072,
+   "outputTokens": 71,
+   "totalTokens": 3288
+  },
+  {
+   "inputTokens": 1136,
+   "cacheReadTokens": 3200,
+   "outputTokens": 100,
+   "totalTokens": 4436
+  },
+  {
+   "inputTokens": 516,
+   "cacheReadTokens": 4224,
+   "outputTokens": 1592,
+   "totalTokens": 6332
+  },
+  {
+   "inputTokens": 1791,
+   "cacheReadTokens": 4736,
+   "outputTokens": 75,
+   "totalTokens": 6602
+  },
+  {
+   "inputTokens": 879,
+   "cacheReadTokens": 6400,
+   "outputTokens": 183,
+   "totalTokens": 7462
+  },
+  {
+   "inputTokens": 377,
+   "cacheReadTokens": 7168,
+   "outputTokens": 75,
+   "totalTokens": 7620
+  },
+  {
+   "inputTokens": 1364,
+   "cacheReadTokens": 7424,
+   "outputTokens": 123,
+   "totalTokens": 8911
+  },
+  {
+   "inputTokens": 671,
+   "cacheReadTokens": 8704,
+   "outputTokens": 79,
+   "totalTokens": 9454
+  },
+  {
+   "inputTokens": 160,
+   "cacheReadTokens": 9344,
+   "outputTokens": 73,
+   "totalTokens": 9577
+  },
+  {
+   "inputTokens": 696,
+   "cacheReadTokens": 9472,
+   "outputTokens": 153,
+   "totalTokens": 10321
+  },
+  {
+   "inputTokens": 841,
+   "cacheReadTokens": 10112,
+   "outputTokens": 185,
+   "totalTokens": 11138
+  },
+  {
+   "inputTokens": 1021,
+   "cacheReadTokens": 10880,
+   "outputTokens": 181,
+   "totalTokens": 12082
+  },
+  {
+   "inputTokens": 469,
+   "cacheReadTokens": 11776,
+   "outputTokens": 75,
+   "totalTokens": 12320
+  },
+  {
+   "inputTokens": 302,
+   "cacheReadTokens": 12160,
+   "outputTokens": 157,
+   "totalTokens": 12619
+  },
+  {
+   "inputTokens": 804,
+   "cacheReadTokens": 12416,
+   "outputTokens": 447,
+   "totalTokens": 13667
+  },
+  {
+   "inputTokens": 586,
+   "cacheReadTokens": 13184,
+   "outputTokens": 119,
+   "totalTokens": 13889
+  },
+  {
+   "inputTokens": 207,
+   "cacheReadTokens": 13696,
+   "outputTokens": 681,
+   "totalTokens": 14584
+  },
+  {
+   "inputTokens": 1501,
+   "cacheReadTokens": 13824,
+   "outputTokens": 80,
+   "totalTokens": 15405
+  },
+  {
+   "inputTokens": 203,
+   "cacheReadTokens": 15232,
+   "outputTokens": 119,
+   "totalTokens": 15554
+  },
+  {
+   "inputTokens": 572,
+   "cacheReadTokens": 15360,
+   "outputTokens": 741,
+   "totalTokens": 16673
+  },
+  {
+   "inputTokens": 1622,
+   "cacheReadTokens": 15872,
+   "outputTokens": 525,
+   "totalTokens": 18019
+  },
+  {
+   "inputTokens": 2031,
+   "cacheReadTokens": 17408,
+   "outputTokens": 4053,
+   "totalTokens": 23492
+  },
+  {
+   "inputTokens": 4381,
+   "cacheReadTokens": 19328,
+   "outputTokens": 141,
+   "totalTokens": 23850
+  },
+  {
+   "inputTokens": 653,
+   "cacheReadTokens": 23680,
+   "outputTokens": 401,
+   "totalTokens": 24734
+  }
+ ],
+ "cost": 0.01062258
+}

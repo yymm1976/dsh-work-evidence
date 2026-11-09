@@ -1,0 +1,76 @@
+{
+ "file": "v31b-pmdev-c-3.json",
+ "arm": "c",
+ "task": "picomatch-dev-filter-paths-v7",
+ "candidate": "C:\\Users\\杨铭\\Documents\\Codex\\2026-10-19\\wo\\dsh-work-evidence-1.1.0-active",
+ "pluginHash": "3490dc3d9d33543ea966827c535bd701745afb08ff7340bdcfa4b9db93eb5214",
+ "pluginHashAlgorithm": "sha256-sorted-relative-files-v1; excludes .git/node_modules/.fastedit-venv",
+ "hostToolsVersion": "0.2.1-rc.4",
+ "node": "v22.19.0",
+ "maxTokens": 8000,
+ "reasoningEffort": "max",
+ "identityValid": true,
+ "completeSuccess": true,
+ "delivered": true,
+ "scorerStatus": "pass",
+ "requests": 9,
+ "toolCalls": 14,
+ "wallMs": 63905,
+ "usages": [
+  {
+   "inputTokens": 1050,
+   "cacheReadTokens": 2048,
+   "outputTokens": 84,
+   "totalTokens": 3182
+  },
+  {
+   "inputTokens": 137,
+   "cacheReadTokens": 3072,
+   "outputTokens": 70,
+   "totalTokens": 3279
+  },
+  {
+   "inputTokens": 1128,
+   "cacheReadTokens": 3200,
+   "outputTokens": 140,
+   "totalTokens": 4468
+  },
+  {
+   "inputTokens": 332,
+   "cacheReadTokens": 4224,
+   "outputTokens": 584,
+   "totalTokens": 5140
+  },
+  {
+   "inputTokens": 1001,
+   "cacheReadTokens": 4480,
+   "outputTokens": 63,
+   "totalTokens": 5544
+  },
+  {
+   "inputTokens": 4154,
+   "cacheReadTokens": 5376,
+   "outputTokens": 686,
+   "totalTokens": 10216
+  },
+  {
+   "inputTokens": 1087,
+   "cacheReadTokens": 9472,
+   "outputTokens": 3796,
+   "totalTokens": 14355
+  },
+  {
+   "inputTokens": 4077,
+   "cacheReadTokens": 10496,
+   "outputTokens": 273,
+   "totalTokens": 14846
+  },
+  {
+   "inputTokens": 1127,
+   "cacheReadTokens": 14464,
+   "outputTokens": 423,
+   "totalTokens": 16014
+  }
+ ],
+ "cost": 0.005955846
+}

@@ -1,0 +1,94 @@
+{
+ "file": "v29-pydev-c-2.json",
+ "arm": "c",
+ "task": "python-dotenv-dev-load-layers-v11",
+ "candidate": "C:\\Users\\杨铭\\Documents\\Codex\\2026-10-19\\wo\\dsh-work-evidence-1.1.0-active",
+ "pluginHash": "12560a8956ba974d65b3f21c5e83ab23fec5a985213caf5da452be3622a4a291",
+ "pluginHashAlgorithm": "sha256-sorted-relative-files-v1; excludes .git/node_modules/.fastedit-venv",
+ "hostToolsVersion": "0.2.1-rc.4",
+ "node": "v22.19.0",
+ "maxTokens": 16000,
+ "reasoningEffort": "max",
+ "identityValid": true,
+ "completeSuccess": true,
+ "delivered": true,
+ "scorerStatus": "pass",
+ "requests": 12,
+ "toolCalls": 19,
+ "wallMs": 312130,
+ "usages": [
+  {
+   "inputTokens": 238,
+   "cacheReadTokens": 3072,
+   "outputTokens": 88,
+   "totalTokens": 3398
+  },
+  {
+   "inputTokens": 232,
+   "cacheReadTokens": 3200,
+   "outputTokens": 90,
+   "totalTokens": 3522
+  },
+  {
+   "inputTokens": 580,
+   "cacheReadTokens": 3456,
+   "outputTokens": 146,
+   "totalTokens": 4182
+  },
+  {
+   "inputTokens": 6849,
+   "cacheReadTokens": 4096,
+   "outputTokens": 1350,
+   "totalTokens": 12295
+  },
+  {
+   "inputTokens": 1368,
+   "cacheReadTokens": 12288,
+   "outputTokens": 8953,
+   "totalTokens": 22609
+  },
+  {
+   "inputTokens": 262,
+   "cacheReadTokens": 22528,
+   "outputTokens": 135,
+   "totalTokens": 22925
+  },
+  {
+   "inputTokens": 829,
+   "cacheReadTokens": 22912,
+   "outputTokens": 2189,
+   "totalTokens": 25930
+  },
+  {
+   "inputTokens": 159,
+   "cacheReadTokens": 25856,
+   "outputTokens": 412,
+   "totalTokens": 26427
+  },
+  {
+   "inputTokens": 184,
+   "cacheReadTokens": 26368,
+   "outputTokens": 372,
+   "totalTokens": 26924
+  },
+  {
+   "inputTokens": 162,
+   "cacheReadTokens": 26880,
+   "outputTokens": 266,
+   "totalTokens": 27308
+  },
+  {
+   "inputTokens": 138,
+   "cacheReadTokens": 27264,
+   "outputTokens": 518,
+   "totalTokens": 27920
+  },
+  {
+   "inputTokens": 41,
+   "cacheReadTokens": 27904,
+   "outputTokens": 3342,
+   "totalTokens": 31287
+  }
+ ],
+ "cost": 0.012990372
+}
