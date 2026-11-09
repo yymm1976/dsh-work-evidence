@@ -26,7 +26,7 @@ export function recallCall(agent,{seq,offset=0,maxChars=16000}={}){
 }
 
 /** Compact request-view receipt for a completed test/check run; canonical output stays exact. */
-export function testOutputDigest(command,text,{seq=null,truncated=false}={}){
+export function testOutputDigest(command,text,{seq=null,truncated=false,focus=[],filterEnvironment=true}={}){
   if(typeof command!=='string'||!TEST_COMMAND.test(command.trim()))return null;
   if(typeof text!=='string'||text.length<TEST_MIN_CHARS||truncated||!Number.isSafeInteger(seq))return null;
   // A spill marker means this request view never held the complete output;
@@ -35,13 +35,23 @@ export function testOutputDigest(command,text,{seq=null,truncated=false}={}){
   const failure=reportedCheckFailure(text),summary=failure?.summary??null,entries=failure?.failureEntries??[];
   if(!failure&&!/(?:^|\n)\s*(?:\d+\s+)?(?:passed|failed|ok|tests?|checks?)\b|(?:passed|failed|ok)\s+in\s+[\d.]+s/iu.test(text))return null;
   const failedLines=text.split(/\r?\n/u).filter(line=>/^\s*(?:FAILED|ERROR|not ok|\d+\s+(?:failed|failures))\b/iu.test(line)).slice(0,8);
+  const environmentFailure=/FileNotFoundError|WinError|PermissionError|\[Errno \d+\]|No such file or directory|Access is denied|Cannot find path|ModuleNotFoundError/iu;
+  const focusPaths=Array.isArray(focus)?focus.filter(item=>typeof item==='string'&&item):[];
+  const actionableEntries=filterEnvironment?entries.filter(entry=>!environmentFailure.test(entry)):entries;
+  const focusEntries=focusPaths.length?actionableEntries.filter(entry=>focusPaths.some(item=>entry.includes(item))):[];
+  const shownEntries=focusEntries.length?focusEntries:actionableEntries.length?actionableEntries:entries;
+  const actionableFailed=filterEnvironment?failedLines.filter(line=>!environmentFailure.test(line)):failedLines;
+  const focusFailed=focusPaths.length?actionableFailed.filter(line=>focusPaths.some(item=>line.includes(item))):[];
+  const shownFailed=focusFailed.length?focusFailed:actionableFailed.length?actionableFailed:failedLines;
   const detailLines=failure?[]:text.split(/\r?\n/u).filter(line=>/(?:Error|Exception|assert|AssertionError|File "|line \d+|Traceback)/iu.test(line)).slice(-10);
   const tail=text.slice(-TEST_TAIL_CHARS).split(/\r?\n/u).filter(line=>line.trim()).slice(-18).join('\n');
   const lines=['[work-evidence test receipt] command='+command.trim().slice(0,180)];
   if(summary&&Number.isInteger(summary.failed))lines.push('result: '+(summary.passed??'?')+' passed, '+summary.failed+' failed'+(summary.total?(' of '+summary.total):''));
   else if(entries.length)lines.push('result: '+entries.length+' named failures');
-  if(entries.length)lines.push('failing: '+entries.slice(0,8).join(' | '));
-  else if(failedLines.length)lines.push('failing: '+failedLines.join(' | '));
+  if(shownEntries.length)lines.push('failing: '+shownEntries.slice(0,8).join(' | '));
+  else if(shownFailed.length)lines.push('failing: '+shownFailed.join(' | '));
+  const environmentCount=filterEnvironment?(entries.filter(entry=>environmentFailure.test(entry)).length+(entries.length?0:failedLines.filter(line=>environmentFailure.test(line)).length)):0;
+  if(environmentCount>0)lines.push('environment-like failures omitted: '+environmentCount+' (canonical output retains them).');
   if(detailLines.length)lines.push('details: '+detailLines.join(' | '));
   if(tail)lines.push('tail:\n'+tail);
   lines.push('The canonical output is unchanged and recoverable with work_recall kind=result'+(seq!==null?(' seq='+seq):'')+'.');
@@ -107,7 +117,10 @@ export function createHistoryHygiene(runtime,taskFlow,{isProtected=()=>false,ret
       }
       if(event.type==='tool/result'&&event.surfaceOp?.op!=='replace'&&message){
         const id=callIdOf(message),text=resultText(message.content),command=state.commands.get(id)?.command??null;
-        const digest=command?testOutputDigest(command,text,{seq:event.seq,truncated:event.data?.meta?.truncated===true}):null;
+        const baseFocus=(()=>{try{return taskFlow.phase(agent)?.focus??[]}catch{return []}})();
+        const isPytest=/^python(?:\.exe)?\s+-m\s+pytest/iu.test(command??'');
+        const testFocus=isPytest?['tests/']:[];
+        const digest=command?testOutputDigest(command,text,{seq:event.seq,truncated:event.data?.meta?.truncated===true,focus:[...baseFocus,...testFocus],filterEnvironment:isPytest}):null;
         state.commands.delete(id);
         const failed=!!message.isError||hasPruneProblem(message.content??[])||state.failures.has(id)||isProtected(agent,id);
         const record={seq:event.seq,step:state.step,callId:id,failed,reads:[...(state.liveReads.get(id)?.values()??[])],
