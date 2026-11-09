@@ -5,7 +5,7 @@ import path from 'node:path';
 import {existsSync} from 'node:fs';
 import {pathToFileURL} from 'node:url';
 import {startHost,text,tool} from './helpers/host.mjs';
-import {OPS_ROOT,pythonExecutableAvailable} from './helpers/paths.mjs';
+import {OPS_ROOT,pythonFileAvailable} from './helpers/paths.mjs';
 
 // OPS is a profile package, not part of the desktop runtime; skip when it is absent.
 const opsRoot=OPS_ROOT;
@@ -58,7 +58,7 @@ test('verified_exec keeps replacement text literal and addresses every edit in t
   assert.equal(read['a.txt'],literal+' changed\n');
 });
 
-test('fastedit_java finds, reads and replaces one method through the native pwsh bridge', {skip:!hasOps||!pythonExecutableAvailable(PYTHON)}, async()=>{
+test('fastedit_java finds, reads and replaces one method through the native pwsh bridge', {skip:!hasOps||!pythonFileAvailable(PYTHON)}, async()=>{
   const java='public class Calc {\n  public int add(int a, int b) {\n    return a + b;\n  }\n\n  public int sub(int a, int b) {\n    return a - b;\n  }\n}\n';
   const replacement='public int add(int a, int b) {\n    return b + a;\n  }';
   const {results,read}=await run([
@@ -79,7 +79,7 @@ test('fastedit_java finds, reads and replaces one method through the native pwsh
   assert.equal(results[4].status,'deopt');
 });
 
-test('fastEditEnabled disables fastedit_java and restores it in the same host session', {skip:!hasOps||!pythonExecutableAvailable(PYTHON)}, async()=>{
+test('fastEditEnabled disables fastedit_java and restores it in the same host session', {skip:!hasOps||!pythonFileAvailable(PYTHON)}, async()=>{
   const java='public class Calc {\n  public int add(int a, int b) {\n    return a + b;\n  }\n}\n';
   const host=await startHost({workspace:{toolSurface:'full',fastEditEnabled:false,fastEditPython:PYTHON},extraMounts:await opsMounts(),
     script:(_o,n)=>n===1||n===3?[tool('fastedit_java',{file:'Calc.java',operation:'find_entity',symbol:'Calc.add'})]:[text('已记录结果。')]});

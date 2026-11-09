@@ -24,5 +24,11 @@ export const pythonExecutableAvailable=value=>{
     extensions.some(extension=>fs.existsSync(path.join(directory,name+extension))));
 };
 export const pythonAvailable=()=>pythonExecutableAvailable(DSH_PYTHON);
+/** FastEdit passes the interpreter to a launcher that rejects bare names, so a
+ *  skip gate for those tests must require an absolute, existing file. */
+export const pythonFileAvailable=value=>{
+  const name=String(value??'').trim();
+  return Boolean(name)&&path.isAbsolute(name)&&fs.existsSync(name);
+};
 export const ACP_ENTRY=path.join(DSH_PROFILE,'node_modules','billion-context-dsh','dist','index.js');
 export const OPS_ROOT=path.join(DSH_PROFILE,'node_modules','dsh-ops','lib','components');
