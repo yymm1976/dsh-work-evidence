@@ -14,6 +14,17 @@ test('only genuine user messages can request full canonical output',()=>{
   assert.deepEqual(fullOutputRequest({type:'tool/result',data:{role:'tool',content:[]}}),{applies:false,requested:false});
   assert.deepEqual(fullOutputRequest(null),{applies:false,requested:false});
   assert.deepEqual(fullOutputRequest({type:'user/message',data:{role:'user',content:[{type:'text',text:'完整输出'}]}}),{applies:true,requested:true});
+  assert.deepEqual(fullOutputRequest(userEvent('show full output','user')),{applies:true,requested:true});
+  assert.deepEqual(fullOutputRequest(userEvent('原始输出报告了失败','work-evidence-task-flow')),{applies:false,requested:false});
+  assert.deepEqual(fullOutputRequest(userEvent('原始输出','user-question-reply')),{applies:false,requested:false});
+});
+
+test('answered user-question replies can request full output, unanswered ones cannot',()=>{
+  const reply=(outcome,text)=>({type:'user/message',data:{role:'user',source:{kind:'user-question-reply',outcome},content:[{type:'text',text}]}});
+  assert.deepEqual(fullOutputRequest(reply('answered','请给出完整输出')),{applies:true,requested:true});
+  assert.deepEqual(fullOutputRequest(reply('answered','继续')),{applies:true,requested:false});
+  assert.deepEqual(fullOutputRequest(reply('dismissed','full output')),{applies:false,requested:false});
+  assert.deepEqual(fullOutputRequest(reply('cancelled','full output')),{applies:false,requested:false});
 });
 
 test('plugin diagnostic replay keeps receipts enabled',()=>{

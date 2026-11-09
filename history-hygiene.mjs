@@ -8,7 +8,18 @@ import {reportedCheckFailure} from './recovery.mjs';
 
 const AGE=2,MIN_SAVING=512;
 const TEST_MIN_CHARS=4000,TEST_TAIL_CHARS=1800,TEST_DIGEST_MAX=4000;
-const FULL_OUTPUT_REQUEST=/完整输出|全部输出|原始输出|full output/iu;
+const FULL_OUTPUT_REQUEST=/完整输出|全部输出|原始输出|full output|full canonical output/iu;
+/** TAP (`node --test`) reports its own exact counts; require all three so a
+ *  truncated or unrelated body is never hidden behind a receipt. */
+function tapCheckFailure(text){
+  const tests=/^# tests (\d+)\s*$/mu.exec(text),pass=/^# pass (\d+)\s*$/mu.exec(text),fail=/^# fail (\d+)\s*$/mu.exec(text);
+  if(!tests||!pass||!fail)return null;
+  const total=Number(tests[1]),passed=Number(pass[1]),failed=Number(fail[1]);
+  if(![total,passed,failed].every(Number.isSafeInteger)||passed+failed>total)return null;
+  const entries=text.split(/\r?\n/u).filter(line=>/^not ok \d+ - /u.test(line)).slice(0,8).map(line=>line.slice(0,180));
+  return {signature:entries[0]??`${failed} failed, ${passed} passed of ${total}`,
+    summary:{passed,failed,total,source:'reported-tap',text:`# tests ${total}\n# pass ${passed}\n# fail ${failed}`},failureEntries:entries};
+}
 const TEST_COMMAND=/^(?:python(?:\.exe)?\s+-m\s+(?:pytest|compileall)|node\s+--test|ruff\s+check|(?:\.\\|\.\/)?gradlew(?:\.bat)?|gradle(?:\.bat)?|mvn(?:\.cmd)?)\b/iu;
 const messageOf=event=>event.data?.message??(event.data?.role?event.data:null);
 /** Only a genuine user request may suspend request-view receipts. Plugin-injected
@@ -19,7 +30,8 @@ export function fullOutputRequest(event){
   const message=messageOf(event);
   if(!message)return {applies:false,requested:false};
   const kind=message.source?.kind;
-  if(kind!==undefined&&kind!=='user')return {applies:false,requested:false};
+  if(kind!==undefined&&kind!=='user'&&!(kind==='user-question-reply'&&message.source.outcome==='answered'))
+    return {applies:false,requested:false};
   return {applies:true,requested:FULL_OUTPUT_REQUEST.test(resultText(message.content))};
 }
 const callIdOf=message=>message?.source?.callId??message?.toolCallId;
@@ -40,12 +52,13 @@ export function recallCall(agent,{seq,offset=0,maxChars=16000}={}){
 /** Compact request-view receipt for a completed test/check run; canonical output stays exact. */
 export function testOutputDigest(command,text,{seq=null,truncated=false,focus=[],filterEnvironment=true}={}){
   if(typeof command!=='string'||!TEST_COMMAND.test(command.trim()))return null;
-  if(/node\s+--test/iu.test(command))return null;
+  const isNodeTest=/node\s+--test/iu.test(command);
   if(typeof text!=='string'||text.length<TEST_MIN_CHARS||truncated||!Number.isSafeInteger(seq))return null;
   // A spill marker means this request view never held the complete output;
   // work_recall cannot recover a host-spilled body, so it must not be hidden.
   if(/\[output truncated; full output:|\[truncated\]/iu.test(text))return null;
-  const failure=reportedCheckFailure(text),summary=failure?.summary??null,entries=failure?.failureEntries??[];
+  const failure=isNodeTest?tapCheckFailure(text):reportedCheckFailure(text),summary=failure?.summary??null,entries=failure?.failureEntries??[];
+  if(isNodeTest&&!failure)return null;
   if(!failure&&!/(?:^|\n)\s*(?:\d+\s+)?(?:passed|failed|ok|tests?|checks?)\b|(?:passed|failed|ok)\s+in\s+[\d.]+s/iu.test(text))return null;
   const failedLines=text.split(/\r?\n/u).filter(line=>/^\s*(?:FAILED|ERROR|not ok|\d+\s+(?:failed|failures))\b/iu.test(line));
   const environmentFailure=/FileNotFoundError|WinError|PermissionError|\[Errno \d+\]|No such file or directory|Access is denied|Cannot find path|ModuleNotFoundError/iu;

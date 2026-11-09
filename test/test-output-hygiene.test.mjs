@@ -18,10 +18,11 @@ test('test output digest keeps failure identity and stays bounded',()=>{
   assert.equal(digest.originalChars,text.length);
   assert.equal(testOutputDigest('python -m pytest','short output'),null);
   assert.equal(testOutputDigest('git status','x'.repeat(9000)),null);
-  assert.equal(testOutputDigest('node --test suite.mjs','x'.repeat(9000),{truncated:true}),null);
-  assert.equal(testOutputDigest('python -m pytest -q',text.slice(0,7000)+'\n[output truncated; full output: C:\\Temp\\spill.log]'),null);
-  assert.equal(testOutputDigest('python -m pytest -q','x'.repeat(9000)),null);
+  assert.equal(testOutputDigest('python -m pytest -q',text,{seq:78,truncated:true}),null);
+  assert.equal(testOutputDigest('python -m pytest -q',text.slice(0,7000)+'\n[output truncated; full output: C:\\Temp\\spill.log]',{seq:79}),null);
+  assert.equal(testOutputDigest('python -m pytest -q','x'.repeat(9000),{seq:80}),null);
   assert.equal(testOutputDigest('python -m pytest -q',text,{seq:null}),null);
+  assert.equal(testOutputDigest('git status',text,{seq:81}),null);
   assert.ok(testOutputDigest('gradlew.bat --offline --no-daemon compileTestJava','x'.repeat(9000)+'\n10 failed',{seq:1}));
 });
 
@@ -62,8 +63,23 @@ test('environment-only output is not projected',()=>{
   assert.equal(testOutputDigest('python -m pytest -q',text,{seq:108,focus:['tests/']}),null);
 });
 
-test('Node test receipts are disabled',()=>{
-  assert.equal(testOutputDigest('node --test suite.mjs','x'.repeat(9000)+'\n10 failed',{seq:109}),null);
+test('Node TAP receipts require an exact summary and preserve failure identity',()=>{
+  const tap=['TAP version 13','not ok 2 - test/api.picomatch.js','  ---','  error: [0mReferenceError: describe is not defined','  ...','1..38','# tests 38','# suites 0','# pass 2','# fail 36','# cancelled 0','# skipped 0','# todo 0'].join('\n')+'x'.repeat(4200);
+  const digest=testOutputDigest('node --test',tap,{seq:109});
+  assert.ok(digest);
+  assert.ok(digest.text.includes('result: 2 passed, 36 failed of 38'));
+  assert.ok(digest.text.includes('not ok 2 - test/api.picomatch.js'));
+  assert.ok(digest.text.includes('work_recall kind=output seq=109'));
+  assert.ok(digest.text.length<=4000);
+  assert.equal(digest.originalChars,tap.length);
+  // Incomplete, spilled, truncated or unsummarized output must stay canonical.
+  assert.equal(testOutputDigest('node --test','x'.repeat(9000)+'\n10 failed',{seq:110}),null);
+  assert.equal(testOutputDigest('node --test',tap.replace('# fail 36\n',''),{seq:111}),null);
+  assert.equal(testOutputDigest('node --test',tap,{seq:112,truncated:true}),null);
+  assert.equal(testOutputDigest('node --test',tap.slice(0,7000)+'\n[output truncated; full output: C:\\Temp\\spill.log]',{seq:113}),null);
+  assert.equal(testOutputDigest('node --test',tap,{seq:null}),null);
+  assert.equal(testOutputDigest('node --test','short',{seq:114}),null);
+  assert.equal(testOutputDigest('git status',tap,{seq:115}),null);
 });
 
 test('truncated receipt keeps the locator',()=>{

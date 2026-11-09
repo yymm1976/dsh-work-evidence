@@ -4,7 +4,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import {existsSync} from 'node:fs';
 import {startHost,text,tool} from './helpers/host.mjs';
-import {DSH_PYTHON} from './helpers/paths.mjs';
+import {DSH_PYTHON,pythonAvailable} from './helpers/paths.mjs';
 const PYTHON=DSH_PYTHON;
 const lastValue=o=>JSON.parse(o.messages.findLast(message=>message.role==='tool').content.map(b=>b.text??'').join(''));
 const outputs=host=>host.events.filter(e=>e.type==='tool/result').map(e=>{const body=e.data.message.content.map(b=>b.text??'').join('');try{return JSON.parse(body);}catch{return {text:body,isError:e.data.message.isError};}});
@@ -245,7 +245,7 @@ test('default ESM require failures provide an exact same-script CommonJS retry',
     assert.equal(feature.reasons['native-execution-failed'],1);
   }finally{await host.close();}
 });
-test('work_exec runs the selected installed Python interpreter and preserves nonzero exit status',{skip:!existsSync(PYTHON)},async()=>{
+test('work_exec runs the selected installed Python interpreter and preserves nonzero exit status',{skip:!pythonAvailable()},async()=>{
   const host=await startHost({script:(_o,n)=>n===1?[tool('work_exec',{runtime:'python',executable:PYTHON,code:'print(42)'})]:n===2?
     [tool('work_exec',{runtime:'python',executable:PYTHON,code:'raise ValueError("expected failure")'})]:[text('完成。')]});
   try{
@@ -355,7 +355,7 @@ test('native shell labeled totals reach the model with exact failure names',asyn
   }finally{await host.close();}
 });
 
-test('real Python unittest stderr reaches a caller that prints only the process exit code',{skip:!existsSync(PYTHON)},async()=>{
+test('real Python unittest stderr reaches a caller that prints only the process exit code',{skip:!pythonAvailable()},async()=>{
   let receipt;
   const code='import unittest\nclass Example(unittest.TestCase):\n def test_pass(self): self.assertEqual(2, 2)\n def test_fail(self): self.assertEqual(2, 3)\n def test_error(self): raise KeyError("missing")\nunittest.main()\n';
   const host=await startHost({toolMode:'ptc',extraMounts:[['dsh-ptc-runtime-node']],pluginConfig:{aggressiveMode:true,stepPacing:false},script:(options,n)=>{

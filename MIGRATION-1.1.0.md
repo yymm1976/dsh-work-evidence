@@ -5,9 +5,10 @@
 1. 停止使用旧版本的宿主会话或让宿主完成当前生命周期。
 2. 保留现有工作区的 `.dsh/work-evidence/config.json` 和会话策略文件；升级前另存一份 `config.json`，以便回退时恢复原始设置。1.1.0 会读取已有 JSON，不要求重建。
 3. 用 1.1.0 发布包替换插件目录。
-4. 重启宿主，先用 `/work-evidence status` 和 `/work-evidence features` 查看配置、依赖和有效状态。
-5. 确认 `dependencies.archiveDecoder.available` 为 `true`。仅确认 `fflate` 包可安装不够；插件或宿主无法实际加载解码器时，归档读取仍会返回 `ARCHIVE_DECODER_UNAVAILABLE`。
-6. 需要完整工具面时显式执行 `/work-evidence feature toolSurface full`；默认仍为 compact。
+4. 在插件目录安装发布依赖：发布 tarball 不含 `node_modules`。若宿主不提供 `fflate 0.8.3`，归档读取会显示 `archive-decoder-unavailable:fflate`，`dependencies.archiveDecoder.available` 为 `false`。执行 `npm install --omit=dev`（或把 tarball 装入宿主依赖树并确认 `fflate` 可解析）后再继续。
+5. 重启宿主，先用 `/work-evidence status` 和 `/work-evidence features` 查看配置、依赖和有效状态。
+6. 确认 `dependencies.archiveDecoder.available` 为 `true`。仅确认 `fflate` 包可安装不够；插件或宿主无法实际加载解码器时，归档读取仍会返回 `ARCHIVE_DECODER_UNAVAILABLE`。
+7. 需要完整工具面时显式执行 `/work-evidence feature toolSurface full`；默认仍为 compact。
 
 ## 配置行为
 
