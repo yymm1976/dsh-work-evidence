@@ -128,7 +128,7 @@
 |---|---|
 | 具体证据 | Picomatch 任务中 `node --test` 的 TAP 输出 48685 字符在两臂都完整进入上下文；`ffcfb31` 关闭 Node 回执后 C 的 `testOutputViews=0`，Picomatch 半区无法归因到实际生效机制。关闭 Node 回执的判断发生在 H15 缺陷（插件 diagnostic 静默关掉全部回执）仍存在时。 |
 | 触发条件 | 命令为 `node --test`，输出 ≥4000 字符、未截断、无 spill 标记，且同时存在 `# tests`、`# pass`、`# fail` 三行精确摘要。 |
-| 预期效果 | 后续请求视图用 ≤4000 字符回执替代完整 TAP；保留失败名、计数、前三条不同错误原因、尾部与 `work_recall kind=output seq=N`；规范事件不变。首次 FINAL SHA 复验暴露：缺少错误原因时模型反复重跑完整套件（50 请求、tov=47、−45.6%），故增加 `causes` 行。 |
+| 预期效果 | 后续请求视图用 ≤4000 字符回执替代完整 TAP；保留失败名、计数、前三条不同错误原因、尾部与 `work_recall kind=output seq=N`；规范事件不变。首次 FINAL SHA 复验暴露：缺少错误原因时模型反复重跑完整套件（50 请求、tov=47；相对同组 B0 每成功成本 **增加 45.6%**），故增加 `causes` 行。 |
 | 质量风险 | 摘要缺失或计数不自洽时不投影；环境失败与装配失败可能被回执归类为失败名，模型仍可按 seq 取回正文。 |
 | 额外开销 | 每事件一次正则与行扫描，无额外请求、无额外模型调用。 |
 | 失败回退 | 回退 `tapCheckFailure` 与 `testOutputDigest` 的 `isNodeTest` 分支，保留负结果。 |
@@ -164,7 +164,7 @@
 | 项 | 内容 |
 |---|---|
 | 具体证据 | 修复前提交 `c0dd3f2` 的 5 个 C 样本全部出现插件 `work-evidence-task-flow` 消息含「原始输出报告了失败」；旧 `sync()` 对任何 `user/message` 都检测 `/完整输出\|全部输出\|原始输出\|full output/`，把它当作用户请求完整输出。`final4-run-c-2` step 19 因此 `fullOutputRequested=true`，该步 12 个测试回执投影全部关闭，89221 字符 pytest 输出重入上下文：输入 477→59466 token、缓存 21376→10752、单请求 0.0095 USD（整次 51%）。真实用户消息 5 条中 0 条请求完整输出，属纯误判。 |
-| 触发条件 | 仅 `user/message` 且 `source.kind==='user'`（或缺失 source）的真实用户消息，正文匹配 `FULL_OUTPUT_REQUEST` 时设置标志；插件注入、runtime-context、工具结果一律不改变该标志。 |
+| 触发条件 | 仅真实用户消息可以设置该标志：`source.kind==='user'`、缺失 source，或 `source.kind==='user-question-reply'` 且 `outcome==='answered'`；正文匹配 `FULL_OUTPUT_REQUEST` 时置 true，否则置 false。插件注入、runtime-context、未回答或已取消的回复、工具结果一律不改变该标志。 |
 | 预期效果 | 插件 diagnostic 不再关闭测试回执；完整测试输出保持在请求视图之外，避免缓存失效与重复验证循环；Python run 留出成本下降、方向可能转正。不新增提示词、不新增请求、不新增工具。 |
 | 质量风险 | 真实用户明确要求完整输出时仍可关闭回执（已回归）；canonical 事件与 `work_recall kind=output` 完全不变；测试摘要保留失败名与数量，不隐藏失败。风险是标志现在持续到用户下一次发言，若用户中途要求完整输出，后续回执会持续关闭，直到用户再次发言。 |
 | 额外开销 | 每事件一次类型/来源判断，无额外 Token、无额外请求、无状态同步。 |

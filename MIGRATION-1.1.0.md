@@ -5,10 +5,11 @@
 1. 停止使用旧版本的宿主会话或让宿主完成当前生命周期。
 2. 保留现有工作区的 `.dsh/work-evidence/config.json` 和会话策略文件；升级前另存一份 `config.json`，以便回退时恢复原始设置。1.1.0 会读取已有 JSON，不要求重建。
 3. 用 1.1.0 发布包替换插件目录。
-4. 在插件目录安装发布依赖：发布 tarball 不含 `node_modules`。若宿主不提供 `fflate 0.8.3`，归档读取会显示 `archive-decoder-unavailable:fflate`，`dependencies.archiveDecoder.available` 为 `false`。执行 `npm install --omit=dev`（或把 tarball 装入宿主依赖树并确认 `fflate` 可解析）后再继续。
-5. 重启宿主，先用 `/work-evidence status` 和 `/work-evidence features` 查看配置、依赖和有效状态。
-6. 确认 `dependencies.archiveDecoder.available` 为 `true`。仅确认 `fflate` 包可安装不够；插件或宿主无法实际加载解码器时，归档读取仍会返回 `ARCHIVE_DECODER_UNAVAILABLE`。
-7. 需要完整工具面时显式执行 `/work-evidence feature toolSurface full`；默认仍为 compact。
+4. 保留或重建 FastEdit Python 环境：发布 tarball 不含 `.fastedit-venv`，而 `runtime.mjs` 默认把 `fastEditPython` 指向该目录。如果旧环境位于被替换的插件目录内，替换后 Java 精确编辑会显示不可用，需把 `fastEditPython` 指向保留的解释器或重建该虚拟环境。
+5. 在插件目录安装发布依赖：发布 tarball 不含 `node_modules`。若宿主不提供 `fflate 0.8.3`，归档读取会显示 `archive-decoder-unavailable:fflate`，`dependencies.archiveDecoder.available` 为 `false`。执行 `npm install --omit=dev`（或把 tarball 装入宿主依赖树并确认 `fflate` 可解析）后再继续。
+6. 重启宿主，先用 `/work-evidence status` 和 `/work-evidence features` 查看配置、依赖和有效状态。
+7. 确认 `dependencies.archiveDecoder.available` 为 `true`。仅确认 `fflate` 包可安装不够；插件或宿主无法实际加载解码器时，归档读取仍会返回 `ARCHIVE_DECODER_UNAVAILABLE`。
+8. 需要完整工具面时显式执行 `/work-evidence feature toolSurface full`；默认仍为 compact。
 
 ## 配置行为
 

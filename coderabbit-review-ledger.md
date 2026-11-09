@@ -7,7 +7,7 @@
 ## 当前状态
 
 - PR #7 为 Open、非 Draft，目标 `main`；远端 head 随候选更新，最终以 PR head 与验收台账记录为准。
-- 远端没有针对本地后续候选的 Review、comment 或 check。运行时代码审查基线止于 `238f125`，其后还有未审查的文档清理；最终审查范围以 `4978b31..最终 SHA` 的实际 diff 为准，审查台账不写会自引用的本地 HEAD。
+- 远端已有针对后续候选的多轮 Review，最新为 `5827397816`（`1075ffe`）。历史记录保留在下方“正式 Review”表；当前待覆盖范围是 `1075ffe..最终 SHA`，最终以 PR head 与同 SHA 验收台账为准，审查台账不写会自引用的本地 HEAD。
 - REST Review 共 16 条记录：CodeRabbit 14 条（12 轮正式审查和 2 条线程回复）、用户 2 条。CodeRabbit 有 10 轮实质覆盖；2 轮相似文件跳过和 2 条回复不计独立覆盖。
 - 共记录 19 条意见：13 条 actionable（11 条 inline、2 条 outside-diff）和 6 条 nitpick。13 条 actionable 已处理；5 条 nitpick 已处理，`count>80` 的 1 条保留为非阻塞。
 - 11 个 GraphQL 审查线程全部 resolved，其中 10 个 outdated。REST inline 评论 15 条：11 条顶层、4 条回复。

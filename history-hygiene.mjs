@@ -19,14 +19,39 @@ function tapCheckFailure(text){
   const entries=text.split(/\r?\n/u).filter(line=>/^not ok \d+ - /u.test(line)).slice(0,8).map(line=>line.slice(0,180));
   // Keep the first distinct error causes: without them a receipt hides why the
   // suite is unusable and the model re-runs the whole suite to find out.
+  // Node TAP puts the cause either on a `XxxError: message` line or inside the
+  // YAML diagnostic as `name: 'AssertionError'` plus an `error: |-` block.
   const seen=new Set(),causes=[];
-  for(const line of text.split(/\r?\n/u)){
-    const match=/^(?:#\s*)?((?:[A-Za-z_$][\w$]*\.)*[A-Za-z_$][\w$]*(?:Error|Exception)):\s*(.{1,160})$/u.exec(line.trim());
-    if(!match)continue;
-    const cause=match[1]+': '+match[2].trim();
-    if(seen.has(cause))continue;
-    seen.add(cause);causes.push(cause);
-    if(causes.length>=3)break;
+  const addCause=(name,message)=>{
+    const text=(message?name+': '+message:name).replace(/\s+/gu,' ').trim().slice(0,200);
+    if(!text||seen.has(text))return true;
+    seen.add(text);causes.push(text);
+    return causes.length<3;
+  };
+  const lines=text.split(/\r?\n/u);
+  for(let index=0;index<lines.length;index++){
+    const line=lines[index],trimmed=line.trim();
+    const direct=/^(?:#\s*)?((?:[A-Za-z_$][\w$]*\.)*[A-Za-z_$][\w$]*(?:Error|Exception)):\s*(.{1,160})$/u.exec(trimmed);
+    if(direct&&!addCause(direct[1],direct[2]))break;
+    const named=/^name:\s*'([^']*(?:Error|Exception)[^']*)'\s*$/u.exec(trimmed);
+    if(!named)continue;
+    let message='';
+    for(let next=index+1;next<Math.min(lines.length,index+8);next++){
+      const block=/^error:\s*\|\s*$/u.exec(lines[next].trim());
+      if(block){
+        for(let body=next+1;body<Math.min(lines.length,next+8);body++){
+          const candidate=lines[body].trim();
+          if(!candidate)continue;
+          if(/^[a-z]+:/u.test(candidate))break;
+          message=candidate;break;
+        }
+        break;
+      }
+      const inline=/^error:\s*(.+)$/u.exec(lines[next].trim());
+      if(inline){message=inline[1].replace(/^['"]|['"]$/gu,'');break;}
+      if(/^\.\.\.$/u.test(lines[next].trim()))break;
+    }
+    if(!addCause(named[1].replace(/^Error$/u,'Error'),message))break;
   }
   return {signature:entries[0]??`${failed} failed, ${passed} passed of ${total}`,
     summary:{passed,failed,total,source:'reported-tap',text:`# tests ${total}\n# pass ${passed}\n# fail ${failed}`},failureEntries:entries,causes};
