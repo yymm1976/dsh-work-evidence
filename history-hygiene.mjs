@@ -28,6 +28,7 @@ export function recallCall(agent,{seq,offset=0,maxChars=16000}={}){
 /** Compact request-view receipt for a completed test/check run; canonical output stays exact. */
 export function testOutputDigest(command,text,{seq=null,truncated=false,focus=[],filterEnvironment=true}={}){
   if(typeof command!=='string'||!TEST_COMMAND.test(command.trim()))return null;
+  if(/node\s+--test/iu.test(command))return null;
   if(typeof text!=='string'||text.length<TEST_MIN_CHARS||truncated||!Number.isSafeInteger(seq))return null;
   // A spill marker means this request view never held the complete output;
   // work_recall cannot recover a host-spilled body, so it must not be hidden.

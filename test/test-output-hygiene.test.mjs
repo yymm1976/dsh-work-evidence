@@ -61,3 +61,7 @@ test('environment-only output is not projected',()=>{
   const text=lines.join('\n')+'x'.repeat(4200);
   assert.equal(testOutputDigest('python -m pytest -q',text,{seq:108,focus:['tests/']}),null);
 });
+
+test('Node test receipts are disabled',()=>{
+  assert.equal(testOutputDigest('node --test suite.mjs','x'.repeat(9000)+'\n10 failed',{seq:109}),null);
+});
