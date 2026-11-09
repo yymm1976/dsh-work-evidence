@@ -34,7 +34,7 @@ export function testOutputDigest(command,text,{seq=null,truncated=false,focus=[]
   if(/\[output truncated; full output:|\[truncated\]/iu.test(text))return null;
   const failure=reportedCheckFailure(text),summary=failure?.summary??null,entries=failure?.failureEntries??[];
   if(!failure&&!/(?:^|\n)\s*(?:\d+\s+)?(?:passed|failed|ok|tests?|checks?)\b|(?:passed|failed|ok)\s+in\s+[\d.]+s/iu.test(text))return null;
-  const failedLines=text.split(/\r?\n/u).filter(line=>/^\s*(?:FAILED|ERROR|not ok|\d+\s+(?:failed|failures))\b/iu.test(line)).slice(0,8);
+  const failedLines=text.split(/\r?\n/u).filter(line=>/^\s*(?:FAILED|ERROR|not ok|\d+\s+(?:failed|failures))\b/iu.test(line));
   const environmentFailure=/FileNotFoundError|WinError|PermissionError|\[Errno \d+\]|No such file or directory|Access is denied|Cannot find path|ModuleNotFoundError/iu;
   const focusPaths=Array.isArray(focus)?focus.filter(item=>typeof item==='string'&&item):[];
   const actionableEntries=filterEnvironment?entries.filter(entry=>!environmentFailure.test(entry)):entries;
@@ -49,12 +49,12 @@ export function testOutputDigest(command,text,{seq=null,truncated=false,focus=[]
   if(summary&&Number.isInteger(summary.failed))lines.push('result: '+(summary.passed??'?')+' passed, '+summary.failed+' failed'+(summary.total?(' of '+summary.total):''));
   else if(entries.length)lines.push('result: '+entries.length+' named failures');
   if(shownEntries.length)lines.push('failing: '+shownEntries.slice(0,8).join(' | '));
-  else if(shownFailed.length)lines.push('failing: '+shownFailed.join(' | '));
+  else if(shownFailed.length)lines.push('failing: '+shownFailed.slice(0,8).join(' | '));
   const environmentCount=filterEnvironment?(entries.filter(entry=>environmentFailure.test(entry)).length+(entries.length?0:failedLines.filter(line=>environmentFailure.test(line)).length)):0;
   if(environmentCount>0)lines.push('environment-like failures omitted: '+environmentCount+' (canonical output retains them).');
   if(detailLines.length)lines.push('details: '+detailLines.join(' | '));
   if(tail)lines.push('tail:\n'+tail);
-  lines.push('The canonical output is unchanged and recoverable with work_recall kind=result'+(seq!==null?(' seq='+seq):'')+'.');
+  lines.push('The canonical output is unchanged and recoverable with work_recall kind=output'+(seq!==null?(' seq='+seq):'')+'.');
   const digest=lines.join('\n');
   return {text:digest.length<=TEST_DIGEST_MAX?digest:digest.slice(0,TEST_DIGEST_MAX-40)+'\n[receipt truncated; use work_recall for the full output]',
     signature:failure?.signature??null,summary,originalChars:text.length};
@@ -179,6 +179,7 @@ export function createHistoryHygiene(runtime,taskFlow,{isProtected=()=>false,ret
       const original=agent.session.eventAt(entry.seq)?.data?.message;
       if(!original)return message;
       const existing=state.outputPlans.get(entry.seq);
+      if(existing?.test)return message;
       const planned=existing??planContextPrune(original,entry.reads,{seq:entry.seq,...pruneSettings,retainSource:protect});
       if(!planned)return message;
       const reduction=resultText(message.content).length-resultText(planned.content).length;

@@ -39,3 +39,17 @@ test('environment and focus filtering keep assertions actionable',()=>{
   assert.ok(!failingLine.includes('tests/test_cli.py'));
   assert.ok(digest.text.includes('environment-like failures omitted'));
 });
+
+test('actionable assertion after eight environment failures is shown',()=>{
+  const lines=[];
+  for(let i=0;i<8;i++)lines.push('FAILED tests/test_cli.py::test_run_'+i+' - FileNotFoundError: WinError 2');
+  lines.push('FAILED tests/test_main.py::test_get_key_not_found - AssertionError: expected x');
+  lines.push('20 failed, 175 passed, 48 skipped, 28 warnings in 1.93s');
+  lines.push('');
+  const text=lines.join('\n')+'x'.repeat(4200);
+  const digest=testOutputDigest('python -m pytest -q',text,{seq:107,focus:['tests/'],filterEnvironment:true});
+  assert.ok(digest);
+  const failingLine=digest.text.split(/\n/u).find(line=>line.startsWith('failing:'))||'';
+  assert.ok(failingLine.includes('tests/test_main.py'));
+  assert.ok(!failingLine.includes('test_cli.py'));
+});
