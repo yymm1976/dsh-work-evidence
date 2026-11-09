@@ -89,3 +89,10 @@ test('truncated receipt keeps the locator',()=>{
   assert.ok(digest.text.length<=4000);
   assert.ok(digest.text.endsWith('work_recall kind=output seq=110.'));
 });
+test('TAP receipts keep the cause regardless of diagnostic field order',()=>{
+  const build=(fields)=>['TAP version 13','not ok 1 - t','  ---',...fields,'  ...','1..1','# tests 1','# pass 0','# fail 1','# cancelled 0','# skipped 0','# todo 0'].join('\n')+'x'.repeat(4200);
+  const errorFirst=build(['  error: |-','    AssertionError [ERR_ASSERTION]: expected true','  name: \'AssertionError\'']);
+  const nameFirst=build(['  name: \'ReferenceError\'','  error: |-','    describe is not defined']);
+  assert.ok(testOutputDigest('node --test',errorFirst,{seq:201}).text.includes('causes: AssertionError'));
+  assert.ok(testOutputDigest('node --test',nameFirst,{seq:202}).text.includes('causes: ReferenceError: describe is not defined'));
+});

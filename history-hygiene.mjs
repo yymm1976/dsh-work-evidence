@@ -23,35 +23,52 @@ function tapCheckFailure(text){
   // YAML diagnostic as `name: 'AssertionError'` plus an `error: |-` block.
   const seen=new Set(),causes=[];
   const addCause=(name,message)=>{
-    const text=(message?name+': '+message:name).replace(/\s+/gu,' ').trim().slice(0,200);
+    let body=message??'';
+    if(body&&name&&(body.startsWith(name+':')||body.startsWith(name+' ')))body=body.slice(name.length).replace(/^[:\s]+/u,'').trim();
+    const text=(body?name+': '+body:name).replace(/\s+/gu,' ').trim().slice(0,200);
     if(!text||seen.has(text))return true;
     seen.add(text);causes.push(text);
     return causes.length<3;
   };
   const lines=text.split(/\r?\n/u);
-  for(let index=0;index<lines.length;index++){
-    const line=lines[index],trimmed=line.trim();
-    const direct=/^(?:#\s*)?((?:[A-Za-z_$][\w$]*\.)*[A-Za-z_$][\w$]*(?:Error|Exception)):\s*(.{1,160})$/u.exec(trimmed);
-    if(direct&&!addCause(direct[1],direct[2]))break;
-    const named=/^name:\s*'([^']*(?:Error|Exception)[^']*)'\s*$/u.exec(trimmed);
-    if(!named)continue;
-    let message='';
-    for(let next=index+1;next<Math.min(lines.length,index+8);next++){
-      const block=/^error:\s*\|\s*$/u.exec(lines[next].trim());
-      if(block){
-        for(let body=next+1;body<Math.min(lines.length,next+8);body++){
-          const candidate=lines[body].trim();
-          if(!candidate)continue;
-          if(/^[a-z]+:/u.test(candidate))break;
-          message=candidate;break;
+  // Node emits TAP diagnostics in an order that varies between versions:
+  // 22.19 writes `error: |-` before `name: 'AssertionError'`. Parse whole
+  // diagnostic blocks so field order cannot hide the cause.
+  const blocks=[];
+  let block=null;
+  for(const line of lines){
+    const trimmed=line.trim();
+    if(trimmed==='---'){block=[];continue;}
+    if(trimmed==='...'){if(block)blocks.push(block);block=null;continue;}
+    if(block)block.push(line);
+  }
+  const indentOf=line=>line.length-line.trimStart().length;
+  for(const entries of blocks){
+    let name='',message='';
+    for(let index=0;index<entries.length;index++){
+      const trimmed=entries[index].trim();
+      const named=/^name:\s*'([^']*(?:Error|Exception)[^']*)'\s*$/u.exec(trimmed);
+      if(named){name=named[1];continue;}
+      if(/^error:\s*(?:\||\|-)\s*$/u.test(trimmed)){
+        const base=indentOf(entries[index]);
+        for(let next=index+1;next<entries.length;next++){
+          const candidate=entries[next];
+          if(!candidate.trim())continue;
+          if(indentOf(candidate)<=base&&/^[A-Za-z_][\w-]*:/u.test(candidate.trim()))break;
+          message=candidate.trim();break;
         }
-        break;
+        continue;
       }
-      const inline=/^error:\s*(.+)$/u.exec(lines[next].trim());
-      if(inline){message=inline[1].replace(/^['"]|['"]$/gu,'');break;}
-      if(/^\.\.\.$/u.test(lines[next].trim()))break;
+      const inline=/^error:\s*(?![|])(.+)$/u.exec(trimmed);
+      if(inline)message=inline[1].replace(/^['"]|['"]$/gu,'');
     }
-    if(!addCause(named[1].replace(/^Error$/u,'Error'),message))break;
+    if((name||message)&&!addCause(name||'TAP failure',message))break;
+  }
+  if(causes.length<3){
+    for(const line of lines){
+      const direct=/^(?:#\s*)?((?:[A-Za-z_$][\w$]*\.)*[A-Za-z_$][\w$]*(?:Error|Exception)):\s*(.{1,160})$/u.exec(line.trim());
+      if(direct&&!addCause(direct[1],direct[2]))break;
+    }
   }
   return {signature:entries[0]??`${failed} failed, ${passed} passed of ${total}`,
     summary:{passed,failed,total,source:'reported-tap',text:`# tests ${total}\n# pass ${passed}\n# fail ${failed}`},failureEntries:entries,causes};
