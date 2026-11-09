@@ -7,7 +7,7 @@
 ## 当前状态
 
 - PR #7 为 Open、非 Draft，目标 `main`；远端 head 随候选更新，最终以 PR head 与验收台账记录为准。
-- 远端已有针对后续候选的多轮 Review，最新为 `5827397816`（`1075ffe`）。历史记录保留在下方“正式 Review”表；当前待覆盖范围是 `1075ffe..最终 SHA`，最终以 PR head 与同 SHA 验收台账为准，审查台账不写会自引用的本地 HEAD。
+- 远端已有针对后续候选的多轮 Review，最新覆盖到 `d4af173`（review `5828670353`，0 inline）。第 10 轮覆盖 FINAL5、第 11 轮覆盖 FINAL6，最终以 PR head 与同 SHA 验收台账为准；审查台账不写会自引用的本地 HEAD。
 - REST Review 共 16 条记录：CodeRabbit 14 条（12 轮正式审查和 2 条线程回复）、用户 2 条。CodeRabbit 有 10 轮实质覆盖；2 轮相似文件跳过和 2 条回复不计独立覆盖。
 - 共记录 19 条意见：13 条 actionable（11 条 inline、2 条 outside-diff）和 6 条 nitpick。13 条 actionable 已处理；5 条 nitpick 已处理，`count>80` 的 1 条保留为非阻塞。
 - 11 个 GraphQL 审查线程全部 resolved，其中 10 个 outdated。REST inline 评论 15 条：11 条顶层、4 条回复。
@@ -28,6 +28,12 @@
 | `5812700838` | `56f1824` | 空正文线程回复；不计独立覆盖 |
 | `5812786085` | `15abac4` | 有效；G1/G4/G9 不得沿用早先结果 |
 | `5812860241` | `58de2a2` | 唯一门禁文件相似跳过；不计覆盖 |
+| `5826437867` | `0ce60a6` | 有效；1 Major（agent/session disposed 竞态）+ 4 Minor（user-question-reply、迁移依赖、零 skipped、PATH-aware Python）+ 1 nitpick（断言补 seq）；全部修复 |
+| `5826930429` | `a2329f0` | 有效；6 Minor（台账过期、D26 正则记录、回执 fallback 过宽、FastEdit 环境、user-question-reply 触发、FastEdit 跳过判据）；全部修复 |
+| `5827397816` | `1075ffe` | 有效；1 Minor（TAP 断言诊断字段）+ 1 Minor（成本方向标注）；全部修复 |
+| `5827816319` | `3779622` | 有效；1 Major（缺 export，已在下一提交修复）+ 1 Minor（TAP 字段顺序）；全部修复 |
+| `5828446760` | `d6c3251` | 有效；1 Minor（FastEdit 裸名解释器跳过判据）；已在 `d4af173` 修复 |
+| `5828670353` | `d4af173` | 有效复核；0 inline actionable |
 | `5823492390` | `ffab4e0` | 有效；4 actionable + 1 outside-diff（G3/G7 回退、测试回执语言与设计） |
 | `5825371763` | `ffcfb31` | 有效；1 actionable + 1 outside-diff（README Node 回执说明、截断时保留 locator） |
 | `5826437867` | `0ce60a6` | 有效；1 Major（agent/session disposed 竞态）+ 4 Minor（user-question-reply、迁移依赖、零 skipped 门禁、PATH-aware Python）+ 1 nitpick（断言补 seq）；已全部修复 |

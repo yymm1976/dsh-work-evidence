@@ -37,6 +37,9 @@
 | D27 | Java simple 评分器复用 heldout 探针，测「灵脉等级/调整时间重载保留」但该要求从未写进 prompt，C-2 失败属规格传递缺陷而非实现能力 | 独立复审逐行核对 `scorer.ps1`、`HeldoutProbe.java` 与 prompt | v24 prompt 明确写入「灵脉等级与调整时间在保存/加载后按原值保留」；B0 在修复后的 v24 任务上通过（42 请求、scorer pass、delivered true），证明装配有效 | `tasks/java-simple-open-v24.json`、`java/tasks/simple/scorer.ps1`、`results/v24-java-b0-1.json` | 关闭（装配修复；C 配对另行登记） |
 | D28 | `ffcfb31` 因「Node 回执后成本不稳、重复验证」整体关闭 `node --test` 回执，导致 Picomatch 半区 `testOutputViews=0`、收益无法归因。当时的判断发生在 H15 缺陷仍存在时 | 独立复审 + 真实轨迹：48685 字符 TAP 输出在两臂均完整入上下文 | H16：只为带完整 `# tests/# pass/# fail` 摘要的 TAP 输出生成有界回执，保留失败名、计数、前三条错误原因、尾部与 `work_recall` locator；无摘要、截断、spill、无 seq 一律不投影。最终候选上 Picomatch 两组转为正向（dev +17.22%、留出 +38.93%） | `history-hygiene.mjs`、`test/test-output-hygiene.test.mjs`、`results/v30-final-metrics.json` | 关闭（真实 B0/C 复验转正） |
 | D29 | `session/disposed` 不等 `agent/disposed` 异步清理完成即删除 runtime state，effect-observer 会重建无 telemetry 目录的状态，丢失最后一批 pending 决策 | CodeRabbit `5826437867` Major | 新增 `disposal-coordinator.mjs`：session 处置等待 agent 清理完成再释放；无 agent 的 session 立即释放；清理抛错仍释放。3 项确定性回归 | `disposal-coordinator.mjs`、`test/disposal-coordinator.test.mjs`、`index.mjs` | 关闭（确定性回归） |
+| D30 | 实验装配：`scorers/python-dev.py` 用顶层 `assert`，实现缺陷变成未捕获异常，`stdout` 为空且样本不可评分 | 复审 P2 + `v23-pydev-c-3`/`final-pydev-b0-3` 同点崩溃 | 改为逐项命名失败、永不崩溃；新增 `bare-key` 检查（缺键即失败）。两臂在新评分器上重跑（v26/v29） | `scorers/python-dev.py`、`results/v26-*.json`、`results/v29-*.json` | 关闭 |
+| D31 | TAP 测试回执缺少错误原因，模型为查明失败原因反复重跑完整套件（实测 50 请求、`testOutputViews=47`、同组成本增加 45.6%） | 最终候选首轮复验 `v25-capneg-c-2` | 回执新增 `causes`（≤3 条），并改为顺序无关解析 TAP 诊断块（Node 22.19 先输出 `error: |-` 后输出 `name`） | `history-hygiene.mjs`、`test/test-output-hygiene.test.mjs` | 关闭 |
+| D32 | Java dev 旧 B0 样本与新 C 的 `baseHash` 不同（`9adf6126` vs `80a30596`），base 快照已变，不可混样 | 同 SHA 复核 | 旧 B0 标为不可比并从配对剔除；改用当前 base 的 B0（`v28-javadev-b0-5/6`、`v29-javadev-b0-1`） | `results/v28-javadev-b0-*.json`、`results/v29-javadev-b0-1.json` | 关闭 |
 
 ## 说明
 
