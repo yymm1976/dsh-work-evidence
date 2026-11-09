@@ -38,6 +38,8 @@ export function testOutputDigest(command,text,{seq=null,truncated=false,focus=[]
   const environmentFailure=/FileNotFoundError|WinError|PermissionError|\[Errno \d+\]|No such file or directory|Access is denied|Cannot find path|ModuleNotFoundError/iu;
   const focusPaths=Array.isArray(focus)?focus.filter(item=>typeof item==='string'&&item):[];
   const actionableEntries=filterEnvironment?entries.filter(entry=>!environmentFailure.test(entry)):entries;
+  const failureLinesOnly=failedLines.filter(line=>/^\s*(?:FAILED|ERROR|not ok)\b/iu.test(line));
+  if(filterEnvironment&&(entries.length||failureLinesOnly.length)&&!actionableEntries.length&&!failureLinesOnly.some(line=>!environmentFailure.test(line)))return null;
   const focusEntries=focusPaths.length?actionableEntries.filter(entry=>focusPaths.some(item=>entry.includes(item))):[];
   const shownEntries=focusEntries.length?focusEntries:actionableEntries.length?actionableEntries:entries;
   const actionableFailed=filterEnvironment?failedLines.filter(line=>!environmentFailure.test(line)):failedLines;

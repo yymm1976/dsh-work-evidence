@@ -53,3 +53,11 @@ test('actionable assertion after eight environment failures is shown',()=>{
   assert.ok(failingLine.includes('tests/test_main.py'));
   assert.ok(!failingLine.includes('test_cli.py'));
 });
+
+test('environment-only output is not projected',()=>{
+  const lines=[];
+  for(let i=0;i<8;i++)lines.push('FAILED tests/test_cli.py::test_run_'+i+' - FileNotFoundError: WinError 2');
+  lines.push('8 failed, 175 passed, 48 skipped, 1 warning in 1.93s');
+  const text=lines.join('\n')+'x'.repeat(4200);
+  assert.equal(testOutputDigest('python -m pytest -q',text,{seq:108,focus:['tests/']}),null);
+});
