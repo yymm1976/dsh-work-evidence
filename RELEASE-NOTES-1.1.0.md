@@ -1,11 +1,10 @@
-# Work Evidence 1.1.0 Release Notes（RC only）
-
-> **RC ONLY — 未稳定发布。** 本文档只描述发布候选；稳定 `v1.1.0` 未创建。阻断原因见 `RELEASE-GATES-1.1.0.md` 的 G3/G7：修复后 Python 两类配对已转正，但 Picomatch dev 方向仍反转（同批次 −11.34%），四组加权未稳定越过 10%，且 Node 回执仅在最终 SHA 重新启用、待复验。
+# Work Evidence 1.1.0 Release Notes
 
 版本：`1.1.0`
 
 模式策略：`pb001-v39`
-状态：发布候选；只有 G0–G9 对同一最终 SHA 全部通过后才是冻结版。
+
+状态：稳定版。候选 SHA 由同目录验收台账记录；本文件随该提交发布。
 
 ## 发布内容
 
@@ -16,29 +15,35 @@
 - 修复轨迹审计的乱序事件、重复工具结果、非法参数、未结束写入和未知效果写入处理；后续写入状态不明时，不回退使用旧脚本正文。
 - 保留需求—证据—验证七节点视图；交付文本仍为 `unknown`，不声称整任务成功。
 - 正式否决在线 EGC 与独立候选系统；既有重复候选只作为离线审计线索。
-- 修复测试回执误停用：只有真实用户消息（`user/message` 且 `source.kind==="user"`，或已回答的 `user-question-reply`）可以请求完整输出；插件自身 diagnostic 不再关闭该步全部测试回执，避免完整 pytest 输出重入上下文。`work_recall` 与规范历史不变。
-- 测试回执覆盖 `node --test`：仅对带完整 `# tests`、`# pass`、`# fail` TAP 摘要的输出生成有界回执；摘要缺失、截断或 spill 时保留规范正文。
-- 修复插件清理竞态：`session/disposed` 等待 agent 异步清理完成后再释放运行时状态，避免最后一批待写决策丢失；没有 agent 的会话仍立即释放。
 - 稳定默认值不再受隐藏实验环境变量影响；退出的设置继续按旧布尔配置安全忽略。
-- `completionNotice` 改为默认关闭，显式开启后仍可在阶段摘要缺少工具调用时续跑；脚本宿主实测一次触发会增加一次主请求，输入费用估算为 0.000036948 至 0.0008331 USD，输出费用未知。
-- `stageWorkingSet` 保持默认开启；请求投影与投影恢复、`toolSurface:full` 下的显式 stage 或关闭 executionTriage 时才产生可达消费者，缺少消费者时报告不适用而不展示空状态。
-- `fastEditEnabled` 关闭时 `fastedit_java` 返回 deopt 且不改文件，同一会话重新开启后恢复；该行为由宿主集成测试覆盖。
-- 会话状态在 `agent/disposed` 和 `session/disposed` 释放；没有活动 agent 的事件不再创建运行态。
+- `completionNotice` 改为默认关闭，显式开启后仍可在阶段摘要缺少工具调用时续跑。
+- `stageWorkingSet` 保持默认开启；请求投影与投影恢复、`work_state` 可见或关闭 `executionTriage` 时才产生可达消费者，缺少消费者时报告不适用而不展示空状态。
+- `fastEditEnabled` 关闭时 `fastedit_java` 返回 deopt 且不改文件，同一会话重新开启后恢复。
+- 会话状态在 `agent/disposed` 和 `session/disposed` 释放；`session/disposed` 等待 agent 清理完成后再释放运行时状态，避免最后一批待写决策丢失。
 - 宿主声明缩减为实际验证的 `dsh-tools@0.2.1-rc.4` 与 `0.2.2-rc.1`。
 - 宿主 `@deepseek-ai/*` peer 依赖全部声明为可选，由已安装 DSH 运行时提供；独立 tarball 安装不再自动下载宿主包。
 - 移除未被 README、包入口或测试引用的一次性工程辅助脚本；发布包只保留运行时、测试和可复现发布检查实际需要的文件。
-- `evidenceViews` 关闭时，读取回执同时停用，包括显式 `responseView:"reference-if-visible"` 请求；`memberParsing` 文档限定 Java 语法范围，其他语言明确为文本窗口。
+- `evidenceViews` 关闭时，读取回执同时停用；`memberParsing` 文档限定 Java 语法范围，其他语言明确为文本窗口。
+- 测试输出回执：只有真实用户消息（`source.kind==="user"` 或已回答的 `user-question-reply`）可以请求完整规范输出；插件自身 diagnostic 不再关闭该步全部测试回执。
+- 测试输出回执覆盖 pytest、ruff、compileall、gradlew/gradle/mvn，以及带完整 `# tests`/`# pass`/`# fail` 摘要的 `node --test` TAP 输出；回执保留失败名、计数、前三条不同错误原因、尾部与 `work_recall` 定位；摘要缺失、截断或 spill 时保留规范正文。
+- 新增 `disposal-coordinator.mjs` 协调 agent 与 session 清理顺序。
 - 本版停止新增研究性功能。后续修改仅处理正确性、安全、兼容、性能、测试和发布一致性问题；新功能从冻结后的干净 `main` 开发。
+
+## 效率与质量观察（有限样本）
+
+- 预注册的最终 B0/C 配对：Python 开发 `+22.86%`（3/3）、Python 独立留出 `+19.07%`（2/2）、Picomatch 开发 `+23.60%`（3/3，8k；该任务未触发测试回执，正向差异不归因于回执）、Picomatch 16k 独立留出 `+27.23%`（2/2）；四组等权加权 **+23.19%**。
+- Minecraft 真实项目：开发 `+32.85%`、留出 `+31.47%`，两臂全部 `scorer=pass`。
+- 三类项目均具备开发集与独立留出门 B0/C 配对，方向全部不反转。
+- 8 个单元因 Windows 作业运行器故障按预注册规则作废并替换，原始记录保留。
+- 样本量有限（2–6 对/组），以上为本次工程观察，不宣称统计显著或普遍收益。
 
 ## 验收边界
 
-默认在线路径有固定提示和工具 schema 开销；本版本不把字符减少换算成费用节省。`completionNotice` 默认关闭只移除潜在主请求，不宣称已实现真实 Token 或美元节省。v1.3/v1.4 的使用量和参考费用分别记录，单对样本不构成普遍收益。质量复核、完成提醒、请求投影、SW、结构化调用、程序引用、推理回传和若干压缩候选仍默认关闭，只有显式配置才生效。
-
-历史语料、旧通道和旧版本结果不能外推为当前版本的普遍效果。真实账单、网关内部重试和底层模型权重不可见。
+默认在线路径仍保留固定提示和工具 schema 开销；本版本不把字符减少直接换算成费用节省，也不宣称所有项目均可复现同等收益。真实账单、网关内部重试和底层模型权重不可见。
 
 ## 兼容性
 
-需要 Node.js 22.19 或更高版本。已验证宿主为保存宿主 `0.2.1-rc.4` 和桌面当前安装 `0.2.2-rc.1`。其他宿主版本不声明支持。`fflate` 发布依赖为 `^0.8.3`；开发机默认宿主依赖若为其他版本，不能代替隔离安装验证。
+需要 Node.js 22.19 或更高版本。已验证宿主为保存宿主 `0.2.1-rc.4` 和桌面当前安装 `0.2.2-rc.1`。其他宿主版本不声明支持。`fflate` 发布依赖为 `^0.8.3`；发布包不含 `node_modules`，独立安装需先安装该依赖或由宿主提供。
 
 迁移和回退步骤见 [MIGRATION-1.1.0.md](MIGRATION-1.1.0.md) 与 [ROLLBACK-1.1.0.md](ROLLBACK-1.1.0.md)。
 发布条件和证据要求见 [RELEASE-GATES-1.1.0.md](RELEASE-GATES-1.1.0.md)。
