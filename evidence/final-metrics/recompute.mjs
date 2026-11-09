@@ -36,6 +36,7 @@ function arm(rows) {
 const groups = {};
 for (const [name, g] of Object.entries(plan.groups)) {
   const b0 = arm(g.b0), c = arm(g.c);
+  if (b0.perSuccess === null || c.perSuccess === null) throw new Error(`group ${name}: an arm has no complete success`);
   groups[name] = { weight: g.weight, task: g.task, maxTokens: g.maxTokens, qualityOnly: !!g.qualityOnly,
     b0, c, delta: 1 - c.perSuccess / b0.perSuccess };
 }
@@ -82,5 +83,9 @@ const artifact = {
 const out = path.join(here, 'FINAL-METRICS-1.1.0.json');
 fs.writeFileSync(out, JSON.stringify(artifact, null, 1) + '\n');
 const pct = (x) => `${(x * 100).toFixed(2)}%`;
+if (problems.length) {
+  console.error(problems.join('\n'));
+  process.exitCode = 1;
+}
 console.log('weighted', pct(weightedValue), 'mechanism-only', pct(mechanismWeighted), 'units', allUnits.length, 'problems', problems.length);
 for (const [name, g] of Object.entries(groups)) console.log(name, pct(g.delta), `${g.b0.successes}/${g.b0.runs}`, `${g.c.successes}/${g.c.runs}`, 'perSuccess', g.b0.perSuccess.toFixed(9), g.c.perSuccess.toFixed(9));

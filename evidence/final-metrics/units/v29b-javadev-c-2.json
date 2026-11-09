@@ -2,7 +2,7 @@
  "file": "v29b-javadev-c-2.json",
  "arm": "c",
  "task": "dsh-java-dev-001-compiletest-current-api",
- "candidate": "C:\\Users\\杨铭\\Documents\\Codex\\2026-10-19\\wo\\dsh-work-evidence-1.1.0-active",
+ "candidate": "dsh-work-evidence-1.1.0-active",
  "pluginHash": "92ac76ca0168b30dc2cad14e8ff59b1f3c8311e5796b048d8419f84f37df2eb1",
  "pluginHashAlgorithm": "sha256-sorted-relative-files-v1; excludes .git/node_modules/.fastedit-venv",
  "hostToolsVersion": "0.2.1-rc.4",

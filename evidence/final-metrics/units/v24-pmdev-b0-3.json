@@ -2,7 +2,7 @@
  "file": "v24-pmdev-b0-3.json",
  "arm": "b0",
  "task": "picomatch-dev-filter-paths-v7",
- "candidate": "C:\\Users\\杨铭\\Documents\\Codex\\2026-10-19\\wo\\outputs\\dsh-1.1.0-b0-4978b31",
+ "candidate": "dsh-1.1.0-b0-4978b31",
  "pluginHash": "e6f297ff1f28297adc09f2bf6006b4377d883d14ed5e8618ca35474b6293e8e9",
  "pluginHashAlgorithm": "sha256-sorted-relative-files-v1; excludes .git/node_modules/.fastedit-venv",
  "hostToolsVersion": "0.2.1-rc.4",

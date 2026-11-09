@@ -2,7 +2,7 @@
  "file": "v31b-pmdev-c-3.json",
  "arm": "c",
  "task": "picomatch-dev-filter-paths-v7",
- "candidate": "C:\\Users\\杨铭\\Documents\\Codex\\2026-10-19\\wo\\dsh-work-evidence-1.1.0-active",
+ "candidate": "dsh-work-evidence-1.1.0-active",
  "pluginHash": "3490dc3d9d33543ea966827c535bd701745afb08ff7340bdcfa4b9db93eb5214",
  "pluginHashAlgorithm": "sha256-sorted-relative-files-v1; excludes .git/node_modules/.fastedit-venv",
  "hostToolsVersion": "0.2.1-rc.4",

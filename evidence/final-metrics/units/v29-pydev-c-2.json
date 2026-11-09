@@ -2,7 +2,7 @@
  "file": "v29-pydev-c-2.json",
  "arm": "c",
  "task": "python-dotenv-dev-load-layers-v11",
- "candidate": "C:\\Users\\杨铭\\Documents\\Codex\\2026-10-19\\wo\\dsh-work-evidence-1.1.0-active",
+ "candidate": "dsh-work-evidence-1.1.0-active",
  "pluginHash": "12560a8956ba974d65b3f21c5e83ab23fec5a985213caf5da452be3622a4a291",
  "pluginHashAlgorithm": "sha256-sorted-relative-files-v1; excludes .git/node_modules/.fastedit-venv",
  "hostToolsVersion": "0.2.1-rc.4",
