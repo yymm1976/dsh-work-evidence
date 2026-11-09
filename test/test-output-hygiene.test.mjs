@@ -1,0 +1,98 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import {testOutputDigest} from '../history-hygiene.mjs';
+
+test('test output digest keeps failure identity and stays bounded',()=>{
+  const lines=[];
+  for(let index=0;index<120;index++)lines.push(`FAILED tests/test_case.py::test_${index} - AssertionError: expected ${index} but got ${index+1}`);
+  lines.push('120 failed, 40 passed, 3 warnings in 4.21s');
+  while(lines.join('\n').length<9000)lines.push('    at tests/test_case.py:'+(lines.length+10)+': assert value == expected');
+  const text=lines.join('\n');
+  const digest=testOutputDigest('python -m pytest -q tests/test_case.py',text,{seq:77});
+  assert.ok(digest);
+  assert.ok(digest.text.includes('FAILED tests/test_case.py::test_0'));
+  assert.ok(digest.text.includes('120 failed'));
+  assert.ok(digest.text.includes('work_recall'));
+  assert.ok(digest.text.includes('seq=77'));
+  assert.ok(digest.text.length<=4000,`${digest.text.length}`);
+  assert.equal(digest.originalChars,text.length);
+  assert.equal(testOutputDigest('python -m pytest','short output'),null);
+  assert.equal(testOutputDigest('git status','x'.repeat(9000)),null);
+  assert.equal(testOutputDigest('python -m pytest -q',text,{seq:78,truncated:true}),null);
+  assert.equal(testOutputDigest('python -m pytest -q',text.slice(0,7000)+'\n[output truncated; full output: C:\\Temp\\spill.log]',{seq:79}),null);
+  assert.equal(testOutputDigest('python -m pytest -q','x'.repeat(9000),{seq:80}),null);
+  assert.equal(testOutputDigest('python -m pytest -q',text,{seq:null}),null);
+  assert.equal(testOutputDigest('git status',text,{seq:81}),null);
+  assert.ok(testOutputDigest('gradlew.bat --offline --no-daemon compileTestJava','x'.repeat(9000)+'\n10 failed',{seq:1}));
+});
+
+test('environment and focus filtering keep assertions actionable',()=>{
+  const text=[
+    'FAILED tests/test_cli.py::test_run - FileNotFoundError: WinError 2',
+    'FAILED tests/test_main.py::test_get_key_not_found - AssertionError: expected x',
+    '16 failed, 175 passed, 48 skipped, 28 warnings in 1.93s',
+    ''
+  ].join('\n')+'x'.repeat(4200);
+  const digest=testOutputDigest('python -m pytest -q',text,{seq:104,focus:['src/dotenv/main.py','tests/','test/']});
+  assert.ok(digest);
+  const failingLine=digest.text.split(/\n/u).find(line=>line.startsWith('failing:'))||'';
+  assert.ok(failingLine.includes('tests/test_main.py'));
+  assert.ok(!failingLine.includes('tests/test_cli.py'));
+  assert.ok(digest.text.includes('environment-like failures omitted'));
+});
+
+test('actionable assertion after eight environment failures is shown',()=>{
+  const lines=[];
+  for(let i=0;i<8;i++)lines.push('FAILED tests/test_cli.py::test_run_'+i+' - FileNotFoundError: WinError 2');
+  lines.push('FAILED tests/test_main.py::test_get_key_not_found - AssertionError: expected x');
+  lines.push('20 failed, 175 passed, 48 skipped, 28 warnings in 1.93s');
+  lines.push('');
+  const text=lines.join('\n')+'x'.repeat(4200);
+  const digest=testOutputDigest('python -m pytest -q',text,{seq:107,focus:['tests/'],filterEnvironment:true});
+  assert.ok(digest);
+  const failingLine=digest.text.split(/\n/u).find(line=>line.startsWith('failing:'))||'';
+  assert.ok(failingLine.includes('tests/test_main.py'));
+  assert.ok(!failingLine.includes('test_cli.py'));
+});
+
+test('environment-only output is not projected',()=>{
+  const lines=[];
+  for(let i=0;i<8;i++)lines.push('FAILED tests/test_cli.py::test_run_'+i+' - FileNotFoundError: WinError 2');
+  lines.push('8 failed, 175 passed, 48 skipped, 1 warning in 1.93s');
+  const text=lines.join('\n')+'x'.repeat(4200);
+  assert.equal(testOutputDigest('python -m pytest -q',text,{seq:108,focus:['tests/']}),null);
+});
+
+test('Node TAP receipts require an exact summary and preserve failure identity',()=>{
+  const tap=['TAP version 13','not ok 2 - test/api.picomatch.js','  ---','# ReferenceError: describe is not defined','  ...','1..38','# tests 38','# suites 0','# pass 2','# fail 36','# cancelled 0','# skipped 0','# todo 0'].join('\n')+'x'.repeat(4200);
+  const digest=testOutputDigest('node --test',tap,{seq:109});
+  assert.ok(digest);
+  assert.ok(digest.text.includes('result: 2 passed, 36 failed of 38'));
+  assert.ok(digest.text.includes('not ok 2 - test/api.picomatch.js'));
+  assert.ok(digest.text.includes('causes: ReferenceError: describe is not defined'),'a receipt must keep the first distinct error causes');
+  assert.ok(digest.text.includes('work_recall kind=output seq=109'));
+  assert.ok(digest.text.length<=4000);
+  assert.equal(digest.originalChars,tap.length);
+  // Incomplete, spilled, truncated or unsummarized output must stay canonical.
+  assert.equal(testOutputDigest('node --test','x'.repeat(9000)+'\n10 failed',{seq:110}),null);
+  assert.equal(testOutputDigest('node --test',tap.replace('# fail 36\n',''),{seq:111}),null);
+  assert.equal(testOutputDigest('node --test',tap,{seq:112,truncated:true}),null);
+  assert.equal(testOutputDigest('node --test',tap.slice(0,7000)+'\n[output truncated; full output: C:\\Temp\\spill.log]',{seq:113}),null);
+  assert.equal(testOutputDigest('node --test',tap,{seq:null}),null);
+  assert.equal(testOutputDigest('node --test','short',{seq:114}),null);
+  assert.equal(testOutputDigest('git status',tap,{seq:115}),null);
+});
+
+test('truncated receipt keeps the locator',()=>{
+  const text='x'.repeat(9000)+'\nFAILED tests/test_main.py::test_x - AssertionError: y\n16 failed, 175 passed\n';
+  const digest=testOutputDigest('python -m pytest -q',text,{seq:110});
+  assert.ok(digest.text.length<=4000);
+  assert.ok(digest.text.endsWith('work_recall kind=output seq=110.'));
+});
+test('TAP receipts keep the cause regardless of diagnostic field order',()=>{
+  const build=(fields)=>['TAP version 13','not ok 1 - t','  ---',...fields,'  ...','1..1','# tests 1','# pass 0','# fail 1','# cancelled 0','# skipped 0','# todo 0'].join('\n')+'x'.repeat(4200);
+  const errorFirst=build(['  error: |-','    AssertionError [ERR_ASSERTION]: expected true','  name: \'AssertionError\'']);
+  const nameFirst=build(['  name: \'ReferenceError\'','  error: |-','    describe is not defined']);
+  assert.ok(testOutputDigest('node --test',errorFirst,{seq:201}).text.includes('causes: AssertionError'));
+  assert.ok(testOutputDigest('node --test',nameFirst,{seq:202}).text.includes('causes: ReferenceError: describe is not defined'));
+});

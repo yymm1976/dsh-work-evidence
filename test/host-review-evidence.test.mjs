@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {pathToFileURL} from 'node:url';
 import {startHost,text,tool} from './helpers/host.mjs';
+import {OPS_ROOT} from './helpers/paths.mjs';
 import {scopeReviewSources} from '../quality-review.mjs';
 
 for(const toolMode of ['native','ptc'])test(`quality review retains implementation reads after modification (${toolMode})`,async()=>{
@@ -111,7 +112,7 @@ test('review retains every bounded artifact and focused scope counts retained un
 });
 
 for(const toolMode of ['native','ptc'])test(`quality review retains successful OPS source changes (${toolMode})`,async t=>{
-  const root='C:/Users/杨铭/Documents/DSH Desktop/home/profiles/web/node_modules/dsh-ops/lib/components';
+  const root=OPS_ROOT;
   const [file,discovery,ptc]=await Promise.all(['file','discovery','ptc'].map(name=>import(pathToFileURL(root+'/'+name+'/index.js').href)));
   const marker='OPS_MIDDLE_REQUIREMENT_BRANCH',body='/*\n'+'source heading\n'.repeat(250)+'*/\nexport const '+marker+' = true;\n/*\n'+'source tail\n'.repeat(250)+'original-ending\n*/\n';
   let payload,revision;

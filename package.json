@@ -1,6 +1,6 @@
 {
   "name": "@local/dsh-work-evidence",
-  "version": "1.0.1-dev.112",
+  "version": "1.1.0",
   "private": true,
   "description": "DSH-native evidence, stable request working sets, history recovery and optional OPS CAS/Java adapters",
   "type": "module",
@@ -11,13 +11,15 @@
     "./icon": "./icon.svg"
   },
   "scripts": {
-    "check": "node --check runtime.mjs && node --check task-flow.mjs"
+    "check": "node scripts/check-syntax.mjs",
+    "test": "node --test"
   },
   "engines": {
     "node": ">=22.19",
-    "dsh": "0.2.1-rc.2 || 0.2.1-rc.3 || 0.2.1-rc.4 || 0.2.1-rc.5"
+    "dsh": "0.2.1-rc.4 || 0.2.2-rc.1"
   },
   "files": [
+    "scripts/check-syntax.mjs",
     "index.mjs",
     "tool-execution.mjs",
     "ultra-effort.mjs",
@@ -80,6 +82,14 @@
     "experiment-cli.mjs",
     "trajectory-audit.mjs",
     "README.md",
+    "RELEASE-NOTES-1.1.0.md",
+    "MIGRATION-1.1.0.md",
+    "ROLLBACK-1.1.0.md",
+    "RELEASE-GATES-1.1.0.md",
+    "FEATURE-CONTROL-MATRIX-1.1.0.md",
+    "OPTIMIZATION-REGISTER-1.1.0.md",
+    "DEFECT-LEDGER-1.1.0.md",
+    "coderabbit-review-ledger.md",
     "cordis.patch.yml",
     "locale/*.json",
     "icon.svg",
@@ -88,15 +98,23 @@
     "source-tools.mjs",
     "management-tools.mjs",
     "completion-notice.mjs",
-    "HISTORY.md"
+    "disposal-coordinator.mjs"
   ],
   "dependencies": {
     "fflate": "^0.8.3"
   },
   "peerDependencies": {
-    "@deepseek-ai/dsh-session-reference": "0.2.1-rc.2 || 0.2.1-rc.3 || 0.2.1-rc.4 || 0.2.1-rc.5"
+    "@deepseek-ai/dsh-llm": "0.2.1-rc.4 || 0.2.2-rc.1",
+    "@deepseek-ai/dsh-ptc-runtime-node": "0.2.1-rc.4 || 0.2.2-rc.1",
+    "@deepseek-ai/dsh-session-reference": "0.2.1-rc.4 || 0.2.2-rc.1"
   },
   "peerDependenciesMeta": {
+    "@deepseek-ai/dsh-llm": {
+      "optional": true
+    },
+    "@deepseek-ai/dsh-ptc-runtime-node": {
+      "optional": true
+    },
     "@deepseek-ai/dsh-session-reference": {
       "optional": true
     }

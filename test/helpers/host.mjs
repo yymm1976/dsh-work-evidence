@@ -8,8 +8,9 @@ import {createRequire,registerHooks} from 'node:module';
 import {pathToFileURL,fileURLToPath} from 'node:url';
 import {randomUUID} from 'node:crypto';
 import {patchToolExecution} from '../../tool-execution.mjs';
+import {DSH_APP} from './paths.mjs';
 
-export const APP=process.env.DSH_APP??'C:/Users/杨铭/AppData/Local/Programs/DSH Desktop/dsh-desktop';
+export const APP=DSH_APP;
 const require=createRequire(path.join(APP,'package.json'));
 const rootZod=path.join(APP,'node_modules','zod');
 const toolsVersion=JSON.parse(readFileSync(require.resolve('@deepseek-ai/dsh-tools/package.json'),'utf8')).version;
@@ -18,6 +19,7 @@ const splitToolExecutor=toolsVersion.startsWith('0.2.2');
 registerHooks({resolve(specifier,context,next){
   try{
     const resolved=next(specifier,context);
+    if(specifier==='@deepseek-ai/dsh-llm'&&!context.conditions?.includes('require'))return next(pathToFileURL(require.resolve(specifier)).href,context);
     if(specifier==='zod'&&resolved.url?.startsWith('file:')){
       const nested=path.dirname(fileURLToPath(resolved.url));
       if(nested!==rootZod&&nested.startsWith(path.join(APP,'node_modules')+path.sep)&&existsSync(path.join(nested,'package.json'))&&

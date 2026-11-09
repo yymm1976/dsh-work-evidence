@@ -8,3 +8,4 @@ __pycache__/
 desktop-*.png
 engineering/*.json
 engineering/*.csv
+*.tgz

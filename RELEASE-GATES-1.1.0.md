@@ -1,0 +1,91 @@
+# Work Evidence 1.1.0 发布门禁
+
+版本：`1.1.0`
+
+模式策略：`pb001-v39`
+
+本文件随最终候选提交发布。候选身份以 Git 提交完整 SHA 为准，并由同目录证据台账记录；不得用较早提交的结果替代最终候选验收。执行类 Gate 与 G6 的最终状态由同一候选 SHA 的验收、审查台账记录，不在提交内预写通过。
+
+## Gate 状态
+
+| Gate | 条件 | 当前证据 | 状态 |
+|---|---|---|---|
+| G0 范围闭环 | 正式功能全部成熟采用或正式淘汰 | 38 个入口逐项记录（`FEATURE-CONTROL-MATRIX-1.1.0.md` 38 行）；`completionNotice` 默认关闭；在线 EGC 与独立候选系统已否决；矩阵描述已按代码更正 11 处 | 待最终 SHA 功能复核 |
+| G1 正确性 | 全量功能、异常和恢复测试通过；无已知 P0/P1 阻塞逻辑错误 | 归档、轨迹、REV、生命周期和发布检查均有复现测试；最终结果以同一候选 SHA 的双宿主全量日志为准，且必须 `fail=0`、`skipped=0` | 待同 SHA 双宿主日志确认 |
+| G2 全功能成熟 | 保留入口、模式、启停、恢复、迁移和错误返回与文档一致 | 功能表、默认配置、退役设置、迁移和回退说明已更新；README 的正式路由改为 `max`，迁移说明补充依赖安装；H13/H15/H16 行为已写入 README 与迁移说明 | 待最终 SHA 功能复核 |
+| G3 效率 | 默认在线开销有证据；重大负优化已处理；收益不夸大 | 最终候选（SHA 见同目录验收台账）：python-dev `+22.86%`（3/3）、python-interp 留出 `+19.07%`（2/2）、 picomatch-dev `+23.60%`（3/3，8k；该任务 `testOutputViews=0`，机制静默已单独标注）、 picomatch 16k 留出 `+27.23%`（2/2；B0 已按同一规则作废 1 条环境无效样本），加权 **+23.19%**； Java dev `+32.85%`、Java 留出 `+31.47%`，两臂全部 `scorer=pass`。 三类项目 dev+holdout 完整且方向不反转；8 个单元因 Windows 作业运行器故障按预注册规则作废并替换，原始记录保留。 | 通过 |
+| G4 宿主与集成 | 两个声明宿主关键路径通过，声明与实测一致 | `0.2.1-rc.4` 与 `0.2.2-rc.1` 使用隔离工作区与 `fflate 0.8.3`；最终结果以同一候选 SHA 的双宿主全量日志为准，日志首行记录实测宿主版本，要求两套宿主均 `fail=0`、`skipped=0` | 待同 SHA 双宿主日志确认 |
+| G5 安全与可靠性 | 无已知 P0/P1 漏洞、越权或状态破坏；故障注入通过 | 路径、归档、非法参数、乱序、重复结果、未结束写入、共享读取取消和资源释放均有测试；新增 `disposal-coordinator.test.mjs` 覆盖 agent/session 清理竞态；最终结果以同一候选 SHA 全量日志为准 | 待同 SHA 全量日志确认 |
+| G6 CodeRabbit | 核心 PR 至少三轮有效审查，最终候选与集成复审覆盖 | 已记录 6 轮实质审查：`5819028970`（7 actionable）、`5819126598`（1）、`5819153830`（0 inline）、`5823492390`（4+1 outside-diff）、`5825371763`（1+1 outside-diff）、`5826437867`（覆盖 `0ce60a6`，1 Major + 4 Minor + 1 nitpick）。最新一轮意见已修复，需在最终 SHA 再做增量复审并确认无新增可操作问题 | 待最终 SHA 增量复审 |
+| G7 实验可信 | 代表试验与离线基线可复现，用量和 `unknown` 口径真实 | 全部正式单元使用 `--effort max`，逐请求校验 provider/model/effort 且 `identityValid=true`；B0 固定 `4978b31`；Java 正则装配缺陷已修并登记；8k 截断单元标为装配无效、不混算；两个独立留出任务正负例校准通过 | 待最终 SHA 配对汇总（G3 未过则 G7 不通过） |
+| G8 构建与文档 | 安装包、依赖、版本、README、迁移、Release Notes 和回退指南一致 | 最终结果以同一候选 SHA 的 `npm run check`、`npm pack` 与独立安装/加载为准；`6c04902` 的 141 文件 check、81 文件 pack、独立安装通过仅作历史记录 | 待同 SHA 重建确认 |
+| G9 最终统一回归 | 从最终候选 SHA 重跑全套关口 | 对包含本表的最终候选提交执行双宿主全量、发布检查和独立安装；结果见同 SHA 验收台账 | 待执行 |
+
+## 证据定位
+
+- 运行日志、打包清单和独立加载结果保存在本地交付证据目录。日志首行记录候选完整 Commit SHA、宿主版本、命令和开始时间；末行记录退出码和结束时间。
+- 审查轮次、reviewed SHA、意见处置和跳过记录见 [CodeRabbit 台账](coderabbit-review-ledger.md)。该台账确认最终候选的本文件已实际审阅且真实问题已处理后，G6 才通过。
+- 私人原始会话、事件正文、真实账单和本机绝对路径不进入公开仓库。
+- 宿主验收要求 `skipped=0`：若 profile 缺少 OPS 或 FastEdit Python 路径缺失，相关测试会跳过，`node --test` 仍可能以 0 退出；这类运行不得记为 G1/G4 通过。验收前必须准备隔离 profile 与 `DSH_TEST_FASTEDIT_PYTHON`，并核对日志中的 skipped 计数。
+
+## L0–L5 门禁
+
+| 层级 | 已执行内容 | 证据 |
+|---|---|---|
+| L0 快速 | 全部仓库 JavaScript 语法检查、版本与配置一致性、`git diff --check` | `npm run check`、`test/release-syntax.test.mjs`、`test/release-metadata.test.mjs` |
+| L1 单元 | 模块、状态机、配置、路径、失败边界和证据失效规则 | `test/` 下的单元与回归测试 |
+| L2 全量 | 全部 Node 测试、功能交互、历史兼容和实验工具链 | `node --test` |
+| L3 宿主 | 双宿主加载、原生工具、PTC、模式、生命周期和组合路径 | 隔离宿主工作区的完整 `node --test` |
+| L4 发布 | 独立安装、文件清单、打包、版本、文档和插件加载 | `npm pack --json` 后的临时目录安装与加载 |
+| L5 可靠性 | 归档故障注入、并发、路径安全、性能和长会话边界 | `test/evidence-archive.test.mjs`、轨迹重放和相关宿主测试 |
+
+## 最终验收命令
+
+以下路径均为占位符。运行前必须把 `DSH_APP`、`DSH_PROFILE`、`DSH_TEST_FASTEDIT_PYTHON` 和 `DSH_TEST_PYTHON` 换成待验收环境的实际路径。
+
+保存宿主：
+
+```powershell
+$env:DSH_APP='<saved-host-0.2.1-rc.4>'
+$env:DSH_PROFILE='<dsh-profile>'
+$env:DSH_TEST_FASTEDIT_PYTHON='<candidate-checkout>/.fastedit-venv/Scripts/python.exe'
+$env:DSH_TEST_PYTHON='<test-python-3.12>'
+(Get-Content "$env:DSH_APP/node_modules/@deepseek-ai/dsh-tools/package.json" -Raw | ConvertFrom-Json).version
+node --test
+```
+
+桌面宿主：
+
+```powershell
+$env:DSH_APP='<desktop-host-0.2.2-rc.1>'
+$env:DSH_PROFILE='<dsh-profile>'
+$env:DSH_TEST_FASTEDIT_PYTHON='<candidate-checkout>/.fastedit-venv/Scripts/python.exe'
+$env:DSH_TEST_PYTHON='<test-python-3.12>'
+(Get-Content "$env:DSH_APP/node_modules/@deepseek-ai/dsh-tools/package.json" -Raw | ConvertFrom-Json).version
+node --test
+```
+
+G4 完成前必须同时保留两次运行各自的宿主版本与结果记录，并确认两次日志均为 `fail=0`、`skipped=0`。宿主版本取自该宿主 `node_modules/@deepseek-ai/dsh-tools/package.json`，不是 `DSH_APP` 自身的 `package.json`（保存宿主的该文件没有 version 字段）。两次记录的版本相同时，不算覆盖两个受支持版本，必须换用另一版本重跑其中一次。
+
+发布包：
+
+```powershell
+npm run check
+npm pack --json
+```
+
+在临时目录安装 tarball 后加载 `index.mjs`，核对 `feature-control.mjs` 的 38 个入口、版本、`fflate 0.8.3` 和发布文件清单。发布包不含 `node_modules`，独立安装必须先安装 `fflate 0.8.3` 或由宿主提供。
+
+## 已知非阻塞限制
+
+- 归档解码在内存中完成，未实现流式解压。归档文件上限为 128 MiB；普通文本条目解压后上限为 8 MiB；`META-INF/MANIFEST.MF` 和 Maven `pom.properties` 的解析上限为 64 KiB。
+- 验证环境为 Windows 和 Node.js 22.19；其他平台不做未经验证的声明。
+- 真实账单、网关内部重试和底层模型权重不可见。
+- 历史轨迹来自旧版本和旧通道，没有独立留出集，不支持普遍精确率、召回率或 Token 收益结论。
+- CodeRabbit 文档注释覆盖率警告不是功能正确性证明；未真实覆盖的审查轮次不得计入 G6。
+- 测试输出回执是请求视图，不改变规范事件；`node --test` 只对带完整 TAP 摘要的输出生成回执。
+- 单次任务失败与插件机制无因果关系时，按实验装配或任务难度单独登记，不并入插件质量结论。
+
+## 发布状态
+
+本版本只有在 G0–G9 全部对同一候选通过后才能标记为稳定 `1.1.0`。当前 G3/G7 仍未通过，稳定版不发布；远端合并和正式发布仍由仓库治理权限决定。

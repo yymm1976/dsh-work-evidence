@@ -7,6 +7,7 @@ import {readRun,tokenFields,writeJson,VERSION} from './experiment-store.mjs';
 import {taskRequestConsumption} from './experiment-consumption.mjs';
 
 const safeId=value=>typeof value==='string'&&/^[-a-zA-Z0-9_][-.a-zA-Z0-9_]{0,127}$/.test(value);
+const desktopApp=value=>path.resolve(value?.trim()||process.env.DSH_APP?.trim()||path.join(os.homedir(),'AppData','Local','Programs','DSH Desktop','dsh-desktop'));
 export function checkedLabel(value) {
   const allowed=['taskKey','contextKey','variant','rubric','evaluator','outcome','score','evidence','notes','recordedAt'];
   if(!value||typeof value!=='object'||Array.isArray(value)||Object.keys(value).some(key=>!allowed.includes(key)))throw new Error('Unrecognized assessment fields');
@@ -209,7 +210,7 @@ async function main() {
     if(!safeId(options.off)||!safeId(options.on)||options.off===options.on||!options.task||!options.context)throw new Error('pair requires different --off and --on session IDs, --task and --context');
     const {importSession}=await import('./experiment-native.mjs');
     for(const [sessionId,variant] of [[options.off,'recorder-only'],[options.on,'work-evidence']]){
-      await importSession({directory,sessionId,variant,home,app:options.app||'C:/Users/杨铭/AppData/Local/Programs/DSH Desktop/dsh-desktop'});
+      await importSession({directory,sessionId,variant,home,app:desktopApp(options.app)});
       const labelFile=path.join(directory,'labels',sessionId+'.json');let previous=null;
       try{previous=JSON.parse(await fs.readFile(labelFile,'utf8'));}catch(error){if(error.code!=='ENOENT')throw error;}
       if(previous&&(previous.taskKey!==options.task||previous.contextKey!==options.context||previous.variant!==variant))throw new Error('Existing session label disagrees with this pair; use explicit label to change it');
@@ -222,7 +223,7 @@ async function main() {
     if(options.session&&!safeId(options.session))throw new Error('Invalid session id');
     if(!!options.session===!!options.file)throw new Error('Specify exactly one of --session or --file');
     const {importSession}=await import('./experiment-native.mjs');
-    console.log(JSON.stringify(await importSession({directory,sessionId:options.session,variant:options.variant,home,app:options.app||'C:/Users/杨铭/AppData/Local/Programs/DSH Desktop/dsh-desktop',file:options.file,observations:options.observations}),null,2));return;
+    console.log(JSON.stringify(await importSession({directory,sessionId:options.session,variant:options.variant,home,app:desktopApp(options.app),file:options.file,observations:options.observations}),null,2));return;
   }
   const {runs,problems}=await readRuns(directory);
   if(command==='show'){

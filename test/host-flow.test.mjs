@@ -15,6 +15,23 @@ async function scenario(workspace,request,steps,{setup,extraMounts=[],usage}={})
 }
 const resultTexts=run=>run.events.filter(e=>e.type==='tool/result').map(e=>e.data.message.content.map(b=>b.text??'').join(''));
 
+test('compact tool definitions stay within the fixed schema budget',async()=>{
+  const host=await startHost({script:async()=>[text('完成。')]});
+  try{
+    const agent=await host.createAgent('max');await host.send(agent,'实现一个函数并运行测试。');
+    const tools=host.requests[0]?.tools??[];
+    const workExec=tools.find(item=>item.name==='work_exec');
+    const workRecall=tools.find(item=>item.name==='work_recall');
+    assert.ok(workExec,'work_exec remains available on the compact writable surface');
+    assert.ok(workRecall,'work_recall remains available on the compact writable surface');
+    // The 2026-11-08 v4 samples rejected shorter descriptions: the saved tokens per request
+    // were outweighed by extra retries and reads. Keep the complete documented definitions
+    // inside their measured ceilings instead of re-compressing them without fresh evidence.
+    assert.ok(JSON.stringify(workExec).length<=2700,'work_exec schema stays within its documentation-backed budget');
+    assert.ok(JSON.stringify(workRecall).length<=1850,'work_recall schema stays within its documentation-backed budget');
+  }finally{await host.close();}
+});
+
 test('executionTriage identifies repeated failures and repeated successful calls only when enabled',async()=>{
   const bad=tool('pwsh',{command:"node -e \"throw new Error('boom 42')\"",description:'run'});
   const good=tool('pwsh',{command:'echo same-output',description:'echo'});

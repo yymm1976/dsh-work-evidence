@@ -5,15 +5,16 @@ import path from 'node:path';
 import {existsSync} from 'node:fs';
 import {pathToFileURL} from 'node:url';
 import {startHost,text,tool} from './helpers/host.mjs';
+import {OPS_ROOT,pythonFileAvailable} from './helpers/paths.mjs';
 
 // OPS is a profile package, not part of the desktop runtime; skip when it is absent.
-const OPS_ROOT='C:/Users/杨铭/Documents/DSH Desktop/home/profiles/web/node_modules/dsh-ops/lib/components';
-const hasOps=existsSync(OPS_ROOT+'/file/index.js');
-const PYTHON=process.env.DSH_TEST_FASTEDIT_PYTHON??path.resolve(import.meta.dirname,'..','.fastedit-venv','Scripts','python.exe');
+const opsRoot=OPS_ROOT;
+const hasOps=existsSync(opsRoot+'/file/index.js');
+const PYTHON=process.env.DSH_TEST_FASTEDIT_PYTHON||path.resolve(import.meta.dirname,'..','.fastedit-venv','Scripts','python.exe');
 
 async function opsMounts(){
-  const file=await import(pathToFileURL(OPS_ROOT+'/file/index.js').href);
-  const discovery=await import(pathToFileURL(OPS_ROOT+'/discovery/index.js').href);
+  const file=await import(pathToFileURL(opsRoot+'/file/index.js').href);
+  const discovery=await import(pathToFileURL(opsRoot+'/discovery/index.js').href);
   return [[file,{promptPolicy:false,required:true}],[discovery,{enabled:true,alwaysLoaded:['stat','edit_file','write_file'],required:true}]];
 }
 const resultsOf=host=>host.events.filter(e=>e.type==='tool/result').map(e=>JSON.parse(e.data.message.content.map(b=>b.text??'').join('')));
@@ -57,7 +58,7 @@ test('verified_exec keeps replacement text literal and addresses every edit in t
   assert.equal(read['a.txt'],literal+' changed\n');
 });
 
-test('fastedit_java finds, reads and replaces one method through the native pwsh bridge', {skip:!hasOps||!existsSync(PYTHON)}, async()=>{
+test('fastedit_java finds, reads and replaces one method through the native pwsh bridge', {skip:!hasOps||!pythonFileAvailable(PYTHON)}, async()=>{
   const java='public class Calc {\n  public int add(int a, int b) {\n    return a + b;\n  }\n\n  public int sub(int a, int b) {\n    return a - b;\n  }\n}\n';
   const replacement='public int add(int a, int b) {\n    return b + a;\n  }';
   const {results,read}=await run([
@@ -76,6 +77,23 @@ test('fastedit_java finds, reads and replaces one method through the native pwsh
   assert.match(read['Calc.java'],/return b \+ a;/);
   assert.match(read['Calc.java'],/return a - b;/,'the other method is untouched');
   assert.equal(results[4].status,'deopt');
+});
+
+test('fastEditEnabled disables fastedit_java and restores it in the same host session', {skip:!hasOps||!pythonFileAvailable(PYTHON)}, async()=>{
+  const java='public class Calc {\n  public int add(int a, int b) {\n    return a + b;\n  }\n}\n';
+  const host=await startHost({workspace:{toolSurface:'full',fastEditEnabled:false,fastEditPython:PYTHON},extraMounts:await opsMounts(),
+    script:(_o,n)=>n===1||n===3?[tool('fastedit_java',{file:'Calc.java',operation:'find_entity',symbol:'Calc.add'})]:[text('已记录结果。')]});
+  try{
+    await fs.writeFile(path.join(host.cwd,'Calc.java'),java);
+    const agent=await host.createAgent('max');
+    await host.send(agent,'定位 Calc.add。');
+    assert.equal(resultsOf(host).at(-1).reason,'fastedit-disabled');
+    const changed=await host.command(agent,'feature fastEditEnabled on');
+    assert.equal(changed.readiness.features[0].configured,true);
+    await host.send(agent,'再次定位 Calc.add。');
+    const restored=resultsOf(host).at(-1);
+    assert.equal(restored.status,'found',JSON.stringify(restored));
+  }finally{await host.close();}
 });
 
 test('readArgumentRecovery corrects a flat OPS read once and can be disabled', {skip:!hasOps}, async()=>{

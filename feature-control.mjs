@@ -107,9 +107,11 @@ export function createFeatureControl(ctx,runtime,{available,canRecall,workingSet
       if(status==='ready'){
         for(const dependency of REQUIRES[key]??[])if(!config[dependency])reasons.push('requires-setting:'+dependency);
         if(key==='defaultResponseView'&&effectiveValue==='reference-if-visible'&&!config.evidenceViews)reasons.push('requires-setting:evidenceViews');
+        if(key==='ledgerReceipt'&&!config.evidenceViews)reasons.push('requires-setting:evidenceViews');
         if(['qualityReviewEffort','qualityReviewScope'].includes(key)&&!config.qualityReview)reasons.push('requires-setting:qualityReview');
-        if(['swEviction','requestProjection','projectionRestore','ledgerReceipt','historyHygiene','stubSummary'].includes(key)&&canRecall(agent)!==true)reasons.push('historical-recall-not-exposed');
+        if(['contextProtocol','swEviction','requestProjection','projectionRestore','ledgerReceipt','historyHygiene','stubSummary'].includes(key)&&canRecall(agent)!==true)reasons.push('historical-recall-not-exposed');
         if(['stubSummary','deferPressureCompaction'].includes(key)&&!nativeCompaction)reasons.push('native-compaction-not-attached');
+        if(key==='deferPressureCompaction'&&runtime.hasRequestBudgetView?.(agent)!==true)reasons.push('request-budget-view-unavailable');
         if(['nativeProgramReuse','structuredCalls'].includes(key)&&!ptc)reasons.push('requires-ptc-tool-mode');
         if(key==='structuredCalls'&&(native?.language!=='typescript'||native?.programFormat!=='function-body'))reasons.push('requires-typescript-function-body-runtime');
         if(['archiveReadRouting','memberParsing','mavenSourceBinding'].includes(key)&&!service('fs'))reasons.push('native-filesystem-unavailable');
@@ -120,9 +122,15 @@ export function createFeatureControl(ctx,runtime,{available,canRecall,workingSet
           if(!['pwsh','ops_bash','bash'].some(tool=>available(agent,tool)))reasons.push('authorized-shell-unavailable');
         }
         if(['requestProjection','projectionRestore'].includes(key)&&workingSet.metrics(agent).adapter==='unavailable')reasons.push('projection-adapter-unavailable');
+        // Projection is off, work_state is hidden and executionTriage already records
+        // executions, so this setting has no consumer the current session can reach.
+        if(key==='stageWorkingSet'&&config.executionTriage&&!(config.requestProjection&&config.projectionRestore)&&
+          !available(agent,'work_state'))reasons.push('inactive-without-reachable-consumer');
         if(key==='qualityReview'&&(!selection?.provider||!selection?.model))reasons.push('main-model-route-unavailable');
         if(key==='retainedCompute')for(const name of retained.missingDependencies)reasons.push('native-service-unavailable:'+name);
-        if(reasons.length)status='blocked';
+        // A request projection exists only after a source body was actually hidden. Before that,
+        // deferPressureCompaction has no budget view yet, but it is not permanently blocked.
+        if(reasons.length)status=key==='deferPressureCompaction'&&reasons.length===1&&reasons[0]==='request-budget-view-unavailable'?'waiting':'blocked';
         else if(key==='retainedCompute'&&retained.loadFailure){status='waiting';reasons.push('retained-runtime-retry-on-next-call');}
         else if(key==='nativeReasoningReplay'&&!/(?:^|\/)deepseek-/iu.test(selection?.model??'')){status='waiting';reasons.push('requires-matching-deepseek-tool-history');}
         else if(key==='qualityReview'&&runtime.modeStatus(agent).selected!=='quality'){status='waiting';reasons.push('requires-ultra-quality-mode');}

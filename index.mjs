@@ -38,6 +38,7 @@ import {createHistoryCoordinator} from './history-coordinator.mjs';
 import {planContextPrune,prunableMessage,hasPruneProblem,readDispatch,historyReferences} from './context-pruning.mjs';
 import {createHistoryHygiene} from "./history-hygiene.mjs";
 import {createReferenceContext} from './reference-context.mjs';
+import {createDisposalCoordinator} from './disposal-coordinator.mjs';
 
 import {createRetainedCompute} from './retained-compute.mjs';
 import {createFinalJsonGuard} from './final-json.mjs';
@@ -113,6 +114,7 @@ export function apply(ctx,config={}){
   const hostReferences=createHostReferences(ctx);
   const pendingSaves=new Set();
   const runtime=createRuntime(ctx,call,config),state=runtime.get;
+  const disposal=createDisposalCoordinator(id=>runtime.dispose(id));
   installExecutionDescriptionCompatibility(ctx,runtime);
   installNativeReadArgumentRecovery(ctx,runtime);
   const disposeUltra=installUltraEffort(ctx,{requestView:options=>nativeReasoningReplayRequest(ctx,runtime,options)});
@@ -296,10 +298,11 @@ export function apply(ctx,config={}){
           if(!prunableMessage(originalEvent.data?.message)||
             preserveContextResults.has(session.id+':'+(originalEvent.data.message.source?.callId??originalEvent.data.message.toolCallId)))continue;
           const original=session.deriveEventMessage(originalEvent);
+          const focus=new Set((taskFlow.phase(agent).focus??[]).map(file=>sourceKey(agent,file)));
           const result=planContextPrune(original,item.reads,{
             seq,thresholdChars:s.config.contextPruneMinChars,
             headChars:s.config.contextPruneHeadChars,tailChars:s.config.contextPruneTailChars,
-            retainSource:file=>retainedSources(agent).has(sourceKey(agent,file))||historyHygiene.retainsSource(agent,file),
+            retainSource:file=>retainedSources(agent).has(sourceKey(agent,file))||historyHygiene.retainsSource(agent,file)||focus.has(sourceKey(agent,file)),
           });
           if(!result){effects.decide(agent,'contextPrune','not-applicable','no-safe-source-reduction',{seq});continue;}
           if(!canRecall(agent)){
@@ -625,7 +628,7 @@ export function apply(ctx,config={}){
     const messages=[...await maintenance(payload),...taskFlow.beforeStep(payload.agent,decision.messages,locations)];
     return messages.length?{...decision,messages:[...decision.messages,...messages]}:decision;
   },{prepend:true});
-  ctx.on('agent/disposed',async({agent})=>{await Promise.allSettled([...pendingSaves]);try{toolSurfaceDisposers.get(agent.session.id)?.dispose?.();}catch{}toolSurfaceDisposers.delete(agent.session.id);contextPruning.delete(agent.session.id);pendingContextPrunes.delete(agent.session.id);contextRetainedSources.delete(agent.session.id);for(const key of contextReadCalls.keys())if(key.startsWith(agent.session.id+':'))contextReadCalls.delete(key);for(const key of preserveContextResults)if(key.startsWith(agent.session.id+':'))preserveContextResults.delete(key);try{await retainedCompute.disposeAgent(agent);}catch(error){runtime.problem(state(agent),'retained-compute-cleanup',error.message);}await effects.disposeAgent(agent);historyCoordinator.disposeAgent(agent);workingSet.disposeAgent(agent);historyHygiene.disposeAgent(agent);contextEconomics.clear(agent);taskFlow.disposeAgent(agent);executionEvidence.disposeAgent(agent);runtime.dispose(agent.session.id);});
+  ctx.on('agent/disposed',({agent})=>disposal.agentDisposed(agent.session.id,async()=>{await Promise.allSettled([...pendingSaves]);try{toolSurfaceDisposers.get(agent.session.id)?.dispose?.();}catch{}toolSurfaceDisposers.delete(agent.session.id);contextPruning.delete(agent.session.id);pendingContextPrunes.delete(agent.session.id);contextRetainedSources.delete(agent.session.id);for(const key of contextReadCalls.keys())if(key.startsWith(agent.session.id+':'))contextReadCalls.delete(key);for(const key of preserveContextResults)if(key.startsWith(agent.session.id+':'))preserveContextResults.delete(key);try{await retainedCompute.disposeAgent(agent);}catch(error){runtime.problem(state(agent),'retained-compute-cleanup',error.message);}await effects.disposeAgent(agent);historyCoordinator.disposeAgent(agent);workingSet.disposeAgent(agent);historyHygiene.disposeAgent(agent);contextEconomics.clear(agent);taskFlow.disposeAgent(agent);executionEvidence.disposeAgent(agent);runtime.dispose(agent.session.id);}));
   async function saveInterruption(agent,{turn,step,provider,reason,signal,observed}){
     const sessionId=agent.session.id,s=state(agent);
     if(!observed.active||s.notedTurn>=turn||s.savingTurn===turn||!/^[-a-zA-Z0-9_][-.a-zA-Z0-9_]{0,127}$/.test(sessionId))return;
@@ -649,6 +652,7 @@ export function apply(ctx,config={}){
     pendingSaves.add(promise);promise.finally(()=>pendingSaves.delete(promise));return promise;
   }
   ctx.on('agent/disposed',({agent})=>{taskSurfaceModes.delete(agent.session.id);});
+  ctx.on('session/disposed',session=>{void disposal.sessionDisposed(session.id);});
   ctx.on('agent/request-error',async(payload,next)=>{
     const action=await next();
     if(action?.kind==='retry'||payload.signal.aborted)return action;
@@ -656,14 +660,16 @@ export function apply(ctx,config={}){
     return action;
   });
   ctx.on('session/event',(session,event)=>{
-    const s=state({session});
     if(event.type==='turn/start')return;
     const owner=ctx.agents.get(session.id);if(owner)runtime.sync(owner);
-    if(event.type!=='turn/end'||!s.active)return;
+    if(event.type!=='turn/end')return;
+    const agent=ctx.agents.get(session.id);
+    if(!agent)return;
+    const s=state(agent);
+    if(!s.active)return;
     const reason=event.data?.reason?.kind;
     if(reason==='completed'&&s.reportedCurrentTurn)return;
     if(!['completed','max-tokens','error','interrupted','blocked'].includes(reason))return;
-    const agent=ctx.agents.get(session.id);if(!agent)return;
     void trackedSave(agent,{turn:event.data.turn,reason:reason==='completed'?'completed-without-work-report':reason,signal:AbortSignal.timeout(8000)});
     const receipt=runtime.receipt(agent,AbortSignal.timeout(8000),true);pendingSaves.add(receipt);receipt.finally(()=>pendingSaves.delete(receipt));
   });

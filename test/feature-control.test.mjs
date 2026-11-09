@@ -104,6 +104,7 @@ test('feature readiness distinguishes required settings, runtime dependencies an
     assert.ok(entry('qualityReview').reasons.includes('requires-ultra-quality-mode'));
     assert.ok(entry('stubSummary').reasons.includes('native-compaction-not-attached'));
     assert.ok(entry('deferPressureCompaction').reasons.includes('native-compaction-not-attached'));
+    assert.ok(entry('deferPressureCompaction').reasons.includes('request-budget-view-unavailable'));
     const summary=await host.command(agent,'status');assert.ok(summary.featureReadiness.blocked.some(item=>item.key==='fastEditEnabled'));
     const changed=await host.command(agent,'config {"swLedger":true,"finalJsonGuard":true}');
     assert.equal(changed.readiness.features.find(item=>item.key==='swEviction').status,'ready');
@@ -158,6 +159,8 @@ test('dependent settings explain the switch that currently prevents their effect
     let view=await host.command(agent,'features'),entry=key=>view.features.find(item=>item.key===key);
     assert.equal(entry('defaultResponseView').status,'blocked');
     assert.deepEqual(entry('defaultResponseView').reasons,['requires-setting:evidenceViews']);
+    assert.equal(entry('ledgerReceipt').status,'blocked');
+    assert.ok(entry('ledgerReceipt').reasons.includes('requires-setting:evidenceViews'));
     for(const key of ['qualityReviewEffort','qualityReviewScope']){
       assert.equal(entry(key).status,'blocked');
       assert.deepEqual(entry(key).reasons,['requires-setting:qualityReview']);

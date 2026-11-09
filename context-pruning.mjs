@@ -176,7 +176,7 @@ export function planContextPrune(message,reads,options){
       const text=block.text??'';
       const repeated=repeatedLineOperations(text,{seq:options.seq,offset});
       let cleaned=applyOperations(text,repeated),stat=null;
-      if(options.dedupSegments!==false&&process.env.DSH_EXPERIMENT_STUB_DEDUP!=='0'){
+      if(options.dedupSegments!==false){
         const deduped=dedupOperations(text,{seq:options.seq,offset});
         if(deduped){
           const outside=repeated.filter(operation=>!deduped.operations.some(range=>

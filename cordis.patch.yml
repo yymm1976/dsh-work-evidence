@@ -361,6 +361,7 @@
             name: '@deepseek-ai/dsh-plugin-market/tools'
             disabled: true
           - id: work-evidence-flash1017-route
+            name: '@local/dsh-work-evidence/flash1017-preset'
     - id: preset-work-evidence-flash1017-workflow013c
       name: '@deepseek-ai/dsh-agent-preset'
       config:

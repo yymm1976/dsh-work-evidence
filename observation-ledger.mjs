@@ -364,8 +364,14 @@ export function createObservationLedger(ctx,runtime,nativeFiles=null){
     const original=textBlocks(result.content);
     const prepared={source,windows,stats,priorById:new Map(),receipt:null,original,bodyHash:hashOf(original)};
     if(!config(agent).ledgerReceipt)return skip('disabled',prepared);
+    // A receipt shortens a body that the reference view must still be able to show.
+    // Disabling evidenceViews therefore disables receipts even for an explicit
+    // responseView:"reference-if-visible" request.
+    if(!config(agent).evidenceViews)return skip('disabled',prepared);
     if(runtime.canRecall?.(agent)!==true)return skip('historical-recall-unavailable',prepared);
-    const defaultView=runtime.get(agent).sessionDefaultResponseView??config(agent).defaultResponseView;
+    // The panel blocks the reference view without evidenceViews; receipts must not
+    // keep shortening bodies behind that blocked view.
+    const defaultView=config(agent).evidenceViews?(runtime.get(agent).sessionDefaultResponseView??config(agent).defaultResponseView):'full';
     if((source.arguments?.responseView??defaultView)==='full'||reads.some(read=>read.arguments?.responseView==='full'))return skip('explicit-full-view',prepared);
     if(original.length<MIN_RECEIPT_BODY)return skip('smallBody',prepared);
     if(!projection){
@@ -617,9 +623,13 @@ export function createObservationLedger(ctx,runtime,nativeFiles=null){
     }
     const unresolved=configNow.ledgerUnresolved?unresolvedItems(state,agent):[];
     // Successful authored writes invalidate history without creating a new
-    // requirement to reread it. Legacy search/write notices describe that same
-    // invalidation; retain those facts in status instead of prompting twice.
-    if(configNow.ledgerUnresolved)runtime.get(agent).pendingStateNotice=null;
+    // requirement to reread it. The card describes stale read windows only, so a
+    // stale search hit keeps its state notice instead of being dropped.
+    const pendingNotice=runtime.get(agent).pendingStateNotice;
+    if(pendingNotice){
+      if(pendingNotice.searches)pendingNotice.observations=0;
+      else runtime.get(agent).pendingStateNotice=null;
+    }
     const unresolvedSignature=unresolved.map(item=>[item.kind,item.ordinal??item.seq??'',item.path??item.tool??'',item.text??''].join(':')).join('|');
     if(configNow.ledgerUnresolved&&!unresolved.length)state.injectedUnresolvedSignature='';
     const unresolvedChanged=configNow.ledgerUnresolved&&unresolved.length>0&&unresolvedSignature!==state.injectedUnresolvedSignature;
@@ -636,7 +646,7 @@ export function createObservationLedger(ctx,runtime,nativeFiles=null){
         if(item.kind==='stale')lines.push(`- ${item.path} changed at its source; ${item.count} earlier observation${item.count===1?' is':'s are'} historical (${item.ordinals.map(value=>'obs#'+value).join(', ')}). Obtain current content only if a remaining decision depends on it.`);
         else if(item.kind==='conflict')lines.push(`- ${item.path} has two visible revisions at obs#${item.first} and obs#${item.second}; the later observation is current.`);
         else if(item.kind==='negative')lines.push(`- ${item.tool} ${argText(item.arguments)} returned no matches in two identical completed observations; that is a negative fact for the recorded scope and arguments.`);
-        else if(item.kind==='reasoning')lines.push(`- reasoning at event ${item.seq} states: ${item.text}`);
+        else if(item.kind==='reasoning')lines.push(`- reasoning at event ${item.seq} recorded a conclusion that is not yet reflected in visible text; retrieve that event with work_recall if a decision depends on it.`);
       }
     }
     const fullText=lines.join('\n'),text=fullText.length<=MAX_CARD_CHARS?fullText:fullText.slice(0,MAX_CARD_CHARS-90)+'\nAdditional observations are available through work_state({mode:"detail"}).';

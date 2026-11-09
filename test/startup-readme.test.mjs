@@ -20,6 +20,16 @@ function fixture(files,{blocked=[],stepPacing=true}={}){
   return {lookups,globs,decisions,run:value=>flow.startupPaths({session:{id:'source-location'}},pending(value),AbortSignal.timeout(10000))};
 }
 
+test('README routes subagents through ZCode and forbids Codex CLI fallbacks',async()=>{
+  const readme=await fs.readFile(path.resolve(import.meta.dirname,'..','README.md'),'utf8');
+  assert.match(readme,/必须使用 ZCode 的 Agent 工具启动/u);
+  assert.match(readme,/不得使用 Codex CLI、`codex exec`、`multi_agent_v1__spawn_agent`/u);
+  assert.match(readme,/复审子代理只读/u);
+  assert.match(readme,/没有报告不能记为已复审/u);
+  assert.match(readme,/`subagent-unavailable`/u);
+  assert.doesNotMatch(readme,/multi_agent_v1__spawn_agent\(\{/u);
+});
+
 test('reStructuredText paths are recognized alongside the existing source extensions',()=>{
   assert.deepEqual(textPaths('读 docs/README.rst、src/main.py 和 README.md。'),['docs/README.rst','src/main.py','README.md']);
   assert.deepEqual(textPaths('README.rstx'),[]);
