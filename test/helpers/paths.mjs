@@ -15,11 +15,14 @@ export const DSH_PROFILE=resolveOverride(process.env.DSH_PROFILE,path.join(home,
 export const DSH_PYTHON=resolveOverride(process.env.DSH_TEST_PYTHON,path.join(home,'Documents','DSH Desktop','runtime','python312','python.exe'),true);
 /** A bare interpreter name (for example `python.exe`) resolves through PATH,
  *  not the checkout directory. Use this for test skip conditions. */
-export const pythonAvailable=()=>{
-  if(path.isAbsolute(DSH_PYTHON)||/[\\/]/u.test(DSH_PYTHON))return fs.existsSync(DSH_PYTHON);
+export const pythonExecutableAvailable=value=>{
+  const name=String(value??'').trim();
+  if(!name)return false;
+  if(path.isAbsolute(name)||/[\\/]/u.test(name))return fs.existsSync(name);
   const extensions=process.platform==='win32'?['',...(process.env.PATHEXT||'.EXE').split(';')]:[''];
   return (process.env.PATH||'').split(path.delimiter).some(directory=>
-    extensions.some(extension=>fs.existsSync(path.join(directory,DSH_PYTHON+extension))));
+    extensions.some(extension=>fs.existsSync(path.join(directory,name+extension))));
 };
+export const pythonAvailable=()=>pythonExecutableAvailable(DSH_PYTHON);
 export const ACP_ENTRY=path.join(DSH_PROFILE,'node_modules','billion-context-dsh','dist','index.js');
 export const OPS_ROOT=path.join(DSH_PROFILE,'node_modules','dsh-ops','lib','components');
