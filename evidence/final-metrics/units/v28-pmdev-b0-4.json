@@ -1,0 +1,64 @@
+{
+ "file": "v28-pmdev-b0-4.json",
+ "arm": "b0",
+ "task": "picomatch-dev-filter-paths-v7",
+ "candidate": "dsh-1.1.0-b0-4978b31",
+ "pluginHash": "e6f297ff1f28297adc09f2bf6006b4377d883d14ed5e8618ca35474b6293e8e9",
+ "pluginHashAlgorithm": "sha256-sorted-relative-files-v1; excludes .git/node_modules/.fastedit-venv",
+ "hostToolsVersion": "0.2.1-rc.4",
+ "node": "v22.19.0",
+ "maxTokens": 8000,
+ "reasoningEffort": "max",
+ "identityValid": true,
+ "completeSuccess": true,
+ "delivered": true,
+ "scorerStatus": "pass",
+ "requests": 7,
+ "toolCalls": 11,
+ "wallMs": 53052,
+ "usages": [
+  {
+   "inputTokens": 1050,
+   "cacheReadTokens": 2048,
+   "outputTokens": 75,
+   "totalTokens": 3173
+  },
+  {
+   "inputTokens": 215,
+   "cacheReadTokens": 3072,
+   "outputTokens": 115,
+   "totalTokens": 3402
+  },
+  {
+   "inputTokens": 1494,
+   "cacheReadTokens": 3200,
+   "outputTokens": 390,
+   "totalTokens": 5084
+  },
+  {
+   "inputTokens": 5459,
+   "cacheReadTokens": 4608,
+   "outputTokens": 182,
+   "totalTokens": 10249
+  },
+  {
+   "inputTokens": 3961,
+   "cacheReadTokens": 9984,
+   "outputTokens": 2494,
+   "totalTokens": 16439
+  },
+  {
+   "inputTokens": 2833,
+   "cacheReadTokens": 13824,
+   "outputTokens": 162,
+   "totalTokens": 16819
+  },
+  {
+   "inputTokens": 701,
+   "cacheReadTokens": 16640,
+   "outputTokens": 156,
+   "totalTokens": 17497
+  }
+ ],
+ "cost": 0.004661478
+}

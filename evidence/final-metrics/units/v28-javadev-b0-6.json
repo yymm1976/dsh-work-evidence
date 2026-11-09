@@ -1,0 +1,76 @@
+{
+ "file": "v28-javadev-b0-6.json",
+ "arm": "b0",
+ "task": "dsh-java-dev-001-compiletest-current-api",
+ "candidate": "dsh-1.1.0-b0-4978b31",
+ "pluginHash": "e6f297ff1f28297adc09f2bf6006b4377d883d14ed5e8618ca35474b6293e8e9",
+ "pluginHashAlgorithm": "sha256-sorted-relative-files-v1; excludes .git/node_modules/.fastedit-venv",
+ "hostToolsVersion": "0.2.1-rc.4",
+ "node": "v22.19.0",
+ "maxTokens": 8000,
+ "reasoningEffort": "max",
+ "identityValid": true,
+ "completeSuccess": true,
+ "delivered": true,
+ "scorerStatus": "pass",
+ "requests": 9,
+ "toolCalls": 14,
+ "wallMs": 165324,
+ "usages": [
+  {
+   "inputTokens": 195,
+   "cacheReadTokens": 2944,
+   "outputTokens": 154,
+   "totalTokens": 3293
+  },
+  {
+   "inputTokens": 16665,
+   "cacheReadTokens": 3072,
+   "outputTokens": 386,
+   "totalTokens": 20123
+  },
+  {
+   "inputTokens": 15607,
+   "cacheReadTokens": 20096,
+   "outputTokens": 410,
+   "totalTokens": 36113
+  },
+  {
+   "inputTokens": 18551,
+   "cacheReadTokens": 36096,
+   "outputTokens": 305,
+   "totalTokens": 54952
+  },
+  {
+   "inputTokens": 582,
+   "cacheReadTokens": 54912,
+   "outputTokens": 323,
+   "totalTokens": 55817
+  },
+  {
+   "inputTokens": 1318,
+   "cacheReadTokens": 55808,
+   "outputTokens": 1530,
+   "totalTokens": 58656
+  },
+  {
+   "inputTokens": 257,
+   "cacheReadTokens": 58624,
+   "outputTokens": 141,
+   "totalTokens": 59022
+  },
+  {
+   "inputTokens": 183,
+   "cacheReadTokens": 59008,
+   "outputTokens": 120,
+   "totalTokens": 59311
+  },
+  {
+   "inputTokens": 471,
+   "cacheReadTokens": 59264,
+   "outputTokens": 380,
+   "totalTokens": 60115
+  }
+ ],
+ "cost": 0.011373222
+}

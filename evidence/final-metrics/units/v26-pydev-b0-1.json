@@ -1,0 +1,88 @@
+{
+ "file": "v26-pydev-b0-1.json",
+ "arm": "b0",
+ "task": "python-dotenv-dev-load-layers-v11",
+ "candidate": "dsh-1.1.0-b0-4978b31",
+ "pluginHash": "e6f297ff1f28297adc09f2bf6006b4377d883d14ed5e8618ca35474b6293e8e9",
+ "pluginHashAlgorithm": "sha256-sorted-relative-files-v1; excludes .git/node_modules/.fastedit-venv",
+ "hostToolsVersion": "0.2.1-rc.4",
+ "node": "v22.19.0",
+ "maxTokens": 16000,
+ "reasoningEffort": "max",
+ "identityValid": true,
+ "completeSuccess": true,
+ "delivered": true,
+ "scorerStatus": "pass",
+ "requests": 11,
+ "toolCalls": 22,
+ "wallMs": 168059,
+ "usages": [
+  {
+   "inputTokens": 624,
+   "cacheReadTokens": 2688,
+   "outputTokens": 90,
+   "totalTokens": 3402
+  },
+  {
+   "inputTokens": 295,
+   "cacheReadTokens": 3200,
+   "outputTokens": 184,
+   "totalTokens": 3679
+  },
+  {
+   "inputTokens": 7099,
+   "cacheReadTokens": 3456,
+   "outputTokens": 1974,
+   "totalTokens": 12529
+  },
+  {
+   "inputTokens": 2220,
+   "cacheReadTokens": 10496,
+   "outputTokens": 140,
+   "totalTokens": 12856
+  },
+  {
+   "inputTokens": 1879,
+   "cacheReadTokens": 12672,
+   "outputTokens": 2204,
+   "totalTokens": 16755
+  },
+  {
+   "inputTokens": 2341,
+   "cacheReadTokens": 14464,
+   "outputTokens": 4106,
+   "totalTokens": 20911
+  },
+  {
+   "inputTokens": 4277,
+   "cacheReadTokens": 16768,
+   "outputTokens": 230,
+   "totalTokens": 21275
+  },
+  {
+   "inputTokens": 43932,
+   "cacheReadTokens": 20992,
+   "outputTokens": 2131,
+   "totalTokens": 67055
+  },
+  {
+   "inputTokens": 2299,
+   "cacheReadTokens": 64896,
+   "outputTokens": 436,
+   "totalTokens": 67631
+  },
+  {
+   "inputTokens": 589,
+   "cacheReadTokens": 67072,
+   "outputTokens": 572,
+   "totalTokens": 68233
+  },
+  {
+   "inputTokens": 757,
+   "cacheReadTokens": 67584,
+   "outputTokens": 1335,
+   "totalTokens": 69676
+  }
+ ],
+ "cost": 0.018840864
+}

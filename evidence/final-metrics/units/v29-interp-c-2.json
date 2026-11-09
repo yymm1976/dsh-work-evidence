@@ -1,0 +1,130 @@
+{
+ "file": "v29-interp-c-2.json",
+ "arm": "c",
+ "task": "holdout-python-dotenv-1.2.3-interp-defaults-v24",
+ "candidate": "dsh-work-evidence-1.1.0-active",
+ "pluginHash": "12560a8956ba974d65b3f21c5e83ab23fec5a985213caf5da452be3622a4a291",
+ "pluginHashAlgorithm": "sha256-sorted-relative-files-v1; excludes .git/node_modules/.fastedit-venv",
+ "hostToolsVersion": "0.2.1-rc.4",
+ "node": "v22.19.0",
+ "maxTokens": 8000,
+ "reasoningEffort": "max",
+ "identityValid": true,
+ "completeSuccess": true,
+ "delivered": true,
+ "scorerStatus": "pass",
+ "requests": 18,
+ "toolCalls": 21,
+ "wallMs": 230974,
+ "usages": [
+  {
+   "inputTokens": 1577,
+   "cacheReadTokens": 2048,
+   "outputTokens": 185,
+   "totalTokens": 3810
+  },
+  {
+   "inputTokens": 5897,
+   "cacheReadTokens": 3584,
+   "outputTokens": 168,
+   "totalTokens": 9649
+  },
+  {
+   "inputTokens": 455,
+   "cacheReadTokens": 9472,
+   "outputTokens": 201,
+   "totalTokens": 10128
+  },
+  {
+   "inputTokens": 1607,
+   "cacheReadTokens": 9856,
+   "outputTokens": 2489,
+   "totalTokens": 13952
+  },
+  {
+   "inputTokens": 4983,
+   "cacheReadTokens": 11392,
+   "outputTokens": 2347,
+   "totalTokens": 18722
+  },
+  {
+   "inputTokens": 2720,
+   "cacheReadTokens": 16256,
+   "outputTokens": 4042,
+   "totalTokens": 23018
+  },
+  {
+   "inputTokens": 4213,
+   "cacheReadTokens": 18944,
+   "outputTokens": 894,
+   "totalTokens": 24051
+  },
+  {
+   "inputTokens": 1075,
+   "cacheReadTokens": 23040,
+   "outputTokens": 145,
+   "totalTokens": 24260
+  },
+  {
+   "inputTokens": 932,
+   "cacheReadTokens": 24064,
+   "outputTokens": 5150,
+   "totalTokens": 30146
+  },
+  {
+   "inputTokens": 5268,
+   "cacheReadTokens": 24960,
+   "outputTokens": 95,
+   "totalTokens": 30323
+  },
+  {
+   "inputTokens": 1573,
+   "cacheReadTokens": 30208,
+   "outputTokens": 400,
+   "totalTokens": 32181
+  },
+  {
+   "inputTokens": 505,
+   "cacheReadTokens": 31744,
+   "outputTokens": 100,
+   "totalTokens": 32349
+  },
+  {
+   "inputTokens": 307,
+   "cacheReadTokens": 32128,
+   "outputTokens": 805,
+   "totalTokens": 33240
+  },
+  {
+   "inputTokens": 870,
+   "cacheReadTokens": 32384,
+   "outputTokens": 143,
+   "totalTokens": 33397
+  },
+  {
+   "inputTokens": 309,
+   "cacheReadTokens": 33152,
+   "outputTokens": 1481,
+   "totalTokens": 34942
+  },
+  {
+   "inputTokens": 1651,
+   "cacheReadTokens": 33408,
+   "outputTokens": 88,
+   "totalTokens": 35147
+  },
+  {
+   "inputTokens": 236,
+   "cacheReadTokens": 34944,
+   "outputTokens": 204,
+   "totalTokens": 35384
+  },
+  {
+   "inputTokens": 401,
+   "cacheReadTokens": 35072,
+   "outputTokens": 1017,
+   "totalTokens": 36490
+  }
+ ],
+ "cost": 0.018379218
+}

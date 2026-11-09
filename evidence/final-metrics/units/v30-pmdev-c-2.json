@@ -1,0 +1,112 @@
+{
+ "file": "v30-pmdev-c-2.json",
+ "arm": "c",
+ "task": "picomatch-dev-filter-paths-v7",
+ "candidate": "dsh-work-evidence-1.1.0-active",
+ "pluginHash": "70e86ae2a23475b083a80ab03feac145c8591885a29771585d9f57ba835a8070",
+ "pluginHashAlgorithm": "sha256-sorted-relative-files-v1; excludes .git/node_modules/.fastedit-venv",
+ "hostToolsVersion": "0.2.1-rc.4",
+ "node": "v22.19.0",
+ "maxTokens": 8000,
+ "reasoningEffort": "max",
+ "identityValid": true,
+ "completeSuccess": true,
+ "delivered": true,
+ "scorerStatus": "pass",
+ "requests": 15,
+ "toolCalls": 20,
+ "wallMs": 122285,
+ "usages": [
+  {
+   "inputTokens": 1048,
+   "cacheReadTokens": 2048,
+   "outputTokens": 80,
+   "totalTokens": 3176
+  },
+  {
+   "inputTokens": 216,
+   "cacheReadTokens": 3072,
+   "outputTokens": 70,
+   "totalTokens": 3358
+  },
+  {
+   "inputTokens": 1205,
+   "cacheReadTokens": 3200,
+   "outputTokens": 66,
+   "totalTokens": 4471
+  },
+  {
+   "inputTokens": 412,
+   "cacheReadTokens": 4352,
+   "outputTokens": 1121,
+   "totalTokens": 5885
+  },
+  {
+   "inputTokens": 1343,
+   "cacheReadTokens": 4736,
+   "outputTokens": 968,
+   "totalTokens": 7047
+  },
+  {
+   "inputTokens": 1117,
+   "cacheReadTokens": 6016,
+   "outputTokens": 70,
+   "totalTokens": 7203
+  },
+  {
+   "inputTokens": 1307,
+   "cacheReadTokens": 7040,
+   "outputTokens": 298,
+   "totalTokens": 8645
+  },
+  {
+   "inputTokens": 397,
+   "cacheReadTokens": 8320,
+   "outputTokens": 71,
+   "totalTokens": 8788
+  },
+  {
+   "inputTokens": 582,
+   "cacheReadTokens": 8704,
+   "outputTokens": 976,
+   "totalTokens": 10262
+  },
+  {
+   "inputTokens": 1457,
+   "cacheReadTokens": 9216,
+   "outputTokens": 73,
+   "totalTokens": 10746
+  },
+  {
+   "inputTokens": 462,
+   "cacheReadTokens": 10624,
+   "outputTokens": 836,
+   "totalTokens": 11922
+  },
+  {
+   "inputTokens": 2040,
+   "cacheReadTokens": 11008,
+   "outputTokens": 982,
+   "totalTokens": 14030
+  },
+  {
+   "inputTokens": 2137,
+   "cacheReadTokens": 12928,
+   "outputTokens": 2531,
+   "totalTokens": 17596
+  },
+  {
+   "inputTokens": 2757,
+   "cacheReadTokens": 14976,
+   "outputTokens": 68,
+   "totalTokens": 17801
+  },
+  {
+   "inputTokens": 684,
+   "cacheReadTokens": 17664,
+   "outputTokens": 515,
+   "totalTokens": 18863
+  }
+ ],
+ "cost": 0.008181312
+}

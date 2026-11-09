@@ -1,0 +1,94 @@
+{
+ "file": "v24-interp-b0-1.json",
+ "arm": "b0",
+ "task": "holdout-python-dotenv-1.2.3-interp-defaults-v24",
+ "candidate": "dsh-1.1.0-b0-4978b31",
+ "pluginHash": "e6f297ff1f28297adc09f2bf6006b4377d883d14ed5e8618ca35474b6293e8e9",
+ "pluginHashAlgorithm": "sha256-sorted-relative-files-v1; excludes .git/node_modules/.fastedit-venv",
+ "hostToolsVersion": "0.2.1-rc.4",
+ "node": "v22.19.0",
+ "maxTokens": 8000,
+ "reasoningEffort": "max",
+ "identityValid": true,
+ "completeSuccess": true,
+ "delivered": true,
+ "scorerStatus": "pass",
+ "requests": 12,
+ "toolCalls": 18,
+ "wallMs": 188660,
+ "usages": [
+  {
+   "inputTokens": 1579,
+   "cacheReadTokens": 2048,
+   "outputTokens": 183,
+   "totalTokens": 3810
+  },
+  {
+   "inputTokens": 5899,
+   "cacheReadTokens": 3584,
+   "outputTokens": 1860,
+   "totalTokens": 11343
+  },
+  {
+   "inputTokens": 2165,
+   "cacheReadTokens": 9472,
+   "outputTokens": 255,
+   "totalTokens": 11892
+  },
+  {
+   "inputTokens": 2103,
+   "cacheReadTokens": 11520,
+   "outputTokens": 3433,
+   "totalTokens": 17056
+  },
+  {
+   "inputTokens": 6007,
+   "cacheReadTokens": 13568,
+   "outputTokens": 1310,
+   "totalTokens": 20885
+  },
+  {
+   "inputTokens": 1569,
+   "cacheReadTokens": 19456,
+   "outputTokens": 95,
+   "totalTokens": 21120
+  },
+  {
+   "inputTokens": 25525,
+   "cacheReadTokens": 20992,
+   "outputTokens": 3206,
+   "totalTokens": 49723
+  },
+  {
+   "inputTokens": 3343,
+   "cacheReadTokens": 46464,
+   "outputTokens": 489,
+   "totalTokens": 50296
+  },
+  {
+   "inputTokens": 628,
+   "cacheReadTokens": 49792,
+   "outputTokens": 88,
+   "totalTokens": 50508
+  },
+  {
+   "inputTokens": 282,
+   "cacheReadTokens": 50304,
+   "outputTokens": 1245,
+   "totalTokens": 51831
+  },
+  {
+   "inputTokens": 1426,
+   "cacheReadTokens": 50560,
+   "outputTokens": 1204,
+   "totalTokens": 53190
+  },
+  {
+   "inputTokens": 1306,
+   "cacheReadTokens": 51968,
+   "outputTokens": 976,
+   "totalTokens": 54250
+  }
+ ],
+ "cost": 0.017370384
+}

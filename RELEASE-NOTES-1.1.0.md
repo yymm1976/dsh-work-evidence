@@ -4,7 +4,7 @@
 
 模式策略：`pb001-v39`
 
-状态：稳定版。候选 SHA 由同目录验收台账记录；本文件随该提交发布。
+状态：稳定版（`v1.1.0` 已发布；验收候选 `2f398e0`，发布提交 `7a049c5`；验收结论见 `verification/ACCEPTANCE-2f398e0.md`）。
 
 ## 发布内容
 
@@ -25,13 +25,13 @@
 - 移除未被 README、包入口或测试引用的一次性工程辅助脚本；发布包只保留运行时、测试和可复现发布检查实际需要的文件。
 - `evidenceViews` 关闭时，读取回执同时停用；`memberParsing` 文档限定 Java 语法范围，其他语言明确为文本窗口。
 - 测试输出回执：只有真实用户消息（`source.kind==="user"` 或已回答的 `user-question-reply`）可以请求完整规范输出；插件自身 diagnostic 不再关闭该步全部测试回执。
-- 测试输出回执覆盖 pytest、ruff、compileall、gradlew/gradle/mvn，以及带完整 `# tests`/`# pass`/`# fail` 摘要的 `node --test` TAP 输出；回执保留失败名、计数、前三条不同错误原因、尾部与 `work_recall` 定位；摘要缺失、截断或 spill 时保留规范正文。
+- 测试输出回执覆盖 pytest、ruff、compileall、gradlew/gradle/mvn，以及带完整 `# tests`/`# pass`/`# fail` 摘要的 `node --test` TAP 输出；回执保留失败名、计数、尾部与 `work_recall` 定位。只有 TAP 输出额外提取前三条不同错误原因；其他命令的回执不提取原因，错误细节用 `work_recall kind=output seq=N` 取回规范正文。摘要缺失、截断或 spill 时保留规范正文。
 - 新增 `disposal-coordinator.mjs` 协调 agent 与 session 清理顺序。
 - 本版停止新增研究性功能。后续修改仅处理正确性、安全、兼容、性能、测试和发布一致性问题；新功能从冻结后的干净 `main` 开发。
 
 ## 效率与质量观察（有限样本）
 
-- 预注册的最终 B0/C 配对：Python 开发 `+22.86%`（3/3）、Python 独立留出 `+19.07%`（2/2）、Picomatch 开发 `+23.60%`（3/3，8k；该任务未触发测试回执，正向差异不归因于回执）、Picomatch 16k 独立留出 `+27.23%`（2/2）；四组等权加权 **+23.19%**。
+- 预注册的最终 B0/C 配对：Python 开发 `+22.86%`（3/3）、Python 独立留出 `+19.07%`（2/2）、Picomatch 开发 `+23.60%`（3/3，8k；该任务未触发测试回执，正向差异不归因于回执）、Picomatch 16k 独立留出 `+27.23%`（2/2）；四组等权加权 **+23.19%**。以上百分比均为每成功任务参考费用的相对改善（input `0.15` / cacheRead `0.003` / output `0.6` USD 每百万 token 折算），用于同一 B0 对照，不等同于实际账单节省；剔除未触发的 Picomatch 开发组后，三个真实触发组等权加权 `+23.06%`。
 - Minecraft 真实项目：开发 `+32.85%`、留出 `+31.47%`，两臂全部 `scorer=pass`。
 - 三类项目均具备开发集与独立留出门 B0/C 配对，方向全部不反转。
 - 8 个单元因 Windows 作业运行器故障按预注册规则作废并替换，原始记录保留。

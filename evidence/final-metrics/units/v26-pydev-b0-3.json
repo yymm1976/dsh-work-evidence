@@ -1,0 +1,64 @@
+{
+ "file": "v26-pydev-b0-3.json",
+ "arm": "b0",
+ "task": "python-dotenv-dev-load-layers-v11",
+ "candidate": "dsh-1.1.0-b0-4978b31",
+ "pluginHash": "e6f297ff1f28297adc09f2bf6006b4377d883d14ed5e8618ca35474b6293e8e9",
+ "pluginHashAlgorithm": "sha256-sorted-relative-files-v1; excludes .git/node_modules/.fastedit-venv",
+ "hostToolsVersion": "0.2.1-rc.4",
+ "node": "v22.19.0",
+ "maxTokens": 16000,
+ "reasoningEffort": "max",
+ "identityValid": true,
+ "completeSuccess": true,
+ "delivered": true,
+ "scorerStatus": "pass",
+ "requests": 7,
+ "toolCalls": 17,
+ "wallMs": 182191,
+ "usages": [
+  {
+   "inputTokens": 3312,
+   "cacheReadTokens": 0,
+   "outputTokens": 154,
+   "totalTokens": 3466
+  },
+  {
+   "inputTokens": 469,
+   "cacheReadTokens": 3200,
+   "outputTokens": 109,
+   "totalTokens": 3778
+  },
+  {
+   "inputTokens": 6564,
+   "cacheReadTokens": 3584,
+   "outputTokens": 2430,
+   "totalTokens": 12578
+  },
+  {
+   "inputTokens": 2776,
+   "cacheReadTokens": 12544,
+   "outputTokens": 6128,
+   "totalTokens": 21448
+  },
+  {
+   "inputTokens": 337,
+   "cacheReadTokens": 21376,
+   "outputTokens": 165,
+   "totalTokens": 21878
+  },
+  {
+   "inputTokens": 43865,
+   "cacheReadTokens": 21760,
+   "outputTokens": 495,
+   "totalTokens": 66120
+  },
+  {
+   "inputTokens": 123,
+   "cacheReadTokens": 66048,
+   "outputTokens": 2359,
+   "totalTokens": 68530
+  }
+ ],
+ "cost": 0.016106436
+}

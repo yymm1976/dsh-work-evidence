@@ -1,0 +1,88 @@
+{
+ "file": "v29-interp-c-1.json",
+ "arm": "c",
+ "task": "holdout-python-dotenv-1.2.3-interp-defaults-v24",
+ "candidate": "dsh-work-evidence-1.1.0-active",
+ "pluginHash": "12560a8956ba974d65b3f21c5e83ab23fec5a985213caf5da452be3622a4a291",
+ "pluginHashAlgorithm": "sha256-sorted-relative-files-v1; excludes .git/node_modules/.fastedit-venv",
+ "hostToolsVersion": "0.2.1-rc.4",
+ "node": "v22.19.0",
+ "maxTokens": 8000,
+ "reasoningEffort": "max",
+ "identityValid": true,
+ "completeSuccess": true,
+ "delivered": true,
+ "scorerStatus": "pass",
+ "requests": 11,
+ "toolCalls": 14,
+ "wallMs": 195031,
+ "usages": [
+  {
+   "inputTokens": 3625,
+   "cacheReadTokens": 0,
+   "outputTokens": 185,
+   "totalTokens": 3810
+  },
+  {
+   "inputTokens": 5897,
+   "cacheReadTokens": 3584,
+   "outputTokens": 1366,
+   "totalTokens": 10847
+  },
+  {
+   "inputTokens": 610,
+   "cacheReadTokens": 10752,
+   "outputTokens": 225,
+   "totalTokens": 11587
+  },
+  {
+   "inputTokens": 13119,
+   "cacheReadTokens": 0,
+   "outputTokens": 3548,
+   "totalTokens": 16667
+  },
+  {
+   "inputTokens": 5258,
+   "cacheReadTokens": 11520,
+   "outputTokens": 1411,
+   "totalTokens": 18189
+  },
+  {
+   "inputTokens": 152,
+   "cacheReadTokens": 18176,
+   "outputTokens": 423,
+   "totalTokens": 18751
+  },
+  {
+   "inputTokens": 16795,
+   "cacheReadTokens": 2688,
+   "outputTokens": 2975,
+   "totalTokens": 22458
+  },
+  {
+   "inputTokens": 3852,
+   "cacheReadTokens": 18688,
+   "outputTokens": 171,
+   "totalTokens": 22711
+  },
+  {
+   "inputTokens": 302,
+   "cacheReadTokens": 22528,
+   "outputTokens": 320,
+   "totalTokens": 23150
+  },
+  {
+   "inputTokens": 243,
+   "cacheReadTokens": 23040,
+   "outputTokens": 1037,
+   "totalTokens": 24320
+  },
+  {
+   "inputTokens": 82,
+   "cacheReadTokens": 24320,
+   "outputTokens": 834,
+   "totalTokens": 25236
+  }
+ ],
+ "cost": 0.015393137999999999
+}
