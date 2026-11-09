@@ -65,3 +65,10 @@ test('environment-only output is not projected',()=>{
 test('Node test receipts are disabled',()=>{
   assert.equal(testOutputDigest('node --test suite.mjs','x'.repeat(9000)+'\n10 failed',{seq:109}),null);
 });
+
+test('truncated receipt keeps the locator',()=>{
+  const text='x'.repeat(9000)+'\nFAILED tests/test_main.py::test_x - AssertionError: y\n16 failed, 175 passed\n';
+  const digest=testOutputDigest('python -m pytest -q',text,{seq:110});
+  assert.ok(digest.text.length<=4000);
+  assert.ok(digest.text.endsWith('work_recall kind=output seq=110.'));
+});

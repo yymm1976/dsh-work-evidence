@@ -57,9 +57,10 @@ export function testOutputDigest(command,text,{seq=null,truncated=false,focus=[]
   if(environmentCount>0)lines.push('environment-like failures omitted: '+environmentCount+' (canonical output retains them).');
   if(detailLines.length)lines.push('details: '+detailLines.join(' | '));
   if(tail)lines.push('tail:\n'+tail);
-  lines.push('The canonical output is unchanged and recoverable with work_recall kind=output'+(seq!==null?(' seq='+seq):'')+'.');
-  const digest=lines.join('\n');
-  return {text:digest.length<=TEST_DIGEST_MAX?digest:digest.slice(0,TEST_DIGEST_MAX-40)+'\n[receipt truncated; use work_recall for the full output]',
+  const locator='The canonical output is unchanged and recoverable with work_recall kind=output'+(seq!==null?(' seq='+seq):'')+'.';
+  const body=lines.join('\n');
+  const digest=body.length+locator.length+1<=TEST_DIGEST_MAX?body+'\n'+locator:body.slice(0,Math.max(0,TEST_DIGEST_MAX-locator.length-2))+'\n'+locator;
+  return {text:digest,
     signature:failure?.signature??null,summary,originalChars:text.length};
 }
 
