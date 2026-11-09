@@ -17,8 +17,19 @@ function tapCheckFailure(text){
   const total=Number(tests[1]),passed=Number(pass[1]),failed=Number(fail[1]);
   if(![total,passed,failed].every(Number.isSafeInteger)||passed+failed>total)return null;
   const entries=text.split(/\r?\n/u).filter(line=>/^not ok \d+ - /u.test(line)).slice(0,8).map(line=>line.slice(0,180));
+  // Keep the first distinct error causes: without them a receipt hides why the
+  // suite is unusable and the model re-runs the whole suite to find out.
+  const seen=new Set(),causes=[];
+  for(const line of text.split(/\r?\n/u)){
+    const match=/^(?:#\s*)?((?:[A-Za-z_$][\w$]*\.)*[A-Za-z_$][\w$]*(?:Error|Exception)):\s*(.{1,160})$/u.exec(line.trim());
+    if(!match)continue;
+    const cause=match[1]+': '+match[2].trim();
+    if(seen.has(cause))continue;
+    seen.add(cause);causes.push(cause);
+    if(causes.length>=3)break;
+  }
   return {signature:entries[0]??`${failed} failed, ${passed} passed of ${total}`,
-    summary:{passed,failed,total,source:'reported-tap',text:`# tests ${total}\n# pass ${passed}\n# fail ${failed}`},failureEntries:entries};
+    summary:{passed,failed,total,source:'reported-tap',text:`# tests ${total}\n# pass ${passed}\n# fail ${failed}`},failureEntries:entries,causes};
 }
 const TEST_COMMAND=/^(?:python(?:\.exe)?\s+-m\s+(?:pytest|compileall)|node\s+--test|ruff\s+check|(?:\.\\|\.\/)?gradlew(?:\.bat)?|gradle(?:\.bat)?|mvn(?:\.cmd)?)\b/iu;
 const messageOf=event=>event.data?.message??(event.data?.role?event.data:null);
@@ -81,6 +92,8 @@ export function testOutputDigest(command,text,{seq=null,truncated=false,focus=[]
   const environmentCount=filterEnvironment?(entries.filter(entry=>environmentFailure.test(entry)).length+(entries.length?0:failedLines.filter(line=>environmentFailure.test(line)).length)):0;
   if(environmentCount>0)lines.push('environment-like failures omitted: '+environmentCount+' (canonical output retains them).');
   if(detailLines.length)lines.push('details: '+detailLines.join(' | '));
+  const causes=failure?.causes??[];
+  if(causes.length)lines.push('causes: '+causes.join(' | '));
   if(tail)lines.push('tail:\n'+tail);
   const locator='The canonical output is unchanged and recoverable with work_recall kind=output'+(seq!==null?(' seq='+seq):'')+'.';
   const body=lines.join('\n');

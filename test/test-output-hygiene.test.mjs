@@ -64,11 +64,12 @@ test('environment-only output is not projected',()=>{
 });
 
 test('Node TAP receipts require an exact summary and preserve failure identity',()=>{
-  const tap=['TAP version 13','not ok 2 - test/api.picomatch.js','  ---','  error: [0mReferenceError: describe is not defined','  ...','1..38','# tests 38','# suites 0','# pass 2','# fail 36','# cancelled 0','# skipped 0','# todo 0'].join('\n')+'x'.repeat(4200);
+  const tap=['TAP version 13','not ok 2 - test/api.picomatch.js','  ---','# ReferenceError: describe is not defined','  ...','1..38','# tests 38','# suites 0','# pass 2','# fail 36','# cancelled 0','# skipped 0','# todo 0'].join('\n')+'x'.repeat(4200);
   const digest=testOutputDigest('node --test',tap,{seq:109});
   assert.ok(digest);
   assert.ok(digest.text.includes('result: 2 passed, 36 failed of 38'));
   assert.ok(digest.text.includes('not ok 2 - test/api.picomatch.js'));
+  assert.ok(digest.text.includes('causes: ReferenceError: describe is not defined'),'a receipt must keep the first distinct error causes');
   assert.ok(digest.text.includes('work_recall kind=output seq=109'));
   assert.ok(digest.text.length<=4000);
   assert.equal(digest.originalChars,tap.length);

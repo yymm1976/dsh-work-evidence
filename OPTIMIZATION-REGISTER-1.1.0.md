@@ -128,7 +128,7 @@
 |---|---|
 | 具体证据 | Picomatch 任务中 `node --test` 的 TAP 输出 48685 字符在两臂都完整进入上下文；`ffcfb31` 关闭 Node 回执后 C 的 `testOutputViews=0`，Picomatch 半区无法归因到实际生效机制。关闭 Node 回执的判断发生在 H15 缺陷（插件 diagnostic 静默关掉全部回执）仍存在时。 |
 | 触发条件 | 命令为 `node --test`，输出 ≥4000 字符、未截断、无 spill 标记，且同时存在 `# tests`、`# pass`、`# fail` 三行精确摘要。 |
-| 预期效果 | 后续请求视图用 ≤4000 字符回执替代完整 TAP；保留失败名、计数、尾部与 `work_recall kind=output seq=N`；规范事件不变。 |
+| 预期效果 | 后续请求视图用 ≤4000 字符回执替代完整 TAP；保留失败名、计数、前三条不同错误原因、尾部与 `work_recall kind=output seq=N`；规范事件不变。首次 FINAL SHA 复验暴露：缺少错误原因时模型反复重跑完整套件（50 请求、tov=47、−45.6%），故增加 `causes` 行。 |
 | 质量风险 | 摘要缺失或计数不自洽时不投影；环境失败与装配失败可能被回执归类为失败名，模型仍可按 seq 取回正文。 |
 | 额外开销 | 每事件一次正则与行扫描，无额外请求、无额外模型调用。 |
 | 失败回退 | 回退 `tapCheckFailure` 与 `testOutputDigest` 的 `isNodeTest` 分支，保留负结果。 |
