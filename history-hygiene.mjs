@@ -313,7 +313,7 @@ export function createHistoryHygiene(runtime,taskFlow,{isProtected=()=>false,ret
       const original=agent.session.eventAt(entry.seq)?.data?.message;
       if(!original)return message;
       const existing=state.outputPlans.get(entry.seq);
-      if(existing?.test)return message;
+      if(existing?.test||existing?.tool)return message;
       const planned=existing??planContextPrune(original,entry.reads,{seq:entry.seq,...pruneSettings,retainSource:protect});
       if(!planned)return message;
       const reduction=resultText(message.content).length-resultText(planned.content).length;
@@ -339,7 +339,7 @@ export function createHistoryHygiene(runtime,taskFlow,{isProtected=()=>false,ret
       if(get(agent).suspended)return messages;
       try{return project(agent,messages,options);}catch(error){get(agent).suspended=true;get(agent).hiddenResults.clear();runtime.problem?.(runtime.get(agent),'history-hygiene',String(error.message));return messages;}
     },observe,hasRequestView(agent){const s=sync(agent);return runtime.isEnabled(agent)&&runtime.get(agent).config.historyHygiene&&!s.suspended&&(s.hiddenResults.size>0||referenceContext?.hasRequestView(agent)===true);},
-    fullOutputRequested(agent){return get(agent).fullOutputRequested;},
+    fullOutputRequested(agent){sync(agent);return get(agent).fullOutputRequested;},
     needsRecall(agent){
       if(!runtime.isEnabled(agent)||!runtime.get(agent).config.historyHygiene)return false;
       const s=sync(agent);if(s.suspended)return false;
