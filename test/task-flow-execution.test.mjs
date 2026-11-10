@@ -528,4 +528,6 @@ test('correct failing reproductions must be fixed, not deleted',()=>{
   assert.match(body,/若复现有效但仍失败，必须继续修复实现并重跑该复现/u);
   assert.match(body,/不得删除有效复现/u);
   assert.match(body,/仅在确认测试无法修正时才删除它/u);
+  assert.match(body,/复现通过后，用文件工具删除临时测试/u);
+  assert.match(body,/不得修改既有测试断言/u);
 });
