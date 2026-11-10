@@ -27,16 +27,16 @@
 
 ## 已知限制与未闭环门禁
 
-- 全量测试：修复提交上双宿主各 **621/621，fail=0、skipped=0、exit 0**（隔离 profile；`results/full-test-cr1-0{22,21}.log`）。
+- 全量测试：修复提交上双宿主各 **622/622，fail=0、skipped=0、exit 0**（隔离 profile；`results/full-test-final4-0{22,21}.log`）。
 - 第二宿主 `0.2.1-rc.4` 已在最终提交上完成全量测试。
-- PR #9 已完成 **5 轮** CodeRabbit 实质审查（7+9+4+2+1 条）；第 1–4 轮确认问题已修复，第 5 轮唯一意见被标 Unverified 并记录拒绝理由。≥3 轮条件满足。
+- PR #9 已完成 **6 轮** CodeRabbit 实质审查（7+9+4+2+1+2 条）；第 1–4 轮确认问题已修复，第 5 轮唯一意见被标 Unverified 并记录拒绝理由，第 6 轮 2 条意见在 `38003fe` 修复并做针对性回归。≥3 轮条件满足。
 - 24 题评分由主 Agent 完成，非盲评；不得称为官方基准解决率。
 - 参考费用按 input `0.15`、cacheRead `0.003`、cacheWrite `0`、output `0.6` USD/百万 token 折算，不等于实际账单。
 - #8 类小任务的固定验证开销仍是主要风险；1.2.0 将把“是否需要临时复现”与改动语义/测试覆盖绑定，并明确正确的失败复现必须保留到修复或报告受阻。
 
 ## 兼容性与安装
 
-需要 Node.js 22.19 或更高版本。本轮实测宿主为 `@deepseek-ai/dsh-tools@0.2.2-rc.1` 与 `0.2.1-rc.4`；两者在隔离 profile 下各 **621/621、fail=0、skipped=0**。`fflate` 发布依赖为 `^0.8.3`；发布包不含 `node_modules`。
+需要 Node.js 22.19 或更高版本。本轮实测宿主为 `@deepseek-ai/dsh-tools@0.2.2-rc.1` 与 `0.2.1-rc.4`；两者在隔离 profile 下各 **622/622、fail=0、skipped=0**。`fflate` 发布依赖为 `^0.8.3`；发布包不含 `node_modules`。
 
 打包产物 `local-dsh-work-evidence-1.1.1.tgz`：82 文件。最终字节数与 SHA-256 由打包后记录在证据仓库 `1.1.1-final/verification/checksums-final.txt` 与发布记录中；包内文档不写自引用摘要，避免“改动文档即改动摘要”的循环。`npm run check` 为 145 个 JS 文件。
 
