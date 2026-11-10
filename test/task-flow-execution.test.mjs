@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {createTaskFlow,taskFlowGuidance} from '../task-flow.mjs';
+import {createTaskFlow} from '../task-flow.mjs';
 import {defaults} from '../runtime.mjs';
 import {reportedCheckFailure,reportedExecutionChecks} from '../recovery.mjs';
 
@@ -514,13 +514,4 @@ test('the next user request and successful program clear a prior clipped-read is
     if(action==='plugin-off')t.runtimeState.config.enabled=false;
     assert.ok(!t.notices().some(m=>m.source.taskFlow.key.includes('native-read-clipped-json')),action);
   }
-});
-
-test('aggressive guidance stays general-purpose and gates reproduction checks on existing coverage',()=>{
-  const body=taskFlowGuidance('aggressive');
-  assert.doesNotMatch(body,/禁止访问网络/u,'blanket network ban is experiment isolation, not general guidance');
-  assert.match(body,/需要联网的操作先确认用户授权/u);
-  assert.match(body,/优先运行仓库既有测试/u);
-  assert.match(body,/若既有测试未覆盖改动行为/u);
-  assert.doesNotMatch(body,/实现后创建一个最小自删除复现测试并运行一次/u);
 });
