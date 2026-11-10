@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {createTaskFlow} from '../task-flow.mjs';
+import {createTaskFlow,taskFlowGuidance} from '../task-flow.mjs';
 import {defaults} from '../runtime.mjs';
 import {reportedCheckFailure,reportedExecutionChecks} from '../recovery.mjs';
 
@@ -514,4 +514,20 @@ test('the next user request and successful program clear a prior clipped-read is
     if(action==='plugin-off')t.runtimeState.config.enabled=false;
     assert.ok(!t.notices().some(m=>m.source.taskFlow.key.includes('native-read-clipped-json')),action);
   }
+});
+
+test('aggressive guidance does not ban network access unconditionally',()=>{
+  const body=taskFlowGuidance('aggressive');
+  assert.doesNotMatch(body,/禁止访问网络/u,'experiment isolation must not be the default product rule');
+  assert.match(body,/需要联网的操作先确认用户授权/u);
+  assert.match(body,/不得用上游仓库或发布版中的现成实现替代本次实现/u);
+});
+
+test('correct failing reproductions must be fixed, not deleted',()=>{
+  const body=taskFlowGuidance('aggressive');
+  assert.match(body,/若复现有效但仍失败，必须继续修复实现并重跑该复现/u);
+  assert.match(body,/不得删除有效复现/u);
+  assert.match(body,/仅在确认测试无法修正时才删除它/u);
+  assert.match(body,/复现通过后，用文件工具删除临时测试/u);
+  assert.match(body,/不得修改既有测试断言/u);
 });

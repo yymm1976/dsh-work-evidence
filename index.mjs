@@ -245,6 +245,7 @@ export function apply(ctx,config={}){
     referenceContext,
   });
   runtime.rewriteRequestHistory=(agent,messages,options)=>historyHygiene.project(agent,messages,options);
+  runtime.historyFullOutputRequested=agent=>historyHygiene.fullOutputRequested(agent);
   ctx.on('session/event',(session,event)=>{
     if(event.type==='agent/inbox/spliced'){
       const inserted=event.data?.inserted;

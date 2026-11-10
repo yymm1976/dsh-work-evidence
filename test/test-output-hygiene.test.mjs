@@ -1,21 +1,15 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {testOutputDigest} from '../history-hygiene.mjs';
+import {testOutputDigest,toolOutputDigest} from '../history-hygiene.mjs';
 
-test('test output digest keeps failure identity and stays bounded',()=>{
+test('failing non-TAP check output stays canonical',()=>{
   const lines=[];
   for(let index=0;index<120;index++)lines.push(`FAILED tests/test_case.py::test_${index} - AssertionError: expected ${index} but got ${index+1}`);
   lines.push('120 failed, 40 passed, 3 warnings in 4.21s');
   while(lines.join('\n').length<9000)lines.push('    at tests/test_case.py:'+(lines.length+10)+': assert value == expected');
   const text=lines.join('\n');
-  const digest=testOutputDigest('python -m pytest -q tests/test_case.py',text,{seq:77});
-  assert.ok(digest);
-  assert.ok(digest.text.includes('FAILED tests/test_case.py::test_0'));
-  assert.ok(digest.text.includes('120 failed'));
-  assert.ok(digest.text.includes('work_recall'));
-  assert.ok(digest.text.includes('seq=77'));
-  assert.ok(digest.text.length<=4000,`${digest.text.length}`);
-  assert.equal(digest.originalChars,text.length);
+  // pytest/gradle/maven failure output has no structured causes; keep the full diagnostic body.
+  assert.equal(testOutputDigest('python -m pytest -q tests/test_case.py',text,{seq:77}),null);
   assert.equal(testOutputDigest('python -m pytest','short output'),null);
   assert.equal(testOutputDigest('git status','x'.repeat(9000)),null);
   assert.equal(testOutputDigest('python -m pytest -q',text,{seq:78,truncated:true}),null);
@@ -23,36 +17,31 @@ test('test output digest keeps failure identity and stays bounded',()=>{
   assert.equal(testOutputDigest('python -m pytest -q','x'.repeat(9000),{seq:80}),null);
   assert.equal(testOutputDigest('python -m pytest -q',text,{seq:null}),null);
   assert.equal(testOutputDigest('git status',text,{seq:81}),null);
-  assert.ok(testOutputDigest('gradlew.bat --offline --no-daemon compileTestJava','x'.repeat(9000)+'\n10 failed',{seq:1}));
+  const gradle=testOutputDigest('gradlew.bat --offline --no-daemon compileTestJava','x'.repeat(9000)+'\n10 failed',{seq:1});
+  assert.ok(gradle);
+  assert.ok(gradle.text.includes('causes:'));
+  assert.ok(gradle.text.length<=4000);
 });
 
-test('environment and focus filtering keep assertions actionable',()=>{
+test('passing pytest output is projected with a locator',()=>{
+  const text='175 passed, 48 skipped, 28 warnings in 1.93s\n'+'    at tests/test_case.py:10: assert value == expected\n'.repeat(200);
+  const digest=testOutputDigest('python -m pytest -q',text,{seq:90});
+  assert.ok(digest);
+  assert.ok(digest.text.includes('work_recall kind=output seq=90'));
+  assert.ok(digest.text.length<=4000,`${digest.text.length}`);
+  const zero='175 passed, 0 failed in 1.93s\n'+'x'.repeat(4200);
+  assert.ok(testOutputDigest('python -m pytest -q',zero,{seq:91}),'a zero failure count is not a failure');
+});
+
+test('failing non-TAP output is not projected regardless of focus',()=>{
   const text=[
     'FAILED tests/test_cli.py::test_run - FileNotFoundError: WinError 2',
     'FAILED tests/test_main.py::test_get_key_not_found - AssertionError: expected x',
     '16 failed, 175 passed, 48 skipped, 28 warnings in 1.93s',
     ''
   ].join('\n')+'x'.repeat(4200);
-  const digest=testOutputDigest('python -m pytest -q',text,{seq:104,focus:['src/dotenv/main.py','tests/','test/']});
-  assert.ok(digest);
-  const failingLine=digest.text.split(/\n/u).find(line=>line.startsWith('failing:'))||'';
-  assert.ok(failingLine.includes('tests/test_main.py'));
-  assert.ok(!failingLine.includes('tests/test_cli.py'));
-  assert.ok(digest.text.includes('environment-like failures omitted'));
-});
-
-test('actionable assertion after eight environment failures is shown',()=>{
-  const lines=[];
-  for(let i=0;i<8;i++)lines.push('FAILED tests/test_cli.py::test_run_'+i+' - FileNotFoundError: WinError 2');
-  lines.push('FAILED tests/test_main.py::test_get_key_not_found - AssertionError: expected x');
-  lines.push('20 failed, 175 passed, 48 skipped, 28 warnings in 1.93s');
-  lines.push('');
-  const text=lines.join('\n')+'x'.repeat(4200);
-  const digest=testOutputDigest('python -m pytest -q',text,{seq:107,focus:['tests/'],filterEnvironment:true});
-  assert.ok(digest);
-  const failingLine=digest.text.split(/\n/u).find(line=>line.startsWith('failing:'))||'';
-  assert.ok(failingLine.includes('tests/test_main.py'));
-  assert.ok(!failingLine.includes('test_cli.py'));
+  assert.equal(testOutputDigest('python -m pytest -q',text,{seq:104,focus:['src/dotenv/main.py','tests/','test/']}),null);
+  assert.equal(testOutputDigest('python -m pytest -q',text,{seq:107,focus:['tests/'],filterEnvironment:true}),null);
 });
 
 test('environment-only output is not projected',()=>{
@@ -73,7 +62,6 @@ test('Node TAP receipts require an exact summary and preserve failure identity',
   assert.ok(digest.text.includes('work_recall kind=output seq=109'));
   assert.ok(digest.text.length<=4000);
   assert.equal(digest.originalChars,tap.length);
-  // Incomplete, spilled, truncated or unsummarized output must stay canonical.
   assert.equal(testOutputDigest('node --test','x'.repeat(9000)+'\n10 failed',{seq:110}),null);
   assert.equal(testOutputDigest('node --test',tap.replace('# fail 36\n',''),{seq:111}),null);
   assert.equal(testOutputDigest('node --test',tap,{seq:112,truncated:true}),null);
@@ -83,16 +71,36 @@ test('Node TAP receipts require an exact summary and preserve failure identity',
   assert.equal(testOutputDigest('git status',tap,{seq:115}),null);
 });
 
-test('truncated receipt keeps the locator',()=>{
-  const text='x'.repeat(9000)+'\nFAILED tests/test_main.py::test_x - AssertionError: y\n16 failed, 175 passed\n';
+test('passing truncated receipt keeps the locator',()=>{
+  const text='175 passed, 48 skipped in 4.21s\n'+'x'.repeat(9000);
   const digest=testOutputDigest('python -m pytest -q',text,{seq:110});
+  assert.ok(digest);
   assert.ok(digest.text.length<=4000);
   assert.ok(digest.text.endsWith('work_recall kind=output seq=110.'));
 });
+
 test('TAP receipts keep the cause regardless of diagnostic field order',()=>{
   const build=(fields)=>['TAP version 13','not ok 1 - t','  ---',...fields,'  ...','1..1','# tests 1','# pass 0','# fail 1','# cancelled 0','# skipped 0','# todo 0'].join('\n')+'x'.repeat(4200);
   const errorFirst=build(['  error: |-','    AssertionError [ERR_ASSERTION]: expected true','  name: \'AssertionError\'']);
   const nameFirst=build(['  name: \'ReferenceError\'','  error: |-','    describe is not defined']);
   assert.ok(testOutputDigest('node --test',errorFirst,{seq:201}).text.includes('causes: AssertionError'));
   assert.ok(testOutputDigest('node --test',nameFirst,{seq:202}).text.includes('causes: ReferenceError: describe is not defined'));
+});
+
+test('generic tool output digest bounds noisy shell/search output',()=>{
+  const text='head line\n'+'grep match line '.repeat(1000)+'\nERROR: build failed\n'+'tail line\n';
+  const digest=toolOutputDigest('grep',text,{seq:301});
+  assert.ok(digest);
+  assert.ok(digest.text.includes('errors:'));
+  assert.ok(digest.text.includes('ERROR: build failed'));
+  assert.ok(digest.text.includes('work_recall kind=output seq=301'));
+  assert.ok(digest.text.length<=5000);
+  assert.equal(digest.originalChars,text.length);
+  assert.equal(toolOutputDigest('read',text,{seq:302}),null);
+  assert.equal(toolOutputDigest('grep','short',{seq:303}),null);
+  assert.equal(toolOutputDigest('grep',text,{seq:null}),null);
+  assert.equal(toolOutputDigest('pwsh',text,{seq:304,command:'python -m pytest -q'}),null,'check commands stay with testOutputDigest');
+  assert.equal(toolOutputDigest('pwsh',text,{seq:305,command:'.\\gradlew.bat test'}),null,'gradle checks stay with testOutputDigest');
+  assert.equal(toolOutputDigest('pwsh',text+'\n[truncated]',{seq:306,command:'echo done'}),null,'truncated bodies keep the canonical output');
+  assert.equal(toolOutputDigest('pwsh',text+'\n[output truncated; full output: C:\\Temp\\spill.log]',{seq:307,command:'echo done'}),null,'spilled bodies keep the canonical output');
 });
