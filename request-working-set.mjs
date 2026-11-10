@@ -482,6 +482,10 @@ export function createRequestWorkingSet(ctx,runtime,economics,taskFlow){
     budgetMessages(agent){
       const attachment=attachments.get(agent.session.id);if(!attachment?.enabled)return null;
       const original=attachment.derive.call(agent.session);
+      // A real user request for full output disables history receipts. The pressure
+      // estimate must use canonical bodies too, otherwise a receipt left in the
+      // working-set projection understates the next request's size.
+      if(runtime.historyFullOutputRequested?.(agent))return original;
       const projected=active(agent)&&sync(agent).hidden.size?render(agent,original,get(agent).hidden,{record:false}):original;
       return runtime.rewriteRequestHistory?.(agent,projected,{record:false})??projected;
     },

@@ -140,7 +140,7 @@ export function testOutputDigest(command,text,{seq=null,truncated=false,focus=[]
   // work_recall cannot recover a host-spilled body, so it must not be hidden.
   if(/\[output truncated; full output:|\[truncated\]/iu.test(text))return null;
   const failure=isNodeTest?tapCheckFailure(text):reportedCheckFailure(text),summary=failure?.summary??null,entries=failure?.failureEntries??[];
-  const failedLines=text.split(/\r?\n/u).filter(line=>/^\s*(?:FAILED|ERROR|not ok|\d+\s+(?:failed|failures))\b/iu.test(line));
+  const failedLines=text.split(/\r?\n/u).filter(line=>/^\s*(?:FAILED|ERROR|not ok|[1-9]\d*\s+(?:failed|failures))\b/iu.test(line));
   // Non-TAP check outputs do not carry structured failure causes. Projecting a passing run is safe;
   // projecting a failing run hides the diagnostic detail the model needs and triggers reruns.
   const isMavenGradle=/^(?:.\\|.\/)?(?:mvnw(?:\.cmd)?|mvn(?:\.cmd)?|gradlew(?:\.bat)?|gradle(?:\.bat)?)\b/iu.test(command.trim());
@@ -339,6 +339,7 @@ export function createHistoryHygiene(runtime,taskFlow,{isProtected=()=>false,ret
       if(get(agent).suspended)return messages;
       try{return project(agent,messages,options);}catch(error){get(agent).suspended=true;get(agent).hiddenResults.clear();runtime.problem?.(runtime.get(agent),'history-hygiene',String(error.message));return messages;}
     },observe,hasRequestView(agent){const s=sync(agent);return runtime.isEnabled(agent)&&runtime.get(agent).config.historyHygiene&&!s.suspended&&(s.hiddenResults.size>0||referenceContext?.hasRequestView(agent)===true);},
+    fullOutputRequested(agent){return get(agent).fullOutputRequested;},
     needsRecall(agent){
       if(!runtime.isEnabled(agent)||!runtime.get(agent).config.historyHygiene)return false;
       const s=sync(agent);if(s.suspended)return false;

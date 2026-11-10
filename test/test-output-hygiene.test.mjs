@@ -29,6 +29,8 @@ test('passing pytest output is projected with a locator',()=>{
   assert.ok(digest);
   assert.ok(digest.text.includes('work_recall kind=output seq=90'));
   assert.ok(digest.text.length<=4000,`${digest.text.length}`);
+  const zero='175 passed, 0 failed in 1.93s\n'+'x'.repeat(4200);
+  assert.ok(testOutputDigest('python -m pytest -q',zero,{seq:91}),'a zero failure count is not a failure');
 });
 
 test('failing non-TAP output is not projected regardless of focus',()=>{
