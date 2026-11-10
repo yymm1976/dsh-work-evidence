@@ -15,21 +15,21 @@
 | Gate | 条件 | 本分支真实证据 | 状态 |
 |---|---|---|---|
 | G0 范围闭环 | 正式功能全部成熟采用或正式淘汰 | `feature-control.mjs` 38 个入口与 `FEATURE-CONTROL-MATRIX-1.1.1.md` 38 行一一对应（程序比对无缺项、无多项） | 通过 |
-| G1 正确性 | 全量功能与恢复测试通过，fail=0、skipped=0 | 最终提交 `8ffdc23` 上隔离 profile 双宿主 `node --test`：**各 620 项，620 pass / 0 fail / 0 skipped，exit 0**（`results/full-test-final-022.log`、`results/full-test-final-021.log`）；此前 617/620 的 3 项失败源于桌面默认 profile 中 ACP 与宿主导出不匹配，改用实验隔离 profile 后 3 项 ACP 集成测试全部通过 | 通过 |
+| G1 正确性 | 全量功能与恢复测试通过，fail=0、skipped=0 | 最终提交 `10a1be3` 上隔离 profile 双宿主 `node --test`：**各 620 项，620 pass / 0 fail / 0 skipped，exit 0**（`results/full-test-final2-022.log`、`results/full-test-final2-021.log`）；此前 617/620 的 3 项失败源于桌面默认 profile 中 ACP 与宿主导出不匹配，改用实验隔离 profile 后 3 项 ACP 集成测试全部通过 | 通过 |
 | G2 全功能成熟 | 入口、启停、恢复、迁移与文档一致 | `test/release-metadata.test.mjs`、`test/package-install.test.mjs` 在版本 bump 后 2/2 通过；`MIGRATION-1.1.1.md`、`ROLLBACK-1.1.1.md`、`RELEASE-NOTES-1.1.1.md` 已提交 | 通过（文档一致性） |
 | G3 效率 | 固定任务上有可复算的真实收益 | `experiments/1.1.1/FINAL-METRICS-1.1.1.json`（`a8f0bf1` 运行时；当前 HEAD 与它除 `VERSION` 常量外逐字节一致）：24 对，B0 `$0.762347544` → C `$0.424497282`，总体 **+44.317%**；逐题均值 42.044%、中位数 47.700%；**23/24 题节省**；#8 为 **-81.1%** 单列。请求 834/542、输出 589,450/389,643、输入 1,980,924/959,031、缓存 37,179,648/15,618,944、工具 1,344/822、墙钟 12,906/7,730 s。机制触发：测试回执 0/24；通用工具回执仅 #7/#12/#13 各 2 次。稳定性：同运行时重复 #8 为 -8.1%/-16.7%（原 -81.1%，中位 -16.7%）、#16 为 +50.6%（原 +47.4%），原样本不替换。提示修正候选 `8b95114` 的真实复测（#1/#2 成本上升、#2 残留临时测试）已否决并回退 `b573548` | 通过 |
-| G4 宿主与集成 | 两个声明宿主通过 | `0.2.2-rc.1`：620/620（`full-test-final-022.log`）；`0.2.1-rc.4`：620/620（`full-test-final-021.log`），均 fail 0、skipped 0、exit 0 | 通过 |
+| G4 宿主与集成 | 两个声明宿主通过 | `0.2.2-rc.1`：620/620（`full-test-final2-022.log`）；`0.2.1-rc.4`：620/620（`full-test-final2-021.log`），均 fail 0、skipped 0、exit 0 | 通过 |
 | G5 安全与可靠性 | 无 P0/P1 漏洞，故障注入通过 | 620 项通过项覆盖归档、路径、生命周期、清理竞态与故障注入；未发现本插件 P0/P1 | 通过 |
 | G6 CodeRabbit | 至少三轮有效审查覆盖最终变更 | 本分支尚无 PR、无 CodeRabbit 审查记录；仓库历史 13 轮审查均针对 1.1.0 候选 `2f398e0`。本机无 `gh` CLI，浏览器会话未登录 GitHub，PR 创建被外部认证阻断 | **未通过**（不得以历史轮次冒充） |
 | G7 实验可信 | 路由、样本与口径可信 | 24 对共 48 单元全部 `opencode-go/deepseek-v4.1-flash`、`reasoning_effort=max`、`identityValid=true`；C 单元协议记录 `sourceCommit=a8f0bf1`；B0 干净重建；污染/TRANSPORT 无效样本归档于 `archive/` | 通过 |
-| G8 构建与文档 | 包、依赖、版本与文档一致 | `npm run check` **145 个 JS 文件**通过；`npm pack` 82 文件、**425,006 字节**、SHA-1 `e0dd32ba39af74c9e701cc1507642aca9d81027f`（sha256 `edb84579…`）；`verification-1.1.1/install-final` 独立安装成功，版本 1.1.1，唯一依赖 `fflate ^0.8.3`，挂载宿主 peer 后入口加载成功 | 通过 |
-| G9 最终统一回归 | 从最终候选重跑全套关口 | `8ffdc23` 上完成 `npm run check`、双宿主 620/620、`npm pack`、独立安装与加载；效率汇总复用 `a8f0bf1` 同运行时证据 | 通过（G6 除外） |
+| G8 构建与文档 | 包、依赖、版本与文档一致 | `10a1be3`：`npm run check` **145 个 JS 文件**通过；`npm pack` 82 文件、**425,302 字节**、SHA-1 `5cd896ea45c76d75eb0411f18a25e427e22d766b`（sha256 `f4503909…`）；`verification-1.1.1/install-final-final` 独立安装成功，版本 1.1.1，唯一依赖 `fflate ^0.8.3`，挂载宿主 peer 后入口加载成功 | 通过 |
+| G9 最终统一回归 | 从最终候选重跑全套关口 | `10a1be3` 上完成 `npm run check`、双宿主 620/620（`results/full-test-final2-0{22,21}.log`）、`npm pack`、独立安装与加载；效率汇总复用同一运行时的 `a8f0bf1` 证据 | 通过（G6 除外） |
 
 ## 证据定位
 
 - 原始会话、48 个单元结果、Patch、测试日志、协议/有效性文件、24 份评分与复算工具：私有证据仓库 `dsh-work-evidence-24task-evidence` 提交 `1c28acd`（`1.1.1/` 目录，280 个文件）；最终报告、独立复审、v8 否决样本、稳定性重复与双宿主最终日志在提交 `db63337`。
 - 汇总复算：`experiments/1.1.1/FINAL-METRICS-1.1.1.json`、`scores.json`、`quality-summary.json`、`evidence-index.json`。
-- 全量测试日志：`results/full-test-final-022.log`（0.2.2，620/620）、`results/full-test-final-021.log`（0.2.1，620/620）；`results/full-test-111.log` 为默认 profile 的 617/620 记录，`full-test-111-acp.log`/`full-test-111-host-021.log` 为同候选中间轮次，均保留作环境对照。
+- 全量测试日志：`results/full-test-final2-022.log`（0.2.2，620/620）、`results/full-test-final2-021.log`（0.2.1，620/620）；`full-test-111.log` 为默认 profile 的 617/620 记录，`full-test-111-acp.log`/`full-test-111-host-021.log`/`full-test-final-*` 为同运行时中间轮次，均保留作环境对照。
 - 打包与安装：`tmp/local-dsh-work-evidence-1.1.1.tgz`、`tmp/install-111/`。
 - 私人原始会话、真实账单和本机绝对路径不进入公开仓库。
 
