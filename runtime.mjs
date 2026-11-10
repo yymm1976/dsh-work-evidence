@@ -34,13 +34,13 @@ function checkedSessionPolicy(value){
 export function defaults(raw={}){
   const config={enabled:true,aggressiveMode:true,mode:'aggressive',selfIndex:true,modelTimeoutMs:20000,modelMaxTokens:1200,modelRoute:null,
     fastEditEnabled:true,fastEditPython:path.join(import.meta.dirname,'.fastedit-venv','Scripts','python.exe'),
-    stateLedger:true,stateInform:false,completionNotice:false,archiveReadRouting:true,readArgumentRecovery:true,requestAccounting:true,evidenceViews:true,memberParsing:true,mavenSourceBinding:true,
+    stateLedger:true,stateInform:true,completionNotice:false,archiveReadRouting:true,readArgumentRecovery:true,requestAccounting:true,evidenceViews:true,memberParsing:true,mavenSourceBinding:true,
     contextProtocol:true,contextPruningPolicy:'forecast',historyHygiene:true,contextPruneMinChars:8000,contextPruneHeadChars:4096,contextPruneTailChars:1024,
     ledgerReceipt:true,ledgerUnresolved:true,
     swLedger:false,swEviction:false,swEvictionSteps:3,
     requestProjection:false,projectionRestore:false,compressionControl:true,compactionTiming:'native',
     deferPressureCompaction:false,stubSummary:false,
-    executionTriage:true,nativeProgramReuse:false,structuredCalls:false,nativeReasoningReplay:false,stageWorkingSet:true,stepPacing:false,retainedCompute:true,finalJsonGuard:true,finalJsonResultGuard:false,qualityReview:false,qualityReviewEffort:'auto',qualityReviewScope:'auto',
+    executionTriage:true,nativeProgramReuse:false,structuredCalls:false,nativeReasoningReplay:false,stageWorkingSet:true,stepPacing:true,retainedCompute:true,finalJsonGuard:true,finalJsonResultGuard:false,qualityReview:false,qualityReviewEffort:'auto',qualityReviewScope:'auto',
     projectionMinChars:64000,projectionRecentSteps:6,projectionStableSteps:8,projectionHorizonSteps:16,projectionPricing:[],
     toolSurface:'compact',
     defaultResponseView:'reference-if-visible',...raw};
