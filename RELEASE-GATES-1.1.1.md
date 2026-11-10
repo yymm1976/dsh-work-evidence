@@ -15,10 +15,10 @@
 | Gate | 条件 | 本分支真实证据 | 状态 |
 |---|---|---|---|
 | G0 范围闭环 | 正式功能全部成熟采用或正式淘汰 | `feature-control.mjs` 38 个入口与 `FEATURE-CONTROL-MATRIX-1.1.1.md` 38 行一一对应（程序比对无缺项、无多项） | 通过 |
-| G1 正确性 | 全量功能与恢复测试通过，fail=0、skipped=0 | `full-test-111.log`：620 项，**617 pass / 3 fail / 0 skipped**；3 项均为 `test/host-acp.test.mjs` 与 `test/host-acp-combinations.test.mjs` 导入已安装的 `billion-context-dsh@0.2.26` 时，宿主 `@deepseek-ai/dsh-llm@0.2.2-rc.1` 不提供该包请求的 `CallId` 导出（宿主实际导出为 `ToolCallId`）。其余 617 项通过 | **未通过**（外部 ACP 版本不兼容，非插件逻辑失败；fail=0 未满足） |
+| G1 正确性 | 全量功能与恢复测试通过，fail=0、skipped=0 | 隔离 profile 下 `node --test`：**620 项，620 pass / 0 fail / 0 skipped，exit 0**（`results/full-test-111-acp.log`）；此前 617/620 的 3 项失败源于桌面默认 profile 中 ACP 与宿主导出不匹配，改用实验隔离 profile 后 3 项 ACP 集成测试全部通过 | 通过 |
 | G2 全功能成熟 | 入口、启停、恢复、迁移与文档一致 | `test/release-metadata.test.mjs`、`test/package-install.test.mjs` 在版本 bump 后 2/2 通过；`MIGRATION-1.1.1.md`、`ROLLBACK-1.1.1.md`、`RELEASE-NOTES-1.1.1.md` 已提交 | 通过（文档一致性） |
-| G3 效率 | 固定任务上有可复算的真实收益 | `experiments/1.1.1/FINAL-METRICS-1.1.1.json`：24 对，B0 `$0.762347544` → C `$0.424497282`，总体 **+44.317%**；逐题均值 42.044%、中位数 47.700%；**23/24 题节省**；#8 为 **-81.1%** 单列。请求 834/542、输出 589,450/389,643、输入 1,980,924/959,031、缓存 37,179,648/15,618,944、工具 1,344/822、墙钟 12,906/7,730 s | 通过（>30% 目标；#8 负结果完整披露） |
-| G4 宿主与集成 | 两个声明宿主通过 | 已实测 `0.2.2-rc.1`（617/620，3 项外部 ACP 失败）；`0.2.1-rc.4` 保存宿主在本机目录不完整（`node_modules/@deepseek-ai` 缺失），本分支未完成第二宿主全量测试 | **未完成**（第二宿主待可用环境） |
+| G3 效率 | 固定任务上有可复算的真实收益 | `experiments/1.1.1/FINAL-METRICS-1.1.1.json`（候选 `a8f0bf1`）：24 对，B0 `$0.762347544` → C `$0.424497282`，总体 **+44.317%**；逐题均值 42.044%、中位数 47.700%；**23/24 题节省**；#8 为 **-81.1%** 单列。请求 834/542、输出 589,450/389,643、输入 1,980,924/959,031、缓存 37,179,648/15,618,944、工具 1,344/822、墙钟 12,906/7,730 s。提示修正后的候选 `8b95114` 正在重测，结果通过前不得替代本行 | 通过（针对 `a8f0bf1`；新候选待复测） |
+| G4 宿主与集成 | 两个声明宿主通过 | `0.2.2-rc.1`：620/620（`full-test-111-acp.log`）；`0.2.1-rc.4`：620/620（`full-test-111-host-021.log`），均 fail 0、skipped 0、exit 0 | 通过 |
 | G5 安全与可靠性 | 无 P0/P1 漏洞，故障注入通过 | 617 项通过项覆盖归档、路径、生命周期、清理竞态与故障注入；3 项外部 ACP 失败不涉及本插件路径 | 通过（以已通过项为限） |
 | G6 CodeRabbit | 至少三轮有效审查覆盖最终变更 | 本分支尚无 PR、无 CodeRabbit 审查记录；仓库历史 13 轮审查均针对 1.1.0 候选 `2f398e0`。本机无 `gh` CLI，浏览器会话未登录 GitHub，PR 创建被外部认证阻断 | **未通过**（不得以历史轮次冒充） |
 | G7 实验可信 | 路由、样本与口径可信 | 24 对共 48 单元全部 `opencode-go/deepseek-v4.1-flash`、`reasoning_effort=max`、`identityValid=true`；C 单元协议记录 `sourceCommit=a8f0bf1`；B0 干净重建；污染/TRANSPORT 无效样本归档于 `archive/` | 通过 |
@@ -29,7 +29,7 @@
 
 - 原始会话、48 个单元结果、Patch、测试日志、协议/有效性文件、24 份评分与复算工具：私有证据仓库 `dsh-work-evidence-24task-evidence` 提交 `1c28acd`（`1.1.1/` 目录，280 个文件）。
 - 汇总复算：`experiments/1.1.1/FINAL-METRICS-1.1.1.json`、`scores.json`、`quality-summary.json`、`evidence-index.json`。
-- 全量测试日志：`results/full-test-111.log`（620 项，617 pass / 3 fail / 0 skip）。
+- 全量测试日志：`results/full-test-111-acp.log`（0.2.2，620/620）、`results/full-test-111-host-021.log`（0.2.1，620/620）；`results/full-test-111.log` 为默认 profile 的 617/620 记录，保留作环境对照。
 - 打包与安装：`tmp/local-dsh-work-evidence-1.1.1.tgz`、`tmp/install-111/`。
 - 私人原始会话、真实账单和本机绝对路径不进入公开仓库。
 
