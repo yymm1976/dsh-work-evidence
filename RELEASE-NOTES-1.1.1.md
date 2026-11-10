@@ -27,8 +27,8 @@
 
 ## 已知限制与未闭环门禁
 
-- 全量测试 620 项：**617 pass / 3 fail / 0 skipped**。3 项失败为 `billion-context-dsh@0.2.26` 导入宿主 `@deepseek-ai/dsh-llm@0.2.2-rc.1` 时请求不存在的 `CallId` 导出（宿主导出为 `ToolCallId`），非插件运行时逻辑；但 `fail=0` 门禁未满足。
-- 第二宿主 `0.2.1-rc.4` 本机保存目录不完整，本分支未完成其全量测试。
+- 全量测试：最终提交上双宿主各 **620/620，fail=0、skipped=0、exit 0**（隔离 profile；`results/full-test-final-0{22,21}.log`）。
+- 第二宿主 `0.2.1-rc.4` 已在最终提交上完成全量测试。
 - 本分支无 PR、无 CodeRabbit 审查；历史 13 轮审查只覆盖 1.1.0 候选。PR 创建受 GitHub 认证阻断。
 - 24 题评分由主 Agent 完成，非盲评；不得称为官方基准解决率。
 - 参考费用按 input `0.15`、cacheRead `0.003`、cacheWrite `0`、output `0.6` USD/百万 token 折算，不等于实际账单。
@@ -38,6 +38,6 @@
 
 需要 Node.js 22.19 或更高版本。本轮实测宿主为 `@deepseek-ai/dsh-tools@0.2.2-rc.1`；`0.2.1-rc.4` 在 1.1.0 验收中使用，本分支未复测。`fflate` 发布依赖为 `^0.8.3`；发布包不含 `node_modules`。
 
-打包产物 `local-dsh-work-evidence-1.1.1.tgz`：82 文件、426,167 字节、SHA-1 `d4ebd05f71e4153cebfa9461ef4faed364a95e88`；独立安装验证版本 `1.1.1`。
+打包产物 `local-dsh-work-evidence-1.1.1.tgz`：82 文件、425,006 字节、SHA-1 `e0dd32ba39af74c9e701cc1507642aca9d81027f`；独立安装验证版本 `1.1.1`，挂载宿主 peer 后入口可加载。`npm run check` 为 145 个 JS 文件。
 
 迁移步骤见 [MIGRATION-1.1.1.md](MIGRATION-1.1.1.md)，回退见 [ROLLBACK-1.1.1.md](ROLLBACK-1.1.1.md)，门禁证据见 [RELEASE-GATES-1.1.1.md](RELEASE-GATES-1.1.1.md)。
