@@ -27,7 +27,7 @@
 
 ## 证据定位
 
-- 原始会话、48 个单元结果、Patch、测试日志、协议/有效性文件、24 份评分与复算工具：私有证据仓库 `dsh-work-evidence-24task-evidence` 提交 `1c28acd`（`1.1.1/` 目录，280 个文件）；最终报告、独立复审、v8 否决样本、稳定性重复与双宿主最终日志在提交 `db63337`。
+- 原始会话、48 个单元结果、Patch、测试日志、协议/有效性文件、24 份评分与复算工具：私有证据仓库 `dsh-work-evidence-24task-evidence` 提交 `1c28acd`（`1.1.1/` 目录，280 个文件）；最终报告、独立复审、v8 否决样本、稳定性重复与双宿主最终日志在提交 `db63337` 及后续提交。
 - 汇总复算：`experiments/1.1.1/FINAL-METRICS-1.1.1.json`、`scores.json`、`quality-summary.json`、`evidence-index.json`。
 - 全量测试日志：`results/full-test-final2-022.log`（0.2.2，620/620）、`results/full-test-final2-021.log`（0.2.1，620/620）；`full-test-111.log` 为默认 profile 的 617/620 记录，`full-test-111-acp.log`/`full-test-111-host-021.log`/`full-test-final-*` 为同运行时中间轮次，均保留作环境对照。
 - 打包与安装：`tmp/local-dsh-work-evidence-1.1.1.tgz`、`tmp/install-111/`。
