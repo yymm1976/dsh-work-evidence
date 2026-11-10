@@ -73,7 +73,19 @@ function tapCheckFailure(text){
   return {signature:entries[0]??`${failed} failed, ${passed} passed of ${total}`,
     summary:{passed,failed,total,source:'reported-tap',text:`# tests ${total}\n# pass ${passed}\n# fail ${failed}`},failureEntries:entries,causes};
 }
-const TEST_COMMAND=/^(?:python(?:\.exe)?\s+-m\s+(?:pytest|compileall)|node\s+--test|ruff\s+check|(?:\.\\|\.\/)?gradlew(?:\.bat)?|gradle(?:\.bat)?|mvn(?:\.cmd)?)\b/iu;
+function extractedCauses(text){
+  const out=[];
+  for(const line of text.split(/\r?\n/u)){
+    if(!/(?:ERROR|FAILED|AssertionError|Exception|Caused by|What went wrong|\[ERROR\])/iu.test(line))continue;
+    const value=line.replace(/^\s*(?:\[ERROR\]|ERROR|FAILED)\s*/iu,'').replace(/^[-: ]+/u,'').trim();
+    if(!value||value.length<4)continue;
+    const key=value.slice(0,200);
+    if(!out.includes(key))out.push(key);
+    if(out.length>=3)break;
+  }
+  return out;
+}
+const TEST_COMMAND=/^(?:python(?:\.exe)?\s+-m\s+(?:pytest|compileall)|node\s+--test|ruff\s+check|(?:.\\|.\/)?mvnw(?:\.cmd)?|(?:\.\\|\.\/)?gradlew(?:\.bat)?|gradle(?:\.bat)?|mvn(?:\.cmd)?)\b/iu;
 const messageOf=event=>event.data?.message??(event.data?.role?event.data:null);
 /** Only a genuine user request may suspend request-view receipts. Plugin-injected
  *  guidance can mention "原始输出" while describing a failure; treating that as a
@@ -114,7 +126,8 @@ export function testOutputDigest(command,text,{seq=null,truncated=false,focus=[]
   const failedLines=text.split(/\r?\n/u).filter(line=>/^\s*(?:FAILED|ERROR|not ok|\d+\s+(?:failed|failures))\b/iu.test(line));
   // Non-TAP check outputs do not carry structured failure causes. Projecting a passing run is safe;
   // projecting a failing run hides the diagnostic detail the model needs and triggers reruns.
-  if(!isNodeTest&&(failedLines.length>0||(summary&&Number.isInteger(summary.failed)&&summary.failed>0)))return null;
+  const isMavenGradle=/^(?:.\\|.\/)?(?:mvnw(?:\.cmd)?|mvn(?:\.cmd)?|gradlew(?:\.bat)?|gradle(?:\.bat)?)\b/iu.test(command.trim());
+  if(!isNodeTest&&!isMavenGradle&&(failedLines.length>0||(summary&&Number.isInteger(summary.failed)&&summary.failed>0)))return null;
   if(isNodeTest&&!failure)return null;
   if(!failure&&!/(?:^|\n)\s*(?:\d+\s+)?(?:passed|failed|ok|tests?|checks?)\b|(?:passed|failed|ok)\s+in\s+[\d.]+s/iu.test(text))return null;
   const environmentFailure=/FileNotFoundError|WinError|PermissionError|\[Errno \d+\]|No such file or directory|Access is denied|Cannot find path|ModuleNotFoundError/iu;
@@ -137,7 +150,7 @@ export function testOutputDigest(command,text,{seq=null,truncated=false,focus=[]
   const environmentCount=filterEnvironment?(entries.filter(entry=>environmentFailure.test(entry)).length+(entries.length?0:failedLines.filter(line=>environmentFailure.test(line)).length)):0;
   if(environmentCount>0)lines.push('environment-like failures omitted: '+environmentCount+' (canonical output retains them).');
   if(detailLines.length)lines.push('details: '+detailLines.join(' | '));
-  const causes=failure?.causes??[];
+  const causes=failure?.causes?.length?failure.causes:extractedCauses(text);
   if(causes.length)lines.push('causes: '+causes.join(' | '));
   if(tail)lines.push('tail:\n'+tail);
   const locator='The canonical output is unchanged and recoverable with work_recall kind=output'+(seq!==null?(' seq='+seq):'')+'.';

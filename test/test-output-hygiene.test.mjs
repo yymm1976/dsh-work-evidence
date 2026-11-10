@@ -17,7 +17,10 @@ test('failing non-TAP check output stays canonical',()=>{
   assert.equal(testOutputDigest('python -m pytest -q','x'.repeat(9000),{seq:80}),null);
   assert.equal(testOutputDigest('python -m pytest -q',text,{seq:null}),null);
   assert.equal(testOutputDigest('git status',text,{seq:81}),null);
-  assert.equal(testOutputDigest('gradlew.bat --offline --no-daemon compileTestJava','x'.repeat(9000)+'\n10 failed',{seq:1}),null);
+  const gradle=testOutputDigest('gradlew.bat --offline --no-daemon compileTestJava','x'.repeat(9000)+'\n10 failed',{seq:1});
+  assert.ok(gradle);
+  assert.ok(gradle.text.includes('causes:'));
+  assert.ok(gradle.text.length<=4000);
 });
 
 test('passing pytest output is projected with a locator',()=>{
