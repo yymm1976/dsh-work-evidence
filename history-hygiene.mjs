@@ -7,7 +7,7 @@ import {messageTokens} from './context-economics.mjs';
 import {reportedCheckFailure} from './recovery.mjs';
 
 const AGE=2,MIN_SAVING=512;
-const TEST_MIN_CHARS=4000,TEST_TAIL_CHARS=1800,TEST_DIGEST_MAX=4000;
+const TEST_MIN_CHARS=4000,TEST_TAIL_CHARS=1800,TEST_DIGEST_MAX=4000,TOOL_MIN_CHARS=12000,TOOL_DIGEST_MAX=5000;
 const FULL_OUTPUT_REQUEST=/完整输出|全部输出|原始输出|full output|full canonical output/iu;
 /** TAP (`node --test`) reports its own exact counts; require all three so a
  *  truncated or unrelated body is never hidden behind a receipt. */
@@ -86,6 +86,19 @@ function extractedCauses(text){
   return out;
 }
 const TEST_COMMAND=/^(?:python(?:\.exe)?\s+-m\s+(?:pytest|compileall)|node\s+--test|ruff\s+check|(?:.\\|.\/)?mvnw(?:\.cmd)?|(?:\.\\|\.\/)?gradlew(?:\.bat)?|gradle(?:\.bat)?|mvn(?:\.cmd)?)\b/iu;
+export function toolOutputDigest(name,text,{seq=null,command=null}={}){
+  if(typeof name!=='string'||!['pwsh','bash','ops_bash','work_exec','grep','glob'].includes(name))return null;
+  if(typeof text!=='string'||text.length<TOOL_MIN_CHARS||!Number.isSafeInteger(seq))return null;
+  const failureLines=text.split(/\r?\n/u).filter(line=>/ERROR|FAILED|Exception|not ok|Traceback|What went wrong/iu.test(line)).slice(0,8);
+  const head=text.slice(0,2000),tail=text.slice(-2500);
+  const lines=['[work-evidence output receipt] tool='+name+(command?' command='+String(command).trim().slice(0,180):''), 'head:\n'+head];
+  if(failureLines.length)lines.push('errors:\n'+failureLines.join('\n'));
+  lines.push('tail:\n'+tail);
+  const locator='The canonical output is unchanged and recoverable with work_recall kind=output seq='+seq+'.';
+  const body=lines.join('\n');
+  const digest=body.length+locator.length+1<=TOOL_DIGEST_MAX?body+'\n'+locator:body.slice(0,Math.max(0,TOOL_DIGEST_MAX-locator.length-2))+'\n'+locator;
+  return {text:digest,originalChars:text.length,signature:null};
+}
 const messageOf=event=>event.data?.message??(event.data?.role?event.data:null);
 /** Only a genuine user request may suspend request-view receipts. Plugin-injected
  *  guidance can mention "原始输出" while describing a failure; treating that as a
@@ -166,7 +179,7 @@ export function createHistoryHygiene(runtime,taskFlow,{isProtected=()=>false,ret
   function get(agent){
     let state=states.get(agent.session.id);
     if(!state){state={cursor:0,step:0,results:new Map(),failures:new Set(),pinnedCalls:new Set(),pinnedResults:new Set(),retainedSources:new Set(),
-      outputPlans:new Map(),hiddenResults:new Set(),omittedSources:new Set(),liveReads:new Map(),observedPaths:new Map(),commands:new Map(),fullOutputRequested:false,requests:0,outputs:0,chars:0,testOutputViews:0,testOutputChars:0,restores:0,rereadPromotions:0};states.set(agent.session.id,state);}
+      outputPlans:new Map(),hiddenResults:new Set(),omittedSources:new Set(),liveReads:new Map(),observedPaths:new Map(),commands:new Map(),toolCalls:new Map(),fullOutputRequested:false,requests:0,outputs:0,chars:0,testOutputViews:0,testOutputChars:0,restores:0,rereadPromotions:0};states.set(agent.session.id,state);}
     return state;
   }
   function rememberRead(state,root,read){
@@ -191,6 +204,7 @@ export function createHistoryHygiene(runtime,taskFlow,{isProtected=()=>false,ret
       if(event.type==='step/start')state.step++;
       if(['tool/call','tool/ptc-dispatch','tool/code-dispatch'].includes(event.type)){
         const args=argsOf(data.arguments);
+        if(data.callId)state.toolCalls.set(data.callId,{name:data.name,arguments:data.arguments});
         if(['pwsh','bash','ops_bash'].includes(data.name)&&typeof args?.command==='string'){
           if(state.commands.size>=64)state.commands.delete(state.commands.keys().next().value);
           state.commands.set(data.callId,{name:data.name,command:args.command});
@@ -217,15 +231,17 @@ export function createHistoryHygiene(runtime,taskFlow,{isProtected=()=>false,ret
         state.observedPaths.set(root,paths);
       }
       if(event.type==='tool/result'&&event.surfaceOp?.op!=='replace'&&message){
-        const id=callIdOf(message),text=resultText(message.content),command=state.commands.get(id)?.command??null;
+        const id=callIdOf(message),text=resultText(message.content),command=state.commands.get(id)?.command??null,call=state.toolCalls.get(id);
+        if(id)state.toolCalls.delete(id);
         const baseFocus=(()=>{try{return taskFlow.phase(agent)?.focus??[]}catch{return []}})();
         const isPytest=/^python(?:\.exe)?\s+-m\s+pytest/iu.test(command??'');
         const testFocus=isPytest?['tests/']:[];
         const digest=command?testOutputDigest(command,text,{seq:event.seq,truncated:event.data?.meta?.truncated===true,focus:[...baseFocus,...testFocus],filterEnvironment:isPytest}):null;
+        const toolDigest=!digest&&call?toolOutputDigest(call.name,text,{seq:event.seq,command}):null;
         state.commands.delete(id);
         const failed=!!message.isError||hasPruneProblem(message.content??[])||state.failures.has(id)||isProtected(agent,id);
         const record={seq:event.seq,step:state.step,callId:id,failed,reads:[...(state.liveReads.get(id)?.values()??[])],
-          paths:[...(state.observedPaths.get(id)??[])],testDigest:digest?.text??null,testSignature:digest?.signature??null,testOriginalChars:digest?.originalChars??0};
+          paths:[...(state.observedPaths.get(id)??[])],testDigest:digest?.text??null,testSignature:digest?.signature??null,testOriginalChars:digest?.originalChars??0,toolDigest:toolDigest?.text??null,toolOriginalChars:toolDigest?.originalChars??0};
         state.results.set(message.id,record);
         if(!failed&&record.reads.length){
           const printed=renderedReads(record.reads,resultText(message.content));
@@ -268,6 +284,19 @@ export function createHistoryHygiene(runtime,taskFlow,{isProtected=()=>false,ret
             state.outputPlans.set(entry.seq,{test:true,content:after.content});
             runtime.effects?.rewrite(agent,{feature:'historyTestOutput',afterMessage:after,beforeMessages:[message],sourceSeqs:[entry.seq]});
             runtime.effects?.decide(agent,'historyTestOutput','applied','test-output-receipt',{seq:entry.seq,saved});
+          }
+          return after;
+        }
+      }
+      if(entry?.toolDigest&&state.step-entry.step>=1&&!state.fullOutputRequested&&!state.pinnedResults.has(entry.seq)&&!pins.opaque&&!pins.targets.has(entry.seq)){
+        const reduction=resultText(message.content).length-entry.toolDigest.length;
+        if(reduction>=MIN_SAVING){
+          const after={...message,content:[{type:'text',text:entry.toolDigest}]};
+          outputs++;saved+=reduction;hidden.add(entry.seq);
+          if(record){
+            state.outputPlans.set(entry.seq,{test:false,tool:true,content:after.content});
+            runtime.effects?.rewrite(agent,{feature:'historyToolOutput',afterMessage:after,beforeMessages:[message],sourceSeqs:[entry.seq]});
+            runtime.effects?.decide(agent,'historyToolOutput','applied','tool-output-receipt',{seq:entry.seq,saved});
           }
           return after;
         }

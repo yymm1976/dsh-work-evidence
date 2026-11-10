@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {testOutputDigest} from '../history-hygiene.mjs';
+import {testOutputDigest,toolOutputDigest} from '../history-hygiene.mjs';
 
 test('failing non-TAP check output stays canonical',()=>{
   const lines=[];
@@ -83,4 +83,18 @@ test('TAP receipts keep the cause regardless of diagnostic field order',()=>{
   const nameFirst=build(['  name: \'ReferenceError\'','  error: |-','    describe is not defined']);
   assert.ok(testOutputDigest('node --test',errorFirst,{seq:201}).text.includes('causes: AssertionError'));
   assert.ok(testOutputDigest('node --test',nameFirst,{seq:202}).text.includes('causes: ReferenceError: describe is not defined'));
+});
+
+test('generic tool output digest bounds noisy shell/search output',()=>{
+  const text='head line\n'+'grep match line '.repeat(1000)+'\nERROR: build failed\n'+'tail line\n';
+  const digest=toolOutputDigest('grep',text,{seq:301});
+  assert.ok(digest);
+  assert.ok(digest.text.includes('errors:'));
+  assert.ok(digest.text.includes('ERROR: build failed'));
+  assert.ok(digest.text.includes('work_recall kind=output seq=301'));
+  assert.ok(digest.text.length<=5000);
+  assert.equal(digest.originalChars,text.length);
+  assert.equal(toolOutputDigest('read',text,{seq:302}),null);
+  assert.equal(toolOutputDigest('grep','short',{seq:303}),null);
+  assert.equal(toolOutputDigest('grep',text,{seq:null}),null);
 });
