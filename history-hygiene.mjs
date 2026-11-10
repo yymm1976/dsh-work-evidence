@@ -288,15 +288,15 @@ export function createHistoryHygiene(runtime,taskFlow,{isProtected=()=>false,ret
           return after;
         }
       }
-      if(entry?.toolDigest&&state.step-entry.step>=1&&!state.fullOutputRequested&&!state.pinnedResults.has(entry.seq)&&!pins.opaque&&!pins.targets.has(entry.seq)){
+      if(entry?.toolDigest&&runtime.get(agent).config?.swLedger!==true&&state.step-entry.step>=1&&!state.fullOutputRequested&&!state.pinnedResults.has(entry.seq)&&!pins.opaque&&!pins.targets.has(entry.seq)){
         const reduction=resultText(message.content).length-entry.toolDigest.length;
         if(reduction>=MIN_SAVING){
           const after={...message,content:[{type:'text',text:entry.toolDigest}]};
           outputs++;saved+=reduction;hidden.add(entry.seq);
           if(record){
             state.outputPlans.set(entry.seq,{test:false,tool:true,content:after.content});
-            runtime.effects?.rewrite(agent,{feature:'historyToolOutput',afterMessage:after,beforeMessages:[message],sourceSeqs:[entry.seq]});
-            runtime.effects?.decide(agent,'historyToolOutput','applied','tool-output-receipt',{seq:entry.seq,saved});
+            runtime.effects?.rewrite(agent,{feature:'historyOutput',afterMessage:after,beforeMessages:[message],sourceSeqs:[entry.seq]});
+            runtime.effects?.decide(agent,'historyOutput','applied','oversized-tool-output-receipt',{seq:entry.seq,saved});
           }
           return after;
         }
