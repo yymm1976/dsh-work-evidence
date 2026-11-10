@@ -39,6 +39,9 @@
 | D30 | 实验装配：`scorers/python-dev.py` 用顶层 `assert`，实现缺陷变成未捕获异常，`stdout` 为空且样本不可评分 | 复审 P2 + `v23-pydev-c-3`/`final-pydev-b0-3` 同点崩溃 | 改为逐项命名失败、永不崩溃；新增 `bare-key` 检查（缺键即失败）。两臂在新评分器上重跑（v26/v29） | `scorers/python-dev.py`、`results/v26-*.json`、`results/v29-*.json` | 关闭 |
 | D31 | TAP 测试回执缺少错误原因，模型为查明失败原因反复重跑完整套件（实测 50 请求、`testOutputViews=47`、同组成本增加 45.6%） | 最终候选首轮复验 `v25-capneg-c-2` | 回执新增 `causes`（≤3 条），并改为顺序无关解析 TAP 诊断块（Node 22.19 先输出 `error: |-` 后输出 `name`） | `history-hygiene.mjs`、`test/test-output-hygiene.test.mjs` | 关闭 |
 | D32 | Java dev 旧 B0 样本与新 C 的 `baseHash` 不同（`9adf6126` vs `80a30596`），base 快照已变，不可混样 | 同 SHA 复核 | 旧 B0 标为不可比并从配对剔除；改用当前 base 的 B0（`v28-javadev-b0-5/6`、`v29-javadev-b0-1`） | `results/v28-javadev-b0-*.json`、`results/v29-javadev-b0-1.json` | 关闭 |
+| D33 | 通用大工具输出回执可替换失败的 pytest/Maven 结果：`testOutputDigest` 按设计返回 null 后，`toolOutputDigest` 仍生成回执，丢失失败诊断正文 | CodeRabbit #9 第 1 轮 Major；#7 56,803 字符、#12 14,920 字符失败 pytest 均满足触发条件 | 回执生成前先计算 `failed` 并禁止失败结果使用通用回执；`toolOutputDigest` 同时拒绝 `TEST_COMMAND` 命令。新增 pytest/gradle 回归断言 | `history-hygiene.mjs`、`test/test-output-hygiene.test.mjs` | 关闭（确定性回归；真实任务复测见下条） |
+| D34 | 通用回执给截断/spill 输出附带 `work_recall` 定位，但完整正文不可取回 | CodeRabbit #9 第 1 轮 Major | `toolOutputDigest` 检测 `[truncated]` 与 `[output truncated; full output:` 标记并返回 null；新增两条回归断言 | `history-hygiene.mjs`、`test/test-output-hygiene.test.mjs` | 关闭 |
+| D35 | 默认激进提示含“禁止访问网络、上游仓库或发布版”，属实验隔离而非通用产品规则 | CodeRabbit #9 第 1 轮 Major；独立复审 R2 | 改为“以工作区/任务原文/已有工具结果为准；不得用上游现成实现替代；联网先确认用户授权”；保留其余 v7 纪律。新增提示回归断言 | `task-flow.mjs`、`test/task-flow-execution.test.mjs` | 代码关闭；24 题 C 需按新运行时复测后更新 G3 |
 
 ## 说明
 
@@ -52,4 +55,4 @@
 
 - `v1.1.1` **未发布**：无 tag、无 GitHub Release、未合并到 `main`。
 - 当前远端 `main` 为 `7840220`（1.1.0 文档补正 PR #8）；1.1.1 候选在分支 `feat/work-evidence-1.1.1-efficiency`，候选代码 `a8f0bf1`、发布文档 `bf88151` 及后续文档更正提交。
-- 打包与独立安装已完成（82 文件、426,167 字节、SHA-1 `d4ebd05f71e4153cebfa9461ef4faed364a95e88`，版本 1.1.1），但发布门禁 G1/G4/G6/G9 未闭环，见 `RELEASE-GATES-1.1.1.md`。
+- 打包与独立安装已完成（82 文件，最终摘要见 `RELEASE-GATES-1.1.1.md` 的 G8 与证据仓库 `1.1.1/verification/checksums-final.txt`）。当前门禁仅 **G6（PR/CodeRabbit）** 未闭环；G1、G4、G9 已在最终提交的双宿主全量测试与打包/安装后通过。

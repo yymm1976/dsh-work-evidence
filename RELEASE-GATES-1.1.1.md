@@ -30,18 +30,18 @@
 - 原始会话、48 个单元结果、Patch、测试日志、协议/有效性文件、24 份评分与复算工具：私有证据仓库 `dsh-work-evidence-24task-evidence` 提交 `1c28acd`（`1.1.1/` 目录，280 个文件）；最终报告、独立复审、v8 否决样本、稳定性重复与双宿主最终日志在提交 `db63337` 及后续提交。
 - 汇总复算：`experiments/1.1.1/FINAL-METRICS-1.1.1.json`、`scores.json`、`quality-summary.json`、`evidence-index.json`。
 - 全量测试日志：`results/full-test-final2-022.log`（0.2.2，620/620）、`results/full-test-final2-021.log`（0.2.1，620/620）；`full-test-111.log` 为默认 profile 的 617/620 记录，`full-test-111-acp.log`/`full-test-111-host-021.log`/`full-test-final-*` 为同运行时中间轮次，均保留作环境对照。
-- 打包与安装：`tmp/local-dsh-work-evidence-1.1.1.tgz`、`tmp/install-111/`。
+- 打包与安装：`verification-1.1.1/`（最终工件摘要见 G8）；该目录只在本机交付证据中，不进入公开仓库。
 - 私人原始会话、真实账单和本机绝对路径不进入公开仓库。
 
 ## L0–L5 门禁
 
 | 层级 | 已执行内容 | 证据 |
 |---|---|---|
-| L0 快速 | 全部仓库 JavaScript 语法检查、版本与配置一致性、`git diff --check` | `npm run check`（146 文件）、`test/release-metadata.test.mjs` |
-| L1 单元 | 模块、状态机、配置、路径、失败边界和证据失效规则 | `test/` 下的单元与回归测试（617 项通过） |
-| L2 全量 | 全部 Node 测试、功能交互、历史兼容和实验工具链 | `node --test`（617/620） |
-| L3 宿主 | 桌面宿主加载、原生工具、PTC、模式、生命周期和组合路径 | `DSH_APP=0.2.2-rc.1` 的全量测试；第二宿主未完成 |
-| L4 发布 | 独立安装、文件清单、打包、版本、文档和插件加载 | `npm pack` + `tmp/install-111` |
+| L0 快速 | 全部仓库 JavaScript 语法检查、版本与配置一致性、`git diff --check` | `npm run check`（145 文件）、`test/release-metadata.test.mjs` |
+| L1 单元 | 模块、状态机、配置、路径、失败边界和证据失效规则 | `test/` 下的单元与回归测试（620 项通过） |
+| L2 全量 | 全部 Node 测试、功能交互、历史兼容和实验工具链 | `node --test`（620/620，fail=0，skipped=0） |
+| L3 宿主 | 桌面宿主加载、原生工具、PTC、模式、生命周期和组合路径 | `0.2.2-rc.1` 与 `0.2.1-rc.4` 各 620/620（隔离 profile） |
+| L4 发布 | 独立安装、文件清单、打包、版本、文档和插件加载 | `verification-1.1.1/` 的 pack 与独立安装记录 |
 | L5 可靠性 | 归档故障注入、并发、路径安全、性能和长会话边界 | `test/evidence-archive.test.mjs`、轨迹重放和相关宿主测试 |
 
 ## 已知非阻塞限制

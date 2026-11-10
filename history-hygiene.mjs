@@ -89,6 +89,10 @@ const TEST_COMMAND=/^(?:python(?:\.exe)?\s+-m\s+(?:pytest|compileall)|node\s+--t
 export function toolOutputDigest(name,text,{seq=null,command=null}={}){
   if(typeof name!=='string'||!['pwsh','bash','ops_bash','work_exec','grep','glob'].includes(name))return null;
   if(typeof text!=='string'||text.length<TOOL_MIN_CHARS||!Number.isSafeInteger(seq))return null;
+  // Check commands are owned by testOutputDigest: a rejected (failing/truncated)
+  // check must keep its canonical body instead of being replaced by this generic receipt.
+  if(TEST_COMMAND.test(String(command??'').trim()))return null;
+  if(/\[output truncated; full output:|\[truncated\]/iu.test(text))return null;
   const failureLines=text.split(/\r?\n/u).filter(line=>/ERROR|FAILED|Exception|not ok|Traceback|What went wrong/iu.test(line)).slice(0,8);
   const head=text.slice(0,2000),tail=text.slice(-2500);
   const lines=['[work-evidence output receipt] tool='+name+(command?' command='+String(command).trim().slice(0,180):''), 'head:\n'+head];
@@ -237,9 +241,9 @@ export function createHistoryHygiene(runtime,taskFlow,{isProtected=()=>false,ret
         const isPytest=/^python(?:\.exe)?\s+-m\s+pytest/iu.test(command??'');
         const testFocus=isPytest?['tests/']:[];
         const digest=command?testOutputDigest(command,text,{seq:event.seq,truncated:event.data?.meta?.truncated===true,focus:[...baseFocus,...testFocus],filterEnvironment:isPytest}):null;
-        const toolDigest=!digest&&call?toolOutputDigest(call.name,text,{seq:event.seq,command}):null;
-        state.commands.delete(id);
         const failed=!!message.isError||hasPruneProblem(message.content??[])||state.failures.has(id)||isProtected(agent,id);
+        const toolDigest=!digest&&!failed&&call?toolOutputDigest(call.name,text,{seq:event.seq,command}):null;
+        state.commands.delete(id);
         const record={seq:event.seq,step:state.step,callId:id,failed,reads:[...(state.liveReads.get(id)?.values()??[])],
           paths:[...(state.observedPaths.get(id)??[])],testDigest:digest?.text??null,testSignature:digest?.signature??null,testOriginalChars:digest?.originalChars??0,toolDigest:toolDigest?.text??null,toolOriginalChars:toolDigest?.originalChars??0};
         state.results.set(message.id,record);

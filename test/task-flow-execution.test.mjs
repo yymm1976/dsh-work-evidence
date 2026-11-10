@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {createTaskFlow} from '../task-flow.mjs';
+import {createTaskFlow,taskFlowGuidance} from '../task-flow.mjs';
 import {defaults} from '../runtime.mjs';
 import {reportedCheckFailure,reportedExecutionChecks} from '../recovery.mjs';
 
@@ -514,4 +514,11 @@ test('the next user request and successful program clear a prior clipped-read is
     if(action==='plugin-off')t.runtimeState.config.enabled=false;
     assert.ok(!t.notices().some(m=>m.source.taskFlow.key.includes('native-read-clipped-json')),action);
   }
+});
+
+test('aggressive guidance does not ban network access unconditionally',()=>{
+  const body=taskFlowGuidance('aggressive');
+  assert.doesNotMatch(body,/禁止访问网络/u,'experiment isolation must not be the default product rule');
+  assert.match(body,/需要联网的操作先确认用户授权/u);
+  assert.match(body,/不得用上游仓库或发布版中的现成实现替代本次实现/u);
 });

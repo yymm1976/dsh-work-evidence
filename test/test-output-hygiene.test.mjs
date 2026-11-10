@@ -97,4 +97,8 @@ test('generic tool output digest bounds noisy shell/search output',()=>{
   assert.equal(toolOutputDigest('read',text,{seq:302}),null);
   assert.equal(toolOutputDigest('grep','short',{seq:303}),null);
   assert.equal(toolOutputDigest('grep',text,{seq:null}),null);
+  assert.equal(toolOutputDigest('pwsh',text,{seq:304,command:'python -m pytest -q'}),null,'check commands stay with testOutputDigest');
+  assert.equal(toolOutputDigest('pwsh',text,{seq:305,command:'.\\gradlew.bat test'}),null,'gradle checks stay with testOutputDigest');
+  assert.equal(toolOutputDigest('pwsh',text+'\n[truncated]',{seq:306,command:'echo done'}),null,'truncated bodies keep the canonical output');
+  assert.equal(toolOutputDigest('pwsh',text+'\n[output truncated; full output: C:\\Temp\\spill.log]',{seq:307,command:'echo done'}),null,'spilled bodies keep the canonical output');
 });
