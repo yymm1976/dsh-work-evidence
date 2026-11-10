@@ -22,7 +22,7 @@
 | D13 | H8 旧推理请求视图省略被证实为负优化 | 本会话 H8 开发实验 | Python 三对均值 B0 `235,985` vs C `225,087`（改善 `4.6%`，未达 10%），两对 C 请求更多；代码回退，测试撤回 | `results/dev-python-v6-h8-*.json`、`OPTIMIZATION-REGISTER-1.1.1.md` H8 判定、`5355c64`/`399c33b` | 否决 |
 | D14 | 全量套件在回退 H8 后仍保留其测试，rc4 `602/1` | 本会话回归 | `399c33b` 恢复 pre-H8 测试文件 | `verification/node-test-rc4-399c33b.log` | 关闭 |
 | D15 | G3/G7 效率门禁（旧候选 C=`f89e668`）：对 B0 未观察到 ≥10% 改善，且留出方向反转 | 生产实验 | H13b 开发 Python `-31.3%`、Picomatch 每成功成本 `-31.8%`；v16 留出 Python `-47.3%`、Picomatch `-0.3%`，合计 `-24.2%`；H14/H3/H8 回退。**2026-11-09 复审更正：全部为 `reasoning_effort=high`，不符合本轮 `max` 路由契约，旧样本作废；v16 任务已多次复用，不能作为新留出。** v17 正在以 `max` 重跑开发集、新留出集与 Java；v17 起以 `max` 重跑；最终候选复算见 `evidence/final-metrics/FINAL-METRICS-1.1.1.json`：四组加权 +23.19%，三类项目方向均不反转 | `OPTIMIZATION-REGISTER-1.1.1.md`、`holdout/results/`、`results/`、`PREREGISTRATION-v17*.json` | 关闭（最终候选以 `max` 复验通过；旧 `high` 样本按 D17 作废并保留） |
-| D16 | G6 CodeRabbit 最终候选三轮实质覆盖 | PR #7 | 六轮实质正文：`5819028970`（`05582be`，7 actionable）、`5819126598`（`0038b99`，1）、`5819153830`（`f89e668`，0 inline）、`5823492390`（`ffab4e0`，4+1 outside-diff）、`5825371763`（`ffcfb31`，1+1 outside-diff）、`5826437867`（`0ce60a6`，1 Major + 4 Minor + 1 nitpick）。最新一轮全部意见已修复；第 7–13 轮继续覆盖最终候选，此前 49 个审查线程已 resolved；最终审查 `5829155540`（`2f398e0`，发布前 3 分钟）提出 4 条文档问题，发布后由 PR #8 修复，无代码问题 | `coderabbit-review-ledger.md`、PR reviews、`evidence/coderabbit/review-5826437867*.json` | 关闭（发布后补正） |
+| D16 | G6 CodeRabbit 最终候选三轮实质覆盖 | PR #7 | 六轮实质正文：`5819028970`（`05582be`，7 actionable）、`5819126598`（`0038b99`，1）、`5819153830`（`f89e668`，0 inline）、`5823492390`（`ffab4e0`，4+1 outside-diff）、`5825371763`（`ffcfb31`，1+1 outside-diff）、`5826437867`（`0ce60a6`，1 Major + 4 Minor + 1 nitpick）。最新一轮全部意见已修复；第 7–13 轮继续覆盖最终候选，此前 49 个审查线程已 resolved；最终审查 `5829155540`（`2f398e0`，发布前 3 分钟）提出 4 条文档问题，发布后由 PR #8 修复，无代码问题 | `coderabbit-review-ledger.md`、PR reviews、`evidence/coderabbit/review-5826437867*.json` | 关闭（仅覆盖 1.1.0，不覆盖 1.1.1） |
 | D17 | 正式实验 runner 把 `reasoningEffort` 硬编码为 `high`，与本轮要求的 `max` 契约不符 | 2026-11-09 复审与校准 | 新增 `run-unit-v17.mjs`，`--effort max` 默认、模型信息必须广告 max、逐请求校验；校准单元 `v17-cal-max-1` 记录 `identityValid=true`、逐请求 `effort=max`。所有旧 high 样本只作为历史校准，不进入本轮正式证据 | `run-unit-v17.mjs`、`results/cal-max-1.json`、`PREREGISTRATION-v17.json` | 关闭（工具修复；旧样本作废） |
 | D18 | Java 评分器 `scorer.ps1` 为 UTF-8 无 BOM，PowerShell 5.1 把中文 JDK 路径解码为乱码，`JAVA_HOME` 被判无效 | 2026-11-09 直接复现 | 两个 Java scorer 加 UTF-8 BOM；开发正例评分 `pass=true`，负例跑出真实 10 个编译错误；原 stderr 与乱码路径保留 | `java/tasks/dev/scorer.ps1`、`java/tasks/heldout/scorer.ps1`、`java/evidence/logs/score-dev-20261108-175815.json` | 关闭 |
 | D19 | Java 留出评分器从 Gradle 控制台输出解析 classpath，UTF-8 输出被错误解码，`HeldoutProbe` 找不到主源码包 | 2026-11-09 byte 级对比与复现 | `print-classpath.gradle` 改为把 classpath 以 UTF-8 写入 `build/dsh-main-runtime-classpath.txt`；scorer 用 `[IO.File]::ReadAllText(..., UTF8)` 读取；javac/java 期间关闭 `ErrorActionPreference=Stop`；正例 `HELDOUT_COOLDOWN_OK`、负例按预期失败 | `java/tasks/scripts/print-classpath.gradle`、`java/tasks/heldout/scorer.ps1`、`java/evidence/logs/score-heldout-20261108-181244.json`、`score-heldout-20261108-181315.json` | 关闭 |
@@ -45,12 +45,11 @@
 - 本账本只记录有直接证据的项；未证实的猜测不列为已修复。
 - 环境类问题（D01）没有通过放宽源码断言来“修复”；验收命令固定为隔离 profile。
 - 被否决的 H8 代码已回退，但其原始结果和登记保留，不能从账本或登记中删除。
-- D15/D22/D23 记录的是旧候选（C=`f89e668`/v18）的失败，原始数据保留；最终候选的 G3/G7 由 `results/FINAL-METRICS-1.1.1.json` 与同 SHA 验收台账记录。D16 已由 13 轮审查闭合。
-- 旧候选不得用其 RC 冒充稳定版；最终候选 `2f398e0` 的 G0–G5、G7–G9 在发布前通过。G6 的最终审查 `5829155540` 在发布前约 3 分钟提出 4 条文档问题，发布时未处理；发布后由 PR #8 修复（运行时零改动），G6 记为发布后补正。`v1.1.1` 据此发布。
+- D15/D22/D23 记录的是旧候选（C=`f89e668`/v18）的失败，原始数据保留；最终候选的 G3/G7 由 `results/FINAL-METRICS-1.1.1.json` 与同 SHA 验收台账记录。D16 的 13 轮审查全部针对 1.1.0 候选 `2f398e0`，不覆盖 1.1.1 分支变更。
+- 1.1.0 的发布事实（tag `v1.1.0` annotated `07e1488`、`main` `7a049c5`、Release `439385235`）不得移植为 1.1.1 的发布记录。1.1.1 目前只有候选分支，未合并、未打 tag、未创建 Release。
 
 ## 发布记录
 
-- Tag `v1.1.1`（annotated `07e1488…`）→ `main` 合并提交 `7a049c5`；验收候选 `2f398e0` 与之运行时逐字节一致（65 个 `.mjs/.js/.cjs` 哈希 `0fda747d…` 未变）。
-- GitHub Release `439385235`，资产 `local-dsh-work-evidence-1.1.1.tgz`，423,740 字节，sha256 `c79524a2…`，平台 digest 与本地一致。
-- 发布后独立安装并以 `0.2.2-rc.1` 宿主加载通过（`verification/post-release-install.log`）。
-- 发布包内的本文件与 `RELEASE-GATES-1.1.1.md` 是发布前快照；发布后在 `main` 按最终证据同步了状态列与发布状态，未改动任何运行时文件。
+- `v1.1.1` **未发布**：无 tag、无 GitHub Release、未合并到 `main`。
+- 当前远端 `main` 为 `7840220`（1.1.0 文档补正 PR #8）；1.1.1 候选在分支 `feat/work-evidence-1.1.1-efficiency`，候选代码 `a8f0bf1`、发布文档 `bf88151` 及后续文档更正提交。
+- 打包与独立安装已完成（82 文件、426,167 字节、SHA-1 `d4ebd05f71e4153cebfa9461ef4faed364a95e88`，版本 1.1.1），但发布门禁 G1/G4/G6/G9 未闭环，见 `RELEASE-GATES-1.1.1.md`。
