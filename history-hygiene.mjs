@@ -111,9 +111,12 @@ export function testOutputDigest(command,text,{seq=null,truncated=false,focus=[]
   // work_recall cannot recover a host-spilled body, so it must not be hidden.
   if(/\[output truncated; full output:|\[truncated\]/iu.test(text))return null;
   const failure=isNodeTest?tapCheckFailure(text):reportedCheckFailure(text),summary=failure?.summary??null,entries=failure?.failureEntries??[];
+  const failedLines=text.split(/\r?\n/u).filter(line=>/^\s*(?:FAILED|ERROR|not ok|\d+\s+(?:failed|failures))\b/iu.test(line));
+  // Non-TAP check outputs do not carry structured failure causes. Projecting a passing run is safe;
+  // projecting a failing run hides the diagnostic detail the model needs and triggers reruns.
+  if(!isNodeTest&&(failedLines.length>0||(summary&&Number.isInteger(summary.failed)&&summary.failed>0)))return null;
   if(isNodeTest&&!failure)return null;
   if(!failure&&!/(?:^|\n)\s*(?:\d+\s+)?(?:passed|failed|ok|tests?|checks?)\b|(?:passed|failed|ok)\s+in\s+[\d.]+s/iu.test(text))return null;
-  const failedLines=text.split(/\r?\n/u).filter(line=>/^\s*(?:FAILED|ERROR|not ok|\d+\s+(?:failed|failures))\b/iu.test(line));
   const environmentFailure=/FileNotFoundError|WinError|PermissionError|\[Errno \d+\]|No such file or directory|Access is denied|Cannot find path|ModuleNotFoundError/iu;
   const focusPaths=Array.isArray(focus)?focus.filter(item=>typeof item==='string'&&item):[];
   const actionableEntries=filterEnvironment?entries.filter(entry=>!environmentFailure.test(entry)):entries;
