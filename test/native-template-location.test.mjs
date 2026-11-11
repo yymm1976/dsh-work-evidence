@@ -37,6 +37,10 @@ test('a String.raw call is located only when the native frame matches the origin
   assert.equal(nativeTemplateCallLocation(rawCode,elsewhere),null);
   const sourceLayout=rawFailed();sourceLayout.content[0].text=sourceLayout.content[0].text.replace('@deepseek-ai/dsh-ptc-runtime-node','packages/ptc-runtime/ptc-runtime-node');
   assert.equal(nativeTemplateCallLocation(rawCode,sourceLayout).line,43);
+  const sourceRuntime={isError:true,content:[{type:'text',text:'Error: code run failed (exception): TypeError: String.raw(...) is not a function\n'+
+    '    at eval (eval at evaluate (file:///D:/DSH-Evals/FrontierHarness-v1.1-62/sources/deepseek-harness-dsh-v0.2.2-rc.2/packages/ptc-runtime/ptc-runtime-node/src/evaluators/async-function.ts:26:39), <anonymous>:46:2)'}]};
+  assert.equal(nativeTemplateCallLocation(rawCode,sourceRuntime).line,43,'captured from the official rc.2 TypeScript evaluator');
+  assert.equal(nativeTemplateCallLocation(rawCode,{...sourceRuntime,content:[{type:'text',text:sourceRuntime.content[0].text.replace('src/evaluators/async-function.ts','src/other.ts')}]}),null);
   const unrelatedSource=rawFailed();unrelatedSource.content[0].text=unrelatedSource.content[0].text.replace('@deepseek-ai/dsh-ptc-runtime-node','packages/other/ptc-runtime-node');
   assert.equal(nativeTemplateCallLocation(rawCode,unrelatedSource),null);
   const noNativeFrame=rawFailed();noNativeFrame.content[0].text=noNativeFrame.content[0].text.replace(/eval at runProgram[^\n]+/u,'<anonymous>:46:2)');

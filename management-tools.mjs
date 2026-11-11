@@ -8,7 +8,7 @@ import {inlineCommand,resolveInlineScript,declaredInlineExecutable,namedInlineEx
 import {declaredFileSources,dependencyExecutionComplete} from './execution-dependencies.mjs';
 import {reportedExecutionChecks} from './recovery.mjs';
 
-export function registerManagementTools({ctx,runtime,state,effects,available,featureControl,capabilityDiagnostic,contextEconomics,taskFlow,taskHandoff,retainedCompute,finalJson,qualityReview,executionEvidence,executionDependencies,refreshExecutionEvidence,hostReferences,workingSet,compressionControl,compactionHandoff,contextWindow,observationLedger,historyCoordinator,clearPluginState,index,candidates,ptcPatterns,ptcFastpath,verifiedExec,fastEditJava,preserveContextResult,retainRecalledSources,hasHistoricalReferences,applyToolSurface,call,disabledResult,output,COMPACT_HIDDEN_TOOLS,assertParameterBounds,parameters}){
+export function registerManagementTools({ctx,runtime,state,effects,available,featureControl,capabilityDiagnostic,contextEconomics,taskFlow,taskHandoff,retainedCompute,finalJson,qualityReview,executionEvidence,executionDependencies,refreshExecutionEvidence,hostReferences,workingSet,compressionControl,compactionHandoff,contextWindow,observationLedger,historyCoordinator,clearPluginState,index,candidates,ptcPatterns,ptcFastpath,verifiedExec,fastEditJava,fileProfiler,structuredJson,preserveContextResult,retainRecalledSources,hasHistoricalReferences,applyToolSurface,call,disabledResult,output,COMPACT_HIDDEN_TOOLS,assertParameterBounds,parameters}){
   const register=(name,description,properties,required,execute,{gate=true,resultSchema=output.schema}={})=>ctx.tools.register({name,description,
     parameters:{...parameters(properties),required},output:{...output,schema:resultSchema},isConcurrencySafe:()=>false,execute:async(args,exec)=>runtime.withExecution(exec,async()=>{
       if(!exec.agent)throw new Error('Agent required');await runtime.init(exec.agent,exec.signal);await effects.load(exec.agent);runtime.sync(exec.agent);
@@ -16,7 +16,7 @@ export function registerManagementTools({ctx,runtime,state,effects,available,fea
         if(gate&&!runtime.isEnabled(exec.agent))return disabledResult(exec.agent,name);
         assertParameterBounds({type:'object',properties},args);
         const result=await execute(args,exec);
-        const feature=name==='work_exec'&&args?.mode==='retained'?'retainedCompute':{work_exec:'inlineExec',work_compute:'retainedCompute',work_probe:'probe',evidence_index:'index',candidate_select:'candidate',ptc_patterns:'patterns',ptc_fastpath:'fastpath',verified_exec:'verifiedEdit',fastedit_java:'fastEdit'}[name];
+        const feature=name==='work_exec'&&args?.mode==='retained'?'retainedCompute':name==='verified_exec'&&runtime.get(exec.agent).config.nativeVerifiedEdits?'nativeVerifiedEdit':{work_exec:'inlineExec',work_compute:'retainedCompute',work_probe:'probe',evidence_index:'index',candidate_select:'candidate',ptc_patterns:'patterns',ptc_fastpath:'fastpath',verified_exec:'verifiedEdit',fastedit_java:'fastEdit',file_profile:'fileProfile',structured_json:'structuredJson'}[name];
         if(feature){
           const status=result?.status;
           if(name==='work_exec'&&args?.mode!=='retained'){
@@ -34,6 +34,14 @@ export function registerManagementTools({ctx,runtime,state,effects,available,fea
         return result;
       }finally{await runtime.receipt(exec.agent,exec.signal,true);}
     })});
+  register('file_profile','Read native UTF-8 text/CSV metadata, bounded head/tail previews and newline/ASCII counts without a script. scan:"sample" reads at most 16 KiB per file and makes no global claim for larger files; scan:"complete" streams within a shared byte budget and returns complete counts only for an unchanged native version. CSV counts include the header, allow quoted newlines and report malformed data explicitly.',
+    {files:{type:'array',minItems:1,maxItems:8,items:{type:'object',additionalProperties:false,properties:{path:{type:'string'},format:{type:'string',enum:['text','csv']},delimiter:{type:'string'}},required:['path']}},
+      scan:{type:'string',enum:['sample','complete']},maxBytes:{type:'integer',minimum:4096,maximum:512000000}},['files'],
+    (args,exec)=>fileProfiler.observe(exec.agent,args,exec.signal));
+  register('structured_json','Select values from a bounded native UTF-8 JSON/JSONL file using RFC6901 pointers without a script. Selectors use op:value, object keys, container count or array page. Empty pointer selects root; /a~1b selects key a/b. offset/limit page keys or arrays. Missing differs from null, clipped values have complete:false, and unsafe integers are rejected. JSONL indices address nonempty records. Source limit 2 MiB; JSON.parse duplicate-key and decimal semantics apply.',
+    {path:{type:'string'},format:{type:'string',enum:['json','jsonl']},maxValueChars:{type:'integer',minimum:256,maximum:16000},
+      selectors:{type:'array',minItems:1,maxItems:32,items:{type:'object',additionalProperties:false,properties:{pointer:{type:'string'},op:{type:'string',enum:['value','keys','count','page']},offset:{type:'integer',minimum:0},limit:{type:'integer',minimum:1,maximum:100}},required:['pointer','op']}}},['path','selectors'],
+    (args,exec)=>structuredJson.query(exec.agent,args,exec.signal));
   register('work_compute','Retained read-only Node REPL. Data, functions and imports persist between calls. Do not redeclare an existing const/let name in a later cell; reuse the binding, choose a new name, or pass reset:true only for a self-contained cell. Top-level await is allowed, return is not; print values or end with JSON. tools has only read/glob/grep/work_recall and OPS reads. State resets after DSH write/edit tools, tool-surface/session changes or interruption; shell/work_exec writes are not detected, so pass reset:true after them. Use normal tools for project edits and work_exec scriptRef for whole-program revisions.',
     {code:{type:'string',description:'REPL statements up to 64000 characters. Reuse retained data/functions and submit only new input or local changes.'},
       reset:{type:'boolean',description:'Explicitly clear this agent\'s retained environment before running code.'},

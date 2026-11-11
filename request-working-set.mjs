@@ -266,7 +266,7 @@ export function createRequestWorkingSet(ctx,runtime,economics,taskFlow){
     sync(agent);runtime.get(agent).dirty=true;return true;
   }
   function beforeBuild(agent,context,originalDerive,{pressureOnly=false,nativePressure=false}={}){
-    if(!active(agent))return;
+    if(!active(agent)||runtime.historyFullOutputRequested?.(agent))return;
     const state=sync(agent),config=runtime.get(agent).config;
     state.recentSteps=config.projectionRecentSteps;
     const messages=originalDerive.call(agent.session);
@@ -402,6 +402,7 @@ export function createRequestWorkingSet(ctx,runtime,economics,taskFlow){
     function projectedDerive(...args){
       const original=derive.apply(this,args);
       if(!attachment.enabled||!attachment.scope||attachment.publication)return original;
+      if(runtime.historyFullOutputRequested?.(agent))return original;
       const projected=active(agent)?render(agent,original):original;
       return runtime.rewriteRequestHistory?.(agent,projected)??projected;
     }

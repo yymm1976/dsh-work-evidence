@@ -86,21 +86,21 @@ function extractedCauses(text){
   return out;
 }
 const TEST_COMMAND=/^(?:python(?:\.exe)?\s+-m\s+(?:pytest|compileall)|node\s+--test|ruff\s+check|(?:.\\|.\/)?mvnw(?:\.cmd)?|(?:\.\\|\.\/)?gradlew(?:\.bat)?|gradle(?:\.bat)?|mvn(?:\.cmd)?)\b/iu;
-export function toolOutputDigest(name,text,{seq=null,command=null}={}){
+export function toolOutputDigest(name,text,{seq=null,command=null,truncated=false}={}){
   if(typeof name!=='string'||!['pwsh','bash','ops_bash','work_exec','grep','glob'].includes(name))return null;
-  if(typeof text!=='string'||text.length<TOOL_MIN_CHARS||!Number.isSafeInteger(seq))return null;
+  if(typeof text!=='string'||text.length<TOOL_MIN_CHARS||!Number.isSafeInteger(seq)||truncated)return null;
   // Check commands are owned by testOutputDigest: a rejected (failing/truncated)
   // check must keep its canonical body instead of being replaced by this generic receipt.
   if(TEST_COMMAND.test(String(command??'').trim()))return null;
   if(/\[output truncated; full output:|\[truncated\]/iu.test(text))return null;
-  const failureLines=text.split(/\r?\n/u).filter(line=>/ERROR|FAILED|Exception|not ok|Traceback|What went wrong/iu.test(line)).slice(0,8);
+  const failureLines=text.split(/\r?\n/u).filter(line=>/ERROR|FAILED|Exception|not ok|Traceback|What went wrong/iu.test(line)).slice(0,8).map(line=>line.slice(0,300));
   const head=text.slice(0,2000),tail=text.slice(-2500);
-  const lines=['[work-evidence output receipt] tool='+name+(command?' command='+String(command).trim().slice(0,180):''), 'head:\n'+head];
-  if(failureLines.length)lines.push('errors:\n'+failureLines.join('\n'));
-  lines.push('tail:\n'+tail);
+  const header='[work-evidence output receipt] tool='+name+(command?' command='+String(command).trim().slice(0,180):'');
   const locator='The canonical output is unchanged and recoverable with work_recall kind=output seq='+seq+'.';
-  const body=lines.join('\n');
-  const digest=body.length+locator.length+1<=TOOL_DIGEST_MAX?body+'\n'+locator:body.slice(0,Math.max(0,TOOL_DIGEST_MAX-locator.length-2))+'\n'+locator;
+  const prefix=header+'\nhead:\n'+head+'\n',suffix='tail:\n'+tail+'\n'+locator;
+  const errorBudget=Math.max(0,TOOL_DIGEST_MAX-prefix.length-suffix.length-'errors:\n\n'.length);
+  const errors=failureLines.join('\n').slice(0,errorBudget);
+  const digest=prefix+(errors?'errors:\n'+errors+'\n':'')+suffix;
   return {text:digest,originalChars:text.length,signature:null};
 }
 const messageOf=event=>event.data?.message??(event.data?.role?event.data:null);
@@ -146,7 +146,7 @@ export function testOutputDigest(command,text,{seq=null,truncated=false,focus=[]
   const isMavenGradle=/^(?:.\\|.\/)?(?:mvnw(?:\.cmd)?|mvn(?:\.cmd)?|gradlew(?:\.bat)?|gradle(?:\.bat)?)\b/iu.test(command.trim());
   if(!isNodeTest&&!isMavenGradle&&(failedLines.length>0||(summary&&Number.isInteger(summary.failed)&&summary.failed>0)))return null;
   if(isNodeTest&&!failure)return null;
-  if(!failure&&!/(?:^|\n)\s*(?:\d+\s+)?(?:passed|failed|ok|tests?|checks?)\b|(?:passed|failed|ok)\s+in\s+[\d.]+s/iu.test(text))return null;
+  if(!failure&&!/(?:^|\n)\s*(?:\[INFO\]\s*)?(?:\d+\s+(?:passed|failed|skipped|errors?|tests?|checks?)\b|(?:Tests run|tests|checks)\s*:\s*\d+\b)/iu.test(text))return null;
   const environmentFailure=/FileNotFoundError|WinError|PermissionError|\[Errno \d+\]|No such file or directory|Access is denied|Cannot find path|ModuleNotFoundError/iu;
   const focusPaths=Array.isArray(focus)?focus.filter(item=>typeof item==='string'&&item):[];
   const actionableEntries=filterEnvironment?entries.filter(entry=>!environmentFailure.test(entry)):entries;
@@ -242,7 +242,7 @@ export function createHistoryHygiene(runtime,taskFlow,{isProtected=()=>false,ret
         const testFocus=isPytest?['tests/']:[];
         const digest=command?testOutputDigest(command,text,{seq:event.seq,truncated:event.data?.meta?.truncated===true,focus:[...baseFocus,...testFocus],filterEnvironment:isPytest}):null;
         const failed=!!message.isError||hasPruneProblem(message.content??[])||state.failures.has(id)||isProtected(agent,id);
-        const toolDigest=!digest&&!failed&&call?toolOutputDigest(call.name,text,{seq:event.seq,command}):null;
+        const toolDigest=!digest&&!failed&&call?toolOutputDigest(call.name,text,{seq:event.seq,command,truncated:event.data?.meta?.truncated===true}):null;
         state.commands.delete(id);
         const record={seq:event.seq,step:state.step,callId:id,failed,reads:[...(state.liveReads.get(id)?.values()??[])],
           paths:[...(state.observedPaths.get(id)??[])],testDigest:digest?.text??null,testSignature:digest?.signature??null,testOriginalChars:digest?.originalChars??0,toolDigest:toolDigest?.text??null,toolOriginalChars:toolDigest?.originalChars??0};

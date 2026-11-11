@@ -15,6 +15,7 @@ test('failing non-TAP check output stays canonical',()=>{
   assert.equal(testOutputDigest('python -m pytest -q',text,{seq:78,truncated:true}),null);
   assert.equal(testOutputDigest('python -m pytest -q',text.slice(0,7000)+'\n[output truncated; full output: C:\\Temp\\spill.log]',{seq:79}),null);
   assert.equal(testOutputDigest('python -m pytest -q','x'.repeat(9000),{seq:80}),null);
+  assert.equal(testOutputDigest('python -m pytest -q','tests started\n'+'x'.repeat(9000),{seq:80}),null);
   assert.equal(testOutputDigest('python -m pytest -q',text,{seq:null}),null);
   assert.equal(testOutputDigest('git status',text,{seq:81}),null);
   const gradle=testOutputDigest('gradlew.bat --offline --no-daemon compileTestJava','x'.repeat(9000)+'\n10 failed',{seq:1});
@@ -99,8 +100,19 @@ test('generic tool output digest bounds noisy shell/search output',()=>{
   assert.equal(toolOutputDigest('read',text,{seq:302}),null);
   assert.equal(toolOutputDigest('grep','short',{seq:303}),null);
   assert.equal(toolOutputDigest('grep',text,{seq:null}),null);
+  assert.equal(toolOutputDigest('grep',text,{seq:309,truncated:true}),null,'metadata truncation must keep the original body');
   assert.equal(toolOutputDigest('pwsh',text,{seq:304,command:'python -m pytest -q'}),null,'check commands stay with testOutputDigest');
   assert.equal(toolOutputDigest('pwsh',text,{seq:305,command:'.\\gradlew.bat test'}),null,'gradle checks stay with testOutputDigest');
   assert.equal(toolOutputDigest('pwsh',text+'\n[truncated]',{seq:306,command:'echo done'}),null,'truncated bodies keep the canonical output');
   assert.equal(toolOutputDigest('pwsh',text+'\n[output truncated; full output: C:\\Temp\\spill.log]',{seq:307,command:'echo done'}),null,'spilled bodies keep the canonical output');
+});
+
+test('an oversized diagnostic line cannot consume the receipt tail or locator',()=>{
+  const text='HEAD_SENTINEL\n'+'ERROR: '+'x'.repeat(16000)+'\nTAIL_SENTINEL';
+  const digest=toolOutputDigest('pwsh',text,{seq:308,command:'inspect '+ 'z'.repeat(250)});
+  assert.ok(digest.text.length<=5000);
+  assert.ok(digest.text.includes('HEAD_SENTINEL'));
+  assert.ok(digest.text.includes('errors:\nERROR: '));
+  assert.ok(digest.text.includes('tail:\n'+text.slice(-2500)));
+  assert.ok(digest.text.endsWith('work_recall kind=output seq=308.'));
 });

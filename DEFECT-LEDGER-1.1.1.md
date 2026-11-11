@@ -21,7 +21,7 @@
 | D12 | 旧 `HISTORY.md`、`1.1.1-SCOPE-FREEZE.md`、重复失败分类/审查台账 | 文档审计 | `7c36edf` 清理 10 个文件 `+67/-1339` | `git show 7c36edf` | 关闭 |
 | D13 | H8 旧推理请求视图省略被证实为负优化 | 本会话 H8 开发实验 | Python 三对均值 B0 `235,985` vs C `225,087`（改善 `4.6%`，未达 10%），两对 C 请求更多；代码回退，测试撤回 | `results/dev-python-v6-h8-*.json`、`OPTIMIZATION-REGISTER-1.1.1.md` H8 判定、`5355c64`/`399c33b` | 否决 |
 | D14 | 全量套件在回退 H8 后仍保留其测试，rc4 `602/1` | 本会话回归 | `399c33b` 恢复 pre-H8 测试文件 | `verification/node-test-rc4-399c33b.log` | 关闭 |
-| D15 | G3/G7 效率门禁（旧候选 C=`f89e668`）：对 B0 未观察到 ≥10% 改善，且留出方向反转 | 生产实验 | H13b 开发 Python `-31.3%`、Picomatch 每成功成本 `-31.8%`；v16 留出 Python `-47.3%`、Picomatch `-0.3%`，合计 `-24.2%`；H14/H3/H8 回退。**2026-11-09 复审更正：全部为 `reasoning_effort=high`，不符合本轮 `max` 路由契约，旧样本作废；v16 任务已多次复用，不能作为新留出。** v17 正在以 `max` 重跑开发集、新留出集与 Java；v17 起以 `max` 重跑；最终候选复算见 `evidence/final-metrics/FINAL-METRICS-1.1.1.json`：四组加权 +23.19%，三类项目方向均不反转 | `OPTIMIZATION-REGISTER-1.1.1.md`、`holdout/results/`、`results/`、`PREREGISTRATION-v17*.json` | 关闭（最终候选以 `max` 复验通过；旧 `high` 样本按 D17 作废并保留） |
+| D15 | 当前候选的效率与实验可信度缺少有效完整轮次证据 | 生产实验与后续证据复核 | 旧 high 样本按 D17 作废并保留；+23.19% 属于 1.1.0，不能关闭本项。`a8f0bf1` 的 24 题汇总又含已确认联网污染的 run08，且当前候选含运行时修改。费用差异不能证明任务质量或当前候选通过，须按当前目标重测 | `RELEASE-GATES-1.1.1.md` G3/G7、原实验结果与污染记录 | 未关闭 |
 | D16 | G6 CodeRabbit 最终候选三轮实质覆盖 | PR #7 | 六轮实质正文：`5819028970`（`05582be`，7 actionable）、`5819126598`（`0038b99`，1）、`5819153830`（`f89e668`，0 inline）、`5823492390`（`ffab4e0`，4+1 outside-diff）、`5825371763`（`ffcfb31`，1+1 outside-diff）、`5826437867`（`0ce60a6`，1 Major + 4 Minor + 1 nitpick）。最新一轮全部意见已修复；第 7–13 轮继续覆盖最终候选，此前 49 个审查线程已 resolved；最终审查 `5829155540`（`2f398e0`，发布前 3 分钟）提出 4 条文档问题，发布后由 PR #8 修复，无代码问题 | `coderabbit-review-ledger.md`、PR reviews、`evidence/coderabbit/review-5826437867*.json` | 关闭（仅覆盖 1.1.0，不覆盖 1.1.1） |
 | D17 | 正式实验 runner 把 `reasoningEffort` 硬编码为 `high`，与本轮要求的 `max` 契约不符 | 2026-11-09 复审与校准 | 新增 `run-unit-v17.mjs`，`--effort max` 默认、模型信息必须广告 max、逐请求校验；校准单元 `v17-cal-max-1` 记录 `identityValid=true`、逐请求 `effort=max`。所有旧 high 样本只作为历史校准，不进入本轮正式证据 | `run-unit-v17.mjs`、`results/cal-max-1.json`、`PREREGISTRATION-v17.json` | 关闭（工具修复；旧样本作废） |
 | D18 | Java 评分器 `scorer.ps1` 为 UTF-8 无 BOM，PowerShell 5.1 把中文 JDK 路径解码为乱码，`JAVA_HOME` 被判无效 | 2026-11-09 直接复现 | 两个 Java scorer 加 UTF-8 BOM；开发正例评分 `pass=true`，负例跑出真实 10 个编译错误；原 stderr 与乱码路径保留 | `java/tasks/dev/scorer.ps1`、`java/tasks/heldout/scorer.ps1`、`java/evidence/logs/score-dev-20261108-175815.json` | 关闭 |
@@ -51,11 +51,11 @@
 - 本账本只记录有直接证据的项；未证实的猜测不列为已修复。
 - 环境类问题（D01）没有通过放宽源码断言来“修复”；验收命令固定为隔离 profile。
 - 被否决的 H8 代码已回退，但其原始结果和登记保留，不能从账本或登记中删除。
-- D15/D22/D23 记录的是旧候选（C=`f89e668`/v18）的失败，原始数据保留；最终候选的 G3/G7 由 `results/FINAL-METRICS-1.1.1.json` 与同 SHA 验收台账记录。D16 的 13 轮审查全部针对 1.1.0 候选 `2f398e0`，不覆盖 1.1.1 分支变更。
+- D15 保持未关闭。D22/D23 的旧候选失败及原始数据保留。旧汇总不能证明当前候选的 G3/G7；D16 的 13 轮审查针对 1.1.0 候选 `2f398e0`，不覆盖本轮变更。
 - 1.1.0 的发布事实（tag `v1.1.0` annotated `07e1488`、`main` `7a049c5`、Release `439385235`）不得移植为 1.1.1 的发布记录。1.1.1 目前只有候选分支，未合并、未打 tag、未创建 Release。
 
 ## 发布记录
 
 - `v1.1.1` **未发布**：无 tag、无 GitHub Release、未合并到 `main`。
 - 当前远端 `main` 为 `7840220`（1.1.0 文档补正 PR #8）；1.1.1 候选在分支 `feat/work-evidence-1.1.1-efficiency`，候选代码 `a8f0bf1`、发布文档 `bf88151` 及后续文档更正提交。
-- 打包与独立安装已完成（82 文件，最终摘要见 `RELEASE-GATES-1.1.1.md` 的 G8 与证据仓库 `1.1.1/verification/checksums-final.txt`）。当前门禁仅 **G6（PR/CodeRabbit）** 未闭环；G1、G4、G9 已在最终提交的双宿主全量测试与打包/安装后通过。
+- 1.1.1 当时的打包与独立安装记录见 `RELEASE-GATES-1.1.1.md` G8。该记录只对应当时工件。当前候选的实验可信度、质量、完整轮次、审查和发布仍未完成，不沿用旧门禁通过状态。

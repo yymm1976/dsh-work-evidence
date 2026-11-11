@@ -1,6 +1,6 @@
 # 1.1.1 功能入口成熟度矩阵
 
-范围：`feature-control.mjs` 的 38 个实际入口。状态只在存在真实入口、配置校验、运行接线、异常分支和测试证据时记录为成熟；效果计数仍需结合真实宿主事件判断。
+范围：`feature-control.mjs` 的 39 个实际入口。原生条件编辑仍为研发候选，默认关闭。真实任务与消融未完成的候选不记为成熟。
 
 | 入口 | 状态 | 启停与依赖 | 运行、恢复和组合证据 | 文档与迁移 |
 |---|---|---|---|---|
@@ -19,6 +19,7 @@
 | `mavenSourceBinding` | 成熟默认开启 | 依赖归档解码和坐标匹配 | `host-source-options.test.mjs`、Maven 来源测试 | `README.md` |
 | `contextProtocol` | 成熟默认开启 | 处理可恢复旧工具正文 | `host-context-combinations.test.mjs`、`host-compaction.test.mjs` 验证正文、压缩与恢复 | `README.md` |
 | `historyHygiene` | 成熟默认开启 | 依赖历史回收入口；异常时停用自身折叠。测试回执覆盖 pytest、ruff、compileall、gradlew/gradle/mvn 和带完整 TAP 摘要的 `node --test`；无摘要、截断、spill 或用户要求完整输出时不投影 | `host-history.test.mjs` 验证折叠和恢复；`test-output-hygiene.test.mjs` 验证测试输出回执、TAP 摘要边界、截断与召回边界；`history-full-output-request.test.mjs` 验证只有真实用户消息可停用回执 | `README.md` |
+| `nativeVerifiedEdits` | 候选，默认关闭 | 限定 rc.2 原生 tools 与 LocalFileSystem；沿原生 write 权限路径附带版本条件。旧宿主或工具替换时明确拒绝该候选；默认 OPS 路径保留 | `native-cas.test.mjs` 覆盖创建、替换、BOM/CRLF、并发、权限、部分效果及真实 PTC；真实任务与消融待完成 | 当前候选尚未发布 |
 | `ledgerReceipt` | 成熟默认开启 | 依赖可回收历史和来源正文 | `host-source-options.test.mjs`、`host-acp-combinations.test.mjs` 验证短回执 | `README.md` |
 | `ledgerUnresolved` | 成熟默认开启 | 保留真实未解决项，不推断完成 | `host-state.test.mjs` 验证状态传播 | `README.md` |
 | `swLedger` | 成熟显式开启 | 默认关闭；为重复结果折叠提供记录 | `sw-default.test.mjs`、上下文组合测试 | `README.md`、`MIGRATION-1.1.1.md` |
@@ -45,7 +46,7 @@
 
 ## 终审结论
 
-- 38 个入口均有配置入口和源码接线；本表逐项列出直接确定性测试或宿主回归，“没有测试引用”的入口不得据此称为成熟。
-- 默认关闭的 12 个能力不通过隐藏环境变量启用；缺少依赖时返回 `blocked`、`waiting` 或明确不适用原因，并释放本次临时状态。
+- 39 个入口均有配置和源码接线。原生条件编辑仍须完成真实任务与消融，不能由确定性回归推断成熟。
+- 默认关闭的能力通过显式配置启用。缺少依赖时返回 `blocked`、`waiting` 或明确原因。
 - 旧设置由 `runtime.mjs` 的 `RETIRED_SETTINGS` 固定关闭；迁移兼容和回退说明见 `MIGRATION-1.1.1.md` 与 `ROLLBACK-1.1.1.md`。
 - 仍需在最终候选 SHA 上重跑本矩阵引用的双宿主证据；当前矩阵不是发布通过声明。

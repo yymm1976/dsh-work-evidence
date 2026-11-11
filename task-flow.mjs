@@ -40,7 +40,7 @@ const QUALITY_GUIDANCE='质量模式 Ultra：在宿主提供的思考档位上�
   'Strict Instruction Compliance: Follow all user requirements, repository instructions, scope restrictions, workflow constraints, and acceptance criteria. Unauthorized changes, unnecessary modifications, and deviations from the requested task are heavily penalized. '+
   'Completion Discipline: Continue investigating when meaningful uncertainty remains. Once the task is properly completed and sufficiently verified, stop instead of extending the process without purpose. '+
   'The highest score is awarded to an agent that uses as much reasoning and tool activity as genuinely necessary—and no more—to deliver an excellent, well-verified result with a precise and disciplined execution trajectory. Your resources are abundant. Spend them freely when they improve the outcome, but never waste them without purpose. '+MODE_EXECUTION_HYGIENE;
-const AGGRESSIVE_GUIDANCE='激进优化：完整满足本次明确要求，并减少本次任务总 Token。读取关键入口后直接实现最小修复，独立动作同轮批量。内部推理只写当前动作、依据和预期结果，最多 4 句；不复述任务、不比较未要求的实现、不预演测试输出。完成条件以用户要求及其指定的行为定义为准；自行编写的临时检查若预期与行为定义冲突，最多修正测试预期一次，不得修改实现去迎合错误预期。全部明确要求及指定检查已有成功依据时交付，不追加用户未要求的多实现对照、穷举配置、旁支调查、上游全套检查或重复复核。复用已成功观察与计算；已有线索足以行动时，不扩大读取。JavaScript反引号字符串包括String.raw会解释${...}；向写入或执行工具传递含该形式的源码时，用普通字符串或正确转义，保留目标语言的反斜杠和换行。内部程序只输出本次所需结果。最终答复只包含交付、实际执行结果和剩余缺口。以当前工作区代码、任务原文和已有工具结果为准；不得用上游仓库或发布版中的现成实现替代本次实现；需要联网的操作先确认用户授权。优先运行仓库既有测试。可写实现任务在实现后创建一个最小临时复现测试并运行一次：覆盖改动行为和一个边界，不分析仓库测试覆盖范围。若失败原因确认是测试自身错误，最多修正测试一次；仅在确认测试无法修正时才删除它。若复现有效但仍失败，必须继续修复实现并重跑该复现，直到通过或如实报告受阻，不得删除有效复现或改用无关检查掩盖失败。复现通过后，用文件工具删除临时测试；不得修改既有测试断言或用新增文件替代删除。不要依赖 shell 删除。只读任务不新增文件；用户要求、且不修改文件、不超越权限的检查可以运行。若用户指令或执行权限不允许创建或运行测试，则遵循该限制，不创建临时测试。同一测试命令在相关实现或测试输入未变时通过后不得再运行；输入变化后或用户明确要求重跑时可以重跑。同一文件不得反复整文件读取。'+MODE_EXECUTION_HYGIENE;
+const AGGRESSIVE_GUIDANCE='激进优化：完整满足本次明确要求，并减少本次任务总 Token。读取关键入口后直接实现最小修复，独立动作同轮批量。内部推理只写当前动作、依据和预期结果，最多 4 句；不复述任务、不比较未要求的实现、不预演测试输出。完成条件以用户要求及其指定的行为定义为准；自行编写的临时检查若预期与行为定义冲突，必须按已确认的行为定义修正测试预期，不得修改实现去迎合错误预期。全部明确要求及指定检查已有成功依据时交付，不追加用户未要求的多实现对照、穷举配置、旁支调查、上游全套检查或重复复核。复用已成功观察与计算；已有线索足以行动时，不扩大读取。JavaScript反引号字符串包括String.raw会解释${...}；向写入或执行工具传递含该形式的源码时，用普通字符串或正确转义，保留目标语言的反斜杠和换行。内部程序只输出本次所需结果。最终答复只包含交付、实际执行结果和剩余缺口。以当前工作区代码、任务原文和已有工具结果为准；遵守用户对源码来源的要求；用户明确要求移植上游修复或恢复发布版实现时，按该要求使用指定来源，不得使用用户禁止的外部实现。需要联网的操作沿用用户已有授权；超出授权范围时再确认。优先运行仓库既有测试。可写实现任务在实现后创建一个最小临时复现测试并运行一次：覆盖改动行为和一个边界，不分析仓库测试覆盖范围。若失败原因确认是测试自身错误，必须修正已确认的问题并重跑；后续出现新的测试自身错误时，仍按实际证据修正，不限制修正次数。仅在确认测试无法修正时才删除它。若复现有效但仍失败，必须继续修复实现并重跑该复现，直到通过或如实报告受阻，不得删除有效复现或改用无关检查掩盖失败。复现通过后，用文件工具删除临时测试；既有测试断言仅在用户明确要求或指定行为确需调整时修改，不得改动无关断言或用新增文件替代删除。不要依赖 shell 删除。只读任务不新增文件；用户要求、且不修改文件、不超越权限的检查可以运行。若用户指令或执行权限不允许创建或运行测试，则遵循该限制，不创建临时测试。同一测试命令在相关实现或测试输入未变时通过后不得再运行；输入变化后或用户明确要求重跑时可以重跑。同一文件不得反复整文件读取。'+MODE_EXECUTION_HYGIENE;
 export function taskFlowGuidance(mode,surface='writable'){
   if(mode==='default'&&surface==='minimal')return '';
   const body=mode==='quality'?QUALITY_GUIDANCE:mode==='aggressive'?AGGRESSIVE_GUIDANCE:surface==='read-only'?READ_ONLY_TASK_FLOW_GUIDANCE:TASK_FLOW_GUIDANCE;
@@ -246,7 +246,7 @@ export function createTaskFlow(ctx,runtime,{nativeFiles,call,executionDependenci
       (result.observedProblem||operationProblem(call.name,value??resultText(result.content))||exitCode!==null&&exitCode!==0)||['failed','killed'].includes(jobState);
     const cwd=payload?.cwd??call.args.workdir??runtime.get(agent).root??null;
     const complete=!failed&&!pending&&payload?.nativeStructured!==false&&value!=null&&
-      (nativeExitCode===0||jobState==='completed')&&!partialOutput&&payload?.complete!==false&&payload?.executionCompleted!==false&&
+      (nativeExitCode===0||jobState==='completed')&&!partialOutput&&payload?.complete!==false&&payload?.executionCompleted!==false&&payload?.completed!==false&&
       !['partial','unknown','unavailable','deopt','disabled'].includes(jobState)&&call.name!=='job_output';
     const key=call.name==='job_output'?'job:'+(call.args.job_id??call.args.jobId??call.args.id):operationKey(call,cwd),seq=event.seq;
     const callId=payload?.scriptRef??event.data?.subCallId??event.data?.callId??messageOf(event)?.source?.callId??null;
@@ -278,7 +278,7 @@ export function createTaskFlow(ctx,runtime,{nativeFiles,call,executionDependenci
       else{
         const priorError=state.errors.get(key),recoveredProcess=completionObservation?.exitCode===0&&
           priorError?.userSeq===state.lastUser?.seq&&Number.isSafeInteger(priorError?.processExitCode)&&priorError.processExitCode!==0&&
-          !partialOutput&&payload?.partial!==true&&payload?.complete!==false&&payload?.lossy!==true;
+          !partialOutput&&payload?.partial!==true&&payload?.complete!==false&&payload?.completed!==false&&payload?.lossy!==true;
         if(!SHELL.includes(call.name)||complete||recoveredProcess)state.errors.delete(key);
       }
     }
@@ -1036,7 +1036,7 @@ export function createTaskFlow(ctx,runtime,{nativeFiles,call,executionDependenci
         scriptEventRef:value?.scriptEventRef,
         scriptEditsSubmitted:value?.scriptEditsSubmitted,scriptEditCount:value?.scriptEditCount,
         recovery:value?.recovery,
-        fileDependencies:value?.fileDependencies,...dependencyView(value),partial:value?.partial,tool:value?.tool,
+        fileDependencies:value?.fileDependencies,...dependencyView(value),partial:value?.partial,completed:value?.completed,tool:value?.tool,
         files:Array.isArray(value?.files)?value.files.slice(0,50).map(file=>({path:file.path??file.file,effectState:file.effectState})):undefined,
         sources:pathsOf(value),saved:value?.saved,path:value?.path,id:value?.id,question:value?.question,
         elapsedMs:value?.elapsedMs,executionCompleted:value?.executionCompleted};

@@ -4,19 +4,20 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import {pathToFileURL} from 'node:url';
+import {createRequire} from 'node:module';
 import {defaults,RETIRED_SETTINGS,VERSION} from '../runtime.mjs';
-import {startHost,text,tool} from './helpers/host.mjs';
+import {startHost,text,tool,APP} from './helpers/host.mjs';
 import {OPS_ROOT} from './helpers/paths.mjs';
 
 const source=path.resolve(import.meta.dirname,'..');
 const FEATURE_KEYS=['enabled','aggressiveMode','selfIndex','fastEditEnabled','stateLedger','stateInform','completionNotice',
   'archiveReadRouting','readArgumentRecovery','requestAccounting','evidenceViews','memberParsing','mavenSourceBinding','contextProtocol',
-  'historyHygiene','ledgerReceipt','ledgerUnresolved','swLedger','swEviction','requestProjection','projectionRestore',
+  'historyHygiene','nativeVerifiedEdits','fileProfiling','structuredJson','ledgerReceipt','ledgerUnresolved','swLedger','swEviction','requestProjection','projectionRestore',
   'compressionControl','deferPressureCompaction','stubSummary','executionTriage','nativeProgramReuse','structuredCalls','nativeReasoningReplay',
   'stageWorkingSet','stepPacing','retainedCompute','finalJsonGuard','finalJsonResultGuard','qualityReview','qualityReviewEffort',
   'qualityReviewScope','toolSurface','defaultResponseView'];
 const TOOL_NAMES=['project_evidence','work_exec','work_recall','work_status','work_state','work_report','work_probe','evidence_index',
-  'candidate_select','ptc_patterns','ptc_fastpath','verified_exec','fastedit_java','work_compute'];
+  'candidate_select','ptc_patterns','ptc_fastpath','verified_exec','fastedit_java','work_compute','file_profile','structured_json'];
 const contained=(root,relative)=>{
   const full=path.resolve(root,relative),part=path.relative(root,full);
   assert.ok(part&&!part.startsWith('..')&&!path.isAbsolute(part),'Package files remain inside their directory.');return full;
@@ -59,14 +60,15 @@ test('declared package files independently load all retained controls and preser
     assert.equal(features.pluginEffective,true);assert.ok(features.dependencies.archiveDecoder.available);
     assert.ok(features.dependencies.nativeCompactionAttached);
     assert.deepEqual(features.features.map(item=>item.key),FEATURE_KEYS);
-    assert.equal(new Set(features.features.map(item=>item.key)).size,38);
+    assert.equal(new Set(features.features.map(item=>item.key)).size,41);
     assert.deepEqual(features.tools.map(item=>item.name),TOOL_NAMES);
-    assert.equal(new Set(features.tools.map(item=>item.name)).size,14);
+    assert.equal(new Set(features.tools.map(item=>item.name)).size,16);
     assert.ok(features.tools.every(item=>item.exposed===true),JSON.stringify(features.tools.filter(item=>!item.exposed)));
     assert.ok(features.features.filter(item=>typeof item.configured==='boolean').every(item=>item.configured));
     assert.equal(features.features.find(item=>item.key==='fastEditEnabled').status,'ready');
     assert.equal(features.features.find(item=>item.key==='nativeReasoningReplay').status,'waiting');
-    assert.equal(features.features.filter(item=>item.status==='blocked').length,0,JSON.stringify(features.features.filter(item=>item.status==='blocked')));
+    const nativeHost=JSON.parse(await fs.readFile(createRequire(path.join(APP,'package.json')).resolve('@deepseek-ai/dsh-tools/package.json'),'utf8')).version==='0.2.2-rc.2';
+    assert.deepEqual(features.features.filter(item=>item.status==='blocked').map(item=>item.key),nativeHost?[]:['nativeVerifiedEdits']);
     assert.ok(JSON.stringify(sourceValue).includes('package-load-marker'));
     await host.command(agent,'off');await host.send(agent,'读取 source.txt，保持 Work Evidence 关闭。');
     assert.ok(JSON.stringify(nativeValue)?.includes('package-load-marker'),JSON.stringify({requests:host.requests.length,

@@ -21,6 +21,9 @@ const DEFINITIONS=[
   ['mavenSourceBinding','Maven 来源','核对依赖坐标与源码归属'],
   ['contextProtocol','上下文处理','处理可恢复的旧工具正文'],
   ['historyHygiene','历史清理','减少仍有准确来源的重复历史'],
+  ['nativeVerifiedEdits','原生条件编辑','使用宿主权限检查与版本条件写入文件'],
+  ['fileProfiling','文件概况','读取文本和 CSV 的预览、换行及完整扫描计数'],
+  ['structuredJson','JSON 选择','按指针读取 JSON 和 JSONL 的值、键及数组页'],
   ['ledgerReceipt','来源回执','已有正文可见时返回短回执'],
   ['ledgerUnresolved','未解决事项','保留尚未解除的实际问题'],
   ['swLedger','重复结果记录','记录可供 SW 折叠的完整结果'],
@@ -45,7 +48,7 @@ const DEFINITIONS=[
   ['toolSurface','工具入口','compact 保留常用入口，full 展示管理和工程工具',['compact','full']],
   ['defaultResponseView','默认来源返回','选择完整正文或已有正文的短引用',['full','reference-if-visible']],
 ];
-const TOOLS=['project_evidence','work_exec','work_recall','work_status','work_state','work_report','work_probe','evidence_index','candidate_select','ptc_patterns','ptc_fastpath','verified_exec','fastedit_java','work_compute'];
+const TOOLS=['project_evidence','work_exec','work_recall','work_status','work_state','work_report','work_probe','evidence_index','candidate_select','ptc_patterns','ptc_fastpath','verified_exec','fastedit_java','work_compute','file_profile','structured_json'];
 const PACKAGE_DEFAULTS=defaults();
 const REQUIRES={stateInform:['stateLedger'],swEviction:['swLedger'],requestProjection:['projectionRestore'],projectionRestore:['requestProjection'],
   deferPressureCompaction:['compressionControl'],stubSummary:['compressionControl'],nativeProgramReuse:['executionTriage'],finalJsonResultGuard:['finalJsonGuard']};
@@ -79,7 +82,7 @@ export function latestObservedEffect(counters){
 }
 
 /** Local readiness only. A saved switch and available dependencies do not prove task success. */
-export function createFeatureControl(ctx,runtime,{available,canRecall,workingSet,qualityReview,compactionHandoff,retainedCompute,effects}){
+export function createFeatureControl(ctx,runtime,{available,canRecall,workingSet,qualityReview,compactionHandoff,retainedCompute,effects,verifiedExec}){
   const service=name=>{try{return ctx.get(name);}catch{return null;}};
   async function snapshot(agent,only){
     const state=runtime.get(agent),config=state.config,effective=runtime.isEnabled(agent),selection=runtime.currentSelection(agent);
@@ -88,6 +91,10 @@ export function createFeatureControl(ctx,runtime,{available,canRecall,workingSet
     const retained=retainedCompute.summary(agent);
     const observedFeatures=effects?.snapshot(agent,{detail:false}).features??{};
     const archiveDecoder=archiveDecoderStatus();
+    let nativeVerifiedReady=false;
+    if(config.nativeVerifiedEdits&&(!only||only==='nativeVerifiedEdits')){
+      try{nativeVerifiedReady=await verifiedExec?.nativeAvailable(agent)===true;}catch{}
+    }
     let fastEditFiles=null;
     if(config.fastEditEnabled&&(!only||only==='fastEditEnabled')){
       try{await Promise.all([fs.access(config.fastEditPython),fs.access(path.join(import.meta.dirname,'fastedit-bridge.py'))]);fastEditFiles=true;}
@@ -128,6 +135,11 @@ export function createFeatureControl(ctx,runtime,{available,canRecall,workingSet
           !available(agent,'work_state'))reasons.push('inactive-without-reachable-consumer');
         if(key==='qualityReview'&&(!selection?.provider||!selection?.model))reasons.push('main-model-route-unavailable');
         if(key==='retainedCompute')for(const name of retained.missingDependencies)reasons.push('native-service-unavailable:'+name);
+        if(key==='nativeVerifiedEdits'&&!nativeVerifiedReady)reasons.push('rc2-native-conditional-write-unavailable');
+        if(key==='nativeVerifiedEdits'&&!available(agent,'verified_exec'))reasons.push('tool-unavailable:verified_exec');
+        if(['fileProfiling','structuredJson'].includes(key)&&!service('fs'))reasons.push('native-filesystem-unavailable');
+        if(key==='fileProfiling'&&!available(agent,'file_profile'))reasons.push('tool-unavailable:file_profile');
+        if(key==='structuredJson'&&!available(agent,'structured_json'))reasons.push('tool-unavailable:structured_json');
         // A request projection exists only after a source body was actually hidden. Before that,
         // deferPressureCompaction has no budget view yet, but it is not permanently blocked.
         if(reasons.length)status=key==='deferPressureCompaction'&&reasons.length===1&&reasons[0]==='request-budget-view-unavailable'?'waiting':'blocked';

@@ -96,3 +96,30 @@ test('projection and its restoration switch must both be enabled',async()=>{
     assert.equal(observed.last.detail.workingSet.restoredObservations,0);
   }
 });
+
+test('a full-output request bypasses active pointers without a source restoration signal',async()=>{
+  const plan=[...Array.from({length:8},(_,i)=>[tool('read',{file_path:`o${i}.txt`})]),[text('第一部分完成。')],
+    ...Array.from({length:14},(_,i)=>[tool('read',{file_path:`p${i}.txt`})]),[text('第二部分完成。')]];
+  const host=await startHost({workspace:{contextProtocol:false,requestProjection:true,projectionRestore:true,projectionPricing:price,projectionMinChars:16000},contextWindow:60000,usage,
+    script:(_o,n)=>plan[n-1]??[text('完成。')]});
+  try{
+    for(let i=0;i<8;i++)await fs.writeFile(path.join(host.cwd,`o${i}.txt`),big(`o${i}`,120));
+    for(let i=0;i<14;i++)await fs.writeFile(path.join(host.cwd,`p${i}.txt`),big(`p${i}`,40));
+    const agent=await host.createAgent('max');
+    await host.send(agent,'读取 o0.txt 到 o7.txt 并总结');
+    await host.send(agent,'现在改为读取 p0.txt 到 p13.txt 并总结');
+    const before=(await host.command(agent,'detail')).detail.workingSet;
+    assert.ok(before.entries.length>0,'this regression requires an actual active projection');
+    const originals=before.entries.map(entry=>host.events.find(event=>event.seq===entry.seq).data.message);
+    await host.send(agent,'请保留完整输出。');
+    for(const original of originals){
+      const assembled=host.requests.at(-1).messages.find(message=>message.id===original.id);
+      assert.deepEqual(assembled?.content,original.content,'the assembled request must carry the canonical tool body');
+    }
+    await host.send(agent,'继续下一部分。');
+    assert.ok(originals.some(original=>{
+      const assembled=host.requests.at(-1).messages.find(message=>message.id===original.id);
+      return assembled&&JSON.stringify(assembled.content)!==JSON.stringify(original.content);
+    }),'a later ordinary request resumes the existing projection');
+  }finally{await host.close();}
+});

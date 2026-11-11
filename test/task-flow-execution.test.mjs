@@ -219,6 +219,19 @@ test('job registry queries keep the call outcome separate from states in the ret
   }
 });
 
+test('a same-command retry with completed false cannot resolve a recorded process failure',()=>{
+  for(const live of [true,false])for(const nested of [true,false]){
+    const t=timeline({stepPacing:false,qualityReview:true},[],'quality'),args={command:'run-checks'};
+    t.command('pwsh',args,{exitCode:1,stdout:'failed',stderr:''},{live,nested});
+    t.command('pwsh',args,{exitCode:0,completed:false,stdout:'still incomplete',stderr:''},{live,nested});
+    const result=t.flow.reviewState(t.agent);
+    assert.equal(result.unresolvedErrors.length,1,JSON.stringify({live,nested}));
+    assert.equal(result.executions.at(-1).executionCompleted,false);
+    t.command('pwsh',args,{exitCode:0,completed:true,stdout:'finished',stderr:''},{live,nested});
+    assert.equal(t.flow.reviewState(t.agent).unresolvedErrors.length,0,'an actual complete retry can resolve the failure');
+  }
+});
+
 test('implicit PTC file writes separate execution comparisons without claiming an observed mutation',()=>{
   for(const live of [true,false]){
     const t=timeline({stepPacing:false}),args={command:'node checks.mjs'},result={exitCode:0,stdout:'passed',stderr:''};
@@ -519,8 +532,9 @@ test('the next user request and successful program clear a prior clipped-read is
 test('aggressive guidance does not ban network access unconditionally',()=>{
   const body=taskFlowGuidance('aggressive');
   assert.doesNotMatch(body,/禁止访问网络/u,'experiment isolation must not be the default product rule');
-  assert.match(body,/需要联网的操作先确认用户授权/u);
-  assert.match(body,/不得用上游仓库或发布版中的现成实现替代本次实现/u);
+  assert.match(body,/需要联网的操作沿用用户已有授权；超出授权范围时再确认/u);
+  assert.match(body,/用户明确要求移植上游修复或恢复发布版实现时，按该要求使用指定来源/u);
+  assert.match(body,/不得使用用户禁止的外部实现/u);
 });
 
 test('correct failing reproductions must be fixed, not deleted',()=>{
@@ -528,7 +542,10 @@ test('correct failing reproductions must be fixed, not deleted',()=>{
   assert.match(body,/若复现有效但仍失败，必须继续修复实现并重跑该复现/u);
   assert.match(body,/不得删除有效复现/u);
   assert.match(body,/仅在确认测试无法修正时才删除它/u);
+  assert.match(body,/后续出现新的测试自身错误时，仍按实际证据修正，不限制修正次数/u);
+  assert.doesNotMatch(body,/最多修正测试(?:预期)?一次/u);
   assert.match(body,/复现通过后，用文件工具删除临时测试/u);
-  assert.match(body,/不得修改既有测试断言/u);
+  assert.match(body,/既有测试断言仅在用户明确要求或指定行为确需调整时修改/u);
+  assert.match(body,/不得改动无关断言/u);
   assert.doesNotMatch(body,/第二次仍失败则删除临时测试/u);
 });

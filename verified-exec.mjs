@@ -1,6 +1,7 @@
 import path from 'node:path';
 import {createHash,randomUUID} from 'node:crypto';
 import {within,assertExistingFileWithin,readUtf8File} from './evidence.mjs';
+import {createNativeCas} from './native-cas.mjs';
 
 export const VERSION='0.8.3';
 
@@ -157,6 +158,9 @@ async function runValidation(ctx,call,runtime,agent,validation,signal){
 }
 
 export function createVerifiedExec(ctx,runtime,call){
+  let native;
+  const registeredNativeWrite=ctx.tools.get('write')??null;
+  const registeredNativeExecute=registeredNativeWrite?.execute;
   async function execute(agent,input,signal){
     const s=await runtime.init(agent,signal),id='verified-'+randomUUID();
     const reportPath=path.join(s.dir,s.id+'.'+id+'.json');
@@ -173,10 +177,17 @@ export function createVerifiedExec(ctx,runtime,call){
     }
     const record={version:1,id,sessionId:s.id,createdAt:new Date().toISOString(),summary:plan.summary,applyRequested:plan.apply,
       status:'preflight',effectState:'none',files:[],validations:[],validationResults:[],atomicity:'per-file; cross-file writes are not transactional'};
+    const useNative=s.config.nativeVerifiedEdits===true;
+    if(useNative)native??=createNativeCas(ctx,runtime,registeredNativeWrite,registeredNativeExecute);
+    record.backend=useNative?'dsh-native-cas':'ops-cas';
+    record.versionKind=useNative?'native-opaque':'sha256';
+    const observe=file=>useNative?native.stat(agent,file,signal):statFile(call,runtime,agent,file,signal);
     async function save(){await runtime.save(agent,reportPath,record,signal);}
     function fileEffects(){return record.files.map(file=>({file:file.file,mode:file.mode,
       status:file.effect?.status||'not-attempted',effectState:file.effect?.effectState||'none',
       beforeRevision:file.beforeRevision,afterRevision:file.afterRevision||file.effect?.revision||null,
+      versionKind:record.versionKind,contentHash:file.effect?.contentHash??(record.versionKind==='sha256'?file.effect?.revision??null:null),
+      expectedAfterHash:file.expectedAfterHash,
       changed:file.effect?.changed??null,...(file.effect?.error?{error:file.effect.error}:{})}));}
     function effectState(){
       const effects=record.files.filter(file=>file.effect).map(file=>file.effect);
@@ -192,10 +203,11 @@ export function createVerifiedExec(ctx,runtime,call){
       record.status='deopt';record.reason='invalid-plan';record.error=error.message;s.metrics.verifiedExecDeopts++;await save();
       return {status:'deopt',reason:record.reason,error:error.message,reportPath,effectState:'none'};
     }
-    const required=['ops_stat'];
-    if(plan.apply&&groups.some(group=>group.mode==='create'))required.push('ops_write_file');
-    if(plan.apply&&groups.some(group=>group.mode==='replace_exact'))required.push('ops_edit_file');
+    const required=useNative?[]:['ops_stat'];
+    if(!useNative&&plan.apply&&groups.some(group=>group.mode==='create'))required.push('ops_write_file');
+    if(!useNative&&plan.apply&&groups.some(group=>group.mode==='replace_exact'))required.push('ops_edit_file');
     const missing=required.filter(name=>{try{return !ctx.tools.get(name,agent);}catch{return true;}});
+    if(useNative&&!await native.available(agent))missing.push('rc2-native-conditional-write');
     if(missing.length){
       record.status='deopt';record.reason='cas-file-tools-unavailable';record.missing=missing;s.metrics.verifiedExecDeopts++;await save();
       return {status:'deopt',reason:record.reason,missing,reportPath,effectState:'none'};
@@ -217,7 +229,7 @@ export function createVerifiedExec(ctx,runtime,call){
     }
     for(const group of groups){
       signal.throwIfAborted();
-      const observation=await statFile(call,runtime,agent,group.file,signal);
+      const observation=await observe(group.file);
       if(!observation.ok){
         record.status='deopt';record.reason='file-observation-unavailable';record.error=observation.error;
         s.metrics.verifiedExecDeopts++;await save();return {status:'deopt',reason:record.reason,file:group.file,error:observation.error,reportPath,effectState:'none'};
@@ -229,25 +241,29 @@ export function createVerifiedExec(ctx,runtime,call){
         }
         record.files.push({file:group.file,mode:'create',beforeRevision:'absent',bytesBefore:0,bytesAfter:Buffer.byteLength(group.content),
           expectedAfterHash:hash(group.content),hunks:0});
+        group.expectedText=group.content;
         continue;
       }
-      if(!observation.exists||!HEX_REVISION.test(String(observation.revision||''))){
+      if(!observation.exists||(useNative?observation.type!=='file'||typeof observation.revision!=='string'||!observation.revision:!HEX_REVISION.test(String(observation.revision||'')))){
         record.status='deopt';record.reason='existing-file-revision-unavailable';record.file=group.file;
         s.metrics.verifiedExecDeopts++;await save();return {status:'deopt',reason:record.reason,file:group.file,reportPath,effectState:'none'};
       }
-      const source=await readFullText(s.root,group.full,observation.revision);
+      const source=useNative?await native.read(agent,group.file,observation.revision,signal):await readFullText(s.root,group.full,observation.revision);
       if(!source.ok){
         record.status='deopt';record.reason='source-read-unavailable';record.error=source.error;record.file=group.file;
         s.metrics.verifiedExecDeopts++;await save();return {status:'deopt',reason:record.reason,file:group.file,error:source.error,reportPath,effectState:'none'};
       }
       const ranges=[];
       for(const edit of group.edits){
-        const found=countExact(source.text,edit.oldText);
+        const preserveCrlf=useNative&&source.text.includes('\r\n')&&!/(?<!\r)\n/u.test(source.text);
+        const oldText=preserveCrlf?edit.oldText.replaceAll('\r\n','\n').replaceAll('\n','\r\n'):edit.oldText;
+        const newText=preserveCrlf?edit.newText.replaceAll('\r\n','\n').replaceAll('\n','\r\n'):edit.newText;
+        const found=countExact(source.text,oldText);
         if(found.length!==1){
           record.status='deopt';record.reason=found.length?'edit-target-not-unique':'edit-target-not-found';record.file=group.file;
           s.metrics.verifiedExecDeopts++;await save();return {status:'deopt',reason:record.reason,file:group.file,reportPath,effectState:'none'};
         }
-        ranges.push({start:found[0],end:found[0]+edit.oldText.length,newText:edit.newText});
+        ranges.push({start:found[0],end:found[0]+oldText.length,newText});
       }
       ranges.sort((a,b)=>a.start-b.start);
       for(let i=1;i<ranges.length;i++)if(ranges[i].start<ranges[i-1].end){
@@ -256,13 +272,19 @@ export function createVerifiedExec(ctx,runtime,call){
       }
       let expectedText=source.text;
       for(const edit of ranges.toReversed())expectedText=expectedText.slice(0,edit.start)+edit.newText+expectedText.slice(edit.end);
+      if(useNative&&(expectedText.length>500000||Buffer.byteLength(expectedText)>2_000_000)){
+        record.status='deopt';record.reason='native-readback-budget-exceeded';record.file=group.file;
+        s.metrics.verifiedExecDeopts++;await save();return {status:'deopt',reason:record.reason,file:group.file,reportPath,effectState:'none'};
+      }
+      group.expectedText=expectedText;
+      group.beforeHash=source.sha256;
       record.files.push({file:group.file,mode:'replace_exact',beforeRevision:observation.revision,bytesBefore:observation.bytes,
         expectedAfterHash:hash(expectedText),
         hunks:group.edits.length});
     }
     if(!plan.apply){
       for(const group of groups){
-        const fresh=await statFile(call,runtime,agent,group.file,signal),original=record.files.find(file=>file.file===group.file);
+        const fresh=await observe(group.file),original=record.files.find(file=>file.file===group.file);
         const actual=fresh.ok&&fresh.exists?fresh.revision:'absent',expected=group.mode==='create'?'absent':original.beforeRevision;
         if(!fresh.ok||actual!==expected){
           record.status='deopt';record.reason='revision-changed-before-preview';record.file=group.file;
@@ -271,12 +293,12 @@ export function createVerifiedExec(ctx,runtime,call){
         }
       }
       record.status='previewed';record.reason='apply-not-requested';s.metrics.verifiedExecPreviews++;await save();
-      return {status:'previewed',reason:record.reason,reportPath,effectState:'none',files:record.files.map(file=>({file:file.file,mode:file.mode,hunks:file.hunks,beforeRevision:file.beforeRevision,expectedAfterHash:file.expectedAfterHash})),validations:plan.validations.map(item=>item.description)};
+      return {status:'previewed',reason:record.reason,reportPath,effectState:'none',files:record.files.map(file=>({file:file.file,mode:file.mode,hunks:file.hunks,beforeRevision:file.beforeRevision,versionKind:record.versionKind,expectedAfterHash:file.expectedAfterHash})),validations:plan.validations.map(item=>item.description)};
     }
     await save();
     const beforeApply=[];
     for(const group of groups){
-      const fresh=await statFile(call,runtime,agent,group.file,signal);
+      const fresh=await observe(group.file);
       const original=record.files.find(file=>file.file===group.file);
       const expected=group.mode==='create'?'absent':original.beforeRevision;
       const actual=fresh.ok&&fresh.exists?fresh.revision:'absent';
@@ -284,19 +306,21 @@ export function createVerifiedExec(ctx,runtime,call){
         record.status='deopt';record.reason='revision-changed-before-apply';record.file=group.file;
         s.metrics.verifiedExecDeopts++;await save();return {status:'deopt',reason:record.reason,file:group.file,reportPath,effectState:'none'};
       }
-      beforeApply.push({group,revision:fresh.revision});
+      beforeApply.push({group,revision:fresh.revision,observation:fresh});
     }
     record.status='applying';
     for(const item of beforeApply){
       let effect;
-      try{effect=await applyEditGroup(call,runtime,agent,item.group,item.revision,signal);}
+      try{effect=useNative?await native.available(agent)?await native.apply(agent,item.group,item.observation,signal):
+        {ok:false,status:'deopt',effectState:'none',error:{message:'The native conditional-write composition changed before application.'}}:
+        await applyEditGroup(call,runtime,agent,item.group,item.revision,signal);}
       catch(error){effect=failedEffect(error);}
       const file=record.files.find(entry=>entry.file===item.group.file);
       file.effect=effect;
       record.effectState=effectState();
       if(effect.ok||['applied','partial','unknown'].includes(effect.effectState)){
-        runtime.recordMutation?.(agent,{tool:item.group.mode==='create'?'ops_write_file':'ops_edit_file',
-          file:item.group.file,revision:effect.ok||effect.effectState==='applied'?effect.revision:null,callId:`verified:${record.id}`,seq:null});
+        runtime.recordMutation?.(agent,{tool:useNative?'write':item.group.mode==='create'?'ops_write_file':'ops_edit_file',
+          file:item.group.file,revision:effect.ok||effect.effectState==='applied'?(useNative?effect.contentHash:effect.revision):null,callId:`verified:${record.id}`,seq:null});
       }
       if(!effect.ok){
         record.status='partial';record.reason='file-apply-failed';
@@ -304,12 +328,12 @@ export function createVerifiedExec(ctx,runtime,call){
         return {status:'partial',reason:record.reason,file:item.group.file,effectState:record.effectState,error:effect.error,reportPath,...saved,
           files:fileEffects(),note:'Per-file effects are listed. Inspect applied and unknown files before deciding the next edit.'};
       }
-      if(!HEX_REVISION.test(String(effect.revision||''))||effect.revision!==file.expectedAfterHash){
+      if(!HEX_REVISION.test(String(useNative?effect.contentHash:effect.revision||''))||(useNative?effect.contentHash:effect.revision)!==file.expectedAfterHash){
         record.status='partial';record.reason='post-write-revision-mismatch';record.effectState='applied';
         s.metrics.verifiedExecPartial++;const saved=await saveOutcome();
         return {status:'partial',reason:record.reason,file:item.group.file,effectState:'applied',reportPath,...saved,files:fileEffects(),
           expectedAfterHash:file.expectedAfterHash,actualRevision:effect.revision||null,
-          note:'OPS applied a change, but its returned revision did not match the precomputed content. Declared validations were not run.'};
+          note:'The file changed, but the returned content identity did not match the precomputed content. Declared validations were not run.'};
       }
       file.afterRevision=effect.revision;file.bytesAfter=effect.bytes;file.lineCount=effect.lineCount;file.resultStatus=effect.status;
     }
@@ -349,5 +373,6 @@ export function createVerifiedExec(ctx,runtime,call){
     }
     return {ok:true,full,text:source.text,sha256:source.sha256,revision:observation.revision,bytes:observation.bytes,lineCount:observation.lineCount};
   }
-  return {execute,readCurrentText};
+  return {execute,readCurrentText,
+    nativeAvailable(agent){native??=createNativeCas(ctx,runtime,registeredNativeWrite,registeredNativeExecute);return native.available(agent);}};
 }
