@@ -30,8 +30,14 @@ export function createNativeCas(ctx,runtime,registeredWrite=ctx.tools.get('write
         import('@deepseek-ai/dsh-tools/package.json',{with:{type:'json'}}),import('@deepseek-ai/dsh-tools'),
         import('@deepseek-ai/dsh-fs-local'),import('@deepseek-ai/dsh-fs-local/package.json',{with:{type:'json'}}),
         import('@deepseek-ai/dsh-tool-fs/package.json',{with:{type:'json'}})]);
+      const filesystem=ctx.get('fs');let supported=Object.getPrototypeOf(filesystem)===LocalFileSystem.prototype;
+      if(!supported){
+        const [{SandboxedFileSystem},{default:metadata}]=await Promise.all([
+          import('@deepseek-ai/dsh-fs-sandbox'),import('@deepseek-ai/dsh-fs-sandbox/package.json',{with:{type:'json'}})]);
+        supported=metadata.version==='0.2.2-rc.2'&&Object.getPrototypeOf(filesystem)===SandboxedFileSystem.prototype;
+      }
       return [version,local.version,toolFs.version].every(value=>value==='0.2.2-rc.2')&&ctx.tools instanceof ToolsService
-        &&Object.getPrototypeOf(ctx.get('fs'))===LocalFileSystem.prototype&&!!registeredWrite&&ctx.tools.get('write')===registeredWrite
+        &&supported&&!!registeredWrite&&ctx.tools.get('write')===registeredWrite
         &&ctx.tools.get('write',agent)===registeredWrite&&registeredWrite.execute===registeredExecute;
     }catch{return false;}
   }

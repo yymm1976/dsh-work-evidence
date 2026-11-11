@@ -159,8 +159,15 @@ async function runValidation(ctx,call,runtime,agent,validation,signal){
 
 export function createVerifiedExec(ctx,runtime,call){
   let native;
-  const registeredNativeWrite=ctx.tools.get('write')??null;
-  const registeredNativeExecute=registeredNativeWrite?.execute;
+  let registeredNativeWrite=ctx.tools.get('write')??null;
+  let registeredNativeExecute=registeredNativeWrite?.execute;
+  // Headless compositions can activate this plugin before the file tools.
+  // Capture the first registered write, then keep rejecting later replacements.
+  ctx.on('tools/change',()=>{
+    if(registeredNativeWrite)return;
+    const write=ctx.tools.get('write');
+    if(write){registeredNativeWrite=write;registeredNativeExecute=write.execute;}
+  });
   async function execute(agent,input,signal){
     const s=await runtime.init(agent,signal),id='verified-'+randomUUID();
     const reportPath=path.join(s.dir,s.id+'.'+id+'.json');

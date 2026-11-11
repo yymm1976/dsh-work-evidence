@@ -19,7 +19,7 @@
 | `mavenSourceBinding` | 成熟默认开启 | 依赖归档解码和坐标匹配 | `host-source-options.test.mjs`、Maven 来源测试 | `README.md` |
 | `contextProtocol` | 成熟默认开启 | 处理可恢复旧工具正文 | `host-context-combinations.test.mjs`、`host-compaction.test.mjs` 验证正文、压缩与恢复 | `README.md` |
 | `historyHygiene` | 成熟默认开启 | 依赖历史回收入口；异常时停用自身折叠。测试回执覆盖 pytest、ruff、compileall、gradlew/gradle/mvn 和带完整 TAP 摘要的 `node --test`；无摘要、截断、spill 或用户要求完整输出时不投影 | `host-history.test.mjs` 验证折叠和恢复；`test-output-hygiene.test.mjs` 验证测试输出回执、TAP 摘要边界、截断与召回边界；`history-full-output-request.test.mjs` 验证只有真实用户消息可停用回执 | `README.md` |
-| `nativeVerifiedEdits` | 候选，默认关闭 | 限定 rc.2 原生 tools 与 LocalFileSystem；沿原生 write 权限路径附带版本条件。旧宿主或工具替换时明确拒绝该候选；默认 OPS 路径保留 | `native-cas.test.mjs` 覆盖创建、替换、BOM/CRLF、并发、权限、部分效果及真实 PTC；真实任务与消融待完成 | 当前候选尚未发布 |
+| `nativeVerifiedEdits` | 候选，默认关闭 | 限定 rc.2 原生 tools、LocalFileSystem 或官方 SandboxedFileSystem；沿原生 write 权限路径附带版本条件。旧宿主或工具替换时明确拒绝该候选；默认 OPS 路径保留 | `native-cas.test.mjs` 覆盖创建、替换、BOM/CRLF、并发、权限、部分效果、延迟注册及真实 PTC；真实任务与消融待完成 | 当前候选尚未发布 |
 | `fileProfiling` | 候选，默认关闭 | 依赖原生文件服务的版本、stat 和字节范围读取；入口 `file_profile` | `file-profile-core.test.mjs`、`file-profile.test.mjs` 覆盖 CSV、UTF-8、抽样/全量、预算与并发；真实触发及消融待完成 | `RELEASE-NOTES-1.1.2.md`、`MIGRATION-1.1.2.md` |
 | `structuredJson` | 候选，默认关闭 | 依赖原生有界字节读取和版本；入口 `structured_json` | `json-pointer.test.mjs`、`structured-json-core.test.mjs`、`structured-json.test.mjs` 覆盖指针、数值规则、行号、短读及真实 PTC；真实任务及消融待完成 | `RELEASE-NOTES-1.1.2.md`、`MIGRATION-1.1.2.md` |
 | `ledgerReceipt` | 成熟默认开启 | 依赖可回收历史和来源正文 | `host-source-options.test.mjs`、`host-acp-combinations.test.mjs` 验证短回执 | `README.md` |

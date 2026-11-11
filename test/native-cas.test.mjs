@@ -6,7 +6,7 @@ import path from 'node:path';
 import {createRequire} from 'node:module';
 import {createHash} from 'node:crypto';
 import {createNativeCas} from '../native-cas.mjs';
-import {startHost,text,tool,APP} from './helpers/host.mjs';
+import {startHost,text,tool,APP,load} from './helpers/host.mjs';
 
 const output=result=>(result.content??[]).filter(block=>block.type==='text').map(block=>block.text).join('\n');
 let ordinal=0;
@@ -17,6 +17,26 @@ async function invoke(host,agent,input){
 }
 const require=createRequire(path.join(APP,'package.json'));
 const nativeSupported=JSON.parse(readFileSync(require.resolve('@deepseek-ai/dsh-tools/package.json'),'utf8')).version==='0.2.2-rc.2';
+
+test('native edits capture file tools registered after plugin activation and preserve the sandbox filesystem fence',async()=>{
+  const host=await startHost({mountPlugin:false,filesystem:nativeSupported?'dsh-fs-sandbox':'dsh-fs-local',fileTools:{write:false},
+    workspace:{nativeVerifiedEdits:true},script:()=>[text('Ready.')]});
+  try{
+    await host.ctx.plugin(await import('../index.mjs'),{});
+    const fsTools=await load('dsh-tool-fs');
+    await host.ctx.plugin(fsTools,{read:false,readImage:false,write:true,edit:false});
+    await fs.writeFile(path.join(host.cwd,'late.txt'),'before');const agent=await host.createAgent();
+    const plan={summary:'Apply through a late native tool registration',apply:true,edits:[{file:'late.txt',mode:'replace_exact',old_text:'before',new_text:'after'}]};
+    const result=await invoke(host,agent,plan);
+    if(!nativeSupported){assert.equal(result.status,'deopt');return;}
+    assert.equal(result.status,'applied');assert.equal(await fs.readFile(path.join(host.cwd,'late.txt'),'utf8'),'after');
+    agent.session.append('sandbox/mode',{mode:'read-only',workspaceRoot:host.cwd});
+    const denied=await host.ctx.tools.execute({name:'verified_exec',arguments:{...plan,edits:[{file:'late.txt',mode:'replace_exact',old_text:'after',new_text:'forbidden'}]},
+      callId:'sandbox-denial',rootCallId:'sandbox-denial',agent,signal:AbortSignal.timeout(20000)});
+    assert.equal(denied.isError,true);assert.match(output(denied),/read-only|denied/iu);
+    assert.equal(await fs.readFile(path.join(host.cwd,'late.txt'),'utf8'),'after');
+  }finally{await host.close();}
+});
 
 test('native conditional editing applies multiple exact changes without OPS and retains a preview with its switch off',async()=>{
   const host=await startHost({workspace:{toolSurface:'full',nativeVerifiedEdits:true},script:()=>[text('Ready.')]});

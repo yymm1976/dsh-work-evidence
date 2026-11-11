@@ -12,7 +12,7 @@
 
 | 开关 | 入口和行为 | 边界 |
 |---|---|---|
-| `nativeVerifiedEdits` | `verified_exec` 在 rc.2 通过原生权限路径执行多文件精确替换或创建。compact 模式在可写任务中提供入口。 | 仅支持已识别的 rc.2 原生工具和本地文件服务；版本是宿主的不透明标记。逐文件生效，后续失败不会撤销已生效的修改。 |
+| `nativeVerifiedEdits` | `verified_exec` 在 rc.2 通过原生权限路径执行多文件精确替换或创建。compact 模式在可写任务中提供入口。 | 仅支持已识别的 rc.2 原生工具、官方本地或沙箱文件服务；版本是宿主的不透明标记。逐文件生效，后续失败不会撤销已生效的修改。 |
 | `fileProfiling` | `file_profile` 提供文本/CSV 预览、换行、ASCII 计数及 CSV 字段分布。 | 抽样不能给出全文件计数。完整扫描受总字节预算限制，保留 BOM 和换行；文件变化、短读和非法 UTF-8 返回不可用。 |
 | `structuredJson` | `structured_json` 按 JSON 指针读取 JSON/JSONL 的值、键、计数或数组页。 | 原文上限 2 MiB。沿用 `JSON.parse` 的重复键、枚举顺序和数字规则，小数可能舍入或下溢；不安全整数和非有限数被拒绝。裁剪值明确标记不完整。 |
 
