@@ -3,9 +3,9 @@ import test from 'node:test';
 import {AGGRESSIVE_GUIDANCE} from '../task-flow.mjs';
 
 test('1.1.2 aggressive guidance requires same-turn temporary test lifecycle', () => {
-  assert.match(AGGRESSIVE_GUIDANCE, /优先运行仓库既有测试中覆盖改动的最小集合/u);
-  assert.match(AGGRESSIVE_GUIDANCE, /仅当既有测试无法触达改动行为且存在可执行测试入口时/u);
-  assert.match(AGGRESSIVE_GUIDANCE, /与实现修改同一轮完成、运行一次后立即删除/u);
+  assert.match(AGGRESSIVE_GUIDANCE, /最多创建一个最小自删除复现测试/u);
+  assert.match(AGGRESSIVE_GUIDANCE, /与实现修改同一轮创建、运行、删除/u);
+  assert.match(AGGRESSIVE_GUIDANCE, /已有测试已覆盖改动行为时可不创建临时测试/u);
   assert.match(AGGRESSIVE_GUIDANCE, /不得留下临时测试、构建产物或未运行文件/u);
 });
 
