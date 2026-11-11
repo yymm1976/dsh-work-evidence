@@ -14,3 +14,9 @@ test('1.1.2 aggressive guidance keeps the valid failing reproduction retention r
   assert.match(AGGRESSIVE_GUIDANCE, /第二次仍失败则删除临时测试、改用既有测试或静态核对/u);
   assert.match(AGGRESSIVE_GUIDANCE, /不得修改实现去迎合错误预期/u);
 });
+
+test('1.1.2 aggressive guidance stops repeated environment failures', () => {
+  assert.match(AGGRESSIVE_GUIDANCE, /环境缺少工具链、依赖或离线产物时/u);
+  assert.match(AGGRESSIVE_GUIDANCE, /同一命令连续两次失败后停止重试/u);
+  assert.match(AGGRESSIVE_GUIDANCE, /不要把环境失败重复成多次请求/u);
+});
