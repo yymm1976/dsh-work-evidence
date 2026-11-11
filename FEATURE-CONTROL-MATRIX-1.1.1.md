@@ -1,6 +1,6 @@
-# 1.1.1 功能入口成熟度矩阵
+# 功能入口成熟度矩阵
 
-范围：`feature-control.mjs` 的 39 个实际入口。原生条件编辑仍为研发候选，默认关闭。真实任务与消融未完成的候选不记为成熟。
+范围：当前 1.1.2 候选 `feature-control.mjs` 的 41 个实际入口。原生条件编辑、文件概况和 JSON 选择仍为研发候选，默认关闭。真实任务与消融未完成的候选不记为成熟。
 
 | 入口 | 状态 | 启停与依赖 | 运行、恢复和组合证据 | 文档与迁移 |
 |---|---|---|---|---|
@@ -20,6 +20,8 @@
 | `contextProtocol` | 成熟默认开启 | 处理可恢复旧工具正文 | `host-context-combinations.test.mjs`、`host-compaction.test.mjs` 验证正文、压缩与恢复 | `README.md` |
 | `historyHygiene` | 成熟默认开启 | 依赖历史回收入口；异常时停用自身折叠。测试回执覆盖 pytest、ruff、compileall、gradlew/gradle/mvn 和带完整 TAP 摘要的 `node --test`；无摘要、截断、spill 或用户要求完整输出时不投影 | `host-history.test.mjs` 验证折叠和恢复；`test-output-hygiene.test.mjs` 验证测试输出回执、TAP 摘要边界、截断与召回边界；`history-full-output-request.test.mjs` 验证只有真实用户消息可停用回执 | `README.md` |
 | `nativeVerifiedEdits` | 候选，默认关闭 | 限定 rc.2 原生 tools 与 LocalFileSystem；沿原生 write 权限路径附带版本条件。旧宿主或工具替换时明确拒绝该候选；默认 OPS 路径保留 | `native-cas.test.mjs` 覆盖创建、替换、BOM/CRLF、并发、权限、部分效果及真实 PTC；真实任务与消融待完成 | 当前候选尚未发布 |
+| `fileProfiling` | 候选，默认关闭 | 依赖原生文件服务的版本、stat 和字节范围读取；入口 `file_profile` | `file-profile-core.test.mjs`、`file-profile.test.mjs` 覆盖 CSV、UTF-8、抽样/全量、预算与并发；真实触发及消融待完成 | `RELEASE-NOTES-1.1.2.md`、`MIGRATION-1.1.2.md` |
+| `structuredJson` | 候选，默认关闭 | 依赖原生有界字节读取和版本；入口 `structured_json` | `json-pointer.test.mjs`、`structured-json-core.test.mjs`、`structured-json.test.mjs` 覆盖指针、数值规则、行号、短读及真实 PTC；真实任务及消融待完成 | `RELEASE-NOTES-1.1.2.md`、`MIGRATION-1.1.2.md` |
 | `ledgerReceipt` | 成熟默认开启 | 依赖可回收历史和来源正文 | `host-source-options.test.mjs`、`host-acp-combinations.test.mjs` 验证短回执 | `README.md` |
 | `ledgerUnresolved` | 成熟默认开启 | 保留真实未解决项，不推断完成 | `host-state.test.mjs` 验证状态传播 | `README.md` |
 | `swLedger` | 成熟显式开启 | 默认关闭；为重复结果折叠提供记录 | `sw-default.test.mjs`、上下文组合测试 | `README.md`、`MIGRATION-1.1.1.md` |
@@ -46,7 +48,7 @@
 
 ## 终审结论
 
-- 39 个入口均有配置和源码接线。原生条件编辑仍须完成真实任务与消融，不能由确定性回归推断成熟。
+- 41 个入口均有配置和源码接线。3 个新候选仍须完成真实任务与消融，不能由确定性回归推断成熟。
 - 默认关闭的能力通过显式配置启用。缺少依赖时返回 `blocked`、`waiting` 或明确原因。
 - 旧设置由 `runtime.mjs` 的 `RETIRED_SETTINGS` 固定关闭；迁移兼容和回退说明见 `MIGRATION-1.1.1.md` 与 `ROLLBACK-1.1.1.md`。
 - 仍需在最终候选 SHA 上重跑本矩阵引用的双宿主证据；当前矩阵不是发布通过声明。

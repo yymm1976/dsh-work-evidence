@@ -21,7 +21,7 @@ const nativeSupported=JSON.parse(readFileSync(require.resolve('@deepseek-ai/dsh-
 test('native conditional editing applies multiple exact changes without OPS and retains a preview with its switch off',async()=>{
   const host=await startHost({workspace:{toolSurface:'full',nativeVerifiedEdits:true},script:()=>[text('Ready.')]});
   let nativeWrites=0;
-  host.ctx.on('tools/result',exec=>{if(exec.name==='write'&&exec.callId?.startsWith('work-evidence-native-cas:'))nativeWrites++;});
+  host.ctx.on('tools/result',exec=>{if(exec.name==='write'&&exec.callId?.startsWith('work-evidence:native-cas:'))nativeWrites++;});
   try{
     await fs.writeFile(path.join(host.cwd,'source.txt'),'\uFEFFalpha\r\nbeta\r\n');
     const agent=await host.createAgent();
@@ -39,6 +39,7 @@ test('native conditional editing applies multiple exact changes without OPS and 
     }
     assert.equal(preview.status,'previewed',JSON.stringify(preview));assert.equal(preview.effectState,'none');
     assert.equal(readiness.status,'ready');
+    assert.equal(readiness.effect.applied,0,'a preview must not be counted as an applied edit');
     assert.equal(await fs.readFile(path.join(host.cwd,'source.txt'),'utf8'),'\uFEFFalpha\r\nbeta\r\n');
     const result=await invoke(host,agent,{...plan,apply:true});
     assert.equal(result.status,'applied',JSON.stringify(result));assert.equal(result.effectState,'applied');
@@ -47,6 +48,9 @@ test('native conditional editing applies multiple exact changes without OPS and 
     assert.equal(host.ctx.tools.get('ops_stat',agent),undefined);
     assert.equal(nativeWrites,2);
     const record=JSON.parse(await fs.readFile(result.reportPath,'utf8'));
+    const mutations=(await host.command(agent,'status')).state.recentMutations.filter(item=>/source\.txt|created\.txt/u.test(item.path));
+    assert.equal(mutations.length,2,'one mutation per file; nested native writes are internal');
+    for(const mutation of mutations)assert.equal(mutation.revision,record.files.find(item=>mutation.path.endsWith(item.file)).effect.contentHash,'the existing ledger uses content SHA256, not opaque native versions');
     assert.equal(record.backend,'dsh-native-cas');assert.equal(record.versionKind,'native-opaque');
     assert.equal(record.files.every(file=>file.effect.guarded===true),true);
     assert.equal((await host.command(agent,'feature nativeVerifiedEdits')).features[0].effect.status,'applied');
@@ -66,7 +70,7 @@ test('a native replacement race preserves the newer file and reports that the ed
     const file=path.join(host.cwd,'source.txt');await fs.writeFile(file,'original');
     let race=false;
     host.ctx.on('fs/write-intent',async(target,actor,next)=>{
-      if(actor?.callId?.startsWith('work-evidence-native-cas:')&&!race){race=true;await fs.writeFile(file,'concurrent update');}
+      if(actor?.callId?.startsWith('work-evidence:native-cas:')&&!race){race=true;await fs.writeFile(file,'concurrent update');}
       return next();
     },{prepend:true});
     const agent=await host.createAgent();
@@ -82,7 +86,7 @@ test('native conditional creation cannot overwrite a file created after prefligh
   try{
     const file=path.join(host.cwd,'created.txt');let race=false;
     host.ctx.on('fs/write-intent',async(target,actor,next)=>{
-      if(actor?.callId?.startsWith('work-evidence-native-cas:')&&!race){race=true;await fs.writeFile(file,'concurrent create');}
+      if(actor?.callId?.startsWith('work-evidence:native-cas:')&&!race){race=true;await fs.writeFile(file,'concurrent create');}
       return next();
     },{prepend:true});
     const agent=await host.createAgent();
@@ -106,7 +110,7 @@ test('native conditional editing retains the native read-only permission denial'
 
 test('a native PTC invocation reaches the conditional edit through the real nested write token',async()=>{
   const plan={summary:'Edit through native PTC',apply:true,edits:[{file:'source.txt',mode:'replace_exact',old_text:'before',new_text:'after'}]};
-  const host=await startHost({toolMode:'ptc',extraMounts:[['dsh-ptc-runtime-node']],workspace:{toolSurface:'full',nativeVerifiedEdits:true},
+  const host=await startHost({toolMode:'ptc',extraMounts:[['dsh-ptc-runtime-node']],workspace:{nativeVerifiedEdits:true},
     script:(_options,n)=>n===1?[tool('run_code',{code:'const result=await tools.verified_exec('+JSON.stringify(plan)+');console.log(JSON.stringify(result));',description:'Apply the explicit conditional edit'})]:[text('Reported the actual edit result.')]});
   try{
     await fs.writeFile(path.join(host.cwd,'source.txt'),'before');
@@ -155,7 +159,7 @@ test('native cross-file partial effects retain the first write when a later poli
   const host=await startHost({workspace:{toolSurface:'full',nativeVerifiedEdits:true},script:()=>[text('Ready.')]});
   try{
     await fs.writeFile(path.join(host.cwd,'first.txt'),'before');await fs.writeFile(path.join(host.cwd,'second.txt'),'before');
-    host.ctx.on('fs/write-intent',async(target,actor,next)=>actor.callId?.startsWith('work-evidence-native-cas:')&&target.displayPath.endsWith('second.txt')
+    host.ctx.on('fs/write-intent',async(target,actor,next)=>actor.callId?.startsWith('work-evidence:native-cas:')&&target.displayPath.endsWith('second.txt')
       ?{kind:'replaceIfVersion',version:'a conflicting policy version'}:next(),{prepend:true});
     const agent=await host.createAgent(),result=await invoke(host,agent,{summary:'Record per-file effects',apply:true,edits:[
       {file:'first.txt',mode:'replace_exact',old_text:'before',new_text:'after'},

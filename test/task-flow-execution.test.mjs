@@ -247,6 +247,18 @@ test('implicit PTC file writes separate execution comparisons without claiming a
   }
 });
 
+test('an incomplete scriptRef retry preserves the referenced failed execution',()=>{
+  for(const live of [true,false])for(const nested of [true,false]){
+    const t=timeline({stepPacing:false,qualityReview:true},[],'quality');
+    t.command('work_exec',{runtime:'node',code:'throw new Error("failed")'}, {exitCode:1,stderr:'Error: failed',stdout:''},{live,nested});
+    const first=t.flow.reviewState(t.agent).unresolvedErrors[0];assert.ok(first);
+    t.command('work_exec',{scriptRef:'failed-version'}, {exitCode:0,completed:false,stdout:'pending',stderr:'',scriptSourceRefs:[first.callId]},{live,nested});
+    assert.equal(t.flow.reviewState(t.agent).unresolvedErrors.length,1,JSON.stringify({live,nested}));
+    t.command('work_exec',{scriptRef:'failed-version'}, {exitCode:0,completed:true,stdout:'complete',stderr:'',scriptSourceRefs:[first.callId]},{live,nested});
+    assert.equal(t.flow.reviewState(t.agent).unresolvedErrors.length,0);
+  }
+});
+
 test('large PTC failure advice distinguishes worker exits, parse errors, cancellation and execution failures',()=>{
   for(const live of [true,false])for(const [error,expected,unexpected]of [
     ['worker-exit: kernel helper did not answer','执行工作进程故障','按实际解析错误修正程序'],

@@ -279,7 +279,7 @@ export function createHistoryHygiene(runtime,taskFlow,{isProtected=()=>false,ret
     const result=messages.map(message=>{
       if(message.role!=='tool')return message;
       const entry=state.results.get(message.id);
-      if(entry?.testDigest&&state.step-entry.step>=1&&!state.fullOutputRequested&&!state.pinnedResults.has(entry.seq)&&!pins.opaque&&!pins.targets.has(entry.seq)){
+      if(entry?.testDigest&&!isProtected(agent,entry.callId)&&state.step-entry.step>=1&&!state.fullOutputRequested&&!state.pinnedResults.has(entry.seq)&&!pins.opaque&&!pins.targets.has(entry.seq)){
         const reduction=resultText(message.content).length-entry.testDigest.length;
         if(reduction>=MIN_SAVING){
           const after={...message,content:[{type:'text',text:entry.testDigest}]};
@@ -292,7 +292,7 @@ export function createHistoryHygiene(runtime,taskFlow,{isProtected=()=>false,ret
           return after;
         }
       }
-      if(entry?.toolDigest&&runtime.get(agent).config?.swLedger!==true&&state.step-entry.step>=1&&!state.fullOutputRequested&&!state.pinnedResults.has(entry.seq)&&!pins.opaque&&!pins.targets.has(entry.seq)){
+      if(entry?.toolDigest&&!isProtected(agent,entry.callId)&&runtime.get(agent).config?.swLedger!==true&&state.step-entry.step>=1&&!state.fullOutputRequested&&!state.pinnedResults.has(entry.seq)&&!pins.opaque&&!pins.targets.has(entry.seq)){
         const reduction=resultText(message.content).length-entry.toolDigest.length;
         if(reduction>=MIN_SAVING){
           const after={...message,content:[{type:'text',text:entry.toolDigest}]};
@@ -346,7 +346,10 @@ export function createHistoryHygiene(runtime,taskFlow,{isProtected=()=>false,ret
       return [...s.results.values()].some(entry=>!entry.failed&&!entry.reads.length&&s.step-entry.step>=1&&
         resultText(agent.session.eventAt(entry.seq)?.data?.message?.content).length>=runtime.get(agent).config.contextPruneMinChars);
     },
-    bodyVisible(agent,seq){return !runtime.isEnabled(agent)||!runtime.get(agent).config.historyHygiene||get(agent).suspended||!get(agent).hiddenResults.has(seq)&&referenceContext?.bodyVisible(agent,seq)!==false;},
+    bodyVisible(agent,seq){
+      if(!runtime.isEnabled(agent)||!runtime.get(agent).config.historyHygiene)return true;
+      const s=sync(agent);return s.suspended||s.fullOutputRequested||!s.hiddenResults.has(seq)&&referenceContext?.bodyVisible(agent,seq)!==false;
+    },
     manages(agent,seq){return runtime.isEnabled(agent)&&runtime.get(agent).config.historyHygiene&&!get(agent).suspended&&(get(agent).hiddenResults.has(seq)||referenceContext?.manages(agent,seq)===true);},
     retainsSource(agent,file){return get(agent).retainedSources.has(fileKey(runtime.get(agent).root,file));},
     summary(agent){const s=sync(agent),references=referenceContext?.summary(agent)??null;return {enabled:runtime.isEnabled(agent)&&runtime.get(agent).config.historyHygiene,requestViews:s.requests,outputViews:s.outputs,testOutputViews:s.testOutputViews,

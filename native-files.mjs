@@ -29,6 +29,8 @@ export function createNativeFiles(ctx){
     if(before.bytes!==null&&before.bytes>maxBytes)throw Object.assign(new Error(`File exceeds the ${maxBytes}-byte read budget`),{code:'FS_READ_BUDGET'});
     const bytes=Buffer.from(await backend().readBytes(before.target,signal,maxBytes));
     if(bytes.length>maxBytes)throw Object.assign(new Error(`File exceeds the ${maxBytes}-byte read budget`),{code:'FS_READ_BUDGET'});
+    if(Number.isSafeInteger(before.bytes)&&before.bytes>=0&&bytes.length!==before.bytes)
+      throw Object.assign(new Error('Native byte read did not return the complete recorded file size.'),{code:'FS_READ_INCOMPLETE'});
     const after=await stat(root,file,signal);
     if(!after.exists||after.type!=='file'||(before.version!==null&&before.version!==after.version)||before.bytes!==after.bytes)
       throw Object.assign(new Error('Source changed during the native read; request it again.'),{code:'SOURCE_CHANGED'});

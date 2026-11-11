@@ -26,12 +26,22 @@ test('a real native complete CSV scan reports exact independent counts and decod
 test('large-file samples do not claim global CSV counts while small files can be read completely',async()=>{
   const host=await startHost({mountPlugin:false,script:()=>[text('done')]});
   try{
-    await fs.writeFile(path.join(host.cwd,'large.csv'),'a,b\n'.repeat(10000));await fs.writeFile(path.join(host.cwd,'small.csv'),'\uFEFFa,b\r\n1,2');
+    await fs.writeFile(path.join(host.cwd,'large.csv'),'a,b\n'.repeat(10000)+'LAST,ROW\n');await fs.writeFile(path.join(host.cwd,'small.csv'),'\uFEFFa,b\r\n1,2');
     const result=await createFileProfiler(host.ctx,runtime(host)).observe({}, {files:[{path:'large.csv',format:'csv'},{path:'small.csv',format:'csv'}]},signal());
     assert.equal(result.status,'observed',JSON.stringify(result));const [large,small]=result.files;
     assert.equal(large.scope,'sampled');assert.equal(large.scanComplete,false);assert.equal(large.analysis,undefined);
     assert.equal(large.scannedBytes,16384);assert.equal(large.samples.at(-1).endsAtFileBoundary,true);
+    assert.ok(large.samples.at(-1).preview.some(line=>line.text==='LAST,ROW'),'the tail preview includes the actual final line');
     assert.equal(small.scope,'complete');assert.equal(small.analysis.csv.records,2);assert.equal(small.analysis.csv.valid,true);
+  }finally{await host.close();}
+});
+
+test('invalid UTF-8 sampled bytes have the same explicit text error as a complete scan',async()=>{
+  const host=await startHost({mountPlugin:false,script:()=>[text('done')]});
+  try{
+    await fs.writeFile(path.join(host.cwd,'invalid.txt'),Buffer.from([0xFF]));
+    const result=await createFileProfiler(host.ctx,runtime(host)).observe({}, {files:[{path:'invalid.txt'}]},signal());
+    assert.equal(result.files[0].error.code,'PROFILE_NOT_UTF8_TEXT');
   }finally{await host.close();}
 });
 

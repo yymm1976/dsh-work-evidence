@@ -535,7 +535,7 @@ export function createRequestWorkingSet(ctx,runtime,economics,taskFlow){
       }catch{return unknown('projection-observation-error');}
     },
     disposeAgent(agent){detach(agent);states.delete(agent.session.id);},
-    bodyVisible(agent,seq){if(!active(agent))return true;const state=sync(agent),pins=surfaceReferences(agent.session);return pins.opaque||pins.targets.has(seq)||!state.hidden.has(seq)||state.restored.has(seq);},
+    bodyVisible(agent,seq){if(!active(agent)||runtime.historyFullOutputRequested?.(agent))return true;const state=sync(agent),pins=surfaceReferences(agent.session);return pins.opaque||pins.targets.has(seq)||!state.hidden.has(seq)||state.restored.has(seq);},
     manages(agent,seq){return active(agent)&&sync(agent).hidden.has(seq);},
     dispose(){disposed=true;for(const item of [...attachments.values()])detach(item.agent);states.clear();}};
 }

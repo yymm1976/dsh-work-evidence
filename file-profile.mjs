@@ -19,16 +19,19 @@ function checkInput(input){
   return {files:input.files,scan,maxBytes};
 }
 
+function decodeSample(bytes,stream=false){
+  try{return new TextDecoder('utf-8',{fatal:true,ignoreBOM:true}).decode(bytes,{stream});}
+  catch(error){if(error instanceof TypeError)throw failure('PROFILE_NOT_UTF8_TEXT','The sampled source must be valid UTF-8.');throw error;}
+}
 function sampleText(bytes,{offset,end}){
   let start=0;
   if(offset)while(start<Math.min(3,bytes.length)&&(bytes[start]&0xC0)===0x80)start++;
-  const decoder=new TextDecoder('utf-8',{fatal:true,ignoreBOM:true});
-  const text=decoder.decode(bytes.subarray(start),{stream:!end});
+  const text=decodeSample(bytes.subarray(start),!end);
   if(text.includes('\0'))throw failure('PROFILE_NOT_UTF8_TEXT','The sampled bytes contain NUL; use a binary or image reader.');
   const view=createFileProfile({sampleLines:4,maxSampleLineChars:200});view.push(text);
   const value=view.finish();
   return {offset,bytes:bytes.length,sha256:sha(bytes),decodedOffset:offset+start,
-    startsAtFileBoundary:offset===0,endsAtFileBoundary:end,preview:value.head};
+    startsAtFileBoundary:offset===0,endsAtFileBoundary:end,preview:offset===0?value.head:value.tail};
 }
 
 /** Read-only profiles keep sampled observations distinct from stable complete scans. */
@@ -84,7 +87,7 @@ export function createFileProfiler(ctx,runtime){
           samples=[sampleText(head,{offset:0,end:headLength===before.bytes})];
           if(tail.length)samples.push(sampleText(tail,{offset:tailOffset,end:true}));
           if(tailOffset===headLength){
-            const bytes=Buffer.concat([head,tail]),text=new TextDecoder('utf-8',{fatal:true,ignoreBOM:true}).decode(bytes);
+            const bytes=Buffer.concat([head,tail]),text=decodeSample(bytes);
             const profile=createFileProfile({format:item.format??'text',delimiter:item.delimiter??','});profile.push(text);
             analysis=profile.finish();scope='complete';decodedTextSha256=sha(bytes);
           }else scope='sampled';

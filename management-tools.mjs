@@ -19,7 +19,8 @@ export function registerManagementTools({ctx,runtime,state,effects,available,fea
         const feature=name==='work_exec'&&args?.mode==='retained'?'retainedCompute':name==='verified_exec'&&runtime.get(exec.agent).config.nativeVerifiedEdits?'nativeVerifiedEdit':{work_exec:'inlineExec',work_compute:'retainedCompute',work_probe:'probe',evidence_index:'index',candidate_select:'candidate',ptc_patterns:'patterns',ptc_fastpath:'fastpath',verified_exec:'verifiedEdit',fastedit_java:'fastEdit',file_profile:'fileProfile',structured_json:'structuredJson'}[name];
         if(feature){
           const status=result?.status;
-          if(name==='work_exec'&&args?.mode!=='retained'){
+          if(name==='verified_exec'&&status==='previewed'&&result.effectState==='none')effects.decide(exec.agent,feature,'deferred','preview-only');
+          else if(name==='work_exec'&&args?.mode!=='retained'){
             const pending=['promoted','background'].includes(result?.kind)||['running','pending','queued','stopping'].includes(result?.status??result?.job?.status);
             const unavailable=['deopt','unavailable','disabled'].includes(status);
             const reportedFailure=reportedExecutionChecks(result);
@@ -241,7 +242,7 @@ export function registerManagementTools({ctx,runtime,state,effects,available,fea
       }
       return ptcFastpath.run(exec.agent,args,exec.signal);
     });
-  register('verified_exec','对已明确的文件修改做精确替换或创建，通过OPS当前revision应用；冲突时deopt，跨文件写入逐文件生效。apply=false只生成修改预览。validations可省略，只在当前任务要求外部命令时显式提供；没有命令时返回applied，有命令且成功才返回validated，均不代表全部需求完成。',
+  register('verified_exec','Apply several explicit exact replacements or new files in one call with version checks and native permission enforcement. Set apply:false for a preview. Conflicts preserve newer content and return deopt; cross-file writes take effect per file and report partial effects honestly. validations are optional and run only the explicitly supplied commands. applied means the files changed; validated means those commands also passed. Neither status declares the whole task complete.',
     {summary:{type:'string'},apply:{type:'boolean'},
       edits:{type:'array',minItems:1,maxItems:50,items:{type:'object',additionalProperties:false,properties:{
         file:{type:'string'},mode:{type:'string',enum:['replace_exact','create']},old_text:{type:'string'},new_text:{type:'string'},content:{type:'string'}

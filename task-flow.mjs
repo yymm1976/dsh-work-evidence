@@ -287,7 +287,7 @@ export function createTaskFlow(ctx,runtime,{nativeFiles,call,executionDependenci
       (directCommand.includes('\n')||/(?:\s-[ce]\s|@['"]|<{1,2}\s*['"]?python)/iu.test(directCommand));
     if(embeddedInterpreter&&state.lastUser&&event.seq>state.lastUser.seq)
       state.legacyInterpreterShell={seq,userSeq:state.lastUser.seq,tool:call.name,chars:directCommand.length};
-    if(call.name==='work_exec'&&!failed&&!pending&&Array.isArray(payload?.scriptSourceRefs)){
+    if(call.name==='work_exec'&&complete&&Array.isArray(payload?.scriptSourceRefs)){
       const repaired=new Set(payload.scriptSourceRefs.filter(id=>typeof id==='string'));
       for(const [errorKey,error]of state.errors)if(error.tool==='work_exec'&&repaired.has(error.callId))state.errors.delete(errorKey);
     }

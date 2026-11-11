@@ -45,7 +45,7 @@ test('packed tarball installs without host peers and loads with the installed ho
     assert.equal(installed.status,0,output(installed));
     const packageDirectory=path.join(install,'node_modules','@local','dsh-work-evidence');
     const manifest=JSON.parse(await fs.readFile(path.join(packageDirectory,'package.json'),'utf8'));
-    assert.equal(manifest.version,'1.1.1');
+    assert.equal(manifest.version,'1.1.2');
     assert.deepEqual(manifest.peerDependenciesMeta?.['@deepseek-ai/dsh-llm'],{optional:true});
     assert.equal(existsSync(path.join(install,'node_modules','@deepseek-ai','dsh-llm','package.json')),false,
       'offline installation must not fetch a host peer');

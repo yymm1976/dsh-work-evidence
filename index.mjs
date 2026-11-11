@@ -401,13 +401,14 @@ export function apply(ctx,config={}){
       return;
     }
     const mode=taskSurfaceModes.get(agent.session.id),surface=base==='compact'?(mode==='read-only'||mode==='minimal'&&hasHistoricalReferences(agent)?'compact-read-only':mode==='minimal'?'compact-minimal':'compact'):base;
-    const exposedReads=[...(state(agent).config.fileProfiling?['file_profile']:[]),...(state(agent).config.structuredJson?['structured_json']:[])];
-    const readKey=exposedReads.join(',');
+    const exposedFeatures=[...(state(agent).config.fileProfiling?['file_profile']:[]),...(state(agent).config.structuredJson?['structured_json']:[]),
+      ...(state(agent).config.nativeVerifiedEdits&&!['read-only','minimal'].includes(mode)?['verified_exec']:[])];
+    const readKey=exposedFeatures.join(',');
     if(current?.surface===surface&&current.readKey===readKey)return;
     try{current?.dispose?.();}catch{}
     toolSurfaceDisposers.delete(agent.session.id);
     try{
-      const hidden=COMPACT_HIDDEN_TOOLS.filter(name=>!exposedReads.includes(name));
+      const hidden=COMPACT_HIDDEN_TOOLS.filter(name=>!exposedFeatures.includes(name));
       const deny=surface==='compact-read-only'?[...hidden,'work_exec']:
         surface==='compact-minimal'?[...hidden,'work_exec','work_recall']:hidden;
       const dispose=surface==='full'?null:agent.ctx.tools.restrict({deny});

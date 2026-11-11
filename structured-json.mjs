@@ -11,6 +11,9 @@ export function createStructuredJson(ctx,runtime){
     try{
       if(!input||typeof input!=='object'||Array.isArray(input)||Object.keys(input).some(key=>!['path','selectors','format','maxValueChars'].includes(key))||
         typeof input.path!=='string'||!input.path.trim()||input.path.length>4096)throw Object.assign(new Error('Invalid JSON query request.'),{code:'INVALID_JSON_REQUEST'});
+      if(input.format!==undefined&&!['json','jsonl'].includes(input.format)||input.maxValueChars!==undefined&&
+        (!Number.isSafeInteger(input.maxValueChars)||input.maxValueChars<256||input.maxValueChars>16000))
+        throw Object.assign(new Error('Invalid JSON query options.'),{code:'INVALID_JSON_OPTIONS'});
       const bounded=AbortSignal.any([signal,AbortSignal.timeout(30000)]);
       const source=await files.readBytes(state.root,input.path,bounded,2_097_152);
       if(!source.versioned)throw Object.assign(new Error('A native version is required for JSON selection.'),{code:'JSON_UNVERSIONED_SOURCE'});

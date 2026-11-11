@@ -38,6 +38,17 @@ test('disabled JSON selection cannot read and settings require booleans',async()
   const ctx={get:()=>{throw new Error('Read is not allowed');}};
   assert.equal((await createStructuredJson(ctx,{get:()=>({config:{structuredJson:false}})}).query({}, {},signal())).status,'disabled');
   for(const key of ['structuredJson','fileProfiling']){assert.equal(defaults()[key],false);assert.throws(()=>defaults({[key]:'yes'}));}
+  for(const patch of [{format:null},{maxValueChars:null}])assert.equal((await createStructuredJson(ctx,{get:()=>({config:{structuredJson:true}})}).query({}, {path:'file.json',selectors:[{pointer:'',op:'value'}],...patch},signal())).reason,'INVALID_JSON_OPTIONS');
+});
+
+test('a native provider short read cannot certify a complete JSON source',async()=>{
+  const host=await startHost({mountPlugin:false,script:()=>[text('done')]});
+  try{
+    await fs.writeFile(path.join(host.cwd,'source.json'),'{"x":1}    ');const backend=host.ctx.get('fs');
+    const shortened=new Proxy(backend,{get(target,key){if(key==='readBytes')return async()=>Buffer.from('{"x":1}');return Reflect.get(target,key);}});
+    const result=await createStructuredJson({get:()=>shortened},runtime(host)).query({}, {path:'source.json',selectors:[{pointer:'/x',op:'value'}]},signal());
+    assert.equal(result.status,'unavailable');assert.equal(result.reason,'FS_READ_INCOMPLETE');assert.equal(result.results,undefined);
+  }finally{await host.close();}
 });
 test('native PTC exposes selected read tools in compact mode and records their real effects',async()=>{
   const host=await startHost({toolMode:'ptc',extraMounts:[['dsh-ptc-runtime-node']],workspace:{fileProfiling:true,structuredJson:true},

@@ -52,7 +52,7 @@ export function createNativeCas(ctx,runtime,registeredWrite=ctx.tools.get('write
     }catch(error){signal.throwIfAborted();return {ok:false,error:{code:error.code,message:error.message}};}
   }
   async function apply(agent,group,observation,signal){
-    const active=runtime.execFor(agent,signal),callId='work-evidence-native-cas:'+randomUUID();
+    const active=runtime.execFor(agent,signal),callId='work-evidence:native-cas:'+randomUUID();
     const intent=group.mode==='create'?{kind:'createIfAbsent'}:{kind:'replaceIfVersion',version:observation.revision};
     const state={agent,target:observation.target,intent,guarded:false};
     pending.set(callId,state);
