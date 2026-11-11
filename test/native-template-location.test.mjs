@@ -35,6 +35,10 @@ test('a String.raw call is located only when the native frame matches the origin
   for(const [line,column]of [[45,2],[47,2],[46,1],[46,3],[46,999],[999,2]])assert.equal(nativeTemplateCallLocation(rawCode,rawFailed(line,column)),null);
   const elsewhere=rawFailed();elsewhere.content[0].text=elsewhere.content[0].text.replace('@deepseek-ai/dsh-ptc-runtime-node','another-runtime');
   assert.equal(nativeTemplateCallLocation(rawCode,elsewhere),null);
+  const sourceLayout=rawFailed();sourceLayout.content[0].text=sourceLayout.content[0].text.replace('@deepseek-ai/dsh-ptc-runtime-node','packages/ptc-runtime/ptc-runtime-node');
+  assert.equal(nativeTemplateCallLocation(rawCode,sourceLayout).line,43);
+  const unrelatedSource=rawFailed();unrelatedSource.content[0].text=unrelatedSource.content[0].text.replace('@deepseek-ai/dsh-ptc-runtime-node','packages/other/ptc-runtime-node');
+  assert.equal(nativeTemplateCallLocation(rawCode,unrelatedSource),null);
   const noNativeFrame=rawFailed();noNativeFrame.content[0].text=noNativeFrame.content[0].text.replace(/eval at runProgram[^\n]+/u,'<anonymous>:46:2)');
   assert.equal(nativeTemplateCallLocation(rawCode,noNativeFrame),null);
   assert.equal(nativeTemplateCallLocation(rawCode.replace('Heading','${value}'),rawFailed()),null);

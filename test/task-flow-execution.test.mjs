@@ -522,3 +522,13 @@ test('aggressive guidance does not ban network access unconditionally',()=>{
   assert.match(body,/需要联网的操作先确认用户授权/u);
   assert.match(body,/不得用上游仓库或发布版中的现成实现替代本次实现/u);
 });
+
+test('correct failing reproductions must be fixed, not deleted',()=>{
+  const body=taskFlowGuidance('aggressive');
+  assert.match(body,/若复现有效但仍失败，必须继续修复实现并重跑该复现/u);
+  assert.match(body,/不得删除有效复现/u);
+  assert.match(body,/仅在确认测试无法修正时才删除它/u);
+  assert.match(body,/复现通过后，用文件工具删除临时测试/u);
+  assert.match(body,/不得修改既有测试断言/u);
+  assert.doesNotMatch(body,/第二次仍失败则删除临时测试/u);
+});

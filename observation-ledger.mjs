@@ -630,7 +630,8 @@ export function createObservationLedger(ctx,runtime,nativeFiles=null){
       if(pendingNotice.searches)pendingNotice.observations=0;
       else runtime.get(agent).pendingStateNotice=null;
     }
-    const unresolvedSignature=unresolved.map(item=>[item.kind,item.ordinal??item.seq??'',item.path??item.tool??'',item.text??''].join(':')).join('|');
+    const unresolvedSignature=JSON.stringify(unresolved.map(item=>item.kind==='negative'?
+      [item.kind,item.tool,canonicalArgsKey(item.tool,item.arguments)]:item));
     if(configNow.ledgerUnresolved&&!unresolved.length)state.injectedUnresolvedSignature='';
     const unresolvedChanged=configNow.ledgerUnresolved&&unresolved.length>0&&unresolvedSignature!==state.injectedUnresolvedSignature;
     if(!unresolvedChanged)return [];

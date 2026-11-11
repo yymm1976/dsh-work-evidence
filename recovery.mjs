@@ -1,7 +1,7 @@
 import path from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {stripTypeScriptTypes} from 'node:module';
-const NATIVE_TEMPLATE_FRAME=/^    at eval \(eval at (?:runProgram|evaluate) \(file:\/\/\/[^\r\n]*\/@deepseek-ai\/dsh-ptc-runtime-node\/lib\/process\.js:\d+:\d+\), <anonymous>:(\d+):(\d+)\)/mu;
+const NATIVE_TEMPLATE_FRAME=/^    at eval \(eval at (?:runProgram|evaluate) \(file:\/\/\/[^\r\n]*\/(?:@deepseek-ai\/dsh-ptc-runtime-node|packages\/ptc-runtime\/ptc-runtime-node)\/lib\/process\.js:\d+:\d+\), <anonymous>:(\d+):(\d+)\)/mu;
 
 export function nativePwshInvocationDiagnostic(argumentsValue,result){
   const command=argumentsValue?.command;

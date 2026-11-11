@@ -7,6 +7,7 @@ import {VERSION,newSummary,applyRow,cleanUsage,writeJson} from './experiment-sto
 import {summarizeAttempts} from './experiment-attempts.mjs';
 import {accountSessionRequests,readRequestAccounting} from './experiment-consumption.mjs';
 import os from 'node:os';
+import {nativeChildCatalogMode} from './host-references.mjs';
 
 export function nativeChildInventory(events,{inherited=0,source='engineering-artifact'}={}){
   if(!Array.isArray(events)||!Number.isSafeInteger(inherited)||inherited<0||inherited>events.length)throw Error('Invalid native event range for child inventory.');
@@ -14,17 +15,16 @@ export function nativeChildInventory(events,{inherited=0,source='engineering-art
   for(const event of events.slice(inherited)){
     if(Number.isSafeInteger(event.seq))throughSeq=throughSeq===null?event.seq:Math.max(throughSeq,event.seq);
     if(event.type!=='subagent/catalog')continue;
-    const value=event.data,local=value&&(value.version===0&&['one-shot','continuable'].includes(value.mode)||
-      value.version===1&&['one-shot','continuable','unknown'].includes(value.mode)),external=value?.version===2&&value.mode==='external';
-    if(!Number.isSafeInteger(event.seq)||!value||!local&&!external||typeof value.childId!=='string'||!value.childId||value.childId.length>512||
-      !Number.isFinite(value.childCreatedAt)||value.childCreatedAt<0||
-      value.mode==='continuable'&&typeof value.label!=='string'||value.label!==undefined&&typeof value.label!=='string'){
+    const value=event.data,mode=nativeChildCatalogMode(value);
+    if(!Number.isSafeInteger(event.seq)||event.seq<0||!mode){
       problems.push({seq:event.seq??null,reason:'invalid-child-catalog'});continue;
     }
-    const child={childId:value.childId,mode:value.mode,version:value.version,childCreatedAt:value.childCreatedAt,sourceSeq:event.seq};
+    const child={childId:value.childId,mode,version:value.version,childCreatedAt:value.childCreatedAt,sourceSeq:event.seq,
+      ...(value.version===3?{name:value.name}:{})};
     const prior=children.get(child.childId);
-    if(prior&&(prior.mode!==child.mode||prior.childCreatedAt!==child.childCreatedAt))problems.push({seq:event.seq,reason:'conflicting-child-catalog',childId:child.childId});
-    else if(!prior)children.set(child.childId,child);
+    if(prior&&(prior.mode!==child.mode||prior.childCreatedAt!==child.childCreatedAt||
+      prior.name!==undefined&&child.name!==undefined&&prior.name!==child.name))problems.push({seq:event.seq,reason:'conflicting-child-catalog',childId:child.childId});
+    else if(!prior||prior.name===undefined&&child.name!==undefined)children.set(child.childId,child);
   }
   return {schema:'work-evidence.native-child-inventory.v1',source,complete:source==='native-session-readonly'&&throughSeq!==null&&!problems.length,
     throughSeq,children:[...children.values()],problems,

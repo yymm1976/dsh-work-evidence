@@ -138,7 +138,7 @@ export function stubCheckpoint(agent){
         '\n  recall: work_recall({kind:"event",seq:'+row.seq+',offset:0})').join('\n')+
       '\nrecent events (oldest first; bounded rows may shift as the conversation grows):\n';
   const head='[work-evidence stub checkpoint policy='+POLICY+' deterministic=true]\n'+
-    'Event rows are bounded pointers to original events. Continuation sources retain human requests where budget permits. Recover original text with work_recall before relying on a head; never rerun an operation only to recreate its text. Problem results are listed regardless of recency. A checked row has a later successful observation of the same tool and target. Continue from the next unmet dependency. Assistant heads are not user decisions.\n\n';
+    'Event rows are bounded pointers to original events. Continuation sources retain human requests where budget permits. Recover original text with work_recall before relying on a head; never rerun an operation only to recreate its text. The problem section lists up to '+STUB_PROBLEM_MAX_ROWS+' latest problem results; older results remain in the original history. A checked row has a later successful observation of the same tool and target. Continue from the next unmet dependency. Assistant heads are not user decisions.\n\n';
   const rowLines=events.filter(row=>row.kind!=='user').map(line);
   const noRowsNotice='[all events exceed the stub budget; recover from the continuation sources]\n';
   const reportBudget=STUB_MAX_CHARS-head.length-body.length-(rowLines.length?noRowsNotice.length:0);

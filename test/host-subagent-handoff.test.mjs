@@ -83,9 +83,9 @@ test('native stub compaction exposes a parent subagent receipt for exact recall 
       Array.from({length:120},(_,line)=>`source${index} line ${line} `+'q'.repeat(100)).join('\n'));
     const parent=await host.createAgent('low');
     await host.send(parent,'Continue the parent task. Received agent reports are background, not user requirements.');
-    const activation=await host.ctx.subagents.startActivation({provider:'spawn',label:'Return a report',delivery:'parent',
-      signal:AbortSignal.timeout(30000),request:{parent,prompt:[{type:'text',text:'CHILD_REPORT_TASK'}],
-        agentOptions:{provider:'scripted',model:'scripted-model',reasoningEffort:'low'}}});
+    const activation=await host.startSubagent({provider:'spawn',label:'Return a report',delivery:'parent',
+      signal:AbortSignal.timeout(30000),parent,prompt:[{type:'text',text:'CHILD_REPORT_TASK'}],
+      agentOptions:{provider:'scripted',model:'scripted-model',reasoningEffort:'low'}});
     assert.equal((await activation.result).stopReason,'completed');await parent.whenIdle();
     assert.equal(reads,10);
     const parentReceipt=parent.session.log.find(event=>event.type==='user/message'&&event.data?.source?.kind==='subagent-settled');

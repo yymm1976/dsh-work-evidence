@@ -370,6 +370,20 @@ test('stubCheckpoint checked requires the same tool and target', () => {
   assert.equal(checked.get(6), false);
 });
 
+test('a background or incomplete retry cannot mark a problem checked in the stub',()=>{
+  for(const value of [{kind:'background',jobId:'j1'},{kind:'promoted',jobId:'j1'},
+    {exitCode:0,executionCompleted:false},{exitCode:0,completed:false},{exitCode:0,timedOut:true},{exitCode:0,aborted:true},
+    {exitCode:0,partial:true},{exitCode:0,outputPartial:true},{exitCode:0,lossy:true},{exitCode:0,stopped:true},{exitCode:0,signal:'SIGTERM'}]){
+    const log=[event(1,'tool/call',{name:'bash',callId:'first',arguments:{command:'build'}}),
+      toolResult(2,'bash','Build did not finish',{isError:true,source:{callId:'first'}}),
+      event(3,'tool/call',{name:'bash',callId:'retry',arguments:{command:'build'}}),
+      toolResult(4,'bash',JSON.stringify(value),{isError:false,source:{callId:'retry'}})];
+    const stub=stubCheckpoint(eventLogAgent(log));
+    const row=JSON.parse(stub.text.match(/^- (\{"seq":2,"kind":"result"[^\n]*,"checked":(?:true|false)\})$/mu)[1]);
+    assert.equal(row.checked,false,JSON.stringify(value));
+  }
+});
+
 test('recallHistory event pages use JavaScript string offsets and reassemble exactly', () => {
   const original = `BEGIN-\u{1F642}-${'x'.repeat(280)}-\u{1F642}-END`;
   const agent = eventLogAgent([userMessage(5, original)]);

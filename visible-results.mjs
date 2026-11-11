@@ -28,7 +28,9 @@ export function resultHasProblem(value){
     if(!node||typeof node!=='object')return false;
     if(node.isError===true||node.success===false||node.ok===false||node.error||node.err||typeof node.stderr==='string'&&node.stderr.trim()||
       Number.isFinite(node.exitCode)&&node.exitCode!==0||Number.isFinite(node.exit_code)&&node.exit_code!==0||
-      ['error','failed','cancelled','unavailable','disabled','deopt','unknown','partial','not_found','running','pending','queued','blocked','not-attempted'].includes(String(node.status??node.state??'').toLowerCase())||
+      ['error','failed','cancelled','aborted','unavailable','disabled','deopt','unknown','partial','not_found','running','pending','queued','stopping','stopped','background','promoted','blocked','not-attempted'].includes(String(node.status??node.state??'').toLowerCase())||
+      ['background','promoted'].includes(node.kind)||node.executionCompleted===false||node.completed===false||
+      node.timedOut===true||node.aborted===true||node.cancelled===true||node.partial===true||node.outputPartial===true||node.lossy===true||node.stopped!==undefined||node.signal!=null||
       node.complete===false||node.rangeComplete===false||node.textComplete===false||node.scanComplete===false||node.truncated===true||node.budgetTruncated===true)return true;
     if(Array.isArray(node))return node.some(item=>visit(item,depth+1));
     // Applicability and optional host capabilities do not change the recorded call's outcome.

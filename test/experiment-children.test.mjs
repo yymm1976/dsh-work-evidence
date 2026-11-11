@@ -85,6 +85,26 @@ test('child inventories exclude inherited entries, retain exact event addresses 
   assert.throws(()=>nativeChildInventory(own,{inherited:10}),/Invalid native event range/);
 });
 
+test('rc.2 catalog v3 records both local and external identities without hiding malformed names',()=>{
+  const entries=['continuable','external'].map((mode,index)=>{
+    const entry=catalog('child-'+index,mode,index);Object.assign(entry.data,{version:3,name:'agent-'+index});return entry;
+  });
+  const inventory=nativeChildInventory(entries,{source:'native-session-readonly'});
+  assert.equal(inventory.complete,true);
+  assert.deepEqual(inventory.children.map(child=>[child.mode,child.name]),[['continuable','agent-0'],['external','agent-1']]);
+  for(const name of [undefined,'lead','Upper','a/b','x'.repeat(33)]){
+    const invalid=structuredClone(entries[0]);invalid.data.name=name;
+    assert.equal(nativeChildInventory([invalid],{source:'native-session-readonly'}).complete,false);
+  }
+  const conflict=structuredClone(entries[0]);conflict.seq=3;conflict.data.name='different';
+  assert.equal(nativeChildInventory([...entries,conflict],{source:'native-session-readonly'}).complete,false);
+  const historical=catalog('child-1','external',0),named=structuredClone(historical);
+  named.seq=1;Object.assign(named.data,{version:3,name:'investigator'});
+  const upgraded=nativeChildInventory([historical,named],{source:'native-session-readonly'});
+  assert.equal(upgraded.complete,true);assert.equal(upgraded.children[0].name,'investigator');
+  assert.equal(upgraded.children[0].version,3);assert.equal(upgraded.children[0].sourceSeq,1);
+});
+
 test('the real file importer retains child facts and readRun preserves them without trusting artifact completeness',async()=>{
   const directory=await fs.mkdtemp(path.join(os.tmpdir(),'we-child-import-'));
   try{

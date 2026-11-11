@@ -118,6 +118,16 @@ export async function startHost({script,auxiliary=()=>[text('{}')],pluginConfig=
     agent.followup(llm.createUserMessage({content:[{type:'text',text:message}],source:{kind:'user'}}));
     await agent.whenIdle();
   }
+  function startSubagent(spec){
+    const version=JSON.parse(readFileSync(require.resolve('@deepseek-ai/dsh-subagent/package.json'),'utf8')).version;
+    if(version==='0.2.2-rc.2')return ctx.subagents.startActivation(spec);
+    const {provider,label,delivery,signal,...request}=spec;
+    return ctx.subagents.startActivation({provider,label,delivery,signal,request});
+  }
+  async function waitForSubagents(parent){
+    if(typeof ctx.subagents.waitForTreeWork==='function')await ctx.subagents.waitForTreeWork(parent);
+    else await ctx.subagents.waitForChildren(parent);
+  }
   async function command(agent,input){
     const result=await ctx.commands.execute(agent,'/work-evidence '+input,[],AbortSignal.timeout(30000));
     if(result?.result?.kind!=='success')throw new Error(result?.result?.text??'command failed');
@@ -127,7 +137,7 @@ export async function startHost({script,auxiliary=()=>[text('{}')],pluginConfig=
     try{await ctx.fiber?.dispose?.();}catch{}
     await fs.rm(cwd,{recursive:true,force:true,maxRetries:3});
   }
-  return {ctx,cwd,requests,auxiliaryRequests,events,createAgent,send,command,close,llm};
+  return {ctx,cwd,requests,auxiliaryRequests,events,createAgent,send,startSubagent,waitForSubagents,command,close,llm};
 }
 
 export const systemOf=options=>{

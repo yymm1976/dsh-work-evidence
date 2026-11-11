@@ -41,9 +41,9 @@ test('native child settlement is handed off and parent receipt and child origina
   try{
     await fs.writeFile(path.join(host.cwd,'source.txt'),'SOURCE_RETURN_EXACT\n');
     const parent=await host.createAgent('low');await host.send(parent,'Continue the parent task; received agent reports are background. '+('Preserve this explicit requirement. '.repeat(240)));
-    const activation=await host.ctx.subagents.startActivation({provider:'spawn',label:'Read the source',delivery:'parent',
-      signal:AbortSignal.timeout(30000),request:{parent,prompt:[{type:'text',text:'CHILD_SOURCE_TASK: read source.txt and return a source report.'}],
-        agentOptions:{provider:'scripted',model:'scripted-model',reasoningEffort:'low'}}});
+    const activation=await host.startSubagent({provider:'spawn',label:'Read the source',delivery:'parent',
+      signal:AbortSignal.timeout(30000),parent,prompt:[{type:'text',text:'CHILD_SOURCE_TASK: read source.txt and return a source report.'}],
+      agentOptions:{provider:'scripted',model:'scripted-model',reasoningEffort:'low'}});
     const result=await activation.result;assert.equal(result.stopReason,'completed');await parent.whenIdle();
     const handoff=await host.command(parent,'handoff'),reports=handoff.observedWork.subagentResults;
     assert.equal(reports.total,1);assert.equal(handoff.userRequests.total,1);
@@ -63,7 +63,7 @@ test('native child settlement is handed off and parent receipt and child origina
     assert.equal(original.isError,false);assert.ok(output(original).includes(REPORT));
     assert.equal(deliveries[0]?.delivery?.kind,'full');
     await host.ctx.subagents.sendMessage(parent,activation.childId,[{type:'text',text:'CHILD_FOLLOWUP_TASK: return a separate follow-up result.'}],{signal:AbortSignal.timeout(15000)});
-    await host.ctx.subagents.waitForChildren(parent);await parent.whenIdle();
+    await host.waitForSubagents(parent);await parent.whenIdle();
     const updated=await host.command(parent,'handoff'),latestReports=updated.observedWork.subagentResults;
     assert.equal(latestReports.total,2);assert.ok(latestReports.items.every(report=>report.childSessionId===activation.childId));
     assert.notEqual(latestReports.items[0].source.seq,latestReports.items[1].source.seq);
@@ -109,8 +109,8 @@ test('native external result keeps its parent original without inventing a child
       inheritsParentContext:false,start:async()=>({id:'external-'+Date.now(),result:Promise.resolve({output:[{type:'text',text:'EXTERNAL_RESULT: investigation claim, not a local transcript.'}],
         stopReason:'completed'}),dispose:async()=>{disposed++;}})});
     const parent=await host.createAgent('low');await host.send(parent,'Receive an external report as background.');
-    const activation=await host.ctx.subagents.startActivation({provider:'fixture-external',label:'External report',delivery:'parent',signal:AbortSignal.timeout(15000),
-      request:{parent,prompt:[{type:'text',text:'Return a source report.'}],agentOptions:{provider:'scripted',model:'scripted-model',reasoningEffort:'low'}}});
+    const activation=await host.startSubagent({provider:'fixture-external',label:'External report',delivery:'parent',signal:AbortSignal.timeout(15000),
+      parent,prompt:[{type:'text',text:'Return a source report.'}],agentOptions:{provider:'scripted',model:'scripted-model',reasoningEffort:'low'}});
     assert.equal((await activation.result).stopReason,'completed');await parent.whenIdle();assert.equal(disposed,1);
     const handoff=await host.command(parent,'handoff'),report=handoff.observedWork.subagentResults.items[0];
     assert.equal(report.locality,'external');assert.equal(report.childLookup,null);assert.equal(report.consumption,'unknown-in-parent-receipt');

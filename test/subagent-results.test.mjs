@@ -61,6 +61,23 @@ test('external, unknown and conflicting child identities never advertise local c
   assert.equal(local.childLookup,null);assert.equal(local.source.recoverable,false);
 });
 
+test('rc.2 named catalog reports preserve local discovery and external boundaries',()=>{
+  for(const mode of ['continuable','external']){
+    const entry=catalog(0,'child',mode);Object.assign(entry.data,{version:3,name:'investigator'});
+    const result=subagentResultIndex([entry,notice(1)],'parent',{searchAvailable:true}).items[0];
+    assert.equal(result.locality,mode==='external'?'external':'local');
+    assert.equal(!!result.childLookup,mode==='continuable');
+    for(const name of [undefined,'lead','Upper','a/b','x'.repeat(33)]){
+      const invalid=structuredClone(entry);invalid.data.name=name;
+      const unknown=subagentResultIndex([invalid,notice(1)],'parent',{searchAvailable:true}).items[0];
+      assert.equal(unknown.locality,'unknown');assert.equal(unknown.childLookup,null);
+    }
+  }
+  const a=catalog(0),b=catalog(2);
+  Object.assign(a.data,{version:3,name:'first'});Object.assign(b.data,{version:3,name:'second'});
+  assert.equal(subagentResultIndex([a,notice(1),b],'parent',{searchAvailable:true}).items[0].locality,'unknown');
+});
+
 test('clipped and omitted reports retain counts and full parent source recovery',()=>{
   const log=[catalog(0),...Array.from({length:12},(_,index)=>notice(index+1,'child','result-'+index+' '+('Source details. '.repeat(300))))];
   const f=fixture(log),full=f.build(),reports=full.observedWork.subagentResults;
