@@ -40,6 +40,20 @@ test('a full-output request restores reported visibility while retaining managed
   assert.equal(h.hygiene.bodyVisible(h.agent,h.seq),true);assert.equal(h.hygiene.manages(h.agent,h.seq),true);
 });
 
+test('full-output requests preserve the ordinary pruned middle and normal requests can resume pruning',()=>{
+  for(const priorProjection of [false,true]){
+    const body='head\n'+'ordinary-result-middle '.repeat(450)+'\ntail',h=fixture('printf data',body);
+    h.add('step/start',{});
+    if(priorProjection)assert.notDeepEqual(h.hygiene.project(h.agent,[h.message])[0].content,h.message.content);
+    h.add('user/message',{message:{role:'user',source:{kind:'user'},content:[{type:'text',text:'Keep full output.'}]}});
+    assert.deepEqual(h.hygiene.project(h.agent,[h.message])[0].content,h.message.content);
+    assert.equal(h.hygiene.bodyVisible(h.agent,h.seq),true);
+    h.add('user/message',{message:{role:'user',source:{kind:'user'},content:[{type:'text',text:'Continue with the summary.'}]}});
+    assert.notDeepEqual(h.hygiene.project(h.agent,[h.message])[0].content,h.message.content);
+    assert.equal(h.hygiene.bodyVisible(h.agent,h.seq),false);
+  }
+});
+
 test('saved receipts preserve a later surface replacement with the original message id',()=>{
   for(const command of ['git status','python -m pytest -q']){
     const h=fixture(command,'100 passed in 0.2s\n'+'x'.repeat(12000));

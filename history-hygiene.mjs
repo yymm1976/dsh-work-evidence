@@ -312,7 +312,7 @@ export function createHistoryHygiene(runtime,taskFlow,{isProtected=()=>false,ret
           return after;
         }
       }
-      if(!entry||entry.failed||isProtected(agent,entry.callId)||state.step-entry.step<AGE||state.pinnedResults.has(entry.seq)||pins.opaque||pins.targets.has(entry.seq))return message;
+      if(!entry||entry.failed||isProtected(agent,entry.callId)||state.fullOutputRequested||state.step-entry.step<AGE||state.pinnedResults.has(entry.seq)||pins.opaque||pins.targets.has(entry.seq))return message;
       // Reading is not evidence that the middle of a source is disposable.
       // Leave source windows to the existing larger, recoverable protocol.
       if(entry.reads.length)return message;

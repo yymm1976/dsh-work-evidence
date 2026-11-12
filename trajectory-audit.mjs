@@ -45,6 +45,13 @@ const incompletePayload=value=>{
   };
   return inspect(value);
 };
+const truncatedPayload=value=>{
+  if(!value||typeof value!=='object')return false;
+  return value.lossy===true||value.outputPartial===true||value.truncated===true||value.rangeComplete===false||
+    value.textComplete===false||value.scanComplete===false||value.budgetTruncated===true||
+    value.stdout?.truncated===true||value.stderr?.truncated===true||value.stdout?.complete===false||value.stderr?.complete===false||
+    !!(value.data&&typeof value.data==='object'&&truncatedPayload(value.data));
+};
 const normalizeFile=value=>{
   if(typeof value!=='string'||!value.trim())return null;
   const windows=/^[A-Za-z]:[\\/]/u.test(value)||value.includes('\\');
@@ -284,7 +291,8 @@ export function normalizeDshEvents(input){
     const exit=value?.exitCode??value?.exit_code;
     const explicitFailure=isError===true||failedPayload(raw);
     call.outcome=explicitFailure?'failed':isError===false?'succeeded':'unknown';
-    call.outputIncomplete=incompletePayload(raw)||/\.\.\. \(line truncated to \d+ chars\)$/mu.test(call.resultText);
+    call.outputTruncated=truncatedPayload(raw)||event.data?.meta?.truncated===true||/\.\.\. \(line truncated to \d+ chars\)$/mu.test(call.resultText);
+    call.outputIncomplete=incompletePayload(raw)||call.outputTruncated;
     call.exitCode=Number.isInteger(exit)?exit:null;
     const effect=value?.effectState;call.effectState=effect??null;
     const fileEffects=call.name==='verified_exec'&&Array.isArray(value?.files)?value.files.map(file=>({
@@ -721,7 +729,6 @@ function checkedChangeScopeReviews(input,normal,sourceId,sourceProblems){
     if(OPAQUE.has(call.name)&&!explicitFileEffects)reasons.push('program-internal-file-effect-unobserved');
     if(!WRITE.has(call.name)||OPAQUE.has(call.name)&&!explicitFileEffects)reasons.push('not-a-recorded-file-mutation-operation');
     if(call.outcome==='unknown')reasons.push('operation-outcome-unknown');
-    if(call.outputIncomplete)reasons.push('incomplete-operation-result');
     const changes=normal.changes.filter(change=>change.callSeq===row.callSeq&&change.seq===row.resultSeq);
     const pathMatches=changes.map(change=>({change,path:normalizeFile(change.path)}))
       .filter(change=>samePath(requestedPath,change.path));
@@ -730,6 +737,9 @@ function checkedChangeScopeReviews(input,normal,sourceId,sourceProblems){
     if(changes.length&&!pathMatches.length)reasons.push('file-path-unresolved');
     if(pathMatches.length>1)reasons.push('file-effect-not-unique');
     const change=pathMatches[0]?.change;
+    // A partial multi-file operation can still record a complete applied effect
+    // for one file. Truncated evidence cannot establish that narrower fact.
+    if(call.outputIncomplete&&(call.outputTruncated||!explicitFileEffects||change?.status!=='applied'))reasons.push('incomplete-operation-result');
     const failureEffects=call.name==='verified_exec'&&call.fileEffectEvidence===true?['applied','partial','unknown']:['partial','unknown'];
     if(call.outcome==='failed'&&!failureEffects.includes(change?.status))reasons.push('operation-failed');
     const recordMatched=pathMatches.length===1&&(!OPAQUE.has(call.name)||explicitFileEffects)&&['native-operation-succeeded','applied'].includes(change.status);

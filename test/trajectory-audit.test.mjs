@@ -610,6 +610,22 @@ test('complete native and legacy settlement exit zero paths still support covera
   }
 });
 
+test('event-level truncation metadata prevents exit-zero checks from supporting requirements',()=>{
+  for(const nested of [false,true])for(const truncated of [false,true]){
+    const {f,assessment,audit}=reviewedFixture();
+    const check=f.operation('pwsh',{command:'node check.js'},JSON.stringify({exitCode:0}),{nested});
+    f.events.find(event=>event.seq===check.resultSeq).data.meta={truncated};
+    assessment.throughSeq=f.events.at(-1).seq;assessment.checks=[recordedCheck(f,check,'source','addresses')];
+    assessment.checks[0].coverage[0].scopePaths=['a.txt'];
+    const result=audit(),observed=result.verification.checks[0];
+    assert.equal(observed.processOutcome,'exited-zero');assert.equal(observed.exitCode,0);
+    assert.equal(observed.outputIncomplete,truncated);
+    if(truncated)assert.ok(observed.coverage[0].unavailableReasons.includes('incomplete-check-result'));
+    assert.equal(result.requirements.requirements[0].status,nested?'stale':truncated?'unknown':'supported',
+      'The enclosing opaque program keeps its existing uncertainty independently of truncation.');
+  }
+});
+
 test('outer or nested failure markers survive inner completion and producer exit zero',()=>{
   const failures=[...['failed','error','cancelled','killed','aborted'].map(status=>({status})),
     {success:false},{ok:false},{isError:true},{error:{message:'outer failure'}},{err:'outer failure'},{exitCode:2}];
@@ -691,6 +707,30 @@ test('verified_exec effects bind their own path while preserving opaque executio
   assert.equal(result.requirements.requirements[0].status,'stale');
   assert.equal(scope.items[0].relation,'direct-requirement');assert.equal(scope.items[0].effectStatus,'applied');
   assert.equal(scope.recordedChangeCount,1);assert.equal(scope.matchedRecordedChanges,1);assert.equal(scope.unreviewedRecordedChanges,0);
+});
+
+test('aggregate partial edits retain an explicit applied file but truncated evidence stays unknown',()=>{
+  for(const truncated of [false,true])for(const channel of ['native','prefix-error']){
+    const {f,done,assessment,audit}=reviewedFixture();
+    const outcome={status:'partial',effectState:'applied',files:[
+      {file:'other.txt',status:'completed',effectState:'applied'},
+      {file:'failed.txt',status:'error',effectState:'none'}]};
+    const changed=f.operation('verified_exec',{edits:[{file:'other.txt',mode:'create',content:'other'},{file:'failed.txt',mode:'create',content:'failed'}]},
+      channel==='native'?'native value':'verified_exec interrupted: '+JSON.stringify(outcome),{failed:channel==='prefix-error'});
+    const event=f.events.find(item=>item.seq===changed.resultSeq);if(channel==='native')event.data.value=outcome;
+    event.data.meta={truncated};
+    const call=normalizeDshEvents(f.events).calls.find(item=>item.resultSeq===changed.resultSeq);
+    assessment.throughSeq=f.events.at(-1).seq;assessment.checks=[recordedCheck(f,done,'source','addresses')];
+    assessment.checks[0].coverage[0].scopePaths=['a.txt'];
+    assessment.scopeReviews=[{id:'partial-edit',callSeq:call.callSeq,resultSeq:changed.resultSeq,path:'other.txt',
+      declaredRelation:'direct-requirement',requirementSeqs:[1],dependencyEvidenceSeqs:[],reviewer:'human',
+      reason:'The first explicitly applied file implements the requested change.',counterexample:'An unobserved effect cannot confirm a different file.'}];
+    const result=audit(),scope=result.changeScopeReviews;
+    assert.equal(call.outputIncomplete,true);assert.equal(scope.items[0].effectStatus,'applied');
+    assert.equal(scope.items[0].relation,truncated?'unknown':'direct-requirement');
+    assert.equal(result.verification.checks[0].coverage[0].reach,'unknown','the same validation command remains opaque to prior checks');
+    assert.equal(result.requirements.requirements[0].status,'stale');
+  }
 });
 
 test('verified_exec validation can change files outside its recorded edit list',()=>{
