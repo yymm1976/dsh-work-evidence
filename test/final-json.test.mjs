@@ -5,6 +5,9 @@ import {startHost,text} from './helpers/host.mjs';
 
 const JSON_REQUEST = '请只返回 JSON 代码块。';
 const RAW_FINAL_REQUEST = 'Return one JSON object directly as the final assistant text, with no prose or Markdown fence.';
+const EXPLANATION_REQUEST = 'Explain whether returning bare JSON directly as the final assistant text is appropriate. Give a prose recommendation.';
+const EDIT_REQUEST = 'Edit final-json.mjs so it returns bare JSON instead of a Markdown code block, then explain the behavior in prose.';
+const EXACT_FINAL_REQUEST = 'The final assistant response must be exactly one JSON value, with no surrounding Markdown.';
 
 test('invalid JSON in a json-labeled code block is reported', () => {
   const issue = finalJsonSyntaxIssue(
@@ -130,6 +133,38 @@ test('requests that explain, translate, or edit JSON instructions do not activat
   }
 });
 
+test('prose recommendations and implementation reports that discuss bare JSON stay prose', () => {
+  const prose = 'Bare JSON is appropriate here, but this answer is prose and intentionally not JSON.';
+  for (const request of [
+    EXPLANATION_REQUEST,
+    EDIT_REQUEST,
+    'Describe the function that returns bare JSON directly as the final assistant text.',
+    'The parser returns bare JSON directly as the final assistant text.',
+    '该方案以裸 JSON 作为最终助手输出。'
+  ]) {
+    assert.equal(finalJsonSyntaxIssue(prose, request), null, request);
+  }
+});
+
+test('later assistant-output clauses remain authoritative after explanation or edit context', () => {
+  const fenced = '```json\n{"answer":42}\n```';
+  for (const request of [
+    'Explain the result, then return only JSON as the final answer.',
+    'Edit the parser. Return only raw JSON in your final response.'
+  ]) {
+    const issue = finalJsonSyntaxIssue(fenced, request);
+    assert.ok(issue, request);
+    assert.equal(issue.rawFinal, true, request);
+  }
+});
+
+test('exact final JSON requirements reject Markdown surroundings and accept bare JSON', () => {
+  const issue = finalJsonSyntaxIssue('```json\n{"answer":42}\n```', EXACT_FINAL_REQUEST);
+  assert.ok(issue);
+  assert.equal(issue.rawFinal, true);
+  assert.equal(finalJsonSyntaxIssue('{"answer":42}\n', EXACT_FINAL_REQUEST), null);
+});
+
 test('valid unlabeled fenced JSON is accepted when JSON is requested', () => {
   assert.equal(
     finalJsonSyntaxIssue('```\n{"answer": 42}\n```', JSON_REQUEST),
@@ -169,6 +204,74 @@ test('non-json labeled fenced blocks are ignored', () => {
     finalJsonSyntaxIssue('```js\n{answer: 42}\n```', JSON_REQUEST),
     null
   );
+});
+
+test('native host does not steer prose recommendations or implementation reports', async () => {
+  for (const [request, answer] of [
+    [EXPLANATION_REQUEST, 'Bare JSON is appropriate here, but this answer is prose and intentionally not JSON.'],
+    [EDIT_REQUEST, 'The file now preserves behavior.']
+  ]) {
+    const host = await startHost({
+      pluginConfig: {finalJsonGuard: true},
+      script: () => [text(answer)]
+    });
+    try {
+      const agent = await host.createAgent();
+      await host.send(agent, request);
+      assert.equal(host.requests.length, 1);
+      assert.equal(host.events.filter(event =>
+        event.type === 'user/message' &&
+        (event.data?.message ?? event.data)?.source?.kind === 'work-evidence-final-json'
+      ).length, 0);
+      const assistant = host.events.find(event => event.type === 'assistant/message');
+      assert.equal(assistant?.data?.message?.content?.find(block => block.type === 'text')?.text, answer);
+    } finally {
+      await host.close();
+    }
+  }
+});
+
+test('native host steers one fenced exact-final answer and preserves its original event', async () => {
+  const fenced = '```json\n{"answer":42}\n```';
+  const host = await startHost({
+    pluginConfig: {finalJsonGuard: true},
+    script: (options, n) => {
+      if (n === 1) return [text(fenced)];
+      assert.equal(n, 2);
+      const correction = options.messages.findLast(
+        message => message.source?.finalJson?.kind === 'syntax-repair'
+      );
+      assert.ok(correction);
+      const correctionText = correction.content
+        .map(block => block.text ?? '')
+        .join('\n');
+      assert.match(correctionText, /final assistant text/iu);
+      assert.match(correctionText, /Markdown fence/iu);
+      return [text('{"answer":42}')];
+    }
+  });
+  try {
+    const agent = await host.createAgent();
+    await host.send(agent, EXACT_FINAL_REQUEST);
+    assert.equal(host.requests.length, 2);
+    const repairEvents = host.events.filter(event =>
+      event.type === 'user/message' &&
+      (event.data?.message ?? event.data)?.source?.kind === 'work-evidence-final-json'
+    );
+    assert.equal(repairEvents.length, 1);
+    assert.equal((repairEvents[0].data.message ?? repairEvents[0].data).source.finalJson.kind, 'syntax-repair');
+    const assistantEvents = host.events.filter(event => event.type === 'assistant/message');
+    assert.equal(
+      assistantEvents[0].data.message.content.find(block => block.type === 'text')?.text,
+      fenced
+    );
+    assert.deepEqual(
+      JSON.parse(assistantEvents.at(-1).data.message.content.find(block => block.type === 'text')?.text),
+      {answer: 42}
+    );
+  } finally {
+    await host.close();
+  }
 });
 
 test('native host steers a fenced raw-final answer without changing the original response', async () => {
