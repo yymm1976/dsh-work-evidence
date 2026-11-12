@@ -103,6 +103,14 @@ test('raw final JSON rejects prose, multiple values, and empty text without enfo
   assert.equal(finalJsonSyntaxIssue('true', request), null);
 });
 
+test('explicit no-fence final requests retain both language forms without requiring Markdown wording',()=>{
+  for(const request of ['Return the final answer as JSON with no code fences.','请返回最终 JSON，不要代码围栏。',
+    'Return the final response as JSON without a code block.','请输出最终 JSON，不使用代码块。']){
+    assert.equal(finalJsonSyntaxIssue('{"answer":42}',request),null,request);
+    assert.equal(finalJsonSyntaxIssue('```json\n{"answer":42}\n```',request)?.rawFinal,true,request);
+  }
+});
+
 test('a request that permits a code block keeps existing fenced behavior', () => {
   for (const request of [
     '请只返回 JSON 代码块，不要写说明。',

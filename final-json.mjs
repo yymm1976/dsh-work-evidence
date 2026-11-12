@@ -56,7 +56,7 @@ function requiresRawFinalJson(text){
   const allowedFence=hasAllowedFenceOutput(text);
   const clauses=requestClauses(text).filter(clause=>!isReferenceAction(clause));
   const action=clauses.some(isAssistantOutputAction);
-  const hasNoFence=clause=>/(?:\bno\b|\bwithout\b)[^\n.]{0,40}\b(?:surrounding\s+)?Markdown(?:\s+(?:formatting|fence|block|surrounding))?\b|\b(?:do|must|should)\s+not\b[^\n.]{0,40}(?:use|include|add|wrap)[^\n.]{0,20}\b(?:Markdown\s+)?(?:code\s+)?(?:fence|block)\b|\bno\s+Markdown\s+formatting\b|(?:不要|不得|禁止|无需|不加|不使用|不能使用|不允许)[^。；;\n]{0,24}(?:(?:Markdown|markdown)\s*(?:代码围栏|围栏|代码块)|(?:周围的?|外层的?|包裹的?)\s*Markdown)/iu
+  const hasNoFence=clause=>/(?:\bno\b|\bwithout\b)[^\n.]{0,40}\b(?:(?:surrounding\s+)?Markdown(?:\s+(?:formatting|fences?|blocks?|surrounding))?|(?:code\s+)?(?:fences?|blocks?))\b|\b(?:do|must|should)\s+not\b[^\n.]{0,40}(?:use|include|add|wrap)[^\n.]{0,20}\b(?:Markdown\s+)?(?:code\s+)?(?:fences?|blocks?)\b|(?:不要|不得|禁止|无需|不加|不使用|不能使用|不允许)[^。；;\n]{0,24}(?:(?:(?:Markdown|markdown)\s*)?(?:代码围栏|围栏|代码块)|(?:周围的?|外层的?|包裹的?)\s*Markdown)/iu
     .test(clause);
   return clauses.some(clause=>{
     if(!isAssistantOutputAction(clause))return false;
