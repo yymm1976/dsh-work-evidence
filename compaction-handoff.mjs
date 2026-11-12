@@ -96,8 +96,8 @@ export function stubCheckpoint(agent){
       event.type==='tool/call'?(typeof data.arguments==='string'?data.arguments:JSON.stringify(data.arguments??{})):
       isTool?textOf({content:message?.content??(Array.isArray(data.content)?data.content:[{type:'text',text:String(data.content??'')}])}):
       textOf({content:data.content??data.summary});
-    if(!text.trim())continue;
     if(human){
+      if(!text.trim())continue;
       const row={seq:event.seq,kind:'user',chars:text.length};
       humans.push(row);events.push(row);
       continue;
@@ -106,15 +106,7 @@ export function stubCheckpoint(agent){
       event.type==='tool/result'?'result':event.type==='assistant/message'?'assistant':event.type==='todo/write'?'todos':'prior-compaction';
     if(callId&&name&&kind==='call')callNames.set(callId,name);
     const resolvedName=name??(kind==='result'&&callId?callNames.get(callId)??null:null);
-    const row={seq:event.seq,kind,
-      ...(isTool||event.type==='assistant/message'?{tool:resolvedName}:{}),...(callId?{callId}:{}),head:text.slice(0,STUB_ROW_MAX_CHARS).replace(/\s+/g,' ').trim()};
-    events.push(row);
-    const target=targetFromArguments(data.arguments);
-    if(callId&&target&&row.kind==='call')callTargets.set(callId,target);
-    const resolvedTarget=target??(row.kind==='result'&&callId?callTargets.get(callId):null);
-    if(resolvedTarget)targetBySeq.set(event.seq,resolvedTarget);
     const resultEvent=['tool/result','tool/ptc-dispatch','tool/code-dispatch'].includes(event.type);
-    if(resultEvent)resultSeqs.add(event.seq);
     const commandTool=['bash','pwsh','ops_bash','work_exec'].includes(resolvedName);
     let reportedFailure=null;
     if(resultEvent&&commandTool){
@@ -122,6 +114,18 @@ export function stubCheckpoint(agent){
       reportedFailure=reportedExecutionChecks(data.value??parsed)??reportedCheckFailure(text);
     }
     const isProblem=resultEvent&&(message?.isError===true||data.isError===true||hasPruneProblem([{type:'text',text}],data.value??null)||!!reportedFailure);
+    if(!text.trim()&&!isProblem)continue;
+    const failureHead='[tool failure without text] '+JSON.stringify({isError:message?.isError===true||data.isError===true,
+      ...(typeof data.value?.status==='string'?{status:data.value.status.slice(0,40)}:{}),
+      ...(Number.isFinite(data.value?.exitCode)?{exitCode:data.value.exitCode}:{})});
+    const row={seq:event.seq,kind,
+      ...(isTool||event.type==='assistant/message'?{tool:resolvedName}:{}),...(callId?{callId}:{}),head:(text.trim()?text:failureHead).slice(0,STUB_ROW_MAX_CHARS).replace(/\s+/g,' ').trim()};
+    events.push(row);
+    const target=targetFromArguments(data.arguments);
+    if(callId&&target&&row.kind==='call')callTargets.set(callId,target);
+    const resolvedTarget=target??(row.kind==='result'&&callId?callTargets.get(callId):null);
+    if(resolvedTarget)targetBySeq.set(event.seq,resolvedTarget);
+    if(resultEvent)resultSeqs.add(event.seq);
     if(isProblem){problems.push(row);problemSeqs.add(event.seq);}
   }
   const line=row=>'- '+JSON.stringify(row)+'\n  recall: work_recall({kind:"event",seq:'+row.seq+',offset:0})';

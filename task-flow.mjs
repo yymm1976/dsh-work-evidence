@@ -41,10 +41,13 @@ const QUALITY_GUIDANCE='质量模式 Ultra：在宿主提供的思考档位上�
   'Completion Discipline: Continue investigating when meaningful uncertainty remains. Once the task is properly completed and sufficiently verified, stop instead of extending the process without purpose. '+
   'The highest score is awarded to an agent that uses as much reasoning and tool activity as genuinely necessary—and no more—to deliver an excellent, well-verified result with a precise and disciplined execution trajectory. Your resources are abundant. Spend them freely when they improve the outcome, but never waste them without purpose. '+MODE_EXECUTION_HYGIENE;
 const AGGRESSIVE_GUIDANCE='激进优化：完整满足本次明确要求，并减少本次任务总 Token。读取关键入口后直接实现最小修复，独立动作同轮批量。内部推理只写当前动作、依据和预期结果，最多 4 句；不复述任务、不比较未要求的实现、不预演测试输出。完成条件以用户要求及其指定的行为定义为准；自行编写的临时检查若预期与行为定义冲突，必须按已确认的行为定义修正测试预期，不得修改实现去迎合错误预期。全部明确要求及指定检查已有成功依据时交付，不追加用户未要求的多实现对照、穷举配置、旁支调查、上游全套检查或重复复核。复用已成功观察与计算；已有线索足以行动时，不扩大读取。JavaScript反引号字符串包括String.raw会解释${...}；向写入或执行工具传递含该形式的源码时，用普通字符串或正确转义，保留目标语言的反斜杠和换行。内部程序只输出本次所需结果。最终答复只包含交付、实际执行结果和剩余缺口。以当前工作区代码、任务原文和已有工具结果为准；遵守用户对源码来源的要求；用户明确要求移植上游修复或恢复发布版实现时，按该要求使用指定来源，不得使用用户禁止的外部实现。需要联网的操作沿用用户已有授权；超出授权范围时再确认。优先运行仓库既有测试。可写实现任务在实现后创建一个最小临时复现测试并运行一次：覆盖改动行为和一个边界，不分析仓库测试覆盖范围。若失败原因确认是测试自身错误，必须修正已确认的问题并重跑；后续出现新的测试自身错误时，仍按实际证据修正，不限制修正次数。仅在确认测试无法修正时才删除它。若复现有效但仍失败，必须继续修复实现并重跑该复现，直到通过或如实报告受阻，不得删除有效复现或改用无关检查掩盖失败。复现通过后，用文件工具删除临时测试；既有测试断言仅在用户明确要求或指定行为确需调整时修改，不得改动无关断言或用新增文件替代删除。不要依赖 shell 删除。只读任务不新增文件；用户要求、且不修改文件、不超越权限的检查可以运行。若用户指令或执行权限不允许创建或运行测试，则遵循该限制，不创建临时测试。同一测试命令在相关实现或测试输入未变时通过后不得再运行；输入变化后或用户明确要求重跑时可以重跑。同一文件不得反复整文件读取。'+MODE_EXECUTION_HYGIENE;
-export function taskFlowGuidance(mode,surface='writable'){
+export function taskFlowGuidance(mode,surface='writable',config={}){
   if(mode==='default'&&surface==='minimal')return '';
   const body=mode==='quality'?QUALITY_GUIDANCE:mode==='aggressive'?AGGRESSIVE_GUIDANCE:surface==='read-only'?READ_ONLY_TASK_FLOW_GUIDANCE:TASK_FLOW_GUIDANCE;
+  const nativeReads=[config.fileProfiling===true?'file_profile 可直接取得文本/CSV 的大小、预览、换行和记录概况。只需概况时优先调用；全局计数要求 scan:"complete" 且 scanComplete:true，sample 不代表全文件。':'',
+    config.structuredJson===true?'structured_json 可直接选择 JSON/JSONL 的值、键、数量和数组页。只需这些字段时优先调用；缺失、null 和 complete:false 分开处理。':''].filter(Boolean).join('\n');
   return `[Work Evidence mode: ${mode}; policy: ${MODE_POLICY_VERSION}]\n`+body+'\n'+
+    (nativeReads?nativeReads+'\n上述原生读取适用时不另写解析程序；需要其他计算或工具返回 unavailable 时再用程序，保持任务要求和输入文件不变。\n':'')+
     (mode!=='default'&&surface==='read-only'?'当前任务只读，不扩大文件或执行权限。\n':'')+STAGE_GUIDANCE+'\n'+STAGE_CHECKPOINT_GUIDANCE;
 }
 const newPacing=()=>({steps:new Set(),operations:0,outputTokens:0,lastOutputTokens:0,missingOutputUsage:0,progressOutputTokens:0,noticeOutputTokens:0,noticeSteps:-1,

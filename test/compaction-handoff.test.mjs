@@ -425,6 +425,28 @@ test('completed PTC command failures stay in the checkpoint until a matching suc
   }
 });
 
+test('checkpoint retains explicit and structured failures without textual tool content',()=>{
+  for(const type of ['tool/result','tool/ptc-dispatch','tool/code-dispatch']){
+    for(const content of [[],[{type:'text',text:'  \n '}],[{type:'image',data:'fixture'}]]){
+      for(const explicit of [false,true]){
+        const value={status:'completed',exitCode:1};
+        const data=type==='tool/result'?{name:'pwsh',value,message:{role:'tool',source:{callId:'failed'},isError:explicit,content}}:
+          {name:'pwsh',subCallId:'failed',rootCallId:'outer',arguments:{command:'requested-check'},isError:explicit,value,content};
+        const stub=stubCheckpoint(eventLogAgent([
+          event(1,'tool/call',{name:'pwsh',callId:'failed',arguments:{command:'requested-check'}}),event(2,type,data),
+        ]));
+        assert.equal(stub.problemRows,1,type+' '+explicit+' '+JSON.stringify(content));
+        const row=JSON.parse(stub.text.match(/^- (\{"seq":2,"kind":"[^"]+"[^\n]*,"checked":(?:true|false)\})$/mu)[1]);
+        assert.equal(row.tool,'pwsh');assert.equal(row.checked,false);
+        assert.match(row.head,/tool failure without text/);assert.match(row.head,/exitCode/);
+        assert.ok(stub.text.includes('kind:"event",seq:2'));
+      }
+    }
+    const data=type==='tool/result'?{name:'pwsh',message:{role:'tool',isError:true,content:[]}}:{name:'pwsh',isError:true,content:[]};
+    assert.equal(stubCheckpoint(eventLogAgent([event(2,type,data)])).problemRows,1,'An explicit error needs no structured value');
+  }
+});
+
 test('recallHistory event pages use JavaScript string offsets and reassemble exactly', () => {
   const original = `BEGIN-\u{1F642}-${'x'.repeat(280)}-\u{1F642}-END`;
   const agent = eventLogAgent([userMessage(5, original)]);

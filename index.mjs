@@ -427,7 +427,7 @@ export function apply(ctx,config={}){
     }
     const section=_assembly.sections.find(section=>section.name==='work-evidence:task-flow');
     if(section)section.text=context?.agent&&runtime.isEnabled(context.agent)&&state(context.agent).config.stepPacing?
-      taskFlowGuidance(runtime.activeMode(context.agent),taskSurfaceModes.get(context.agent.session.id)):'';
+      taskFlowGuidance(runtime.activeMode(context.agent),taskSurfaceModes.get(context.agent.session.id),state(context.agent).config):'';
     if(context?.agent)effects.instructions(context.agent,section?.text??'');
     if(context?.agent&&runtime.isEnabled(context.agent)&&state(context.agent).config.toolSurface==='compact'&&['read-only','minimal'].includes(taskSurfaceModes.get(context.agent.session.id))&&Array.isArray(_assembly.tools))
       _assembly.tools=_assembly.tools.filter(tool=>tool?.name!=='work_exec');
