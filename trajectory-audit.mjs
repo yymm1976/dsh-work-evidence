@@ -6,6 +6,7 @@ import {isUserRequestMessage} from './runtime.mjs';
 import {resultText,parseResult,toolResultValue} from './visible-results.mjs';
 import {recordedProcessCompletion} from './execution-evidence.mjs';
 import {resolveInlineScript} from './inline-exec.mjs';
+import {executionResultLayers,executionExitCode} from './execution-dependencies.mjs';
 
 export const AUDIT_SCHEMA='work-evidence.trajectory-audit.v1';
 export const ASSESSMENT_SCHEMA='work-evidence.task-assessment.v1';
@@ -25,13 +26,11 @@ const forecastRoute=value=>Object.fromEntries(['provider','model','reasoningEffo
 const completeRoute=value=>['provider','model','reasoningEffort'].every(key=>typeof value?.[key]==='string'&&value[key].trim());
 const fileOf=args=>args?.file_path??args?.path??args?.file??null;
 const isReadOnlyJava=call=>call.name==='fastedit_java'&&['find_entity','read_entity'].includes(call.arguments.operation);
-const failedPayload=value=>{
-  if(!value||typeof value!=='object')return false;
-  const exit=value.exitCode??value.exit_code;
-  return value.isError===true||value.success===false||value.ok===false||!!value.error||!!value.err||
-    Number.isInteger(exit)&&exit!==0||[value.status,value.state,value.job?.status].some(status=>FAILED_STATUS.has(String(status??'').toLowerCase()))||
-    value.data&&typeof value.data==='object'&&failedPayload(value.data);
-};
+const failedPayload=value=>executionResultLayers(value).some(node=>{
+  const exit=node.exitCode??node.exit_code;
+  return node.isError===true||node.success===false||node.ok===false||!!node.error||!!node.err||
+    Number.isInteger(exit)&&exit!==0||[node.status,node.state,node.job?.status].some(status=>FAILED_STATUS.has(String(status??'').toLowerCase()));
+});
 const incompletePayload=value=>{
   const inspect=node=>{
     if(!node||typeof node!=='object')return false;
@@ -41,17 +40,14 @@ const incompletePayload=value=>{
       node.signal!=null||node.timedOut===true||node.aborted===true||node.cancelled===true||node.partial===true||
       node.outputPartial===true||node.truncated===true||node.rangeComplete===false||node.textComplete===false||
       node.scanComplete===false||node.budgetTruncated===true||node.stdout?.truncated===true||node.stderr?.truncated===true||
-      node.stdout?.complete===false||node.stderr?.complete===false||node.data&&typeof node.data==='object'&&inspect(node.data);
+      node.stdout?.complete===false||node.stderr?.complete===false;
   };
-  return inspect(value);
+  return executionResultLayers(value).some(inspect);
 };
-const truncatedPayload=value=>{
-  if(!value||typeof value!=='object')return false;
-  return value.lossy===true||value.outputPartial===true||value.truncated===true||value.rangeComplete===false||
-    value.textComplete===false||value.scanComplete===false||value.budgetTruncated===true||
-    value.stdout?.truncated===true||value.stderr?.truncated===true||value.stdout?.complete===false||value.stderr?.complete===false||
-    !!(value.data&&typeof value.data==='object'&&truncatedPayload(value.data));
-};
+const truncatedPayload=value=>executionResultLayers(value).some(node=>
+  node.lossy===true||node.outputPartial===true||node.truncated===true||node.rangeComplete===false||
+    node.textComplete===false||node.scanComplete===false||node.budgetTruncated===true||
+    node.stdout?.truncated===true||node.stderr?.truncated===true||node.stdout?.complete===false||node.stderr?.complete===false);
 const normalizeFile=value=>{
   if(typeof value!=='string'||!value.trim())return null;
   const windows=/^[A-Za-z]:[\\/]/u.test(value)||value.includes('\\');
@@ -287,8 +283,9 @@ export function normalizeDshEvents(input){
       return;
     }
     call.resultSeq=event.seq??null;call.resultText=resultText(content);
-    const raw=toolResultValue(call.name,{value:nativeValue,content,isError}),value=raw?.data??raw;
-    const exit=value?.exitCode??value?.exit_code;
+    const raw=toolResultValue(call.name,{value:nativeValue,content,isError}),layers=executionResultLayers(raw);
+    const value=layers.length?Object.assign({},...layers):raw;
+    const exit=executionExitCode(raw);
     const explicitFailure=isError===true||failedPayload(raw);
     call.outcome=explicitFailure?'failed':isError===false?'succeeded':'unknown';
     call.outputTruncated=truncatedPayload(raw)||event.data?.meta?.truncated===true||/\.\.\. \(line truncated to \d+ chars\)$/mu.test(call.resultText);

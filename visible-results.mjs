@@ -33,21 +33,28 @@ export function resultIdentity(content){
   return JSON.stringify(parseResult(text)??text);
 }
 
-export function resultHasProblem(value){
+export const resultHasProblem=value=>inspectResult(value,true);
+export const resultHasFailure=value=>inspectResult(value,false);
+
+function inspectResult(value,includeIncomplete){
   if(typeof value==='string')return /\b(?:NOT_FOUND|PERMISSION_DENIED|CANCELLED|PTC-X\d+)\b|(?:^|\n)\s*(?:TypeError|Error|Traceback)\b/.test(value);
   let remaining=2048;
-  const visit=(node,depth=0)=>{
+  const visit=(node,depth=0,execution=true,selection=false)=>{
     if(--remaining<0||depth>16)return true;
     if(!node||typeof node!=='object')return false;
     if(node.isError===true||node.success===false||node.ok===false||node.error||node.err||typeof node.stderr==='string'&&node.stderr.trim()||
       Number.isFinite(node.exitCode)&&node.exitCode!==0||Number.isFinite(node.exit_code)&&node.exit_code!==0||
-      ['error','failed','cancelled','aborted','unavailable','disabled','deopt','unknown','partial','not_found','running','pending','queued','stopping','stopped','background','promoted','blocked','not-attempted'].includes(String(node.status??node.state??'').toLowerCase())||
+      execution&&(
+      [node.status,node.state,node.job?.status].some(status=>['error','failed','killed','cancelled','rejected','aborted','unavailable','disabled','deopt','not_found','blocked','not-attempted'].includes(String(status??'').toLowerCase())||includeIncomplete&&['unknown','partial','running','pending','queued','stopping','stopped','background','promoted'].includes(String(status??'').toLowerCase()))||
+      node.timedOut===true||node.aborted===true||node.cancelled===true||node.stopped!==undefined||node.signal!=null||includeIncomplete&&(
       ['background','promoted'].includes(node.kind)||node.executionCompleted===false||node.completed===false||
-      node.timedOut===true||node.aborted===true||node.cancelled===true||node.partial===true||node.outputPartial===true||node.lossy===true||node.stopped!==undefined||node.signal!=null||
-      node.complete===false||node.rangeComplete===false||node.textComplete===false||node.scanComplete===false||node.truncated===true||node.budgetTruncated===true)return true;
-    if(Array.isArray(node))return node.some(item=>visit(item,depth+1));
+      node.partial===true||node.outputPartial===true||node.lossy===true))||includeIncomplete&&(
+      node.complete===false||node.rangeComplete===false||node.textComplete===false||node.scanComplete===false||node.truncated===true||node.budgetTruncated===true))return true;
+    if(Array.isArray(node))return node.some(item=>visit(item,depth+1,false,selection));
+    const query=node.sourceComplete===true&&['json','jsonl'].includes(node.format)&&Array.isArray(node.results);
+    const selected=selection&&node.status==='selected'&&typeof node.pointer==='string'&&['value','page','keys'].includes(node.op);
     // Applicability and optional host capabilities do not change the recorded call's outcome.
-    return Object.entries(node).some(([key,item])=>!['text','lines','content','fileDependencies','evidenceAssessment','evidenceValidity','hostTransfer','referencedSessions','sourceReads'].includes(key)&&visit(item,depth+1));
+    return Object.entries(node).some(([key,item])=>!(selected&&key==='value')&&!['text','lines','content','fileDependencies','evidenceAssessment','evidenceValidity','hostTransfer','referencedSessions','sourceReads'].includes(key)&&visit(item,depth+1,execution&&['value','data'].includes(key),query&&key==='results'));
   };
   return visit(value);
 }

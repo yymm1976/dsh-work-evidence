@@ -11,12 +11,10 @@ export function declaredFileSources(sources=[]){
   return sources.slice();
 }
 
-/** Supported execution envelopes, from the tool wrapper to the deepest data payload. */
+/** Supported value/data execution envelopes, from the tool wrapper to the producer. */
 export function executionResultLayers(result){
-  const raw=result?.value??result;
   const layers=[];
-  if(result!==raw&&result&&typeof result==='object')layers.push(result);
-  for(let node=raw;node&&typeof node==='object'&&!layers.includes(node);node=node.data)layers.push(node);
+  for(let node=result;node&&typeof node==='object'&&!layers.includes(node);node=node.value??node.data)layers.push(node);
   return layers;
 }
 
