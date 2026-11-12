@@ -14,3 +14,14 @@ test('legacy zero exit and completed job observations remain complete',()=>{
   assert.equal(dependencyExecutionComplete({job:{status:'completed'}}),true);
   assert.equal(dependencyExecutionComplete({status:'completed',state:'completed',job:{status:'completed'},exitCode:0}),true);
 });
+
+test('an inner zero exit cannot erase explicit failures or incomplete flags in any outer data layer',()=>{
+  for(const marker of [{status:'failed'},{state:'pending'},{job:{status:'running'}},{success:false},{ok:false},{exitCode:2},
+    {completed:false},{complete:false},{executionCompleted:false},{partial:true},{outputPartial:true},{truncated:true},{lossy:true},
+    {signal:'SIGTERM'},{stopped:true},{kind:'background',job:{kind:'foreground'}},{kind:'foreground',job:{kind:'background'}}]){
+    for(const wrapped of [false,true]){
+      const raw={...marker,data:{status:'completed',exitCode:0}},result={value:wrapped?{status:'completed',data:raw}:raw};
+      assert.equal(dependencyExecutionComplete(result),false,JSON.stringify({marker,wrapped}));
+    }
+  }
+});

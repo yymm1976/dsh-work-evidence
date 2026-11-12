@@ -260,6 +260,8 @@ async function runValidation(ctx,call,runtime,agent,validation,signal){
   const payload=shellPayload(outerPayload),exitCode=Number.isInteger(payload.exitCode)?payload.exitCode:Number.isInteger(payload.exit_code)?payload.exit_code:null;
   const outerStatus=outerPayload?.status??null,innerStatus=hasInner?outerPayload.data?.status??null:null;
   const status=outerStatus??innerStatus??(result.isError?'error':'completed');
+  const statusOk=[outerStatus,innerStatus,outerPayload?.state,outerPayload?.job?.status,
+    outerPayload?.data?.state,outerPayload?.data?.job?.status].every(value=>value==null||String(value).toLowerCase()==='completed');
   let outerWithoutInner=outerPayload;
   if(outerPayload&&typeof outerPayload==='object'){
     const {data,...outerFields}=outerPayload;outerWithoutInner=outerFields;
@@ -269,7 +271,7 @@ async function runValidation(ctx,call,runtime,agent,validation,signal){
     (!hasInner||dependencyExecutionComplete({value:outerPayload.data}));
   const conclusive=exitCode!==null||result.isError;
   const reportedChecks=reportedExecutionChecks(result);
-  const passed=exitCode===0&&executionComplete&&!reportedChecks;
+  const passed=statusOk&&exitCode===0&&executionComplete&&!reportedChecks;
   const stdout=typeof payload.stdout==='string'?payload.stdout:payload.stdout?.text;
   const stderr=typeof payload.stderr==='string'?payload.stderr:payload.stderr?.text;
   return {passed,tool,description:validation.description,status:status||(result.isError?'error':'completed'),exitCode,

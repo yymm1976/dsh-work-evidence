@@ -16,15 +16,18 @@ export function dependencyExecutionComplete(result){
   const raw=result?.value??result,value=raw?.data??raw;
   const statuses=[value?.status,value?.state,value?.job?.status].filter(status=>status!=null).map(status=>String(status).toLowerCase());
   const completed=statuses.includes('completed');
-  return !result?.isError&&!result?.error&&!raw?.isError&&!value?.isError&&!raw?.error&&!value?.error&&value?.success!==false&&value?.ok!==false&&
-    (value?.exitCode===0||value?.exit_code===0||completed)&&
-    (value?.exitCode==null||value.exitCode===0)&&(value?.exit_code==null||value.exit_code===0)&&
-    !['background','promoted'].includes(value?.kind??value?.job?.kind)&&
-    statuses.every(status=>!['background','promoted','running','pending','queued','stopping','partial','unknown','unavailable','deopt','disabled','failed','error','killed','cancelled','rejected'].includes(status))&&
-    value?.timedOut!==true&&value?.aborted!==true&&value?.cancelled!==true&&value?.signal==null&&value?.stopped===undefined&&
-    value?.complete!==false&&value?.completed!==false&&value?.executionCompleted!==false&&value?.partial!==true&&value?.outputPartial!==true&&
-    value?.truncated!==true&&value?.lossy!==true&&value?.stdout?.truncated!==true&&value?.stderr?.truncated!==true&&
-    value?.stdout?.complete!==false&&value?.stderr?.complete!==false;
+  const layers=[];
+  for(let node=raw;node&&typeof node==='object'&&!layers.includes(node);node=node.data)layers.push(node);
+  if(result!==raw&&result&&typeof result==='object')layers.push(result);
+  return (value?.exitCode===0||value?.exit_code===0||completed)&&layers.every(node=>
+    !node.isError&&!node.error&&node.success!==false&&node.ok!==false&&
+    (node.exitCode==null||node.exitCode===0)&&(node.exit_code==null||node.exit_code===0)&&
+    ![node.kind,node.job?.kind].some(kind=>['background','promoted'].includes(kind))&&
+    [node.status,node.state,node.job?.status].every(status=>!['background','promoted','running','pending','queued','stopping','stopped','partial','unknown','unavailable','deopt','disabled','failed','error','killed','cancelled','aborted','blocked','not-attempted','rejected'].includes(String(status??'').toLowerCase()))&&
+    node.timedOut!==true&&node.aborted!==true&&node.cancelled!==true&&node.signal==null&&node.stopped===undefined&&
+    node.complete!==false&&node.completed!==false&&node.executionCompleted!==false&&node.partial!==true&&node.outputPartial!==true&&
+    node.truncated!==true&&node.lossy!==true&&node.stdout?.truncated!==true&&node.stderr?.truncated!==true&&
+    node.stdout?.complete!==false&&node.stderr?.complete!==false);
 }
 
 function compare(before,after){

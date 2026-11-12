@@ -145,6 +145,19 @@ test('completed state and job status at either validation layer remain valid wit
     }finally{await f.close();}
   }
 });
+
+test('validation retains the completed-only status rule for unrecognized terminal names',async()=>{
+  for(const status of ['success','succeeded','not-started',''])for(const nested of [false,true]){
+    const payload={status,exitCode:0,stdout:{text:'PASS: complete'}},validation=nested?{status:'completed',data:payload}:payload;
+    const f=await fixture('before',validation);
+    try{
+      const result=await f.service.execute({}, {summary:'Do not broaden validation completion states',apply:true,
+        edits:[{file:'source.txt',mode:'replace_exact',old_text:'before',new_text:'after'}],
+        validations:[{command:'requested-check',description:'Keep terminal-state interpretation',tool:'pwsh'}]},AbortSignal.timeout(10000));
+      assert.equal(result.status,'partial');assert.equal(result.validation.passed,false);assert.equal(result.validation.exitCode,0);
+    }finally{await f.close();}
+  }
+});
 test('validation needs an observed zero exit and accepts both native exit fields',async()=>{
   for(const validation of [{status:'completed',stdout:{text:'finished'}},{status:'completed',exit_code:0,stdout:{text:'PASS: complete'}}]){
     const f=await fixture('before',validation);
