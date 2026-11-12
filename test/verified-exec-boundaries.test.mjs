@@ -112,6 +112,39 @@ test('fully completed inner and outer validation and native exit-only success ar
     }finally{await f.close();}
   }
 });
+test('explicit failed, running, or pending state and job status at either validation layer cannot certify success',async()=>{
+  for(const status of ['failed','running','pending'])for(const layer of ['outer-state','outer-job','inner-state','inner-job']){
+    const inner={status:'completed',exitCode:0,stdout:{text:'PASS: complete'}};
+    if(layer==='inner-state')inner.state=status;
+    if(layer==='inner-job')inner.job={status};
+    const validation={status:'completed',data:inner};
+    if(layer==='outer-state')validation.state=status;
+    if(layer==='outer-job')validation.job={status};
+    const f=await fixture('before',validation);
+    try{
+      const result=await f.service.execute({}, {summary:'Do not certify an incomplete validation layer',apply:true,
+        edits:[{file:'source.txt',mode:'replace_exact',old_text:'before',new_text:'after'}],
+        validations:[{command:'requested-check',description:'Check layer completion',tool:'pwsh'}]},AbortSignal.timeout(10000));
+      assert.equal(result.status,'partial',layer+':'+status);assert.equal(result.reason,'validation-failed');
+      assert.equal(result.validation.passed,false);assert.equal(result.validation.exitCode,0);
+    }finally{await f.close();}
+  }
+});
+test('completed state and job status at either validation layer remain valid with a zero producer exit',async()=>{
+  for(const validation of [
+    {status:'completed',state:'completed',job:{status:'completed'},exitCode:0,data:{status:'completed',exitCode:0,stdout:{text:'PASS: complete'}}},
+    {status:'completed',exitCode:0,data:{status:'completed',state:'completed',job:{status:'completed'},exitCode:0,stdout:{text:'PASS: complete'}}},
+    {job:{status:'completed'},exitCode:0,data:{job:{status:'completed'},exitCode:0,stdout:{text:'PASS: complete'}}}
+  ]){
+    const f=await fixture('before',validation);
+    try{
+      const result=await f.service.execute({}, {summary:'Accept completed validation layers',apply:true,
+        edits:[{file:'source.txt',mode:'replace_exact',old_text:'before',new_text:'after'}],
+        validations:[{command:'requested-check',description:'Check completed layers',tool:'pwsh'}]},AbortSignal.timeout(10000));
+      assert.equal(result.status,'validated');assert.equal(result.validations[0].exitCode,0);
+    }finally{await f.close();}
+  }
+});
 test('validation needs an observed zero exit and accepts both native exit fields',async()=>{
   for(const validation of [{status:'completed',stdout:{text:'finished'}},{status:'completed',exit_code:0,stdout:{text:'PASS: complete'}}]){
     const f=await fixture('before',validation);

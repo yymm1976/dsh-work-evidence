@@ -14,12 +14,13 @@ export function declaredFileSources(sources=[]){
 /** File applicability has a narrower meaning than process success or task correctness. */
 export function dependencyExecutionComplete(result){
   const raw=result?.value??result,value=raw?.data??raw;
-  const status=String(value?.status??value?.state??value?.job?.status??'').toLowerCase();
+  const statuses=[value?.status,value?.state,value?.job?.status].filter(status=>status!=null).map(status=>String(status).toLowerCase());
+  const completed=statuses.includes('completed');
   return !result?.isError&&!result?.error&&!raw?.isError&&!value?.isError&&!raw?.error&&!value?.error&&value?.success!==false&&value?.ok!==false&&
-    (value?.exitCode===0||value?.exit_code===0||status==='completed')&&
+    (value?.exitCode===0||value?.exit_code===0||completed)&&
     (value?.exitCode==null||value.exitCode===0)&&(value?.exit_code==null||value.exit_code===0)&&
     !['background','promoted'].includes(value?.kind??value?.job?.kind)&&
-    !['background','promoted','running','pending','queued','stopping','partial','unknown','unavailable','deopt','disabled','failed','error','killed','cancelled','rejected'].includes(status)&&
+    statuses.every(status=>!['background','promoted','running','pending','queued','stopping','partial','unknown','unavailable','deopt','disabled','failed','error','killed','cancelled','rejected'].includes(status))&&
     value?.timedOut!==true&&value?.aborted!==true&&value?.cancelled!==true&&value?.signal==null&&value?.stopped===undefined&&
     value?.complete!==false&&value?.completed!==false&&value?.executionCompleted!==false&&value?.partial!==true&&value?.outputPartial!==true&&
     value?.truncated!==true&&value?.lossy!==true&&value?.stdout?.truncated!==true&&value?.stderr?.truncated!==true&&
