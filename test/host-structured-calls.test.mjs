@@ -9,6 +9,43 @@ import {installStructuredCalls} from '../structured-calls.mjs';
 const rootValue=options=>JSON.parse(options.messages.findLast(message=>message.role==='tool').content.map(block=>block.text??'').join('').replace(/\nFile sandbox[^\r\n]*$/u,''));
 const ptc={toolMode:'ptc',extraMounts:[['dsh-ptc-runtime-node']]};
 
+test('unloading and reloading the plugin restores the native prompt and current structured-call owner',async()=>{
+  const samples=[];let waitingForResult=false;
+  const host=await startHost({...ptc,mountPlugin:false,script:options=>{
+    if(waitingForResult){
+      waitingForResult=false;
+      assert.match(JSON.stringify(options.messages.findLast(message=>message.role==='tool')),/lifecycle-source-marker/u);
+      return [text('Tool interface observed.')];
+    }
+    const transport=options.tools.find(item=>item.name==='run_code');
+    const structured=!!transport?.parameters?.properties?.calls;
+    samples.push(structured);waitingForResult=true;
+    return [tool('run_code',structured?
+      {calls:[{name:'read',arguments:{file_path:'lifecycle.txt'}}],description:'Read through the current structured-call owner'}:
+      {code:'console.log(JSON.stringify(await tools.read({file_path:"lifecycle.txt"})));',description:'Read through the restored native interface'})];
+  }});
+  try{
+    await fs.writeFile(path.join(host.cwd,'lifecycle.txt'),'lifecycle-source-marker\n');
+    const plugin=await import('../index.mjs');
+    let owner=await host.ctx.plugin(plugin,{structuredCalls:true,stepPacing:false});
+    const agent=await host.createAgent('max');
+    await host.send(agent,'Observe the loaded tool interface.');
+    assert.deepEqual(samples,[true]);
+    for(let cycle=0;cycle<2;cycle++){
+      await owner.dispose();
+      await host.send(agent,'Observe the native tool interface after unloading.');
+      assert.equal(samples.length,2+cycle*2);
+      assert.equal(samples.at(-1),false);
+      assert.equal(host.events.findLast(event=>event.type==='turn/end')?.data.reason.kind,'completed');
+      owner=await host.ctx.plugin(plugin,{structuredCalls:true,stepPacing:false});
+      await host.send(agent,'Observe the reloaded tool interface.');
+      assert.equal(samples.at(-1),true);
+    }
+    assert.deepEqual(samples,[true,false,true,false,true]);
+    await owner.dispose();
+  }finally{await host.close();}
+});
+
 test('structured calls stay absent by default and regular JavaScript still executes',async()=>{
   const host=await startHost({...ptc,script:(options,n)=>{
     const transport=options.tools.find(item=>item.name==='run_code');

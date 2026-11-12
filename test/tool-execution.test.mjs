@@ -62,7 +62,7 @@ test('tool mode recognizes a selected PTC executor on newer hosts',()=>{
 
 test('new system prompt hosts receive tool transforms after assembly',async()=>{
   let assembles=0;
-  const ctx={tools:{selectExecutor:()=>({})},systemPrompt:{assemble:async()=>({tools:[{name:'run_code'}],sections:[]})}};
+  const ctx={effect:setup=>setup(),tools:{selectExecutor:()=>({})},systemPrompt:{assemble:async()=>({tools:[{name:'run_code'}],sections:[]})}};
   assert.equal(isBatchToolHost(ctx),true);
   patchSystemPromptTools(ctx,(result)=>{result.tools=[...result.tools,{name:'added'}];});
   const before=ctx.systemPrompt.assemble;

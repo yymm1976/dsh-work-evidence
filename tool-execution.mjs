@@ -72,5 +72,13 @@ export function patchSystemPromptTools(ctx,transform){
       return result;
     };
   }
-  transforms.push(transform);
+  ctx.effect(()=>{
+    transforms.push(transform);
+    // The shared assembly wrapper survives reloads, but each plugin's closure
+    // must leave before its Cordis services become inactive.
+    return ()=>{
+      const index=transforms.indexOf(transform);
+      if(index>=0)transforms.splice(index,1);
+    };
+  });
 }
