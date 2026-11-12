@@ -92,9 +92,13 @@ test('reference clauses cannot override later affirmative final-output directive
 test('fence permissions and prohibitions qualify only the assistant output they belong to',()=>{
   const fenced='```json\n{"answer":42}\n```';
   for(const request of ['Return only JSON as the final answer. Include a JSON code block in the README.',
+    'Return only JSON as the final answer. Use a JSON code block for the README.',
+    'Return only JSON as the final answer and use a JSON code block for the README.',
     '请最后只返回 JSON。在 README 文件中使用 JSON 代码块。'])
     assert.equal(finalJsonSyntaxIssue(fenced,request)?.rawFinal,true,request);
   for(const request of ['Return the final answer in a JSON code block. Do not use code blocks in the README.',
+    'Return the final answer in a JSON code block. No code blocks for the README.',
+    'Return the final answer in a JSON code block, with no code blocks for the README.',
     '请最后返回 JSON 代码块。README 文件不得使用 Markdown 代码块。'])
     assert.equal(finalJsonSyntaxIssue(fenced,request),null,request);
 });
@@ -103,6 +107,11 @@ test('negated final JSON statements leave a prose answer and its invalid illustr
   const answer='This is an intentionally broken illustration:\n```json\n{"answer":}\n```';
   for(const request of ['The final answer must not be JSON. Explain this syntax.',
     'JSON is not the final response. Give a prose explanation.',
+    "JSON isn't the final response. Give a prose explanation.",
+    "JSON isn't the final response and this isn't a JSON-only task. Explain the syntax.",
+    'JSON isn’t the final response. Give a prose explanation.',
+    'JSON 不是最终回答。请解释这段格式。',
+    'JSON 不得作为最终回答。请解释这段格式。',
     '最终回答必须不是 JSON。请解释这段格式。'])
     assert.equal(finalJsonSyntaxIssue(answer,request),null,request);
 });

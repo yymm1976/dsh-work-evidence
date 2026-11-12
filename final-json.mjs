@@ -18,23 +18,23 @@ function requestDirectives(text){
   return text
     .replace(/```[\s\S]*?```/gu,'\n')
     .replace(/`[^`\r\n]*`/gu,' ')
-    .replace(/"[^"\r\n]*"|“[^”\r\n]*”|'[^'\r\n]*'/gu,quoted=>/[。.!?！？]\s*["”']$/u.test(quoted)?'. ':' ');
+    .replace(/"[^"\r\n]*"|“[^”\r\n]*”|(?<![\p{L}\p{N}])'[^'\r\n]*'/gu,quoted=>/[。.!?！？]\s*["”']$/u.test(quoted)?'. ':' ');
 }
 function requestClauses(text){
   return requestDirectives(String(text??''))
-    .split(/[。！？?!;；\n,，]|\.(?=\s|$)|\s+(?=then\s+(?:(?:only|just)\s+)?(?:return|output|provide|give|reply|respond)\b)/iu)
+    .split(/[。！？?!;；\n,，]|\.(?=\s|$)|\s+(?=(?:and|but|then|also)\s+(?:(?:only|just)\s+)?(?:return|output|provide|give|reply|respond|use|using|include|insert|write|add|put|do\s+not|don't|no)\b)/iu)
     .map(clause=>clause.trim().replace(CLAUSE_LEAD,'').trim())
     .filter(Boolean);
 }
 function isAssistantOutputAction(clause){
-  if(/\b(?:must|should|shall|will)\s+(?:not|never)\s+(?:be|contain|include|consist\s+of)\b|^JSON\b[^\n]{0,32}\b(?:is|be)\s+(?:not|never)\b|(?:不是|不能是|不得为|非)\s*JSON/iu.test(clause))return false;
+  if(/\b(?:must|should|shall|will)\s+(?:not|never)\s+(?:be|contain|include|consist\s+of)\b|^JSON\b[^\n]{0,32}\b(?:(?:is|be)\s+(?:not|never)|isn['’]t)\b|(?:不是|不能是|不得为|非)\s*JSON|^JSON\s*(?:不是|并非|不能|不得|不应|不要|无需|禁止)/iu.test(clause))return false;
   return ENGLISH_OUTPUT_ACTION.test(clause)||CHINESE_OUTPUT_ACTION.test(clause)||
     ENGLISH_FINAL_ACTION.test(clause)||CHINESE_FINAL_ACTION.test(clause)||JSON_AS_FINAL.test(clause);
 }
 function isReferenceAction(clause){
   return REFERENCE_ACTION.test(clause)||
     /^(?:provide|give|return|output)\s+(?:(?:a|an|the)\s+)?(?:prose|explanation|analysis|recommendation|translation|description)\b/iu.test(clause)||
-    /\b(?:in|into|within|inside|to)\s+(?:(?:the|a|an)\s+)?(?:README(?:\.md)?|(?:source|output|config|documentation)\s+files?|files?\b|[\w./-]+\.(?:md|json|[cm]?js|py))\b|(?:在|写入|添加到)[^。；;\n]{0,30}(?:README|文件|文档)/iu.test(clause);
+    /\b(?:for|in|into|within|inside|to)\s+(?:(?:the|a|an)\s+)?(?:README(?:\.md)?|(?:source|output|config|documentation)\s+files?|files?\b|[\w./-]+\.(?:md|json|[cm]?js|py))\b|(?:在|写入|添加到|用于)[^。；;\n]{0,30}(?:README|文件|文档)/iu.test(clause);
 }
 function mentionsRequestedFinalJson(clause){
   const rawOutput=/(?:裸|原始|纯|\braw\b|\bbare\b|\bunwrapped\b|\bplain\b|\bnaked\b|\bunformatted\b)[^。！？;\n]{0,16}JSON/iu.test(clause)&&
