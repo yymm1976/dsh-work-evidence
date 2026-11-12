@@ -83,7 +83,7 @@ function targetFromArguments(value){
 // Problem rows get checked markers only
 // when a later successful result has the same tool and path/command target.
 export function stubCheckpoint(agent){
-  const log=eventLog(agent.session),events=[],problems=[],humans=[],problemSeqs=new Set(),targetBySeq=new Map(),callTargets=new Map(),callNames=new Map();
+  const log=eventLog(agent.session),events=[],problems=[],humans=[],problemSeqs=new Set(),resultSeqs=new Set(),targetBySeq=new Map(),callTargets=new Map(),callNames=new Map();
   const reports=subagentResultIndex(log,agent.session.id,{inherited:agent.session.inheritedEventCount??(agent.session.header?.isSeeded?null:0),recallAvailable:true});
   for(const event of log){
     const message=messageOf(event),data=event.data??{};
@@ -113,13 +113,15 @@ export function stubCheckpoint(agent){
     if(callId&&target&&row.kind==='call')callTargets.set(callId,target);
     const resolvedTarget=target??(row.kind==='result'&&callId?callTargets.get(callId):null);
     if(resolvedTarget)targetBySeq.set(event.seq,resolvedTarget);
+    const resultEvent=['tool/result','tool/ptc-dispatch','tool/code-dispatch'].includes(event.type);
+    if(resultEvent)resultSeqs.add(event.seq);
     const commandTool=['bash','pwsh','ops_bash','work_exec'].includes(resolvedName);
     let reportedFailure=null;
-    if(event.type==='tool/result'&&commandTool){
+    if(resultEvent&&commandTool){
       let parsed;try{parsed=JSON.parse(text);}catch{}
-      reportedFailure=reportedExecutionChecks(parsed)??reportedCheckFailure(text);
+      reportedFailure=reportedExecutionChecks(data.value??parsed)??reportedCheckFailure(text);
     }
-    const isProblem=event.type==='tool/result'&&(message?.isError===true||hasPruneProblem([{type:'text',text}])||!!reportedFailure);
+    const isProblem=resultEvent&&(message?.isError===true||data.isError===true||hasPruneProblem([{type:'text',text}],data.value??null)||!!reportedFailure);
     if(isProblem){problems.push(row);problemSeqs.add(event.seq);}
   }
   const line=row=>'- '+JSON.stringify(row)+'\n  recall: work_recall({kind:"event",seq:'+row.seq+',offset:0})';
@@ -135,12 +137,12 @@ export function stubCheckpoint(agent){
       authority:item.authority,childOriginalEvents:item.childOriginalEvents,consumption:item.consumption}));
     // Problem rows carry a verification marker; checked ones were later answered by a
     // successful result and only need re-reading after explicit recall.
-    const successSeqs=new Set(events.filter(r=>r.kind==='result'&&!problemSeqs.has(r.seq)&&!/error|failed|exception|cannot|undefined|null pointer|traceback/i.test(r.head)).map(r=>r.seq));
+    const successSeqs=new Set(events.filter(r=>resultSeqs.has(r.seq)&&!problemSeqs.has(r.seq)&&!/error|failed|exception|cannot|undefined|null pointer|traceback/i.test(r.head)).map(r=>r.seq));
     const marked=problems.slice(-STUB_PROBLEM_MAX_ROWS).map(row=>{
       // A retry counts only when tool and target both match.
       const sameTool=r=>r.tool&&row.tool&&r.tool===row.tool;
       const target=targetBySeq.get(row.seq);
-      const checked=!!target&&events.some(r=>r.kind==='result'&&successSeqs.has(r.seq)&&r.seq>row.seq&&r.seq<=row.seq+6&&
+      const checked=!!target&&events.some(r=>successSeqs.has(r.seq)&&r.seq>row.seq&&r.seq<=row.seq+6&&
         sameTool(r)&&targetBySeq.get(r.seq)===target);
       return {...row,checked};
     });

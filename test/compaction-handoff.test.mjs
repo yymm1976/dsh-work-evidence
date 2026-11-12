@@ -408,6 +408,23 @@ test('stubCheckpoint resolves a missing result tool name from its callId',()=>{
   assert.match(row.head,/FAILURES/);
 });
 
+test('completed PTC command failures stay in the checkpoint until a matching successful dispatch',()=>{
+  for(const failedRetry of [false,true]){
+    const failed={status:'completed',exitCode:0,stdout:{text:"FAILURES: ['case']"}},passed={status:'completed',exitCode:0,stdout:{text:'PASS'}};
+    const dispatch=(seq,id,value)=>event(seq,'tool/ptc-dispatch',{name:'pwsh',subCallId:id,rootCallId:'outer',arguments:{command:'requested-check'},
+      isError:false,value,content:[{type:'text',text:JSON.stringify(value)}]});
+    const stub=stubCheckpoint(eventLogAgent([
+      event(1,'tool/call',{name:'run_code',callId:'outer',arguments:{code:'Run the declared check'}}),
+      dispatch(2,'first',failed),
+      event(3,'tool/result',{message:{role:'tool',source:{kind:'tool',callId:'outer'},content:[{type:'text',text:JSON.stringify(failed)}]}}),
+      dispatch(4,'retry',failedRetry?failed:passed),
+    ]));
+    assert.equal(stub.problemRows,failedRetry?2:1);
+    const row=JSON.parse(stub.text.match(/^- (\{"seq":2,"kind":"call"[^\n]*,"checked":(?:true|false)\})$/mu)[1]);
+    assert.equal(row.checked,!failedRetry);assert.equal(row.tool,'pwsh');
+  }
+});
+
 test('recallHistory event pages use JavaScript string offsets and reassemble exactly', () => {
   const original = `BEGIN-\u{1F642}-${'x'.repeat(280)}-\u{1F642}-END`;
   const agent = eventLogAgent([userMessage(5, original)]);
