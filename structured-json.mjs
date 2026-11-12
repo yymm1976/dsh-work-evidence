@@ -16,7 +16,8 @@ export function createStructuredJson(ctx,runtime){
         throw Object.assign(new Error('Invalid JSON query options.'),{code:'INVALID_JSON_OPTIONS'});
       const bounded=AbortSignal.any([signal,AbortSignal.timeout(30000)]);
       const source=await files.readBytes(state.root,input.path,bounded,2_097_152,{requireKnownSize:true});
-      if(!source.versioned)throw Object.assign(new Error('A native version is required for JSON selection.'),{code:'JSON_UNVERSIONED_SOURCE'});
+      if(!source.versioned||typeof source.version!=='string'||!source.version)
+        throw Object.assign(new Error('A native version is required for JSON selection.'),{code:'JSON_UNVERSIONED_SOURCE'});
       let text;
       try{text=new TextDecoder('utf-8',{fatal:true,ignoreBOM:true}).decode(source.bytes);}
       catch{throw Object.assign(new Error('The JSON source must be valid UTF-8.'),{code:'JSON_NOT_UTF8'});}

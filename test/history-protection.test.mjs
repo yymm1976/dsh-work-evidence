@@ -39,3 +39,15 @@ test('a full-output request restores reported visibility while retaining managed
   assert.equal(h.hygiene.fullOutputRequested(h.agent),true);
   assert.equal(h.hygiene.bodyVisible(h.agent,h.seq),true);assert.equal(h.hygiene.manages(h.agent,h.seq),true);
 });
+
+test('saved receipts preserve a later surface replacement with the original message id',()=>{
+  for(const command of ['git status','python -m pytest -q']){
+    const h=fixture(command,'100 passed in 0.2s\n'+'x'.repeat(12000));
+    assert.notDeepEqual(h.hygiene.project(h.agent,[h.message])[0].content,h.message.content);
+    const current={...h.message,content:[{type:'text',text:'New visible locator and retained detail\n'+'y'.repeat(7000)}]};
+    const replacement=h.add('tool/result',{message:current});
+    replacement.surfaceOp={op:'replace',startSeq:h.seq,endSeq:h.seq};
+    assert.deepEqual(h.hygiene.project(h.agent,[current])[0],current,command);
+    assert.equal(h.hygiene.bodyVisible(h.agent,h.seq),true);
+  }
+});

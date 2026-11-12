@@ -1,5 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import fs from 'node:fs/promises';
+import path from 'node:path';
 import {startHost,text,tool,requestText} from './helpers/host.mjs';
 
 const price=[{provider:'scripted',model:'scripted-model',input:0.15,cacheRead:0.003,output:0.6,currency:'USD'}];
@@ -38,5 +40,19 @@ test('SW evicts exact duplicate outputs under context pressure and respects its 
   assert.equal(noLedger.status.sw.observations,0);assert.equal(noLedger.status.sw.evicted,0);
   assert.ok(on.status.sw.charsSaved>4096);
   console.log('measurement',JSON.stringify({feature:'swEviction',onChars:on.total,offChars:off.total,evictions:on.status.sw.evicted,charsSaved:on.status.sw.charsSaved}));
+});
+
+test('a full-output request prevents a queued persistent history replacement',async()=>{
+  for(const requested of [false,true]){
+    const host=await startHost({workspace:{contextProtocol:true,historyHygiene:false,swLedger:false,swEviction:false},
+      script:(_o,n)=>n===1?[tool('read',{file_path:'big.txt'})]:n===2?[tool('read',{file_path:'small.txt'})]:[text('done')]});
+    try{
+      await fs.writeFile(path.join(host.cwd,'big.txt'),Array.from({length:400},(_,i)=>'line '+i+' '+('q'.repeat(90))).join('\n'));
+      await fs.writeFile(path.join(host.cwd,'small.txt'),'small');
+      const agent=await host.createAgent();await host.send(agent,(requested?'Keep full output. ':'')+'Read big.txt and small.txt and summarize.');
+      const replacements=host.events.filter(event=>event.type==='tool/result'&&event.surfaceOp?.op==='replace');
+      assert.equal(replacements.length,requested?0:1,'ordinary requests must still prune; full-output requests must preserve the body');
+    }finally{await host.close();}
+  }
 });
 

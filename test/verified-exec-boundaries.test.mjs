@@ -71,3 +71,21 @@ test('validation needs an observed zero exit and accepts both native exit fields
     }finally{await f.close();}
   }
 });
+
+test('duplicate missing create targets through a directory alias reject before any tool dispatch',async()=>{
+  const root=await fs.mkdtemp(path.join(os.tmpdir(),'verified-create-alias-'));
+  try{
+    await fs.symlink(root,path.join(root,'alias'),process.platform==='win32'?'junction':'dir');
+    const record={root,dir:path.join(root,'.dsh'),id:'alias-boundary',config:{},metrics:{verifiedExecDeopts:0}};
+    let calls=0;
+    const service=createVerifiedExec({on(){},tools:{get:()=>({})}},
+      {init:async()=>record,save:async()=>{},execFor:()=>({})},async()=>{calls++;return {isError:false,value:{status:'completed',exists:false}};});
+    for(const file of ['new.txt','missing/nested/new.txt'])for(const apply of [false,true]){
+      const result=await service.execute({}, {summary:'Reject duplicate creates before writes',apply,edits:[
+        {file,mode:'create',content:'first'},{file:'alias/'+file,mode:'create',content:'second'}]},AbortSignal.timeout(10000));
+      assert.equal(result.status,'deopt');assert.equal(result.reason,'invalid-plan');
+      assert.match(result.error,/More than one create operation/u);assert.equal(result.effectState,'none');
+      assert.equal(calls,0);await assert.rejects(fs.stat(path.join(root,file)),error=>error.code==='ENOENT');
+    }
+  }finally{await fs.rm(root,{recursive:true,force:true});}
+});

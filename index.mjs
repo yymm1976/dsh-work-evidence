@@ -289,7 +289,7 @@ export function apply(ctx,config={}){
     queueMicrotask(()=>{
       let pruned=0,charsRemoved=0;
       try{
-        if(!runtime.isEnabled(agent)||compactionActive(session))return;
+        if(!runtime.isEnabled(agent)||compactionActive(session)||runtime.historyFullOutputRequested(agent))return;
         const tokenMeter=ctx.get?.('tokenMeter');
         const visible=new Set(session.surface.nodes);
         const references=surfaceReferences(session);
@@ -320,7 +320,7 @@ export function apply(ctx,config={}){
           effects.decide(agent,'contextPrune',economics.allowed?'approved':'deferred',economics.reason,{seq,economics});
           if(!economics.allowed)continue;
           const shadowedTokenCount=typeof tokenMeter?.estimateMessage==='function'?tokenMeter.estimateMessage(original):0;
-          if(compactionActive(session))break;
+          if(compactionActive(session)||runtime.historyFullOutputRequested(agent))break;
           session.append('compaction/prune',{
             shadowedRange:{start:seq,end:seq},shadowedSeqs:[seq],shadowedTokenCount,
           });

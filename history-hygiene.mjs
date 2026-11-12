@@ -280,6 +280,10 @@ export function createHistoryHygiene(runtime,taskFlow,{isProtected=()=>false,ret
     const result=messages.map(message=>{
       if(message.role!=='tool')return message;
       const entry=state.results.get(message.id);
+      const original=entry&&agent.session.eventAt(entry.seq)?.data?.message;
+      // A surface replacement may retain the message id while changing the body.
+      // Receipts and prune plans describe only the captured canonical result.
+      if(!original||message.isError!==original.isError||JSON.stringify(message.content)!==JSON.stringify(original.content))return message;
       const textOnly=Array.isArray(message.content)&&message.content.every(block=>block?.type==='text');
       if(textOnly&&entry?.testDigest&&!isProtected(agent,entry.callId)&&state.step-entry.step>=1&&!state.fullOutputRequested&&!state.pinnedResults.has(entry.seq)&&!pins.opaque&&!pins.targets.has(entry.seq)){
         const reduction=resultText(message.content).length-entry.testDigest.length;
@@ -313,8 +317,6 @@ export function createHistoryHygiene(runtime,taskFlow,{isProtected=()=>false,ret
       // Leave source windows to the existing larger, recoverable protocol.
       if(entry.reads.length)return message;
       const protect=file=>retainedSource(agent,file)||state.retainedSources.has(fileKey(root,file))||focus.has(fileKey(root,file));
-      const original=agent.session.eventAt(entry.seq)?.data?.message;
-      if(!original)return message;
       const existing=state.outputPlans.get(entry.seq);
       if(existing?.test||existing?.tool)return message;
       const planned=existing??planContextPrune(original,entry.reads,{seq:entry.seq,...pruneSettings,retainSource:protect});

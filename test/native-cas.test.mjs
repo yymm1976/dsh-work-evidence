@@ -269,3 +269,42 @@ test('cancellation after an outcome report commits preserves its saved state',as
     assert.equal(JSON.parse(await fs.readFile(report.reportPath,'utf8')).effectState,'applied');
   }finally{await host.close();}
 });
+
+test('a committed outcome remains saved when cancellation also changes the policy to read-only',async()=>{
+  const host=await startHost({workspace:{nativeVerifiedEdits:true},script:()=>[text('Ready.')]});
+  try{
+    await fs.writeFile(path.join(host.cwd,'source.txt'),'before');const agent=await host.createAgent(),controller=new AbortController();let sourceWritten=false,switched=false;
+    host.ctx.on('tools/result',(exec,result)=>{
+      if(exec.name!=='write'||result.isError)return;
+      if(exec.callId?.startsWith('work-evidence:native-cas:'))sourceWritten=true;
+      else if(sourceWritten&&!switched&&exec.arguments.file_path.endsWith('.json')){
+        switched=true;agent.session.append('sandbox/mode',{mode:'read-only',workspaceRoot:host.cwd});controller.abort(new Error('cancel after report commit and policy change'));
+      }
+    });
+    const result=await host.ctx.tools.execute({name:'verified_exec',arguments:{summary:'Observe the existing committed outcome',apply:true,
+      edits:[{file:'source.txt',mode:'replace_exact',old_text:'before',new_text:'after'}]},callId:'cancel-report-read-only',rootCallId:'cancel-report-read-only',agent,signal:controller.signal});
+    if(!nativeSupported){assert.equal(switched,false);return;}
+    assert.equal(switched,true);assert.equal(result.isError,true);const body=output(result),at=body.indexOf('{');assert.ok(at>=0,body);
+    const report=JSON.parse(body.slice(at));assert.equal(report.reportSaved,true,body);assert.equal(report.reportObservedAfterWriteError,true);
+    assert.equal(JSON.parse(await fs.readFile(report.reportPath,'utf8')).status,'applied');
+    assert.equal(await fs.readFile(path.join(host.cwd,'source.txt'),'utf8'),'after');
+  }finally{await host.close();}
+});
+
+test('an older preflight report cannot certify that a cancelled final outcome was saved',async()=>{
+  const host=await startHost({workspace:{nativeVerifiedEdits:true},script:()=>[text('Ready.')]});
+  try{
+    await fs.writeFile(path.join(host.cwd,'source.txt'),'before');const agent=await host.createAgent(),controller=new AbortController();let switched=false;
+    host.ctx.on('tools/result',(exec,result)=>{
+      if(!switched&&exec.name==='write'&&!result.isError&&exec.callId?.startsWith('work-evidence:native-cas:')){
+        switched=true;agent.session.append('sandbox/mode',{mode:'read-only',workspaceRoot:host.cwd});controller.abort(new Error('cancel before outcome report'));
+      }
+    });
+    const result=await host.ctx.tools.execute({name:'verified_exec',arguments:{summary:'Keep an unsaved final outcome distinct from preflight',apply:true,
+      edits:[{file:'source.txt',mode:'replace_exact',old_text:'before',new_text:'after'}]},callId:'cancel-before-final-report',rootCallId:'cancel-before-final-report',agent,signal:controller.signal});
+    if(!nativeSupported){assert.equal(switched,false);return;}
+    assert.equal(switched,true);assert.equal(result.isError,true);const body=output(result),at=body.indexOf('{');assert.ok(at>=0,body);
+    const report=JSON.parse(body.slice(at));assert.equal(report.reportSaved,false,body);assert.equal(report.effectState,'applied');
+    assert.equal(JSON.parse(await fs.readFile(report.reportPath,'utf8')).status,'preflight');
+  }finally{await host.close();}
+});

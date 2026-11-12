@@ -5,6 +5,7 @@ import {within,assertExistingFileWithin,readUtf8File} from './evidence.mjs';
 import {createNativeCas} from './native-cas.mjs';
 import {reportedExecutionChecks} from './recovery.mjs';
 import {dependencyExecutionComplete} from './execution-dependencies.mjs';
+import {createNativeFiles} from './native-files.mjs';
 
 export const VERSION='0.8.3';
 
@@ -75,8 +76,16 @@ async function groupEdits(edits,root){
   const groups=new Map();
   for(const edit of edits){
     const full=within(root,edit.file),file=path.relative(root,full).replaceAll('\\','/');
-    let identity;
-    try{identity=await fs.realpath(full);}catch(error){if(error.code!=='ENOENT')throw error;identity=process.platform==='win32'?full.toLowerCase():full;}
+    let parent=full,identity;
+    const missing=[];
+    for(;;){
+      try{identity=path.join(await fs.realpath(parent),...missing);break;}
+      catch(error){
+        if(error.code!=='ENOENT'||path.dirname(parent)===parent)throw error;
+        missing.unshift(path.basename(parent));parent=path.dirname(parent);
+      }
+    }
+    if(missing.length&&process.platform==='win32')identity=identity.toLowerCase();
     const group=groups.get(identity)||{file,full,mode:edit.mode,edits:[],content:null};
     if(group.mode!==edit.mode)throw new Error(`Conflicting create/replace modes for ${file}`);
     if(edit.mode==='create'){
@@ -219,6 +228,16 @@ export function createVerifiedExec(ctx,runtime,call){
         if(signal.aborted)try{
           await runtime.save(agent,reportPath,record,AbortSignal.timeout(5000),{background:true});return {reportSaved:true};
         }catch(retry){error=retry;}
+        // The native write can commit before cancellation or a policy change
+        // rejects its response. Observe exact bytes without issuing another write.
+        try{
+          const expected=Buffer.from(JSON.stringify(record,null,2)+'\n');
+          if(expected.length<=2_000_000){
+            const observed=await createNativeFiles(ctx).readBytes(s.root,reportPath,AbortSignal.timeout(5000),expected.length,{requireKnownSize:true});
+            if(observed.versioned&&typeof observed.version==='string'&&observed.version&&observed.bytes.equals(expected))
+              return {reportSaved:true,reportObservedAfterWriteError:true,reportWriteError:String(error?.message||error).slice(0,1200)};
+          }
+        }catch{}
         return {reportSaved:false,reportError:String(error?.message||error).slice(0,1200)};
       }
     }

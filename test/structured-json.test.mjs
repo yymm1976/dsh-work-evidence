@@ -18,6 +18,23 @@ test('native JSON selection reads long single-line data intact with source ident
     assert.equal(result.sha256,createHash('sha256').update(source).digest('hex'));assert.equal(result.versionKind,'native-opaque');assert.ok(result.version);
   }finally{await host.close();}
 });
+test('native JSON requires a non-empty string provider version',async()=>{
+  const host=await startHost({mountPlugin:false,script:()=>[text('done')]});
+  try{
+    await fs.writeFile(path.join(host.cwd,'source.json'),'{"ok":true}');
+    const backend=host.ctx.get('fs');
+    const providerWithVersion=version=>new Proxy(backend,{get(target,key){
+      if(key==='stat')return async(...args)=>({...await target.stat(...args),version});
+      return Reflect.get(target,key);
+    }});
+    const input={path:'source.json',selectors:[{pointer:'/ok',op:'value'}]};
+    for(const version of ['',42]){
+      const result=await createStructuredJson({get:()=>providerWithVersion(version)},runtime(host)).query({},input,AbortSignal.timeout(20000));
+      assert.equal(result.status,'unavailable',JSON.stringify(result));
+      assert.equal(result.reason,'JSON_UNVERSIONED_SOURCE');
+    }
+  }finally{await host.close();}
+});
 test('the real host renders a deep root selection as an explicit serialized preview',async()=>{
   const host=await startHost({workspace:{structuredJson:true},script:()=>[text('done')]});
   try{
