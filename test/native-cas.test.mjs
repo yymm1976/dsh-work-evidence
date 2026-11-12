@@ -230,14 +230,22 @@ test('the real native tool channel retains cancelled file effects and a saved re
     host.ctx.on('tools/result',exec=>{
       if(!aborted&&exec.name==='write'&&exec.callId?.startsWith('work-evidence:native-cas:')){aborted=true;controller.abort(new Error('cancel after native write'));}
     });
-    const result=await host.ctx.tools.execute({name:'verified_exec',arguments:{summary:'Keep cancellation effects',apply:true,
-      edits:[{file:'source.txt',mode:'replace_exact',old_text:'before',new_text:'after'}]},callId:'cancel-effects',rootCallId:'cancel-effects',agent,signal:controller.signal});
+    const input={summary:'Keep cancellation effects',apply:true,edits:[{file:'source.txt',mode:'replace_exact',old_text:'before',new_text:'after'}]};
+    const callEvent=agent.session.append('tool/call',{callId:'cancel-effects',name:'verified_exec',arguments:input});
+    const result=await host.ctx.tools.execute({name:'verified_exec',arguments:input,callId:'cancel-effects',rootCallId:'cancel-effects',agent,signal:controller.signal});
     if(!nativeSupported){assert.equal(aborted,false);return;}
+    const {createToolResultMessage}=await load('dsh-llm');
+    agent.session.append('tool/result',{message:createToolResultMessage({callId:'cancel-effects',content:result.content,isError:result.isError})},
+      {surfaceOp:'append',sourceEventSeqs:[callEvent.seq]});
     assert.equal(aborted,true);assert.equal(result.isError,true);assert.equal(await fs.readFile(path.join(host.cwd,'source.txt'),'utf8'),'after');
     const body=output(result),start=body.indexOf('{');assert.ok(start>=0,body);
     const report=JSON.parse(body.slice(start));assert.equal(report.status,'partial');assert.equal(report.effectState,'applied');
     assert.equal(report.files[0].effectState,'applied');assert.equal(report.reportSaved,true);
     const saved=JSON.parse(await fs.readFile(report.reportPath,'utf8'));assert.equal(saved.files[0].effect.effectState,'applied');
+    const detail=await host.command(agent,'detail');
+    assert.ok(detail.taskFlow.mutationVersion>0,'The real failed tool channel must retain its committed mutation');
+    assert.ok(detail.taskFlow.lastMutationSeq>=0);
+    assert.ok(detail.taskFlow.unresolvedErrors.some(error=>error.tool==='verified_exec'));
   }finally{await host.close();}
 });
 test('native edits merge Windows case aliases of one existing file before planning changes',async()=>{

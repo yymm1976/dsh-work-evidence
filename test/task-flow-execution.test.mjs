@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import path from 'node:path';
 import {createTaskFlow,taskFlowGuidance} from '../task-flow.mjs';
 import {defaults} from '../runtime.mjs';
 import {reportedCheckFailure,reportedExecutionChecks} from '../recovery.mjs';
@@ -149,10 +150,11 @@ test('cold completion cannot resolve another command, working directory, user re
 });
 
 test('unrelated, ambiguous or later completion and explicitly partial results preserve a native failure',()=>{
-  for(const variation of ['wrong-owner','duplicate','later','partial','truncated','reported-failure']){
+  for(const variation of ['wrong-owner','duplicate','later','partial','truncated','execution-incomplete','reported-failure']){
     const h=nativeRecovery(),first=h.command('run-checks',1);
     const body=variation==='partial'?JSON.stringify({nativeStructured:false,partial:true}):
       variation==='truncated'?JSON.stringify({nativeStructured:false,stdout:{text:'ok',truncated:true}}):
+      variation==='execution-incomplete'?JSON.stringify({executionCompleted:false}):
       variation==='reported-failure'?'TOTAL 2 FAILED 1':'command output';
     h.command('run-checks',0,{variation,body});
     const result=h.review();
@@ -244,6 +246,34 @@ test('implicit PTC file writes separate execution comparisons without claiming a
     assert.equal(summary.nativeExecutions[1].programEpoch,3,'assistant and tool/call events count one program');
     t.command('pwsh',args,result,{live});
     assert.equal(t.notices().some(m=>m.source.taskFlow.kind==='reuse'),live,'only live complete short outputs support an equality comparison');
+  }
+});
+
+test('tool-owned conditional-edit errors retain committed effects and invalidate prior evidence',()=>{
+  for(const reason of ['interrupted','permission denied'])for(const hostPrefix of ['', 'Error: ']){
+    const t=timeline({stepPacing:false,qualityReview:true},[],'quality'),source=path.resolve(process.cwd(),'source.txt');
+    const observation={path:source,exists:true,type:'file',version:'before'};
+    t.command('work_exec',{runtime:'node',code:'Check the declared source',sources:['source.txt']},{exitCode:0,
+      fileDependencies:{schema:'work-evidence.declared-files.v1',scope:'caller-declared-files-only',workspace:process.cwd(),declaredCount:1,executionCompleted:true,
+        files:[{source:'source.txt',before:observation,after:observation}]},
+      evidenceAssessment:{validity:'current-for-declared-files',files:[{source:'source.txt',path:source,status:'unchanged'}]}},{live:false});
+    t.command('work_report',{status:'complete',summary:'Earlier state',remaining:[]},{saved:true,path:'report.json'},{live:false});
+    assert.ok(t.flow.handoff(t.agent).report);
+    const outcome={status:'partial',effectState:'applied',files:[{file:'source.txt',effectState:'applied'}]};
+    t.command('verified_exec',{apply:true,edits:[{file:'source.txt',mode:'replace_exact',old_text:'before',new_text:'after'}]},
+      hostPrefix+'verified_exec '+reason+': '+JSON.stringify(outcome),{live:false,isError:true});
+    const summary=t.flow.summary(t.agent),handoff=t.flow.handoff(t.agent);
+    assert.equal(summary.mutationVersion,1);assert.ok(summary.lastMutationSeq>0);
+    assert.equal(handoff.report,null);assert.equal(handoff.artifacts[0].effectState,'applied');
+    assert.equal(summary.nativeExecutions[0].evidenceValidity,'affected');
+    assert.equal(summary.nativeExecutions[0].evidenceAssessment.files[0].status,'changed-by-file-tool');
+    assert.ok(summary.unresolvedErrors.some(error=>error.tool==='verified_exec'),'An observed write does not make its interrupted tool successful');
+  }
+  for(const [toolName,isError,prefix]of [['pwsh',true,'Error: verified_exec interrupted: '],['verified_exec',false,'verified_exec interrupted: '],
+    ['verified_exec',true,'Error: unrelated failure: ']]){
+    const t=timeline({stepPacing:false}),outcome={files:[{file:'source.txt',effectState:'applied'}]};
+    t.command(toolName,{edits:[{file:'source.txt',mode:'create',content:'after'}]},prefix+JSON.stringify(outcome),{live:false,isError});
+    assert.equal(t.flow.summary(t.agent).mutationVersion,0,'Only the identified conditional-edit failure channel carries this effect');
   }
 });
 

@@ -3,7 +3,7 @@ import path from 'node:path';
 import {canonicalUsage,usageCost} from './context-economics.mjs';
 import {summarizeAttempts} from './experiment-attempts.mjs';
 import {isUserRequestMessage} from './runtime.mjs';
-import {resultText,parseResult} from './visible-results.mjs';
+import {resultText,parseResult,toolResultValue} from './visible-results.mjs';
 import {recordedProcessCompletion} from './execution-evidence.mjs';
 import {resolveInlineScript} from './inline-exec.mjs';
 
@@ -257,7 +257,7 @@ export function normalizeDshEvents(input){
       return;
     }
     call.resultSeq=event.seq??null;call.resultText=resultText(content);
-    const raw=nativeValue??parseResult(call.resultText),value=raw?.data??raw;
+    const raw=toolResultValue(call.name,{value:nativeValue,content,isError}),value=raw?.data??raw;
     const exit=value?.exitCode??value?.exit_code;
     const explicitFailure=isError===true||Number.isInteger(exit)&&exit!==0||value?.success===false||value?.ok===false||
       ['failed','killed','cancelled','error'].includes(value?.status);

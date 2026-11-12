@@ -72,7 +72,20 @@ function countExact(text,needle){
   return positions;
 }
 
-async function directoryCaseSensitivity(directory){
+function canonicalTargetName(name){
+  return name.normalize('NFC').toLowerCase().normalize('NFC');
+}
+
+function caseAlternateName(name){
+  return name.replace(/[a-zA-Z]/u,char=>char===char.toLowerCase()?char.toUpperCase():char.toLowerCase());
+}
+
+function normalizationAlternateName(name){
+  const nfc=name.normalize('NFC'),nfd=name.normalize('NFD');
+  return nfc!==name?nfc:nfd!==name?nfd:name;
+}
+
+async function directorySensitivity(directory){
   try{
     const entries=await fs.opendir(directory,{bufferSize:16}),names=[];
     let complete=true;
@@ -80,35 +93,68 @@ async function directoryCaseSensitivity(directory){
       if(names.length===32){complete=false;break;}
       names.push(entry.name);
     }
-    for(const name of names){
-      const alternate=name.replace(/[a-zA-Z]/u,char=>char===char.toLowerCase()?char.toUpperCase():char.toLowerCase());
-      if(alternate===name)continue;
-      // Two exact directory entries prove distinct names even if they are hard links.
-      if(names.includes(alternate))return true;
-      const source=path.join(directory,name),other=path.join(directory,alternate);
-      let before;
-      try{before=await fs.lstat(source,{bigint:true});}catch(error){if(error.code==='ENOENT')continue;throw error;}
-      try{
-        const aliased=await fs.lstat(other,{bigint:true});
-        const current=await fs.lstat(source,{bigint:true});
-        if(before.dev!==current.dev||before.ino!==current.ino)continue;
-        if(before.ino!==0n&&aliased.ino!==0n&&(before.dev!==aliased.dev||before.ino!==aliased.ino))return true;
-        if(complete)return false;
-      }catch(error){
-        if(error.code!=='ENOENT')throw error;
-        const current=await fs.lstat(source,{bigint:true});
-        if(before.dev===current.dev&&before.ino===current.ino)return true;
+    async function probe(alternateName){
+      for(const name of names){
+        const alternate=alternateName(name);
+        if(alternate===name)continue;
+        // Two exact directory entries prove distinct names even if they are hard links.
+        if(names.includes(alternate))return true;
+        const source=path.join(directory,name),other=path.join(directory,alternate);
+        let before;
+        try{before=await fs.lstat(source,{bigint:true});}catch(error){if(error.code==='ENOENT')continue;throw error;}
+        try{
+          const aliased=await fs.lstat(other,{bigint:true});
+          const current=await fs.lstat(source,{bigint:true});
+          if(before.dev!==current.dev||before.ino!==current.ino)continue;
+          if(before.ino!==0n&&aliased.ino!==0n&&(before.dev!==aliased.dev||before.ino!==aliased.ino))return true;
+          if(complete)return false;
+        }catch(error){
+          if(error.code!=='ENOENT')throw error;
+          const current=await fs.lstat(source,{bigint:true});
+          if(before.dev===current.dev&&before.ino===current.ino)return true;
+        }
       }
+      return null;
     }
+    return {caseSensitive:await probe(caseAlternateName),normalizationSensitive:await probe(normalizationAlternateName)};
   }catch{}
-  return null;
+  return {caseSensitive:null,normalizationSensitive:null};
+}
+
+function sameMissingTarget(left,right,caseSensitive,normalizationSensitive){
+  if(left.length!==right.length)return false;
+  for(let index=0;index<left.length;index++){
+    let leftName=left[index],rightName=right[index];
+    if(!normalizationSensitive){
+      leftName=leftName.normalize('NFC');rightName=rightName.normalize('NFC');
+    }
+    if(!caseSensitive){
+      leftName=leftName.toLowerCase();rightName=rightName.toLowerCase();
+    }
+    if(!normalizationSensitive){
+      leftName=leftName.normalize('NFC');rightName=rightName.normalize('NFC');
+    }
+    if(leftName!==rightName)return false;
+  }
+  return true;
+}
+
+function missingTargetRelation(left,right,sensitivity){
+  if(left.length!==right.length)return false;
+  if(left.every((name,index)=>name===right[index]))return true;
+  const caseModes=sensitivity.caseSensitive==null?[false,true]:[sensitivity.caseSensitive];
+  const normalizationModes=sensitivity.normalizationSensitive==null?[false,true]:[sensitivity.normalizationSensitive];
+  const aliases=[];
+  for(const caseSensitive of caseModes)for(const normalizationSensitive of normalizationModes)
+    aliases.push(sameMissingTarget(left,right,caseSensitive,normalizationSensitive));
+  return aliases.every(Boolean)?true:aliases.every(value=>!value)?false:null;
 }
 
 async function groupEdits(edits,root){
-  const groups=new Map(),foldedMissing=new Map(),caseSensitivity=new Map(),realRoot=await fs.realpath(root);
+  const groups=new Map(),candidateTargets=new Map(),sensitivity=new Map(),realRoot=await fs.realpath(root);
   for(const edit of edits){
     const full=within(root,edit.file),file=path.relative(root,full).replaceAll('\\','/');
-    let parent=full,identity;
+    let parent=full,identity,groupKey;
     const missing=[];
     for(;;){
       try{parent=await fs.realpath(parent);identity=path.join(parent,...missing);break;}
@@ -122,22 +168,31 @@ async function groupEdits(edits,root){
       const info=await fs.stat(parent,{bigint:true});
       const directoryKey=info.ino!==0n?`${info.dev}:${info.ino}`:parent;
       identity=directoryKey+':'+JSON.stringify(missing);
-      const folded=directoryKey+':'+JSON.stringify(missing.map(component=>component.toLowerCase())),alias=foldedMissing.get(folded);
-      if(alias&&alias!==identity){
-        if(!caseSensitivity.has(directoryKey))caseSensitivity.set(directoryKey,await directoryCaseSensitivity(parent));
-        const sensitive=caseSensitivity.get(directoryKey);
-        if(sensitive===null)throw new Error('Cannot establish whether case-different missing targets are distinct in '+parent);
-        if(!sensitive)identity=alias;
+      groupKey=identity;
+      const candidateKey=directoryKey+':'+JSON.stringify(missing.map(canonicalTargetName));
+      const candidates=candidateTargets.get(candidateKey)??[];
+      for(const candidate of candidates){
+        let relation;
+        if(candidate.missing.length===missing.length&&candidate.missing.every((name,index)=>name===missing[index]))relation=true;
+        else{
+          if(!sensitivity.has(directoryKey))sensitivity.set(directoryKey,await directorySensitivity(parent));
+          relation=missingTargetRelation(candidate.missing,missing,sensitivity.get(directoryKey));
+          if(relation===null)throw new Error('Cannot establish whether case- or normalization-different missing targets are distinct in '+parent);
+        }
+        if(relation){
+          if(groupKey===identity)groupKey=candidate.groupKey;
+          else if(groupKey!==candidate.groupKey)throw new Error('Missing targets resolve to conflicting directory aliases');
+        }
       }
-      if(!foldedMissing.has(folded))foldedMissing.set(folded,identity);
-    }
-    const group=groups.get(identity)||{file,full,mode:edit.mode,edits:[],content:null};
+      candidates.push({missing,groupKey});candidateTargets.set(candidateKey,candidates);
+    }else groupKey=identity;
+    const group=groups.get(groupKey)||{file,full,mode:edit.mode,edits:[],content:null};
     if(group.mode!==edit.mode)throw new Error(`Conflicting create/replace modes for ${file}`);
     if(edit.mode==='create'){
       if(group.content!==null)throw new Error(`More than one create operation for ${file}`);
       group.content=edit.content;
     }else group.edits.push({oldText:edit.old_text,newText:edit.new_text});
-    groups.set(identity,group);
+    groups.set(groupKey,group);
   }
   return [...groups.values()];
 }
@@ -201,12 +256,21 @@ async function runValidation(ctx,call,runtime,agent,validation,signal){
   const tool=requested||shellTool(ctx,agent);
   if(!tool)return {passed:false,deopt:'no-authorized-shell',tool:null,description:validation.description};
   const result=await call(tool,{command:validation.command,description:validation.description,timeoutMs:validation.timeoutMs},runtime.execFor(agent,signal));
-  const payload=shellPayload(result.value),exitCode=Number.isInteger(payload.exitCode)?payload.exitCode:Number.isInteger(payload.exit_code)?payload.exit_code:null;
-  const status=outcomeStatus(result.value);
-  const statusOk=status===null||status==='completed';
+  const outerPayload=result.value,hasInner=outerPayload&&typeof outerPayload==='object'&&outerPayload.data!=null;
+  const payload=shellPayload(outerPayload),exitCode=Number.isInteger(payload.exitCode)?payload.exitCode:Number.isInteger(payload.exit_code)?payload.exit_code:null;
+  const outerStatus=outerPayload?.status??null,innerStatus=hasInner?outerPayload.data?.status??null:null;
+  const status=outerStatus??innerStatus??(result.isError?'error':'completed');
+  const statusOk=[outerStatus,innerStatus].every(value=>value==null||String(value).toLowerCase()==='completed');
+  let outerWithoutInner=outerPayload;
+  if(outerPayload&&typeof outerPayload==='object'){
+    const {data,...outerFields}=outerPayload;outerWithoutInner=outerFields;
+  }
+  const outerCompletion=hasInner?{...outerWithoutInner,exitCode:outerWithoutInner?.exitCode??exitCode}:outerWithoutInner;
+  const executionComplete=dependencyExecutionComplete({...result,value:outerCompletion})&&
+    (!hasInner||dependencyExecutionComplete({value:outerPayload.data}));
   const conclusive=exitCode!==null||result.isError;
   const reportedChecks=reportedExecutionChecks(result);
-  const passed=statusOk&&exitCode===0&&dependencyExecutionComplete(result)&&!reportedChecks;
+  const passed=statusOk&&exitCode===0&&executionComplete&&!reportedChecks;
   const stdout=typeof payload.stdout==='string'?payload.stdout:payload.stdout?.text;
   const stderr=typeof payload.stderr==='string'?payload.stderr:payload.stderr?.text;
   return {passed,tool,description:validation.description,status:status||(result.isError?'error':'completed'),exitCode,
@@ -214,7 +278,7 @@ async function runValidation(ctx,call,runtime,agent,validation,signal){
     ...(!passed&&!conclusive?{deopt:'ambiguous-shell-result'}:{}),
     timedOut:payload.timedOut===true,stdout:boundedOutput(stdout??payload.stdoutText??textOf(result)),
     stderr:boundedOutput(stderr??payload.stderrText??''),
-    error:passed?null:payload.error||result.error||null};
+    error:passed?null:payload.error||outerPayload?.error||result.error||null};
 }
 
 export function createVerifiedExec(ctx,runtime,call){

@@ -4,6 +4,17 @@ export function parseResult(text){
   try{return JSON.parse(text);}catch{return null;}
 }
 
+/** Recover the structured effect carried by this plugin's own failed edit channel. */
+export function toolResultValue(name,result){
+  const value=result?.value??parseResult(resultText(result?.content));
+  if(value!=null)return value;
+  if(name!=='verified_exec'||result?.isError!==true)return null;
+  const text=resultText(result?.content).trim(),prefix=/^(?:Error: )?verified_exec (?:interrupted|permission denied):\s*/u.exec(text);
+  if(!prefix)return null;
+  const outcome=parseResult(text.slice(prefix[0].length));
+  return outcome&&typeof outcome==='object'&&!Array.isArray(outcome)&&Array.isArray(outcome.files)?outcome:null;
+}
+
 export function historyReferences(message){
   const found=[];
   for(const match of resultText(message?.content).matchAll(/^\[work-evidence history (\{[^\n]*\})\]$/gm)){

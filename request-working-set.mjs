@@ -3,7 +3,7 @@ import {randomUUID} from 'node:crypto';
 import {argsOf,eventLog,isUserRequestMessage} from './runtime.mjs';
 import {collectReadWindows} from './observation-ledger.mjs';
 import {operationKey} from './task-flow.mjs';
-import {resultText,parseResult,resultHasProblem,resultIdentity,resultReference,contentReferences,surfaceReferences,compactionActive,rewriteSpacingReady} from './visible-results.mjs';
+import {resultText,parseResult,toolResultValue,resultHasProblem,resultIdentity,resultReference,contentReferences,surfaceReferences,compactionActive,rewriteSpacingReady} from './visible-results.mjs';
 
 const SOURCE='work-evidence-working-set',VERSION=1,MAX_ENTRIES=128,MAX_BATCH=24;
 const MAX_REVIEWED=32,MAX_REVIEWED_DEPS=6,MAX_RESTORE_REASONS=32;
@@ -134,7 +134,7 @@ export function createRequestWorkingSet(ctx,runtime,economics,taskFlow){
         state.lastUser={seq:event.seq,step:state.step,text:messageText(message??{})};
       }
       if(['tool/ptc-dispatch','tool/code-dispatch'].includes(event.type)){
-        const args=argsOf(data.arguments),list=state.nested.get(data.rootCallId)??[],value=parseResult(resultText(data.content)),
+        const args=argsOf(data.arguments),list=state.nested.get(data.rootCallId)??[],value=toolResultValue(data.name,data),
           problem=!!data.isError||resultHasProblem(value??resultText(data.content)),mutation=appliedMutation(data.name,args,value,!!data.isError);
         list.push({name:data.name,args,isError:!!data.isError,problem,mutation,problemText:problem?resultIdentity(data.content):null});state.nested.set(data.rootCallId,list.slice(-64));
         state.inputs.push({seq:event.seq,step:state.step,text:JSON.stringify(args)});
@@ -147,7 +147,7 @@ export function createRequestWorkingSet(ctx,runtime,economics,taskFlow){
         state.nested.delete(callId);
         if(call&&!liveNodes.has(event.seq)&&!WRITE.test(call.name)){state.calls.delete(callId);continue;}
         if(call){
-          const text=resultText(message.content),parsed=parseResult(text),deps=new Map(),depStats={sourceOmitted:0,scanIncomplete:false};
+          const text=resultText(message.content),parsed=toolResultValue(call.name,{...message,value:data.value}),deps=new Map(),depStats={sourceOmitted:0,scanIncomplete:false};
           for(const dep of [...dependencies(root,call.args,depStats),...dependencies(root,parsed,depStats),...nested.flatMap(item=>dependencies(root,item.args,depStats))])deps.set(dep.kind+':'+dep.key,dep);
           // Nested arguments describe dependencies of the whole outer observation,
           // never proof that the mixed output is the body of any one input file.
