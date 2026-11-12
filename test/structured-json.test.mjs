@@ -50,6 +50,19 @@ test('a native provider short read cannot certify a complete JSON source',async(
     assert.equal(result.status,'unavailable');assert.equal(result.reason,'FS_READ_INCOMPLETE');assert.equal(result.results,undefined);
   }finally{await host.close();}
 });
+test('a versioned JSONL provider without a known byte size cannot certify a short prefix',async()=>{
+  const host=await startHost({mountPlugin:false,script:()=>[text('done')]});
+  try{
+    await fs.writeFile(path.join(host.cwd,'source.jsonl'),'{"x":1}\n{"x":2}\n');const backend=host.ctx.get('fs');let reads=0;
+    const unknown=new Proxy(backend,{get(target,key){
+      if(key==='stat')return async(...args)=>({...await backend.stat(...args),size:undefined});
+      if(key==='readBytes')return async()=>{reads++;return Buffer.from('{"x":1}\n');};
+      return Reflect.get(target,key);
+    }});
+    const result=await createStructuredJson({get:()=>unknown},runtime(host)).query({}, {path:'source.jsonl',format:'jsonl',selectors:[{pointer:'',op:'count'}]},signal());
+    assert.equal(result.status,'unavailable');assert.equal(result.reason,'FS_SIZE_UNKNOWN');assert.equal(result.results,undefined);assert.equal(reads,0);
+  }finally{await host.close();}
+});
 test('native PTC exposes selected read tools in compact mode and records their real effects',async()=>{
   const host=await startHost({toolMode:'ptc',extraMounts:[['dsh-ptc-runtime-node']],workspace:{fileProfiling:true,structuredJson:true},
     script:(_options,n)=>n===1?[tool('run_code',{code:'const a=await tools.file_profile({files:[{path:"input.csv",format:"csv"}],scan:"complete"});const b=await tools.structured_json({path:"input.json",selectors:[{pointer:"/ok",op:"value"}]});console.log(JSON.stringify({a,b}));',description:'Read declared data'})]:[text('Read the actual data.')]});

@@ -185,7 +185,7 @@ export function createVerifiedExec(ctx,runtime,call){
     const record={version:1,id,sessionId:s.id,createdAt:new Date().toISOString(),summary:plan.summary,applyRequested:plan.apply,
       status:'preflight',effectState:'none',files:[],validations:[],validationResults:[],atomicity:'per-file; cross-file writes are not transactional'};
     const useNative=s.config.nativeVerifiedEdits===true;
-    if(useNative)native??=createNativeCas(ctx,runtime,registeredNativeWrite,registeredNativeExecute);
+    if(useNative&&registeredNativeWrite)native??=createNativeCas(ctx,runtime,registeredNativeWrite,registeredNativeExecute);
     record.backend=useNative?'dsh-native-cas':'ops-cas';
     record.versionKind=useNative?'native-opaque':'sha256';
     const observe=file=>useNative?native.stat(agent,file,signal):statFile(call,runtime,agent,file,signal);
@@ -214,7 +214,7 @@ export function createVerifiedExec(ctx,runtime,call){
     if(!useNative&&plan.apply&&groups.some(group=>group.mode==='create'))required.push('ops_write_file');
     if(!useNative&&plan.apply&&groups.some(group=>group.mode==='replace_exact'))required.push('ops_edit_file');
     const missing=required.filter(name=>{try{return !ctx.tools.get(name,agent);}catch{return true;}});
-    if(useNative&&!await native.available(agent))missing.push('rc2-native-conditional-write');
+    if(useNative&&(!native||!await native.available(agent)))missing.push('rc2-native-conditional-write');
     if(missing.length){
       record.status='deopt';record.reason='cas-file-tools-unavailable';record.missing=missing;s.metrics.verifiedExecDeopts++;await save();
       return {status:'deopt',reason:record.reason,missing,reportPath,effectState:'none'};
@@ -381,5 +381,5 @@ export function createVerifiedExec(ctx,runtime,call){
     return {ok:true,full,text:source.text,sha256:source.sha256,revision:observation.revision,bytes:observation.bytes,lineCount:observation.lineCount};
   }
   return {execute,readCurrentText,
-    nativeAvailable(agent){native??=createNativeCas(ctx,runtime,registeredNativeWrite,registeredNativeExecute);return native.available(agent);}};
+    nativeAvailable(agent){if(!registeredNativeWrite)return false;native??=createNativeCas(ctx,runtime,registeredNativeWrite,registeredNativeExecute);return native.available(agent);}};
 }

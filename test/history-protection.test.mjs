@@ -3,14 +3,14 @@ import assert from 'node:assert/strict';
 import {createHistoryHygiene} from '../history-hygiene.mjs';
 import {defaults} from '../runtime.mjs';
 
-function fixture(command,body){
+function fixture(command,body,{allow=true,blocks=[]}={}){
   const log=[],session={id:'protected-history',log,surface:{nodes:[],contentGeneration:0},eventAt:seq=>log[seq]},agent={session};
   const add=(type,data)=>{const event={seq:log.length,type,data};log.push(event);session.surface.nodes.push(event.seq);session.seq=event.seq;return event;};
   const state={config:defaults({contextProtocol:false}),root:process.cwd()};let protectedResult=false;
-  const hygiene=createHistoryHygiene({get:()=>state,isEnabled:()=>true}, {phase:()=>({focus:[]})},{isProtected:()=>protectedResult,canRecall:()=>true});
+  const hygiene=createHistoryHygiene({get:()=>state,isEnabled:()=>true,contextControl:{assess:()=>({allowed:allow,reason:'fixture-forecast'}),remember:()=>{}}}, {phase:()=>({focus:[]})},{isProtected:()=>protectedResult,canRecall:()=>true});
   add('user/message',{message:{role:'user',source:{kind:'user'},content:[{type:'text',text:'Inspect output.'}]}});
   add('step/start',{});add('tool/call',{name:'bash',callId:'body-call',arguments:{command}});
-  const message={id:'body',role:'tool',source:{callId:'body-call'},content:[{type:'text',text:body}]};
+  const message={id:'body',role:'tool',source:{callId:'body-call'},content:[{type:'text',text:body},...blocks]};
   const event=add('tool/result',{message});add('step/start',{});
   return {agent,hygiene,add,message,seq:event.seq,protect:()=>{protectedResult=true;}};
 }
@@ -19,6 +19,17 @@ test('receipt application rechecks a result protected after receipt capture',()=
     const h=fixture(command,body);
     assert.notDeepEqual(h.hygiene.project(h.agent,[h.message])[0].content,h.message.content);
     h.protect();assert.deepEqual(h.hygiene.project(h.agent,[h.message])[0].content,h.message.content);
+  }
+});
+test('generic receipts preserve output when the cache forecast denies a new rewrite',()=>{
+  const h=fixture('git status','native output\n'+'x'.repeat(12000),{allow:false});
+  assert.deepEqual(h.hygiene.project(h.agent,[h.message])[0].content,h.message.content);
+  assert.equal(h.hygiene.bodyVisible(h.agent,h.seq),true);
+});
+test('generic and test receipts preserve every image or file block beside text',()=>{
+  for(const command of ['git status','python -m pytest -q'])for(const block of [{type:'image',data:'retained-image'},{type:'file',id:'retained-file'}]){
+    const h=fixture(command,'100 passed in 0.2s\n'+'x'.repeat(12000),{blocks:[block]});
+    assert.deepEqual(h.hygiene.project(h.agent,[h.message])[0].content,h.message.content);
   }
 });
 test('a full-output request restores reported visibility while retaining managed history',()=>{

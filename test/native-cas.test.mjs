@@ -23,6 +23,9 @@ test('native edits capture file tools registered after plugin activation and pre
     workspace:{nativeVerifiedEdits:true},script:()=>[text('Ready.')]});
   try{
     await host.ctx.plugin(await import('../index.mjs'),{});
+    const early=await host.createAgent();
+    const initial=await host.command(early,'features');
+    assert.equal(initial.features.find(item=>item.key==='nativeVerifiedEdits').status,'blocked');
     const fsTools=await load('dsh-tool-fs');
     await host.ctx.plugin(fsTools,{read:false,readImage:false,write:true,edit:false});
     await fs.writeFile(path.join(host.cwd,'late.txt'),'before');const agent=await host.createAgent();

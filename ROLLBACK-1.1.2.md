@@ -3,7 +3,7 @@
 切换旧包不会撤销已经生效的文件修改。一次调用未完成全部文件时，以记录中的逐文件效果为准。
 
 1. 结束使用新版本的会话，并让宿主释放插件。
-2. 在当前工作区 `.dsh/work-evidence/config.json` 中移除 `nativeVerifiedEdits`、`fileProfiling`、`structuredJson`，保留其他设置。
+2. 检查每个仍使用该插件的工作区。在各工作区 `.dsh/work-evidence/config.json` 中移除 `nativeVerifiedEdits`、`fileProfiling`、`structuredJson`，保留其他设置。
 3. 加载与目标宿主匹配、已有加载依据的旧插件包。
 4. 重新启动会话，查看 `/work-evidence status` 和 `/work-evidence features`。
 5. 确认原生读取和修改入口仍能使用。

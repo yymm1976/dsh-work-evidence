@@ -240,9 +240,10 @@ export function createHistoryHygiene(runtime,taskFlow,{isProtected=()=>false,ret
         const baseFocus=(()=>{try{return taskFlow.phase(agent)?.focus??[]}catch{return []}})();
         const isPytest=/^python(?:\.exe)?\s+-m\s+pytest/iu.test(command??'');
         const testFocus=isPytest?['tests/']:[];
-        const digest=command?testOutputDigest(command,text,{seq:event.seq,truncated:event.data?.meta?.truncated===true,focus:[...baseFocus,...testFocus],filterEnvironment:isPytest}):null;
+        const textOnly=Array.isArray(message.content)&&message.content.every(block=>block?.type==='text');
+        const digest=command&&textOnly?testOutputDigest(command,text,{seq:event.seq,truncated:event.data?.meta?.truncated===true,focus:[...baseFocus,...testFocus],filterEnvironment:isPytest}):null;
         const failed=!!message.isError||hasPruneProblem(message.content??[])||state.failures.has(id)||isProtected(agent,id);
-        const toolDigest=!digest&&!failed&&call?toolOutputDigest(call.name,text,{seq:event.seq,command,truncated:event.data?.meta?.truncated===true}):null;
+        const toolDigest=textOnly&&!digest&&!failed&&call?toolOutputDigest(call.name,text,{seq:event.seq,command,truncated:event.data?.meta?.truncated===true}):null;
         state.commands.delete(id);
         const record={seq:event.seq,step:state.step,callId:id,failed,reads:[...(state.liveReads.get(id)?.values()??[])],
           paths:[...(state.observedPaths.get(id)??[])],testDigest:digest?.text??null,testSignature:digest?.signature??null,testOriginalChars:digest?.originalChars??0,toolDigest:toolDigest?.text??null,toolOriginalChars:toolDigest?.originalChars??0};
@@ -279,7 +280,8 @@ export function createHistoryHygiene(runtime,taskFlow,{isProtected=()=>false,ret
     const result=messages.map(message=>{
       if(message.role!=='tool')return message;
       const entry=state.results.get(message.id);
-      if(entry?.testDigest&&!isProtected(agent,entry.callId)&&state.step-entry.step>=1&&!state.fullOutputRequested&&!state.pinnedResults.has(entry.seq)&&!pins.opaque&&!pins.targets.has(entry.seq)){
+      const textOnly=Array.isArray(message.content)&&message.content.every(block=>block?.type==='text');
+      if(textOnly&&entry?.testDigest&&!isProtected(agent,entry.callId)&&state.step-entry.step>=1&&!state.fullOutputRequested&&!state.pinnedResults.has(entry.seq)&&!pins.opaque&&!pins.targets.has(entry.seq)){
         const reduction=resultText(message.content).length-entry.testDigest.length;
         if(reduction>=MIN_SAVING){
           const after={...message,content:[{type:'text',text:entry.testDigest}]};
@@ -292,10 +294,11 @@ export function createHistoryHygiene(runtime,taskFlow,{isProtected=()=>false,ret
           return after;
         }
       }
-      if(entry?.toolDigest&&!isProtected(agent,entry.callId)&&runtime.get(agent).config?.swLedger!==true&&state.step-entry.step>=1&&!state.fullOutputRequested&&!state.pinnedResults.has(entry.seq)&&!pins.opaque&&!pins.targets.has(entry.seq)){
+      if(textOnly&&entry?.toolDigest&&!isProtected(agent,entry.callId)&&runtime.get(agent).config?.swLedger!==true&&state.step-entry.step>=1&&!state.fullOutputRequested&&!state.pinnedResults.has(entry.seq)&&!pins.opaque&&!pins.targets.has(entry.seq)){
         const reduction=resultText(message.content).length-entry.toolDigest.length;
         if(reduction>=MIN_SAVING){
           const after={...message,content:[{type:'text',text:entry.toolDigest}]};
+          if(!state.outputPlans.get(entry.seq)?.tool&&!allowed('historyOutput',message,after,entry.seq))return message;
           outputs++;saved+=reduction;hidden.add(entry.seq);
           if(record){
             state.outputPlans.set(entry.seq,{test:false,tool:true,content:after.content});
