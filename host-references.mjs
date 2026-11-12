@@ -30,9 +30,13 @@ export function subagentResultIndex(log,ownerId,{inherited=0,recallAvailable=fal
   for(const event of own){
     const data=event.data??{};
     if(event.type==='subagent/catalog'){
-      const mode=nativeChildCatalogMode(data);
-      if(!integer(event.seq)||!mode)continue;
-      const prior=catalog.get(data.childId),conflict=prior&&(prior.mode!==mode||prior.createdAt!==data.childCreatedAt||
+      if(!integer(event.seq))continue;
+      const mode=nativeChildCatalogMode(data),prior=catalog.get(data.childId);
+      if(!mode){
+        if(prior)catalog.set(data.childId,{...prior,seq:event.seq,conflict:true});
+        continue;
+      }
+      const conflict=prior&&(prior.mode!==mode||prior.createdAt!==data.childCreatedAt||
         prior.name!==undefined&&data.name!==undefined&&prior.name!==data.name);
       catalog.set(data.childId,{mode,name:data.name??prior?.name,createdAt:data.childCreatedAt,seq:event.seq,conflict:!!(conflict||prior?.conflict)});
     }

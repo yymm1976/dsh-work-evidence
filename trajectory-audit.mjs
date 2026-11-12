@@ -15,6 +15,7 @@ const STATIC_RESULTS=new Set([...READ,'glob','grep','ops_glob','ops_grep']);
 const WRITE=new Set(['write','edit','ops_write_file','ops_edit_file','verified_exec','str_replace_editor','fastedit_java']);
 const INCOMPLETE_STATUS=new Set(['background','promoted','running','pending','queued','stopping','stopped','partial','unknown',
   'unavailable','deopt','disabled','blocked','not-attempted','aborted']);
+const FAILED_STATUS=new Set(['failed','killed','cancelled','error','aborted']);
 const messageOf=event=>event.data?.message??(event.data?.role?event.data:null);
 const integer=value=>Number.isSafeInteger(value)&&value>=0;
 const stable=value=>JSON.stringify(value,(_key,item)=>item&&typeof item==='object'&&!Array.isArray(item)?Object.fromEntries(Object.keys(item).sort().map(key=>[key,item[key]])):item);
@@ -28,14 +29,14 @@ const failedPayload=value=>{
   if(!value||typeof value!=='object')return false;
   const exit=value.exitCode??value.exit_code;
   return value.isError===true||value.success===false||value.ok===false||!!value.error||!!value.err||
-    Number.isInteger(exit)&&exit!==0||['failed','killed','cancelled','error','aborted'].includes(String(value.status??value.state??'').toLowerCase())||
+    Number.isInteger(exit)&&exit!==0||[value.status,value.state,value.job?.status].some(status=>FAILED_STATUS.has(String(status??'').toLowerCase()))||
     value.data&&typeof value.data==='object'&&failedPayload(value.data);
 };
 const incompletePayload=value=>{
   const inspect=node=>{
     if(!node||typeof node!=='object')return false;
-    const status=String(node.status??node.state??node.job?.status??'').toLowerCase();
-    return INCOMPLETE_STATUS.has(status)||['background','promoted'].includes(node.kind)||node.executionCompleted===false||
+    return [node.status,node.state,node.job?.status].some(status=>INCOMPLETE_STATUS.has(String(status??'').toLowerCase()))||
+      ['background','promoted'].includes(node.kind)||node.executionCompleted===false||
       node.completed===false||node.complete===false||node.interrupted===true||node.lossy===true||node.stopped!==undefined||
       node.signal!=null||node.timedOut===true||node.aborted===true||node.cancelled===true||node.partial===true||
       node.outputPartial===true||node.truncated===true||node.rangeComplete===false||node.textComplete===false||

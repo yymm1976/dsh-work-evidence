@@ -248,11 +248,12 @@ test('the real native tool channel retains cancelled file effects and a saved re
     assert.ok(detail.taskFlow.unresolvedErrors.some(error=>error.tool==='verified_exec'));
   }finally{await host.close();}
 });
-test('native edits merge Windows case aliases of one existing file before planning changes',async()=>{
+test('native edits merge filesystem case aliases of one existing file before planning changes',async()=>{
   const host=await startHost({workspace:{nativeVerifiedEdits:true},script:()=>[text('Ready.')]});
   try{
     const file=path.join(host.cwd,'Case.txt');await fs.writeFile(file,'AB');const agent=await host.createAgent();
-    const alias=process.platform==='win32'?'case.txt':'Case.txt';
+    const caseInsensitive=await fs.lstat(path.join(host.cwd,'case.txt')).then(()=>true,error=>{if(error.code!=='ENOENT')throw error;return false;});
+    const alias=caseInsensitive?'case.txt':'Case.txt';
     const result=await invoke(host,agent,{summary:'Apply both edits to the same file identity',apply:true,edits:[
       {file:'Case.txt',mode:'replace_exact',old_text:'A',new_text:'X'},{file:alias,mode:'replace_exact',old_text:'B',new_text:'Y'}]});
     if(!nativeSupported){assert.equal(result.status,'deopt');return;}

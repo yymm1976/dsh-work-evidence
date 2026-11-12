@@ -629,6 +629,22 @@ test('outer or nested failure markers survive inner completion and producer exit
   }
 });
 
+test('a completed outer envelope cannot hide nested job failure or unfinished state',()=>{
+  for(const status of ['failed','killed','cancelled','error','aborted','running','pending','queued','stopping']){
+    const body=JSON.stringify({status:'completed',exitCode:0,job:{status}});
+    const {f,result}=processFixture({body,exitCode:0});
+    const assessment={schema:ASSESSMENT_SCHEMA,sourceId:'nested-job-state',throughSeq:result.seq,reviewer:'human',allExplicitRequirementsCovered:true,
+      criteria:[{id:'source',requirementSeqs:[1],eventSeqs:[result.seq],outcome:'pass'}],
+      checks:[recordedCheck(f,{resultSeq:result.seq},'source','addresses')]};
+    const audited=auditDshSession(f.events,{sourceId:assessment.sourceId,assessment});
+    const call=normalizeDshEvents(f.events).calls.find(row=>row.name==='pwsh');
+    assert.equal(call.processOutcome,'exited-zero',status);assert.equal(call.exitCode,0,status);
+    if(['failed','killed','cancelled','error','aborted'].includes(status))assert.equal(call.toolOutcome,'failed',status);
+    else assert.equal(call.outputIncomplete,true,status);
+    assert.notEqual(audited.requirements.requirements[0].status,'supported',status);
+  }
+});
+
 test('verified_exec file effects retain paths and per-file states without extra mutation epochs',()=>{
   for(const channel of ['native','prefix-error']){
     const f=fixture(),outcome={status:'partial',effectState:'applied',files:[
