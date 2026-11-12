@@ -124,6 +124,35 @@ test('only return and only output select whole-response JSON validation',()=>{
   }
 });
 
+test('final JSON composes validity confirmations without dropping explicit format requirements',()=>{
+  const fenced='```json\n{"answer":42}\n```';
+  for(const request of ['Return only raw JSON as the final answer. The final response must be valid JSON.',
+    'The final answer must be JSON without code blocks. The final response must be valid JSON.'])
+    assert.equal(finalJsonSyntaxIssue(fenced,request)?.rawFinal,true,request);
+  assert.equal(finalJsonSyntaxIssue(fenced,'Return only raw JSON as the final answer. Return the final answer in a JSON code block.'),null);
+  assert.equal(finalJsonSyntaxIssue(fenced,'Return the final answer in a JSON code block. Return only raw JSON as the final answer.')?.rawFinal,true);
+});
+
+test('schema inputs remain separate from output destinations',()=>{
+  const fenced='```json\n{"answer":42}\n```';
+  for(const request of ['Return only raw JSON as the final answer using the schema in README.md.',
+    'Return only raw JSON as the final answer following the schema defined in schema.json.'])
+    assert.equal(finalJsonSyntaxIssue(fenced,request)?.rawFinal,true,request);
+  assert.equal(finalJsonSyntaxIssue('```json\n{"answer":}\n```','Return JSON in README.md using the schema in schema.json.'),null);
+});
+
+test('prohibiting fences preserves an affirmative JSON requirement',()=>{
+  const fenced='```json\n{"answer":42}\n```',malformed='```json\n{"answer":}\n```';
+  for(const request of ['The final answer must be JSON and must not contain Markdown fences.',
+    'Return only JSON and must not include a JSON code block.']){
+    assert.equal(finalJsonSyntaxIssue(fenced,request)?.rawFinal,true,request);
+    assert.equal(finalJsonSyntaxIssue('{"answer":42}',request),null,request);
+  }
+  for(const request of ['The final answer must not contain JSON. Explain the syntax.',
+    'Return only raw JSON. The final answer must not be JSON. Explain the syntax.'])
+    assert.equal(finalJsonSyntaxIssue(malformed,request),null,request);
+});
+
 test('raw final JSON rejects a valid fenced answer and accepts bare JSON', () => {
   const issue = finalJsonSyntaxIssue('```json\n{"answer": 42}\n```', RAW_FINAL_REQUEST);
   assert.ok(issue);
