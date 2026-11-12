@@ -41,7 +41,11 @@ for(const ledgerReceipt of [true,false])test('native PTC, '+(ledgerReceipt?'sour
     plan.push([tool('run_code',{code:'console.log(JSON.stringify(await tools.work_recall('+JSON.stringify({kind:'event',seq:root.seq,offset:0,maxChars:64000})+')));',description:'Recover the original source event without another file read'})],[text('已取回原始正文。')]);
     await host.send(agent,`从 event:${root.seq} 取回 o0.txt 原文，保持 Work Evidence 关闭，不重新读取文件。`);
     assert.ok(requestText(host.requests.at(-1)).includes('o0 row 31'));
-    assert.equal(host.events.filter(event=>event.type==='tool/ptc-dispatch'&&event.data.name==='read').length,23);
+    const reads=host.events.filter(event=>event.type==='tool/ptc-dispatch'&&event.data.name==='read');
+    assert.equal(reads.length,23,JSON.stringify({ledgerReceipt,reads:reads.map(event=>({seq:event.seq,args:event.data.arguments})),
+      unconsumedPlan:plan.length,requests:host.requests.length,
+      turnEnds:host.events.filter(event=>event.type==='turn/end').map(event=>event.data.reason),
+      toolErrors:host.events.filter(event=>event.type==='tool/result'&&event.data.message?.isError).map(event=>({seq:event.seq,content:event.data.message.content}))}));
     assert.equal(host.auxiliaryRequests.length,0);
     assert.equal(host.events.filter(event=>event.type==='tool/result'&&event.data.message?.isError).length,0,
       JSON.stringify(host.events.filter(event=>event.type==='tool/result'&&event.data.message?.isError).map(event=>event.data.message.content)));
