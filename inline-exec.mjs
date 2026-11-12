@@ -2,6 +2,7 @@ import {argsOf,eventLog,isUserRequestMessage,textOf} from './runtime.mjs';
 import {Script} from 'node:vm';
 
 const quote=value=>"'"+String(value).replaceAll("'","''")+"'";
+const bashQuote=value=>"'"+String(value).replaceAll("'","'\\''")+"'";
 const INPUT_KEYS=new Set(['runtime','language','code','scriptRef','edits','executable','interpreter','format','cwd','workdir','timeoutMs','mode','sources']);
 const CALL_EVENT_TYPES=new Set(['tool/call','tool/ptc-dispatch-start','tool/ptc-dispatch','tool/code-dispatch-start','tool/code-dispatch']);
 const RESULT_EVENT_TYPES=new Set(['tool/result','tool/ptc-dispatch','tool/code-dispatch']);
@@ -308,13 +309,22 @@ function resolveIndexedScript(input,calls,resultExecutables,eventRefs,signal){
   return {...resolved,sourceCallIds};
 }
 
-/** Transfer UTF-8 bytes through native PowerShell without shell re-escaping. */
-export function inlineCommand(input,root){
+/** Transfer UTF-8 bytes through the selected native shell while treating the program as stdin data. */
+export function inlineCommand(input,root,shell='pwsh'){
   if(!input||!['python','node'].includes(input.runtime)||typeof input.code!=='string'||!input.code.trim()||input.code.length>64000)
     throw new Error('runtime must be python or node and code must contain 1–64000 characters');
   if(input.format!==undefined&&(input.runtime!=='node'||!['module','commonjs'].includes(input.format)))throw new Error('format applies only to Node');
   const executable=input.executable??input.runtime;
   if(!validExecutable(executable))throw new Error('Invalid existing executable');
+  if(shell==='bash'){
+    const args=input.runtime==='python'?['-B','-X','utf8','-']:['--input-type='+(input.format??'module'),'-'];
+    const environment=input.runtime==='python'?'PYTHONIOENCODING=utf-8 PYTHONDONTWRITEBYTECODE=1 ':'';
+    const invocation=environment+[executable,...args].map(bashQuote).join(' ');
+    return `set -o pipefail
+cd -- ${bashQuote(root)} || exit $?
+printf '%s' ${bashQuote(input.code)} | ${invocation}`;
+  }
+  if(shell!=='pwsh')throw new Error('shell must be pwsh or bash');
   const args=input.runtime==='python'?'-B -X utf8 -':'--input-type='+(input.format??'module')+' -';
   const encoded=Buffer.from(input.code,'utf8').toString('base64');
   return `$ErrorActionPreference = 'Stop'

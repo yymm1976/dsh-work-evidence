@@ -67,7 +67,7 @@ async function* emit(turn,usage){
  * auxiliary(options) answers non-loop calls (quality review, compaction).
  */
 export async function startHost({script,auxiliary=()=>[text('{}')],pluginConfig={},workspace=null,efforts=['low','high','max'],toolMode='native',mountPlugin=true,
-  extraMounts=[],usage=null,contextWindow=200000,pluginDirectory=PLUGIN,sessionQueryMount=['dsh-session-query'],filesystem='dsh-fs-local',fileTools={}}={}){
+  extraMounts=[],usage=null,contextWindow=200000,pluginDirectory=PLUGIN,sessionQueryMount=['dsh-session-query'],filesystem='dsh-fs-local',fileTools={},mountShell=true}={}){
   const [{Context},llm]=await Promise.all([load('cordis'),load('dsh-llm')]);
   const cwd=await fs.mkdtemp(path.join(os.tmpdir(),'we-host-'));
   if(workspace){await fs.mkdir(path.join(cwd,'.dsh','work-evidence'),{recursive:true});await fs.writeFile(path.join(cwd,'.dsh','work-evidence','config.json'),JSON.stringify(workspace));}
@@ -98,7 +98,8 @@ export async function startHost({script,auxiliary=()=>[text('{}')],pluginConfig=
     ['dsh-tools',splitToolExecutor?{}:{mode:toolMode}],
     ...(splitToolExecutor?[[toolMode==='ptc'?'dsh-tool-executor-ptc':'dsh-tool-executor-native',{}]]:[]),
     [filesystem,{cwd}],['dsh-working-directory',{defaultDirectory:cwd}],['dsh-subprocess-local'],['dsh-sandbox-local'],['dsh-sandbox-policy',{mode:'danger-full-access',workspaceRoot:cwd}],
-    ['dsh-shell-env'],['dsh-jobs-local'],['dsh-pwsh-local',{cwd}],['dsh-tool-pwsh',{}],['dsh-tool-fs',{read:true,write:true,edit:true,...fileTools}],['dsh-tool-fs-search',{sampleOverCapGlobResults:false}],
+    ['dsh-shell-env'],['dsh-jobs-local'],...(mountShell?[['dsh-pwsh-local',{cwd}],['dsh-tool-pwsh',{}]]:[]),
+    ['dsh-tool-fs',{read:true,write:true,edit:true,...fileTools}],['dsh-tool-fs-search',{sampleOverCapGlobResults:false}],
     ['dsh-llm'],['dsh-agent-loop'],['dsh-commands'],['dsh-session-persistence-jsonl',{root:path.join(cwd,'.sessions')}],...extraMounts,
   ])await mount(name,config);
   patchToolExecution(ctx);

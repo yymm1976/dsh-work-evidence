@@ -77,7 +77,8 @@ export function registerManagementTools({ctx,runtime,state,effects,available,fea
       }
       if(args.reset!==undefined)throw new Error('reset requires mode: retained');
       const sources=declaredFileSources(args.sources);
-      if(process.platform!=='win32'||!available(exec.agent,'pwsh'))return {status:'unavailable',reason:'native-pwsh-unavailable',executionOccurred:false};
+      const shell=process.platform==='win32'?'pwsh':'bash';
+      if(!available(exec.agent,shell))return {status:'unavailable',reason:`native-${shell}-unavailable`,executionOccurred:false};
       let script;
       try{script=resolveInlineScript(args,exec.agent.session,exec.signal);}catch(error){
         if(error.message==='runtime must be python or node'&&args.runtime===undefined&&args.language===undefined&&typeof args.code==='string'&&args.code.trim()&&args.code.length<=64000&&exec.callId)
@@ -105,12 +106,15 @@ export function registerManagementTools({ctx,runtime,state,effects,available,fea
             namedExecutable?'No program was executed. The task names a specific interpreter path. Supply that interpreter at an existing absolute path or report the unmet requirement; do not substitute PATH. Reuse the returned scriptRef to retain the complete program.':
             'No program was executed. Supply an existing absolute interpreter path. If the task permits changing environments, explicitly set executable to python or node (matching the runtime) to use PATH. Omitting executable retains the recorded or declared path. Reuse the returned scriptRef to retain the complete program.'};
       }
-      const command=inlineCommand(script,root);
+      const command=inlineCommand(script,root,shell);
       // Inline scripts may print source files. Their output has no native read
       // windows, so it must not be treated as disposable generic shell output.
       preserveContextResult(exec.agent.session.id,exec.rootCallId??exec.callId);
       const dependencies=await executionDependencies.capture(root,sources,exec.signal);
-      const result=await call('pwsh',{command,description:'Run '+script.runtime+' script via stdin',timeoutMs:script.timeoutMs??10000},exec);
+      const description='Run '+script.runtime+' script via stdin';
+      const result=shell==='bash'
+        ?await call('bash',{description,command,timeoutMs:script.timeoutMs??10000},exec)
+        :await call('pwsh',{command,description,timeoutMs:script.timeoutMs??10000},exec);
       const fileEvidence=await executionDependencies.finish(dependencies,dependencyExecutionComplete(result),exec.signal);
       const scriptEditsSubmitted=args.edits?.length??0,scriptEditCount=(args.edits??[]).filter(edit=>edit.before!==edit.after).length;
       if(args.scriptRef)effects.decide(exec.agent,'inlineScriptReuse','applied','explicit-same-session-script-reference',{scriptChars:script.code.length,sourceCallId:args.scriptRef,scriptEditsSubmitted,scriptEditCount});

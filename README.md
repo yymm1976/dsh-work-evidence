@@ -448,7 +448,8 @@ FastEdit Python 路径由 fastEditPython 设置。
 原生 PowerShell 调用以未引用的含空格 `.exe` 路径开始，且完整错误中的未知命令名恰好是第一个空格前的路径片段时，恢复消息给出带 `&` 和引号的调用前缀。除英文错误外，也接受带 `FullyQualifiedErrorId : CommandNotFoundException` 和被引号包围的同一路径片段的本地化错误；两者必须位于同一输出流的同一错误记录，不能跨 stdout、stderr 或不同记录拼接。其他错误不猜测。同条用户要求中，同一路径只提示 1 次。调用方保留原参数并决定后续动作；原命令、退出码和输出保留。成功、后台、取消、不完整结果及其他错误不附此提示。
 
 `work_exec` 的 Python 调用不传 `format`。Node 默认使用 ESM；未显式设置 Node 格式且因当前脚本的 `require` 在 ESM 下失败时，若原文可按 CommonJS 解析，结果提供 `recovery.arguments`，包含当前 `scriptRef` 与 `format:"commonjs"`。
-显式绝对 `executable` 路径不存在或指向目录时，调用在启动 PowerShell 前返回 `WORK_EXEC_EXECUTABLE_NOT_FOUND`、`executionOccurred:false`，保留 `scriptRef`。程序引用继承记录的解释器路径；省略 `executable` 不会改用 PATH。只有任务允许更换环境时，才建议将 `executable` 显式设为 `python` 或 `node`，改用 PATH 中的同名运行时；任务声明特定解释器时保留缺失路径为阻塞项。权限无法确认、PATH 名称及相对路径仍交给宿主执行；这里不检查执行权限或文件格式。
+Windows 继续通过原生 `pwsh` 执行。POSIX 在宿主提供原生 `bash` 时，由 `bash` 的 stdin、超时、取消和作业状态执行完整的 Python/Node 程序；缺少 `bash` 时返回 `native-bash-unavailable`，不启动替代进程或报告成功。程序正文及路径经 shell 单引号转义后只作为 stdin 数据传入，不生成临时源码文件。
+显式绝对 `executable` 路径不存在或指向目录时，调用在启动所选原生 shell 前返回 `WORK_EXEC_EXECUTABLE_NOT_FOUND`、`executionOccurred:false`，保留 `scriptRef`。程序引用继承记录的解释器路径；省略 `executable` 不会改用 PATH。只有任务允许更换环境时，才建议将 `executable` 显式设为 `python` 或 `node`，改用 PATH 中的同名运行时；任务声明特定解释器时保留缺失路径为阻塞项。权限无法确认、PATH 名称及相对路径仍交给宿主执行；这里不检查执行权限或文件格式。
 `scriptEditsSubmitted` 记录提交的编辑数，`scriptEditCount` 只计替换前后文字不同的编辑。相同文字仍会按请求再次执行原程序，不发送脚本已改动的版本提示。
 结果中的 `scriptEventRef` 是当前会话内准确调用的短地址，例如 `event:69`。后续把该地址传给 `scriptRef` 即可修改或执行同版程序；原来的完整 `scriptRef` 继续可用。地址不匹配、语言冲突或编辑不唯一时拒绝执行。
 长程序失败后的复用建议保留原运行时；只有结果明确为 `WORK_EXEC_EXECUTABLE_NOT_FOUND` 且任务未声明特定解释器时才附同名 PATH `executable`，避免继续继承失效路径，其他失败不切换解释器。
