@@ -128,7 +128,7 @@ const shellReportedFailure=text=>/The term[^\r\n]{0,500}is not recognized as a n
 const executionFailed=value=>typeof value==='string'?resultHasProblem(value):executionResultLayers(value).some(node=>
   node.isError===true||node.success===false||node.ok===false||!!(node.error||node.err)||
   Number.isFinite(node.exitCode)&&node.exitCode!==0||Number.isFinite(node.exit_code)&&node.exit_code!==0||
-  [node.status,node.state,node.job?.status].some(status=>['error','failed','killed','cancelled','rejected','aborted'].includes(String(status??'').toLowerCase()))||
+  [node.status,node.state,node.job?.status].some(status=>['error','failed','killed','cancelled','rejected','aborted','unavailable'].includes(String(status??'').toLowerCase()))||
   node.timedOut===true||node.aborted===true||node.cancelled===true||node.signal!=null||node.stopped!==undefined);
 // A successful registry read may contain running or failed jobs. Their states
 // describe the jobs, not the outcome of reading the registry.

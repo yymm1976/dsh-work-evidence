@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
+import {execFileSync} from 'node:child_process';
 import {startHost,text,tool} from './helpers/host.mjs';
 
 const lastValue=options=>JSON.parse(options.messages.findLast(message=>message.role==='tool').content.map(block=>block.text??'').join(''));
@@ -17,20 +18,37 @@ const nodeImage=process.env.DSH_TEST_LINUX_NODE_IMAGE??'node:24.22.1-bookworm-sl
 async function installBashDockerShim(){
   const directory=await fs.mkdtemp(path.join(os.tmpdir(),'dsh-linux-work-exec-bash-'));
   const executable=path.join(directory,'bash');
+  const hadPath=Object.hasOwn(process.env,'PATH'),previousPath=process.env.PATH;
+  const originalPath="'"+(previousPath??'').replaceAll("'","'\\''")+"'";
+  const owner=path.basename(directory),dockerOptions={encoding:'utf8',timeout:15000,env:{...process.env,PATH:previousPath??''}};
   await fs.writeFile(executable,`#!/bin/sh
 set -eu
-exec /usr/bin/docker run --rm -i --pull never --network none -e DSH_WORK_EVIDENCE_STDIN_ID -e DSH_WORK_EVIDENCE_STDIN_0 -e DSH_WORK_EVIDENCE_STDIN_1 -e DSH_WORK_EVIDENCE_STDIN_2 -v "$PWD:$PWD" -w "$PWD" "$WORK_EXEC_TEST_IMAGE" /usr/bin/bash "$@"
+PATH=${originalPath} exec docker run --rm -i --pull never --network none --label dsh-work-evidence-fixture=${owner} -e DSH_WORK_EVIDENCE_STDIN_ID -e DSH_WORK_EVIDENCE_STDIN_0 -e DSH_WORK_EVIDENCE_STDIN_1 -e DSH_WORK_EVIDENCE_STDIN_2 -v "$PWD:$PWD" -w "$PWD" "$WORK_EXEC_TEST_IMAGE" /usr/bin/bash "$@"
 `,{mode:0o755});
-  const hadPath=Object.hasOwn(process.env,'PATH'),previousPath=process.env.PATH;
   const hadImage=Object.hasOwn(process.env,'WORK_EXEC_TEST_IMAGE'),previousImage=process.env.WORK_EXEC_TEST_IMAGE;
   process.env.PATH=directory+path.delimiter+(previousPath??'');
   process.env.WORK_EXEC_TEST_IMAGE=pythonImage;
   return async()=>{
-    if(hadPath)process.env.PATH=previousPath;
-    else delete process.env.PATH;
-    if(hadImage)process.env.WORK_EXEC_TEST_IMAGE=previousImage;
-    else delete process.env.WORK_EXEC_TEST_IMAGE;
-    await fs.rm(directory,{recursive:true,force:true});
+    const errors=[];
+    try{
+      // Killing the native Docker client may leave the container's PID 1 alive.
+      const ids=execFileSync('docker',['ps','-aq','--no-trunc','--filter','label=dsh-work-evidence-fixture='+owner],dockerOptions).trim().split(/\s+/u).filter(Boolean);
+      for(const id of ids)try{
+        const [container]=JSON.parse(execFileSync('docker',['inspect',id],dockerOptions));
+        assert.equal(container.Id,id);assert.equal(container.Config.Labels?.['dsh-work-evidence-fixture'],owner);
+        if(container.State.Running)execFileSync('docker',['stop','--time','2',id],dockerOptions);
+      }catch(error){errors.push(error);}
+      const remaining=execFileSync('docker',['ps','-aq','--filter','label=dsh-work-evidence-fixture='+owner],dockerOptions).trim();
+      if(remaining)errors.push(new Error('work_exec fixture containers remain after cleanup: '+remaining));
+    }catch(error){errors.push(error);}
+    finally{
+      if(hadPath)process.env.PATH=previousPath;
+      else delete process.env.PATH;
+      if(hadImage)process.env.WORK_EXEC_TEST_IMAGE=previousImage;
+      else delete process.env.WORK_EXEC_TEST_IMAGE;
+      try{await fs.rm(directory,{recursive:true,force:true});}catch(error){errors.push(error);}
+    }
+    if(errors.length)throw new AggregateError(errors,'work_exec fixture container cleanup failed');
   };
 }
 
@@ -80,9 +98,9 @@ async function assertLinuxNativeBash(){
   const nodeCode='console.log('+JSON.stringify(trickyText)+');';
   const largePython=paddedProgram('python','\nprint("large-python-ok")');
   const largeNode=paddedProgram('node','\nconsole.log("large-node-ok");');
-  const largeTimeout=paddedProgram('python','\nimport time\nprint("large-timeout-start", flush=True)\ntime.sleep(30)');
+  const largeTimeout=paddedProgram('python','\nimport time\nprint("large-timeout-start", flush=True)\ntime.sleep(86400)');
   let nodeRef;
-  let host,failure;
+  let host,agent,failure,promotedJobId,promotedJobSettled=false;
   try{
     host=await startHost({
       workspace:{toolSurface:'full'},
@@ -130,9 +148,10 @@ async function assertLinuxNativeBash(){
     });
     const nativeResults=[];
     host.ctx.on('tools/result',(execution,result)=>{if(execution.name==='bash')nativeResults.push(result.value?.data??result.value??result);});
-    const agent=await host.createAgent('max');
+    agent=await host.createAgent('max');
     await host.send(agent,'用 work_exec 执行 Python 和 Node，并沿用准确程序版本。');
     const [python,node,commonjs,pythonFailure,edited,largePythonResult,largeNodeResult,largeTimeoutResult,privateEnvironment]=outputs(host);
+    promotedJobId=largeTimeoutResult?.jobId;
     const laterBash=nativeResults.at(-1);
     assert.equal(python.exitCode,0);
     assert.equal(python.stdout.text,trickyText+'\n');
@@ -172,11 +191,20 @@ async function assertLinuxNativeBash(){
     assert.equal(host.ctx.jobs.kill(largeTimeoutResult.jobId,agent.session.id,'transport fixture complete'),'requested');
     const settled=await host.ctx.jobs.wait(largeTimeoutResult.jobId,30000,agent.session.id,AbortSignal.timeout(32000));
     assert.equal(settled.status,'killed');
+    promotedJobSettled=true;
     assert.deepEqual((await fs.readdir(host.cwd)).filter(name=>name.startsWith('.dsh-work-exec-')),[]);
   }catch(error){
     failure=error;
   }finally{
     const cleanupErrors=[];
+    if(host&&agent&&!promotedJobSettled){
+      const jobId=promotedJobId??outputs(host).find(value=>value.kind==='promoted'&&typeof value.jobId==='string')?.jobId;
+      if(jobId)try{
+        host.ctx.jobs.kill(jobId,agent.session.id,'failed transport fixture cleanup');
+        const settled=await host.ctx.jobs.wait(jobId,30000,agent.session.id,AbortSignal.timeout(32000));
+        if(['running','stopping'].includes(settled.status))throw new Error('work_exec fixture job did not settle during cleanup');
+      }catch(error){cleanupErrors.push(error);}
+    }
     if(host)try{await host.close();}catch(error){cleanupErrors.push(error);}
     try{await restoreShim();}catch(error){cleanupErrors.push(error);}
     if(process.env.PATH!==expectedPath)cleanupErrors.push(new Error('work_exec Linux test did not restore PATH'));

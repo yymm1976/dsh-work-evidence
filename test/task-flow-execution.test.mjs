@@ -5,13 +5,13 @@ import {createTaskFlow,taskFlowGuidance} from '../task-flow.mjs';
 import {defaults} from '../runtime.mjs';
 import {reportedCheckFailure,reportedExecutionChecks} from '../recovery.mjs';
 
-function reviewResult(value,{body=typeof value==='string'?value:JSON.stringify(value),live=false,isError=false}={}){
+function reviewResult(value,{body=typeof value==='string'?value:JSON.stringify(value),live=false,isError=false,commandName='pwsh'}={}){
   const log=[{seq:0,type:'turn/start',data:{turn:1}},
     {seq:1,type:'user/message',data:{message:{id:'request',role:'user',source:{kind:'user'},content:[{type:'text',text:'运行检查并说明结果'}]}}},
-    {seq:2,type:'tool/call',data:{turn:1,step:1,callId:'shell',name:'pwsh',arguments:{command:'run-checks',description:'checks'}}}];
+    {seq:2,type:'tool/call',data:{turn:1,step:1,callId:'shell',name:commandName,arguments:{command:'run-checks',description:'checks'}}}];
   const agent={session:{id:'execution-facts',log,seq:4}},state={config:{...defaults(),qualityReview:true},root:process.cwd()};
   const flow=createTaskFlow({}, {get:()=>state,isEnabled:()=>true,activeMode:()=> 'quality'});
-  if(live)flow.observe({agent,name:'pwsh',callId:'shell'},{value,content:[{type:'text',text:body}],isError});
+  if(live)flow.observe({agent,name:commandName,callId:'shell'},{value,content:[{type:'text',text:body}],isError});
   log.push({seq:3,type:'tool/result',data:{turn:1,step:1,message:{role:'tool',source:{callId:'shell'},content:[{type:'text',text:body}],isError}}});
   return flow.reviewState(agent);
 }
@@ -25,6 +25,16 @@ test('zero failed count is not confused with the total count before FAILED',()=>
       assert.equal(result.executions[0].executionCompleted,true);
       assert.equal(result.unresolvedErrors.length,0);
     }
+  }
+});
+
+test('an unavailable native command remains unresolved without claiming execution completed',()=>{
+  for(const commandName of ['work_exec','bash','pwsh'])for(const live of [false,true]){
+    const result=reviewResult({status:'unavailable',reason:'native-shell-env-unavailable',executionOccurred:false},{live,commandName});
+    assert.equal(result.executions[0].tool,commandName);
+    assert.equal(result.executions[0].executionCompleted,false);
+    assert.equal(result.executions[0].exitCode,null);
+    assert.equal(result.unresolvedErrors.length,1);
   }
 });
 

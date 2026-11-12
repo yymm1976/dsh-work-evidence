@@ -11,6 +11,9 @@ import {reportedExecutionChecks} from './recovery.mjs';
 
 export function registerManagementTools({ctx,runtime,state,effects,available,featureControl,capabilityDiagnostic,contextEconomics,taskFlow,taskHandoff,retainedCompute,finalJson,qualityReview,executionEvidence,executionDependencies,refreshExecutionEvidence,hostReferences,workingSet,compressionControl,compactionHandoff,contextWindow,observationLedger,historyCoordinator,clearPluginState,index,candidates,ptcPatterns,ptcFastpath,verifiedExec,fastEditJava,fileProfiler,structuredJson,preserveContextResult,retainRecalledSources,hasHistoricalReferences,applyToolSurface,call,disabledResult,output,COMPACT_HIDDEN_TOOLS,assertParameterBounds,parameters}){
   const pendingStdin=new Map();let registeredShellEnv=null,disposeShellEnv=null;
+  function clearShellEnvironment(){
+    pendingStdin.clear();disposeShellEnv?.();registeredShellEnv=null;disposeShellEnv=null;
+  }
   function prepareShellEnvironment(){
     const registry=ctx.get('shellEnv');
     if(typeof registry?.register!=='function')return false;
@@ -25,7 +28,8 @@ export function registerManagementTools({ctx,runtime,state,effects,available,fea
       }});
     registeredShellEnv=registry;return true;
   }
-  ctx.on('dispose',()=>{pendingStdin.clear();disposeShellEnv?.();registeredShellEnv=null;disposeShellEnv=null;});
+  ctx.on('internal/service',name=>{if(name==='shellEnv')clearShellEnvironment();});
+  ctx.effect(()=>clearShellEnvironment);
   const register=(name,description,properties,required,execute,{gate=true,resultSchema=output.schema}={})=>ctx.tools.register({name,description,
     parameters:{...parameters(properties),required},output:{...output,schema:resultSchema},isConcurrencySafe:()=>false,execute:async(args,exec)=>runtime.withExecution(exec,async()=>{
       if(!exec.agent)throw new Error('Agent required');await runtime.init(exec.agent,exec.signal);await effects.load(exec.agent);runtime.sync(exec.agent);
