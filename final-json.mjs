@@ -6,11 +6,9 @@ const PROCESS_FIELDS=['exitCode','stdout','stderr'];
 const SHELL_TOOLS=new Set(['pwsh','bash','ops_bash']);
 const MAX_REPAIRS=2;
 const messageOf=event=>event?.data?.message??event?.data;
-const STRICT_JSON_OUTPUT=/(?:只|仅)(?:能|需)?(?:返回|输出)|\b(?:return|output)\s+only\b/iu;
-const PROMPT_REFERENCE=/(?:(?:解释|说明|翻译|分析|审查|评审|修改|编辑|改写|替换|更新|检查|explain|translate|describe|review|analy[sz]e|edit|modify|rewrite|replace|update|inspect)[^。！？;\n]{0,140}(?:指令|要求|提示|示例|例子|README|instruction|prompt|example)|(?:指令|要求|提示|示例|例子|README|instruction|prompt|example)[^。！？;\n]{0,140}(?:解释|说明|翻译|分析|审查|评审|修改|编辑|改写|替换|更新|检查|explain|translate|describe|review|analy[sz]e|edit|modify|rewrite|replace|update|inspect))/iu;
-const JSON_TOPIC_REFERENCE=/(?:最终|最后)\s*JSON\s*(?:解析|处理|校验|验证|格式|代码|文件|逻辑|函数|模块|配置|路径|字段|问题|实现|方案|需求|要求|示例|说明)|\bfinal\s+JSON\s+(?:parsing|handling|validation|format|code|file|logic|function|module|config|schema|example|instruction)\b/iu;
+const STRICT_JSON_OUTPUT=/(?:只|仅)(?:能|需)?(?:返回|输出)|\b(?:(?:return|output)\s+only|only\s+(?:return|output))\b/iu;
 const CLAUSE_LEAD=/^(?:(?:and|but|so|then|also|finally|please|kindly)\s+|(?:can|could|would)\s+you\s+|i\s+need\s+you\s+to\s+|you\s+(?:must|should|need\s+to|have\s+to)\s+|请(?:你)?\s*|然后|随后|并且|同时)+/iu;
-const REFERENCE_ACTION=/^(?:解释|说明|翻译|分析|审查|评审|修改|编辑|改写|替换|更新|检查)|\b(?:describe|explain|translate|review|analy[sz]e|edit|modify|rewrite|replace|update|inspect)\b/iu;
+const REFERENCE_ACTION=/^(?:(?:解释|说明|翻译|分析|审查|评审|修改|编辑|改写|替换|更新|检查)|(?:describe|explain|translate|review|analy[sz]e|edit|modify|rewrite|replace|update|inspect|include|insert|write|add|put)\b)/iu;
 const ENGLISH_OUTPUT_ACTION=/^(?:(?:only|just)\s+)?(?:(?:you|assistant)\s+)?(?:(?:must|should|need\s+to|have\s+to|shall|will|can|could)\s+)?(?:return|output|provide|give|reply|respond)\b/iu;
 const CHINESE_OUTPUT_ACTION=/^(?:(?:最终|最后|只|仅|直接|务必|必须|应该|应当|需要|能|需|须|可)\s*)*(?:返回|输出|提供|给出)/iu;
 const ENGLISH_FINAL_ACTION=/^(?:the\s+)?final\s+(?:assistant\s+)?(?:answer|response|result|text|output)\s+(?:must|should|needs?\s+to|has\s+to|is\s+required\s+to|will)\s+(?:be|contain|consist\s+of)?[^\n]{0,80}\bJSON\b/iu;
@@ -20,54 +18,61 @@ function requestDirectives(text){
   return text
     .replace(/```[\s\S]*?```/gu,'\n')
     .replace(/`[^`\r\n]*`/gu,' ')
-    .replace(/"[^"\r\n]*"|“[^”\r\n]*”|'[^'\r\n]*'/gu,' ');
+    .replace(/"[^"\r\n]*"|“[^”\r\n]*”|'[^'\r\n]*'/gu,quoted=>/[。.!?！？]\s*["”']$/u.test(quoted)?'. ':' ');
 }
 function requestClauses(text){
   return requestDirectives(String(text??''))
-    .split(/[。！？?!;；\n,.，]/u)
+    .split(/[。！？?!;；\n,，]|\.(?=\s|$)|\s+(?=then\s+(?:(?:only|just)\s+)?(?:return|output|provide|give|reply|respond)\b)/iu)
     .map(clause=>clause.trim().replace(CLAUSE_LEAD,'').trim())
     .filter(Boolean);
 }
 function isAssistantOutputAction(clause){
+  if(/\b(?:must|should|shall|will)\s+(?:not|never)\s+(?:be|contain|include|consist\s+of)\b|^JSON\b[^\n]{0,32}\b(?:is|be)\s+(?:not|never)\b|(?:不是|不能是|不得为|非)\s*JSON/iu.test(clause))return false;
   return ENGLISH_OUTPUT_ACTION.test(clause)||CHINESE_OUTPUT_ACTION.test(clause)||
     ENGLISH_FINAL_ACTION.test(clause)||CHINESE_FINAL_ACTION.test(clause)||JSON_AS_FINAL.test(clause);
 }
 function isReferenceAction(clause){
-  return REFERENCE_ACTION.test(clause.replace(CLAUSE_LEAD,'').trim());
+  return REFERENCE_ACTION.test(clause)||
+    /^(?:provide|give|return|output)\s+(?:(?:a|an|the)\s+)?(?:prose|explanation|analysis|recommendation|translation|description)\b/iu.test(clause)||
+    /\b(?:in|into|within|inside|to)\s+(?:(?:the|a|an)\s+)?(?:README(?:\.md)?|(?:source|output|config|documentation)\s+files?|files?\b|[\w./-]+\.(?:md|json|[cm]?js|py))\b|(?:在|写入|添加到)[^。；;\n]{0,30}(?:README|文件|文档)/iu.test(clause);
 }
 function mentionsRequestedFinalJson(clause){
   const rawOutput=/(?:裸|原始|纯|\braw\b|\bbare\b|\bunwrapped\b|\bplain\b|\bnaked\b|\bunformatted\b)[^。！？;\n]{0,16}JSON/iu.test(clause)&&
     /(?:最终|返回|输出|作为|return|output|final)/iu.test(clause);
-  return rawOutput||/(?:最终|最后)[^。；;\n]{0,80}JSON|(?:只|仅)(?:能|需|须|可)?(?:返回|输出)[^。；;\n]{0,24}JSON|(?:返回|输出)(?:一[个份段])?(?:合法|有效|完整的?)?(?:裸|原始|纯)?\s*JSON(?:对象|数组|值|文本|代码块)|JSON[^。；;\n]{0,40}(?:作为|是)[^。；;\n]{0,16}(?:最终|回答|输出)|(?:返回|输出|提供)[^。；;\n]{0,80}JSON[^。；;\n]{0,80}(?:直接|原样)|(?:返回|输出|提供)[^。；;\n]{0,80}(?:直接|原样)[^。；;\n]{0,80}JSON/iu.test(clause)||
+  return STRICT_JSON_OUTPUT.test(clause)&&/JSON/iu.test(clause)||rawOutput||/(?:最终|最后)[^。；;\n]{0,80}JSON|(?:只|仅)(?:能|需|须|可)?(?:返回|输出)[^。；;\n]{0,24}JSON|(?:返回|输出)(?:一[个份段])?(?:合法|有效|完整的?)?(?:裸|原始|纯)?\s*JSON(?:对象|数组|值|文本|代码块)|JSON[^。；;\n]{0,40}(?:作为|是)[^。；;\n]{0,16}(?:最终|回答|输出)|(?:返回|输出|提供)[^。；;\n]{0,80}JSON[^。；;\n]{0,80}(?:直接|原样)|(?:返回|输出|提供)[^。；;\n]{0,80}(?:直接|原样)[^。；;\n]{0,80}JSON/iu.test(clause)||
     /\b(?:final\s+(?:assistant\s+)?(?:answer|response|result|text|output)|(?:return|output)\s+only)\b[^\n.]{0,80}\bJSON\b|\bJSON\b[^\n.]{0,80}\bfinal\s+(?:assistant\s+)?(?:answer|response|result|text|output)\b|\b(?:return|output|provide)\b[^\n.]{0,80}\bJSON\b[^\n.]{0,80}\bdirectly\b/iu.test(clause);
 }
-function expectsFinalJson(text){
-  const request=requestDirectives(String(text??''));
-  if(/(?:故意|无效|非法|不合法|malformed|invalid)\s*JSON[^。；;\n]{0,16}(?:示例|例子|example|sample)/iu.test(request))return false;
-  if(PROMPT_REFERENCE.test(request))return false;
-  if(JSON_TOPIC_REFERENCE.test(request))return false;
-  return requestClauses(request).some(clause=>
-    !isReferenceAction(clause)&&isAssistantOutputAction(clause)&&mentionsRequestedFinalJson(clause));
+function finalJsonDirectives(text){
+  const directives=[];let current=null;
+  for(const clause of requestClauses(text)){
+    if(isReferenceAction(clause)||/(?:故意|无效|非法|不合法|malformed|invalid)\s*JSON[^。；;\n]{0,16}(?:示例|例子|example|sample)/iu.test(clause)){
+      current=null;continue;
+    }
+    if(isAssistantOutputAction(clause)&&(mentionsRequestedFinalJson(clause)||/JSON/iu.test(clause)&&hasAllowedFenceOutput(clause))){
+      current={text:clause};directives.push(current);
+    }else if(current&&/^(?:with\b|without\b|no\b|(?:do|must|should)\s+not\b|don't\b|use\b|using\b|in\b|as\b|不要|不得|禁止|无需|不加|不使用|不能使用|不允许|使用|用)/iu.test(clause)&&
+      /Markdown|fences?|(?:code\s+)?blocks?|代码块|围栏/iu.test(clause))current.text+=' '+clause;
+    else current=null;
+  }
+  return directives;
 }
+const expectsFinalJson=text=>finalJsonDirectives(text).length>0;
 function hasAllowedFenceOutput(text){
   return /JSON\s*代码块|(?:使用|用|放在|包装(?:在|成))[^。；;\n]{0,24}(?:(?:Markdown|markdown)\s*)?(?:代码块|围栏)|\bJSON\s+(?:Markdown\s+)?(?:code\s+)?(?:block|fence)\b|(?:return|output|provide)\b[^\n.]{0,24}\b(in|as|inside|within|using)\s+(?:a|the)\s+(?:Markdown\s+|JSON\s+)?(?:code\s+block|fence)\b/iu.test(text);
 }
 function requiresRawFinalJson(text){
-  const allowedFence=hasAllowedFenceOutput(text);
-  const clauses=requestClauses(text).filter(clause=>!isReferenceAction(clause));
-  const action=clauses.some(isAssistantOutputAction);
+  const clause=finalJsonDirectives(text).at(-1)?.text;
+  if(!clause)return false;
+  const allowedFence=hasAllowedFenceOutput(clause);
   const hasNoFence=clause=>/(?:\bno\b|\bwithout\b)[^\n.]{0,40}\b(?:(?:surrounding\s+)?Markdown(?:\s+(?:formatting|fences?|blocks?|surrounding))?|(?:code\s+)?(?:fences?|blocks?))\b|\b(?:do|must|should)\s+not\b[^\n.]{0,40}(?:use|include|add|wrap)[^\n.]{0,20}\b(?:Markdown\s+)?(?:code\s+)?(?:fences?|blocks?)\b|(?:不要|不得|禁止|无需|不加|不使用|不能使用|不允许)[^。；;\n]{0,24}(?:(?:(?:Markdown|markdown)\s*)?(?:代码围栏|围栏|代码块)|(?:周围的?|外层的?|包裹的?)\s*Markdown)/iu
     .test(clause);
-  return clauses.some(clause=>{
-    if(!isAssistantOutputAction(clause))return false;
-    const raw=/\b(raw|bare|unwrapped|plain|naked|unformatted)\s+JSON\b/iu.test(clause)||
+  const raw=/\b(raw|bare|unwrapped|plain|naked|unformatted)\s+JSON\b/iu.test(clause)||
       /(?:裸|未包装|未经包装|原始|纯)\s*JSON/iu.test(clause);
     const direct=/(?:return|output|provide)\b[^\n.]{0,100}\bJSON\b[^\n.]{0,80}\bdirectly\b|\bJSON\b[^\n.]{0,80}\bdirectly\s+as\s+(?:the\s+)?final\s+(?:assistant\s+)?(?:answer|response|result|text)\b/iu.test(clause)||
       /(?:直接|原样)[^。；;\n]{0,80}(?:作为|是)[^。；;\n]{0,16}(?:最终|回答|输出)|(?:直接|原样)[^。；;\n]{0,24}(?:返回|输出|提供|给出)[^。；;\n]{0,24}JSON|(?:返回|输出|提供)[^。；;\n]{0,80}(?:直接|原样)[^。；;\n]{0,24}JSON/iu.test(clause);
     const exact=/\b(?:exactly|solely)\s+(?:one|a\s+single)\s+JSON(?:\s+(?:value|object|array|document))?\b|\bonly\s+one\s+JSON(?:\s+(?:value|object|array|document))?\b|(?:最终|最后)[^。；;\n]{0,40}(?:恰好|精确|严格|仅|只)[^。；;\n]{0,20}(?:一个|一[个份])?\s*JSON\s*值/iu.test(clause);
     const strictOnly=STRICT_JSON_OUTPUT.test(clause)&&/JSON/iu.test(clause);
-    return hasNoFence(clause)||!allowedFence&&(raw||direct||exact||strictOnly);
-  })||action&&clauses.some(hasNoFence);
+  return hasNoFence(clause)||!allowedFence&&(raw||direct||exact||strictOnly);
 }
 // Unlabeled fences are ambiguous with shell/JS, so require a JSON-shaped leading token.
 function looksLikeJsonBlock(raw){

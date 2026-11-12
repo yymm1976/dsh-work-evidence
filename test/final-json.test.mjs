@@ -75,6 +75,46 @@ test('strict top-level JSON output is parsed without a fence', () => {
   assert.equal(finalJsonSyntaxIssue('{"answer": 42}', '只返回 JSON'), null);
 });
 
+test('reference clauses cannot override later affirmative final-output directives',()=>{
+  for(const request of ['Edit the README instructions. Return only raw JSON as the final answer.',
+    'Explain the prompt. Return only JSON as the final answer.',
+    'Explain this prompt: “Return the final answer as JSON.” Then return only JSON as the final answer.',
+    'Explain the prompt then return only JSON as the final answer.',
+    'Analyze final JSON parsing. Return only JSON as the final answer.',
+    '请修改 README 里的说明。最后只返回 JSON。']){
+    assert.equal(finalJsonSyntaxIssue('{"answer":42}',request),null,request);
+    assert.equal(finalJsonSyntaxIssue('```json\n{"answer":42}\n```',request)?.rawFinal,true,request);
+    assert.ok(finalJsonSyntaxIssue('{"answer":}',request),request);
+  }
+  assert.ok(finalJsonSyntaxIssue('```json\n{"answer":}\n```','Explain the prompt. Return a JSON code block as the final answer.'));
+});
+
+test('fence permissions and prohibitions qualify only the assistant output they belong to',()=>{
+  const fenced='```json\n{"answer":42}\n```';
+  for(const request of ['Return only JSON as the final answer. Include a JSON code block in the README.',
+    '请最后只返回 JSON。在 README 文件中使用 JSON 代码块。'])
+    assert.equal(finalJsonSyntaxIssue(fenced,request)?.rawFinal,true,request);
+  for(const request of ['Return the final answer in a JSON code block. Do not use code blocks in the README.',
+    '请最后返回 JSON 代码块。README 文件不得使用 Markdown 代码块。'])
+    assert.equal(finalJsonSyntaxIssue(fenced,request),null,request);
+});
+
+test('negated final JSON statements leave a prose answer and its invalid illustration alone',()=>{
+  const answer='This is an intentionally broken illustration:\n```json\n{"answer":}\n```';
+  for(const request of ['The final answer must not be JSON. Explain this syntax.',
+    'JSON is not the final response. Give a prose explanation.',
+    '最终回答必须不是 JSON。请解释这段格式。'])
+    assert.equal(finalJsonSyntaxIssue(answer,request),null,request);
+});
+
+test('only return and only output select whole-response JSON validation',()=>{
+  for(const request of ['Only return JSON in your final answer.','Only return JSON.','Only output JSON.']){
+    assert.equal(finalJsonSyntaxIssue('{"answer":42}',request),null,request);
+    for(const answer of ['```json\n{"answer":42}\n```','{"answer":}'])
+      assert.equal(finalJsonSyntaxIssue(answer,request)?.rawFinal,true,request);
+  }
+});
+
 test('raw final JSON rejects a valid fenced answer and accepts bare JSON', () => {
   const issue = finalJsonSyntaxIssue('```json\n{"answer": 42}\n```', RAW_FINAL_REQUEST);
   assert.ok(issue);
