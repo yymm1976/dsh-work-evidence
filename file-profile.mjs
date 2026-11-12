@@ -23,14 +23,18 @@ function decodeSample(bytes,stream=false){
   try{return new TextDecoder('utf-8',{fatal:true,ignoreBOM:true}).decode(bytes,{stream});}
   catch(error){if(error instanceof TypeError)throw failure('PROFILE_NOT_UTF8_TEXT','The sampled source must be valid UTF-8.');throw error;}
 }
-function sampleText(bytes,{offset,end}){
+function sampleText(bytes,{offset,end,prefix=Buffer.alloc(0),suffix=Buffer.alloc(0),suffixEndsFile=false}){
+  const context=Buffer.concat([prefix,bytes]);
   let start=0;
-  if(offset)while(start<Math.min(3,bytes.length)&&(bytes[start]&0xC0)===0x80)start++;
-  const text=decodeSample(bytes.subarray(start),!end);
+  // Only the unsampled prefix may begin inside an earlier code point. Every
+  // byte in the declared sample must be validated with its adjacent bytes.
+  if(offset)while(start<prefix.length&&(context[start]&0xC0)===0x80)start++;
+  const text=decodeSample(context.subarray(start),!end);
+  if(suffix.length)decodeSample(Buffer.concat([bytes,suffix]),!suffixEndsFile);
   if(text.includes('\0'))throw failure('PROFILE_NOT_UTF8_TEXT','The sampled bytes contain NUL; use a binary or image reader.');
   const view=createFileProfile({sampleLines:4,maxSampleLineChars:200});view.push(text);
   const value=view.finish();
-  return {offset,bytes:bytes.length,sha256:sha(bytes),decodedOffset:offset+start,
+  return {offset,bytes:bytes.length,sha256:sha(bytes),decodedOffset:offset-prefix.length+start,
     startsAtFileBoundary:offset===0,endsAtFileBoundary:end,preview:offset===0?value.head:value.tail};
 }
 
@@ -81,11 +85,13 @@ export function createFileProfiler(ctx,runtime){
           if(typeof backend.readByteRange!=='function')throw failure('PROFILE_RANGE_UNAVAILABLE','The native provider has no bounded byte-range reader.');
           if(!Number.isSafeInteger(before.bytes)||before.bytes<0)throw failure('PROFILE_SIZE_UNAVAILABLE','Sampled profiles require a known native file size.');
           const headLength=Math.min(before.bytes,8192),tailOffset=Math.max(headLength,before.bytes-8192),tailLength=before.bytes-tailOffset;
-          if(headLength+tailLength>budget.remaining)throw failure('PROFILE_BYTE_BUDGET','The requested samples exceed the remaining byte budget.');
+          const separated=tailOffset>headLength,suffixLength=separated?Math.min(3,before.bytes-headLength):0,prefixLength=separated?Math.min(3,tailOffset):0;
+          if(headLength+tailLength+suffixLength+prefixLength>budget.remaining)throw failure('PROFILE_BYTE_BUDGET','The requested samples and UTF-8 boundary bytes exceed the remaining byte budget.');
           const head=await range(0,headLength);
           const tail=tailLength?await range(tailOffset,tailLength):Buffer.alloc(0);
-          samples=[sampleText(head,{offset:0,end:headLength===before.bytes})];
-          if(tail.length)samples.push(sampleText(tail,{offset:tailOffset,end:true}));
+          const suffix=suffixLength?await range(headLength,suffixLength):tail.subarray(0,3),prefix=prefixLength?await range(tailOffset-prefixLength,prefixLength):head.subarray(Math.max(0,head.length-3));
+          samples=[sampleText(head,{offset:0,end:headLength===before.bytes,suffix,suffixEndsFile:headLength+suffix.length===before.bytes})];
+          if(tail.length)samples.push(sampleText(tail,{offset:tailOffset,end:true,prefix}));
           if(tailOffset===headLength){
             const bytes=Buffer.concat([head,tail]),text=decodeSample(bytes);
             const profile=createFileProfile({format:item.format??'text',delimiter:item.delimiter??','});profile.push(text);

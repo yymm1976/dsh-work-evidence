@@ -41,7 +41,7 @@ export function registerManagementTools({ctx,runtime,state,effects,available,fea
         return result;
       }finally{await runtime.receipt(exec.agent,exec.signal,true);}
     })});
-  register('file_profile','Read native UTF-8 text/CSV metadata, bounded head/tail previews and newline/ASCII counts without a script. scan:"sample" reads at most 16 KiB per file and makes no global claim for larger files; scan:"complete" streams within a shared byte budget and returns complete counts only for an unchanged native version. CSV counts include the header, allow quoted newlines and report malformed data explicitly.',
+  register('file_profile','Read native UTF-8 text/CSV metadata, bounded head/tail previews and newline/ASCII counts without a script. scan:"sample" reads at most 16,390 bytes per file including up to six UTF-8 boundary bytes and makes no global claim for larger files; scan:"complete" streams within a shared byte budget and returns complete counts only for an unchanged native version. CSV counts include the header, allow quoted newlines and report malformed data explicitly.',
     {files:{type:'array',minItems:1,maxItems:8,items:{type:'object',additionalProperties:false,properties:{path:{type:'string'},format:{type:'string',enum:['text','csv']},delimiter:{type:'string'}},required:['path']}},
       scan:{type:'string',enum:['sample','complete']},maxBytes:{type:'integer',minimum:4096,maximum:512000000}},['files'],
     (args,exec)=>fileProfiler.observe(exec.agent,args,exec.signal));

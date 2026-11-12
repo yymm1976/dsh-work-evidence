@@ -60,3 +60,14 @@ test('incomplete zero-exit validation cannot certify an applied edit',async()=>{
     }finally{await f.close();}
   }
 });
+test('validation needs an observed zero exit and accepts both native exit fields',async()=>{
+  for(const validation of [{status:'completed',stdout:{text:'finished'}},{status:'completed',exit_code:0,stdout:{text:'PASS: complete'}}]){
+    const f=await fixture('before',validation);
+    try{
+      const result=await f.service.execute({}, {summary:'Use an actual process exit',apply:true,
+        edits:[{file:'source.txt',mode:'replace_exact',old_text:'before',new_text:'after'}],validations:[{command:'requested-check',description:'Observe the exit',tool:'pwsh'}]},AbortSignal.timeout(10000));
+      assert.equal(result.status,validation.exit_code===0?'validated':'partial');
+      if(validation.exit_code===0)assert.equal(result.validations[0].exitCode,0);
+    }finally{await f.close();}
+  }
+});

@@ -147,12 +147,12 @@ async function runValidation(ctx,call,runtime,agent,validation,signal){
   const tool=requested||shellTool(ctx,agent);
   if(!tool)return {passed:false,deopt:'no-authorized-shell',tool:null,description:validation.description};
   const result=await call(tool,{command:validation.command,description:validation.description,timeoutMs:validation.timeoutMs},runtime.execFor(agent,signal));
-  const payload=shellPayload(result.value),exitCode=Number.isInteger(payload.exitCode)?payload.exitCode:null;
+  const payload=shellPayload(result.value),exitCode=Number.isInteger(payload.exitCode)?payload.exitCode:Number.isInteger(payload.exit_code)?payload.exit_code:null;
   const status=outcomeStatus(result.value);
   const statusOk=status===null||status==='completed';
-  const conclusive=exitCode!==null||status!==null||result.isError;
+  const conclusive=exitCode!==null||result.isError;
   const reportedChecks=reportedExecutionChecks(result);
-  const passed=statusOk&&dependencyExecutionComplete(result)&&!reportedChecks;
+  const passed=statusOk&&exitCode===0&&dependencyExecutionComplete(result)&&!reportedChecks;
   const stdout=typeof payload.stdout==='string'?payload.stdout:payload.stdout?.text;
   const stderr=typeof payload.stderr==='string'?payload.stderr:payload.stderr?.text;
   return {passed,tool,description:validation.description,status:status||(result.isError?'error':'completed'),exitCode,

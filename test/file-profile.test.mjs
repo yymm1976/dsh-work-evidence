@@ -30,7 +30,7 @@ test('large-file samples do not claim global CSV counts while small files can be
     const result=await createFileProfiler(host.ctx,runtime(host)).observe({}, {files:[{path:'large.csv',format:'csv'},{path:'small.csv',format:'csv'}]},signal());
     assert.equal(result.status,'observed',JSON.stringify(result));const [large,small]=result.files;
     assert.equal(large.scope,'sampled');assert.equal(large.scanComplete,false);assert.equal(large.analysis,undefined);
-    assert.equal(large.scannedBytes,16384);assert.equal(large.samples.at(-1).endsAtFileBoundary,true);
+    assert.equal(large.scannedBytes,16390);assert.equal(large.samples.at(-1).endsAtFileBoundary,true);
     assert.ok(large.samples.at(-1).preview.some(line=>line.text==='LAST,ROW'),'the tail preview includes the actual final line');
     assert.equal(small.scope,'complete');assert.equal(small.analysis.csv.records,2);assert.equal(small.analysis.csv.valid,true);
   }finally{await host.close();}
@@ -44,13 +44,40 @@ test('invalid UTF-8 sampled bytes have the same explicit text error as a complet
     assert.equal(result.files[0].error.code,'PROFILE_NOT_UTF8_TEXT');
   }finally{await host.close();}
 });
+test('sampled UTF-8 boundaries reject malformed bytes instead of dropping them',async()=>{
+  const host=await startHost({mountPlugin:false,script:()=>[text('done')]});
+  try{
+    for(const [offset,byte] of [[40000-8192,0x80],[8191,0xC2]]){
+      const bytes=Buffer.alloc(40000,0x61);bytes[offset]=byte;await fs.writeFile(path.join(host.cwd,'invalid-boundary.txt'),bytes);
+      const result=await createFileProfiler(host.ctx,runtime(host)).observe({}, {files:[{path:'invalid-boundary.txt'}]},signal());
+      assert.equal(result.files[0].status,'unavailable');assert.equal(result.files[0].error.code,'PROFILE_NOT_UTF8_TEXT');
+    }
+  }finally{await host.close();}
+});
+test('sampled UTF-8 boundaries accept valid characters spanning the original ranges',async()=>{
+  const host=await startHost({mountPlugin:false,script:()=>[text('done')]});
+  try{
+    const bytes=Buffer.alloc(40000,0x61);Buffer.from('😀').copy(bytes,8191);Buffer.from('😀').copy(bytes,40000-8192-1);
+    await fs.writeFile(path.join(host.cwd,'valid-boundary.txt'),bytes);
+    const result=await createFileProfiler(host.ctx,runtime(host)).observe({}, {files:[{path:'valid-boundary.txt'}]},signal());
+    assert.equal(result.status,'observed',JSON.stringify(result));assert.equal(result.files[0].scope,'sampled');
+    const contiguous=Buffer.alloc(9000,0x61);Buffer.from('😀').copy(contiguous,8191);await fs.writeFile(path.join(host.cwd,'contiguous.txt'),contiguous);
+    const complete=await createFileProfiler(host.ctx,runtime(host)).observe({}, {files:[{path:'contiguous.txt'}]},signal());
+    assert.equal(complete.status,'observed',JSON.stringify(complete));assert.equal(complete.files[0].scope,'complete');assert.equal(complete.files[0].scannedBytes,9000);
+  }finally{await host.close();}
+});
 
 test('a source mutation during the native ranges rejects its counts',async()=>{
   const host=await startHost({mountPlugin:false,script:()=>[text('done')]});
   try{
     const filename=path.join(host.cwd,'input.csv');await fs.writeFile(filename,'a,b\n');const backend=host.ctx.get('fs');
     const modified=new Proxy(backend,{get(target,key){
-      if(key==='readByteRange')return async(...args)=>{const bytes=await backend.readByteRange(...args);await fs.writeFile(filename,'updated file\n');return bytes;};
+      if(key==='readByteRange')return async(...args)=>{
+        const before=await backend.stat(args[0],args[2]),bytes=await backend.readByteRange(...args);
+        await fs.writeFile(filename+'.new','z,z\n');await fs.rename(filename+'.new',filename);
+        const after=await backend.stat(args[0],args[2]);assert.equal(before.size,after.size);assert.notEqual(before.version,after.version);
+        return bytes;
+      };
       return Reflect.get(target,key);
     }});
     const ctx={get:name=>name==='fs'?modified:host.ctx.get(name)};
