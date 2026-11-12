@@ -289,6 +289,24 @@ test('an incomplete scriptRef retry preserves the referenced failed execution',(
   }
 });
 
+test('structured JSON failures preserve per-file effects without clearing the tool error',()=>{
+  for(const live of [true,false])for(const nested of [true,false]){
+    const t=timeline({stepPacing:false});
+    t.command('work_report',{status:'complete',summary:'Earlier state',remaining:[]},{saved:true,path:'report.json'},{live,nested});
+    const outcome={status:'partial',effectState:'applied',files:[
+      {file:'changed.txt',effectState:'applied'},{file:'untouched.txt',effectState:'none'}]};
+    t.command('verified_exec',{apply:true,edits:[
+      {file:'changed.txt',mode:'create',content:'after'},{file:'untouched.txt',mode:'create',content:'other'}]},outcome,{live,nested,isError:true,innerIsError:true});
+    const summary=t.flow.summary(t.agent),handoff=t.flow.handoff(t.agent);
+    assert.equal(summary.mutationVersion,1);
+    assert.equal(handoff.report,null);
+    assert.equal(handoff.artifacts.length,1);
+    assert.equal(handoff.artifacts[0].path,'changed.txt');
+    assert.equal(handoff.artifacts[0].effectState,'applied');
+    assert.ok(summary.unresolvedErrors.some(error=>error.tool==='verified_exec'));
+  }
+});
+
 test('large PTC failure advice distinguishes worker exits, parse errors, cancellation and execution failures',()=>{
   for(const live of [true,false])for(const [error,expected,unexpected]of [
     ['worker-exit: kernel helper did not answer','执行工作进程故障','按实际解析错误修正程序'],

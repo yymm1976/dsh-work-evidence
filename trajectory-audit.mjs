@@ -13,6 +13,8 @@ export const AUDIT_LABELS=Object.freeze(['W1','W2','W3','W4','W5','W6','W7','W8'
 const READ=new Set(['read','ops_read_files','ops_inspect_local_file','project_evidence','fastedit_java']);
 const STATIC_RESULTS=new Set([...READ,'glob','grep','ops_glob','ops_grep']);
 const WRITE=new Set(['write','edit','ops_write_file','ops_edit_file','verified_exec','str_replace_editor','fastedit_java']);
+const INCOMPLETE_STATUS=new Set(['background','promoted','running','pending','queued','stopping','stopped','partial','unknown',
+  'unavailable','deopt','disabled','blocked','not-attempted','aborted']);
 const messageOf=event=>event.data?.message??(event.data?.role?event.data:null);
 const integer=value=>Number.isSafeInteger(value)&&value>=0;
 const stable=value=>JSON.stringify(value,(_key,item)=>item&&typeof item==='object'&&!Array.isArray(item)?Object.fromEntries(Object.keys(item).sort().map(key=>[key,item[key]])):item);
@@ -20,8 +22,21 @@ const routeOf=value=>({provider:value?.provider??null,model:value?.model??null,r
 const forecastRoute=value=>Object.fromEntries(['provider','model','reasoningEffort'].map(key=>
   [key,typeof value?.[key]==='string'&&value[key].trim()?value[key]:null]));
 const completeRoute=value=>['provider','model','reasoningEffort'].every(key=>typeof value?.[key]==='string'&&value[key].trim());
-const fileOf=args=>args.file_path??args.path??args.file??null;
+const fileOf=args=>args?.file_path??args?.path??args?.file??null;
 const isReadOnlyJava=call=>call.name==='fastedit_java'&&['find_entity','read_entity'].includes(call.arguments.operation);
+const incompletePayload=value=>{
+  const inspect=node=>{
+    if(!node||typeof node!=='object')return false;
+    const status=String(node.status??node.state??node.job?.status??'').toLowerCase();
+    return INCOMPLETE_STATUS.has(status)||['background','promoted'].includes(node.kind)||node.executionCompleted===false||
+      node.completed===false||node.complete===false||node.interrupted===true||node.lossy===true||node.stopped!==undefined||
+      node.signal!=null||node.timedOut===true||node.aborted===true||node.cancelled===true||node.partial===true||
+      node.outputPartial===true||node.truncated===true||node.rangeComplete===false||node.textComplete===false||
+      node.scanComplete===false||node.budgetTruncated===true||node.stdout?.truncated===true||node.stderr?.truncated===true||
+      node.stdout?.complete===false||node.stderr?.complete===false||node.data&&typeof node.data==='object'&&inspect(node.data);
+  };
+  return inspect(value);
+};
 const normalizeFile=value=>{
   if(typeof value!=='string'||!value.trim())return null;
   const windows=/^[A-Za-z]:[\\/]/u.test(value)||value.includes('\\');
@@ -262,14 +277,19 @@ export function normalizeDshEvents(input){
     const explicitFailure=isError===true||Number.isInteger(exit)&&exit!==0||value?.success===false||value?.ok===false||
       ['failed','killed','cancelled','error'].includes(value?.status);
     call.outcome=explicitFailure?'failed':isError===false?'succeeded':'unknown';
-    call.outputIncomplete=!!(value?.truncated||value?.partial||value?.outputPartial||value?.complete===false||
-      /\.\.\. \(line truncated to \d+ chars\)$/mu.test(call.resultText));
+    call.outputIncomplete=incompletePayload(raw)||/\.\.\. \(line truncated to \d+ chars\)$/mu.test(call.resultText);
     call.exitCode=Number.isInteger(exit)?exit:null;
     const effect=value?.effectState;call.effectState=effect??null;
-    if(WRITE.has(call.name)&&!isReadOnlyJava(call)&&(call.outcome==='succeeded'||['applied','partial','unknown'].includes(effect))&&effect!=='none'){
-    mutationEpoch++;changes.push({seq:call.resultSeq,callSeq:call.callSeq,path:fileOf(call.arguments),tool:call.name,
+    const fileEffects=call.name==='verified_exec'&&Array.isArray(value?.files)?value.files.map(file=>({
+      path:fileOf(file),status:file?.effectState})).filter(file=>['applied','partial','unknown'].includes(file.status)):null;
+    if(fileEffects!==null)call.fileEffectEvidence=value.files.some(file=>['none','applied','partial','unknown'].includes(file?.effectState));
+    if(WRITE.has(call.name)&&!isReadOnlyJava(call)&&(fileEffects?fileEffects.length>0:effect!=='none'&&
+      (call.outcome==='succeeded'||['applied','partial','unknown'].includes(effect)))){
+      mutationEpoch++;
+      if(fileEffects)changes.push(...fileEffects.map(file=>({seq:call.resultSeq,callSeq:call.callSeq,...file,tool:call.name,currentState:'not-inferred'})));
+      else changes.push({seq:call.resultSeq,callSeq:call.callSeq,path:fileOf(call.arguments),tool:call.name,
         status:effect??'native-operation-succeeded',currentState:'not-inferred'});
-    }else if(WRITE.has(call.name)&&!isReadOnlyJava(call)&&effect!=='none'){
+    }else if(WRITE.has(call.name)&&!isReadOnlyJava(call)&&!fileEffects&&effect!=='none'){
       possibleChanges.push({seq:call.resultSeq,callSeq:call.callSeq,path:fileOf(call.arguments),tool:call.name,status:'unknown'});
     }
     if(call.name==='run_code')opaqueEpoch++;
@@ -688,20 +708,24 @@ function checkedChangeScopeReviews(input,normal,sourceId,sourceProblems){
     const call=matches[0],reasons=[],callPath=normalizeFile(fileOf(call.arguments));
     if(sourceId===null||!normal.seqs.has(input.throughSeq))throw Error('Change-scope review requires the matching source snapshot.');
     if(sourceProblems.length)reasons.push('incomplete-source');
-    if(OPAQUE.has(call.name))reasons.push('program-internal-file-effect-unobserved');
-    if(!WRITE.has(call.name)||OPAQUE.has(call.name))reasons.push('not-a-recorded-file-mutation-operation');
-    if(call.outcome==='failed'&&!['partial','unknown'].includes(normal.changes.find(change=>change.callSeq===row.callSeq&&change.seq===row.resultSeq)?.status))
-      reasons.push('operation-failed');
+    // A listed file effect can be reviewed independently. The same call remains
+    // opaque to prior checks because its validation commands can change other files.
+    const explicitFileEffects=call.name==='verified_exec'&&call.fileEffectEvidence===true;
+    if(OPAQUE.has(call.name)&&!explicitFileEffects)reasons.push('program-internal-file-effect-unobserved');
+    if(!WRITE.has(call.name)||OPAQUE.has(call.name)&&!explicitFileEffects)reasons.push('not-a-recorded-file-mutation-operation');
     if(call.outcome==='unknown')reasons.push('operation-outcome-unknown');
     if(call.outputIncomplete)reasons.push('incomplete-operation-result');
-    if(!requestedPath||!callPath||!samePath(requestedPath,callPath))reasons.push('file-path-unresolved');
     const changes=normal.changes.filter(change=>change.callSeq===row.callSeq&&change.seq===row.resultSeq);
+    const pathMatches=changes.map(change=>({change,path:normalizeFile(change.path)}))
+      .filter(change=>samePath(requestedPath,change.path));
+    if(!requestedPath||!samePath(requestedPath,callPath)&&!pathMatches.length)reasons.push('file-path-unresolved');
     if(!changes.length)reasons.push('no-recorded-file-effect');
-    if(changes.length>1)reasons.push('file-effect-not-unique');
-    const change=changes[0],changePath=normalizeFile(change?.path);
-    if(!changePath||!requestedPath||!samePath(requestedPath,changePath))reasons.push('file-path-unresolved');
-    const recordMatched=changes.length===1&&requestedPath&&changePath&&samePath(requestedPath,changePath)&&
-      !OPAQUE.has(call.name)&&['native-operation-succeeded','applied'].includes(change.status);
+    if(changes.length&&!pathMatches.length)reasons.push('file-path-unresolved');
+    if(pathMatches.length>1)reasons.push('file-effect-not-unique');
+    const change=pathMatches[0]?.change;
+    const failureEffects=call.name==='verified_exec'&&call.fileEffectEvidence===true?['applied','partial','unknown']:['partial','unknown'];
+    if(call.outcome==='failed'&&!failureEffects.includes(change?.status))reasons.push('operation-failed');
+    const recordMatched=pathMatches.length===1&&(!OPAQUE.has(call.name)||explicitFileEffects)&&['native-operation-succeeded','applied'].includes(change.status);
     if(recordMatched)matchedChanges.add(change);
     if(['partial','unknown'].includes(change?.status))reasons.push(change.status+'-file-effect');
     if(change&&!['native-operation-succeeded','applied','partial','unknown'].includes(change.status))reasons.push('file-effect-unconfirmed');
@@ -904,7 +928,7 @@ export function requirementEvidenceView(normal,review,verification,sourceProblem
       normal.calls.some(call=>call.callSeq<=review.throughSeq&&(
         OPAQUE.has(call.name)&&(call.resultSeq===null||call.resultSeq>check.resultSeq)||
         WRITE.has(call.name)&&call.resultSeq===null&&!isReadOnlyJava(call)))));
-    const successful=({check,item})=>item.reach==='addresses'&&check.toolOutcome==='succeeded'&&
+    const successful=({check,item})=>item.reach==='addresses'&&check.outputIncomplete!==true&&check.toolOutcome==='succeeded'&&
       (!check.nested||check.enclosingOutcome==='succeeded')&&
       (!['pwsh','ops_bash','bash','run_code','work_exec','work_probe','verified_exec','job_output'].includes(check.tool)||
         check.processOutcome==='exited-zero');

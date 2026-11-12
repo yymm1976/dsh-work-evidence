@@ -567,6 +567,111 @@ test('an unsuccessful producer completion cannot support a requirement',()=>{
   assert.notEqual(audited.requirements.requirements[0].status,'supported');
 });
 
+test('explicit incomplete execution cannot support coverage after native settlement exit zero',()=>{
+  const incomplete=[
+    {executionCompleted:false},
+    {completed:false},
+    {lossy:true},
+    {stopped:true},
+    {signal:'SIGTERM'},
+    {timedOut:true},
+    {status:'partial',data:{status:'completed',exitCode:0}},
+    {status:'completed',data:{status:'partial',exitCode:0}},
+    {status:'completed',data:{executionCompleted:false,exitCode:0}}
+  ];
+  for(const flags of incomplete){
+    const {f,result}=processFixture({body:JSON.stringify({exitCode:0,...flags}),exitCode:0});
+    const normalized=normalizeDshEvents(f.events),call=normalized.calls.find(row=>row.name==='pwsh');
+    assert.equal(call.toolOutcome,'succeeded');assert.equal(call.processOutcome,'exited-zero');
+    assert.equal(call.exitCode,0);assert.equal(call.outputIncomplete,true,JSON.stringify(flags));
+    const assessment={schema:ASSESSMENT_SCHEMA,sourceId:'incomplete-source',throughSeq:result.seq,reviewer:'human',allExplicitRequirementsCovered:true,
+      criteria:[{id:'source',requirementSeqs:[1],eventSeqs:[result.seq],outcome:'pass'}],
+      checks:[recordedCheck(f,{resultSeq:result.seq},'source','addresses')]};
+    const audited=auditDshSession(f.events,{sourceId:assessment.sourceId,assessment});
+    assert.equal(audited.verification.checks[0].coverage[0].reach,'unknown');
+    assert.equal(audited.verification.checks[0].coverage[0].unavailableReason,'incomplete-check-result');
+    assert.equal(audited.verification.criteria[0].coverage,'unknown');assert.equal(audited.verification.addressedCriteria,0);
+    assert.equal(audited.requirements.requirements[0].status,'unknown');
+  }
+});
+
+test('complete native and legacy settlement exit zero paths still support coverage',()=>{
+  for(const [label,body] of [
+    ['native',JSON.stringify({exitCode:0,executionCompleted:true})],
+    ['legacy','[exit code: 0]']
+  ]){
+    const {f,result}=processFixture({body,exitCode:0});
+    const assessment={schema:ASSESSMENT_SCHEMA,sourceId:'complete-source',throughSeq:result.seq,reviewer:'human',allExplicitRequirementsCovered:true,
+      criteria:[{id:'source',requirementSeqs:[1],eventSeqs:[result.seq],outcome:'pass'}],
+      checks:[recordedCheck(f,{resultSeq:result.seq},'source','addresses')]};
+    const audited=auditDshSession(f.events,{sourceId:assessment.sourceId,assessment}),check=audited.verification.checks[0];
+    assert.equal(check.processOutcome,'exited-zero',label);assert.equal(check.outputIncomplete,false,label);
+    assert.equal(check.coverage[0].reach,'addresses',label);assert.equal(audited.requirements.requirements[0].status,'supported',label);
+  }
+});
+
+test('verified_exec file effects retain paths and per-file states without extra mutation epochs',()=>{
+  for(const channel of ['native','prefix-error']){
+    const f=fixture(),outcome={status:'partial',effectState:'applied',files:[
+      {file:'src/a.mjs',effectState:'applied'},
+      {file:'src/b.mjs',effectState:'partial'},
+      {file:'src/c.mjs',effectState:'unknown'},
+      {file:'src/d.mjs',effectState:'none'},
+      {effectState:'unknown'}
+    ]};
+    const call=f.add('tool/call',{callId:'verified-effects',name:'verified_exec',arguments:{file:'src/argument.mjs',
+      edits:[{file:'src/a.mjs',mode:'create',content:'a'},{file:'src/b.mjs',mode:'create',content:'b'}]}});
+    const text=channel==='native'?'native value':'verified_exec interrupted: '+JSON.stringify(outcome);
+    f.add('tool/result',{...(channel==='native'?{value:outcome}:{}),
+      message:{role:'tool',source:{callId:call.data.callId},isError:channel==='prefix-error',content:[{type:'text',text}]}});
+    f.operation('verified_exec',{file:'src/argument.mjs',edits:[{file:'src/d.mjs',mode:'create',content:'d'}]},
+      'verified_exec interrupted: '+JSON.stringify({status:'partial',effectState:'applied',files:[{file:'src/d.mjs',effectState:'none'}]}),
+      {failed:true});
+    f.operation('read',{file_path:'src/a.mjs'},'source');
+    const normalized=normalizeDshEvents(f.events),read=normalized.calls.find(row=>row.name==='read');
+    assert.equal(normalized.changes.length,4,channel);
+    assert.deepEqual(normalized.changes.map(change=>[change.path,change.status]),[
+      ['src/a.mjs','applied'],['src/b.mjs','partial'],['src/c.mjs','unknown'],[null,'unknown']
+    ],channel);
+    assert.deepEqual(normalized.changes.map(change=>change.path),['src/a.mjs','src/b.mjs','src/c.mjs',null]);
+    assert.equal(normalized.changes.some(change=>change.path==='src/d.mjs'),false,channel);
+    assert.equal(normalized.changes.some(change=>change.path==='src/argument.mjs'),false,channel);
+    assert.equal(read.mutationEpoch,1,channel);
+  }
+});
+
+test('verified_exec effects bind their own path while preserving opaque execution uncertainty',()=>{
+  const {f,done,assessment,audit}=reviewedFixture();
+  const outcome={status:'applied',effectState:'applied',files:[{file:'other.txt',effectState:'applied'}]};
+  const changed=f.operation('verified_exec',{edits:[{file:'other.txt',mode:'create',content:'other'}]},
+    'verified_exec interrupted: '+JSON.stringify(outcome),{failed:true});
+  assessment.throughSeq=f.events.at(-1).seq;assessment.checks=[recordedCheck(f,done,'source','addresses')];
+  assessment.checks[0].coverage[0].scopePaths=['a.txt'];
+  const changedCall=normalizeDshEvents(f.events).calls.find(call=>call.resultSeq===changed.resultSeq);
+  assessment.scopeReviews=[{id:'verified-change',callSeq:changedCall.callSeq,resultSeq:changed.resultSeq,path:'other.txt',
+    declaredRelation:'direct-requirement',requirementSeqs:[1],dependencyEvidenceSeqs:[],reviewer:'human',
+    reason:'The requirement covered the verified file change.',counterexample:'A later requirement may supersede it.'}];
+  const result=audit(),scope=result.changeScopeReviews;
+  assert.equal(result.verification.checks[0].coverage[0].reach,'unknown');
+  assert.equal(result.requirements.requirements[0].status,'stale');
+  assert.equal(scope.items[0].relation,'direct-requirement');assert.equal(scope.items[0].effectStatus,'applied');
+  assert.equal(scope.recordedChangeCount,1);assert.equal(scope.matchedRecordedChanges,1);assert.equal(scope.unreviewedRecordedChanges,0);
+});
+
+test('verified_exec validation can change files outside its recorded edit list',()=>{
+  const {f,done,assessment,audit}=reviewedFixture();
+  f.operation('verified_exec',{edits:[{file:'other.txt',mode:'create',content:'other'}],
+    validations:[{tool:'bash',arguments:{command:'printf changed > a.txt'}}]},JSON.stringify({
+      status:'validated',effectState:'applied',files:[{file:'other.txt',effectState:'applied'}],
+      validations:[{tool:'bash',exitCode:0}]}));
+  assessment.throughSeq=f.events.at(-1).seq;assessment.checks=[recordedCheck(f,done,'source','addresses')];
+  assessment.checks[0].coverage[0].scopePaths=['a.txt'];
+  const result=audit();
+  assert.equal(result.verification.checks[0].coverage[0].reach,'unknown');
+  assert.ok(result.verification.checks[0].coverage[0].unavailableReason.includes('opaque-execution-after-check'));
+  assert.equal(result.requirements.requirements[0].status,'stale');
+});
+
 test('check review rejects unrelated event pairs, duplicate operation counts and unknown criteria',()=>{
   const {f,done,assessment,audit}=reviewedFixture();
   const other=f.operation('read',{file_path:'another.txt'},'another source');assessment.throughSeq=f.events.at(-1).seq;
@@ -839,10 +944,10 @@ test('nested check review preserves delivery uncertainty and unreviewed requirem
   assert.equal(unreviewed.verification.unknownCriteria,2);assert.equal(unreviewed.taskOutcome,'unknown');
 });
 
-function processFixture({variation=null,body='[exit code: 1]'}={}){
+function processFixture({variation=null,body='[exit code: 1]',exitCode=1}={}){
   const f=fixture(),call=f.add('tool/call',{callId:'native-call',name:'pwsh',arguments:{command:'node check.js'}});
   const job={jobId:'native-job',owner:'session-a',kind:'pwsh',toolCall:{callId:'native-call',rootCallId:'native-call'}};
-  const registered=f.add('job/registered',job),end={...job,status:'completed',cause:'producer',producerReported:true,detail:'exit code: 1'};
+  const registered=f.add('job/registered',job),end={...job,status:'completed',cause:'producer',producerReported:true,detail:'exit code: '+exitCode};
   if(variation==='owner')end.owner='session-b';
   if(variation==='caller')end.toolCall={...end.toolCall,callId:'different-call'};
   if(variation==='producer')end.producerReported=false;

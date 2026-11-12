@@ -4,8 +4,10 @@ export function parseResult(text){
   try{return JSON.parse(text);}catch{return null;}
 }
 
-/** Recover the structured effect carried by this plugin's own failed edit channel. */
+/** Read existing structured results, then recover tool-owned non-JSON error envelopes. */
 export function toolResultValue(name,result){
+  // Event replay has always accepted rendered JSON, including partial effects on
+  // failed calls. The fixed prefixes below only recover otherwise non-JSON text.
   const value=result?.value??parseResult(resultText(result?.content));
   if(value!=null)return value;
   if(name!=='verified_exec'||result?.isError!==true)return null;
