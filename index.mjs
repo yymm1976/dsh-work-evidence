@@ -387,6 +387,9 @@ export function apply(ctx,config={}){
   }
   function applyToolSurface(agent){
     if(!agent?.ctx?.tools?.restrict)return;
+    // rc.2 freezes admission before prompt assembly. An unread configuration
+    // must not install a temporary disabled mask that this step cannot expand.
+    if(!state(agent).configured)return;
     retainedSources(agent);
     const current=toolSurfaceDisposers.get(agent.session.id),base=state(agent).config.toolSurface;
     if(!runtime.isEnabled(agent)){

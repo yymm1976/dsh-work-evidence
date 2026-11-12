@@ -11,7 +11,7 @@ const gap=(payload,detail)=>({issues:[{kind:'requirement',detail,evidence:[paylo
 
 // One session with the review feature enabled: the adapter answers review calls, the scripted
 // assistant answers the requests, and the state file lives in a temporary session directory.
-async function harness({review=()=>({issues:[]}),finish=()=>'stop',abortOn=0,usage=USAGE,executions=[],pendingJobs=[]}={}){
+async function harness({review=()=>({issues:[]}),finish=()=>'stop',abortOn=0,usage=USAGE,executions=[],pendingJobs=[],artifacts=[]}={}){
   const dir=await fs.mkdtemp(path.join(os.tmpdir(),'we-quality-review-'));
   const id='quality-review-session',stateFile=path.join(dir,id+'.quality-review.json');
   const hooks=new Map(),dispatched=[],events=[],steered=[];
@@ -39,7 +39,7 @@ async function harness({review=()=>({issues:[]}),finish=()=>'stop',abortOn=0,usa
   const finalJson={inspect:inspected};
   const taskFlow={reviewState:()=>{const {request,assistant}=inspected();
     return {request:request?{seq:request.seq}:null,assistant:assistant?{seq:assistant.seq}:null,
-      mutation:{seq,version:seq},artifacts:[],executions,unresolvedErrors:[],pendingJobs,todos:[],
+      mutation:{seq,version:seq},artifacts,executions,unresolvedErrors:[],pendingJobs,todos:[],
       evidenceHighWater:{seq:seq+1}};}};
   const created=createQualityReview(ctx,runtime,taskFlow,finalJson);
   return {agent,state,stateFile,dispatched,steered,review:created,
@@ -56,6 +56,36 @@ async function harness({review=()=>({issues:[]}),finish=()=>'stop',abortOn=0,usa
     text:()=>fs.readFile(stateFile,'utf8'),
     close:()=>fs.rm(dir,{recursive:true,force:true,maxRetries:3})};
 }
+
+test('successful partial OPS read pages retain source excerpts without claiming complete files',async()=>{
+  const marker='PARTIAL_PAGE_SOURCE_MARKER',source='head '.repeat(600)+marker+' tail'.repeat(600);
+  const page={status:'partial',data:{failed:0,complete:false,items:[{failed:0,complete:false,items:[{path:'core.mjs',line:250,text:source}]}]},
+    coverage:{isComplete:false},continuation:'remaining-page'};
+  for(const variant of ['page','failed','item-failed','error','dry-run','tool-error']){
+    let payload;const artifacts=[],h=await harness({artifacts,review:value=>{payload=value;return {issues:[]};}});
+    try{
+      h.request('审阅 core.mjs 的已修改源码。');
+      h.event('tool/call',{callId:'write',name:'write',arguments:{file_path:'core.mjs',content:'initial source'}});
+      const written=h.event('tool/result',{message:{role:'tool',source:{callId:'write'},isError:false,content:[{type:'text',text:'Created file'}]}});
+      artifacts.push({seq:written.seq,path:'core.mjs',tool:'write',effectState:'applied'});
+      const value=structuredClone(page);
+      if(variant==='failed')value.data.failed=1;
+      if(variant==='item-failed')value.data.items[0].failed=1;
+      if(variant==='error')value.error={message:'Read failed'};
+      const original=JSON.stringify(value),read=h.event('tool/ptc-dispatch',{subCallId:'read',rootCallId:'outer',name:'ops_read_files',
+        arguments:{files:[{path:'core.mjs',offset:245,limit:20}],...(variant==='dry-run'?{dryRun:true}:{})},
+        isError:variant==='tool-error',content:[{type:'text',text:original}]});
+      h.answer('已审阅提供的源码摘录。');await h.run();
+      const excerpt=payload.evidence.find(item=>item.seq===read.seq);
+      assert.equal(excerpt.data.includes(marker),variant==='page',variant);
+      if(variant==='page'){
+        assert.deepEqual(excerpt.sourceFiles,['core.mjs']);
+        assert.ok(excerpt.data.includes('"complete":false'));assert.ok(excerpt.data.includes('remaining-page'));
+      }else assert.equal(excerpt.sourceFiles,undefined,variant);
+      assert.equal(read.data.content[0].text,original,'The recorded read and its incomplete-page metadata remain unchanged.');
+    }finally{await h.close();}
+  }
+});
 
 test('quality review links producer completion to the exact nested call without upgrading task or file validity',async()=>{
   const executions=[];let payload;

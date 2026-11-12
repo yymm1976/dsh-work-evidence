@@ -9,6 +9,35 @@ import {installStructuredCalls} from '../structured-calls.mjs';
 const rootValue=options=>JSON.parse(options.messages.findLast(message=>message.role==='tool').content.map(block=>block.text??'').join('').replace(/\nFile sandbox[^\r\n]*$/u,''));
 const ptc={toolMode:'ptc',extraMounts:[['dsh-ptc-runtime-node']]};
 
+test('the first PTC request after reload admits and executes plugin-owned tools without a delay',async()=>{
+  for(const toolSurface of ['full','compact']){
+    let phase='initial',sent=false,owner;
+    const host=await startHost({...ptc,mountPlugin:false,script:options=>{
+      if(phase==='initial')return [text('Ready.')];
+      if(sent){
+        const value=rootValue(options);
+        assert.equal(value.exitCode,0);assert.equal(value.stdout.text.trim(),'reloaded-tool-executed');
+        return [text('Program executed.')];
+      }
+      sent=true;
+      return [tool('run_code',{calls:[{name:'work_exec',arguments:{runtime:'node',code:'console.log("reloaded-tool-executed");'}}],description:'Execute the plugin tool in the first request after reload'})];
+    }});
+    try{
+      const plugin=await import('../index.mjs'),config={structuredCalls:true,stepPacing:false,toolSurface};
+      owner=await host.ctx.plugin(plugin,config);
+      const agent=await host.createAgent('max');await host.send(agent,'Initialize before reload.');
+      for(let cycle=0;cycle<2;cycle++){
+        await owner.dispose();phase='reloaded';sent=false;
+        owner=await host.ctx.plugin(plugin,config);
+        await host.send(agent,'Execute the supplied Node program.');
+        const result=host.events.findLast(event=>event.type==='tool/result');
+        assert.equal(result?.data.message.isError,false,JSON.stringify(result?.data));
+        assert.equal(host.events.filter(event=>event.type==='tool/ptc-dispatch'&&event.data.name==='work_exec').length,cycle+1);
+      }
+    }finally{if(owner?.uid!==null)await owner?.dispose();await host.close();}
+  }
+});
+
 test('unloading and reloading the plugin restores the native prompt and current structured-call owner',async()=>{
   const samples=[];let waitingForResult=false;
   const host=await startHost({...ptc,mountPlugin:false,script:options=>{

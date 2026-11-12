@@ -1,6 +1,8 @@
 import {randomUUID} from 'node:crypto';
 
 const patched=new WeakSet(),toolTransforms=new WeakMap();
+// FiberState.UNLOADING in the supported Cordis hosts is a const enum value.
+const CORDIS_UNLOADING=5;
 
 export const isBatchToolHost=ctx=>typeof ctx?.tools?.selectExecutor==='function';
 
@@ -17,13 +19,13 @@ export function toolModeFor(ctx,agent){
 
 /** New DSH hosts expose a batch executor; older hosts accept one execution object. */
 export function patchToolExecution(ctx){
-  const tools=ctx?.tools;
+  const service=ctx?.tools,tools=service?.[Symbol.for('cordis.original')]??service;
   if(!tools||patched.has(tools)||typeof tools.selectExecutor!=='function')return;
   const original=tools.execute.bind(tools);
   tools.execute=async input=>{
     if(Array.isArray(input?.calls))return original(input);
     if(input?.parent!==undefined){
-      const nested=await executeNested(ctx,input);
+      const nested=await executeNested(tools,input);
       if(nested!==undefined)return nested;
     }
     const callId=input.callId??input.rootCallId??randomUUID();
@@ -43,8 +45,8 @@ export function patchToolExecution(ctx){
  * children. The batch API drops the nesting marker, so internal plugin calls
  * with `parent` run through the selected executor's pipeline instead.
  */
-async function executeNested(ctx,input){
-  const tools=ctx?.tools,pipeline=tools.selectExecutor(input.agent)?.pipeline;
+async function executeNested(tools,input){
+  const pipeline=tools.selectExecutor(input.agent)?.pipeline;
   if(typeof pipeline?.prepare!=='function'||typeof pipeline?.dispatch!=='function'||typeof pipeline?.complete!=='function')return undefined;
   const callId=input.callId??input.rootCallId??randomUUID();
   let args=input.arguments??{};
@@ -68,16 +70,18 @@ export function patchSystemPromptTools(ctx,transform){
     const original=target.assemble.bind(target);
     target.assemble=async context=>{
       const result=await original(context);
-      if(Array.isArray(result?.tools))for(const apply of transforms)apply(result,context);
+      if(Array.isArray(result?.tools))for(const entry of transforms)
+        if(entry.owner?.uid!==null&&entry.owner?.state!==CORDIS_UNLOADING)entry.apply(result,context);
       return result;
     };
   }
   ctx.effect(()=>{
-    transforms.push(transform);
+    const entry={apply:transform,owner:ctx.fiber};
+    transforms.push(entry);
     // The shared assembly wrapper survives reloads, but each plugin's closure
     // must leave before its Cordis services become inactive.
     return ()=>{
-      const index=transforms.indexOf(transform);
+      const index=transforms.indexOf(entry);
       if(index>=0)transforms.splice(index,1);
     };
   });

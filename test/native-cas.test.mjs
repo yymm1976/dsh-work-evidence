@@ -134,6 +134,32 @@ test('native conditional editing retains the native read-only permission denial'
   }finally{await host.close();}
 });
 
+test('native conditional editing resolves workspace-write permissions through the injected filesystem',async()=>{
+  const host=await startHost({workspace:{toolSurface:'full',nativeVerifiedEdits:true},script:()=>[text('Ready.')]});
+  try{
+    const permitted=host.cwd;await fs.writeFile(path.join(permitted,'source.txt'),'before');
+    const agent=await host.createAgent();
+    agent.session.append('sandbox/mode',{mode:'workspace-write'});
+    if(nativeSupported)assert.equal(host.ctx.get('sandboxPolicy').resolve({session:agent.session}).workspaceRoot,permitted);
+    const result=await invoke(host,agent,{summary:'Apply within the permitted workspace',apply:true,
+      edits:[{file:'source.txt',mode:'replace_exact',old_text:'before',new_text:'after'}]});
+    if(!nativeSupported){assert.equal(result.status,'deopt');return;}
+    assert.equal(result.status,'applied',JSON.stringify(result));assert.equal(await fs.readFile(path.join(permitted,'source.txt'),'utf8'),'after');
+  }finally{await host.close();}
+});
+
+test('missing workspace filesystems and outside targets deny a conditional intent before forwarding it',async()=>{
+  for(const filesystem of [null,{resolve:async()=>({targetKey:'workspace'}),contains:()=>false}]){
+    const agent={session:{}},target={targetKey:'one'};let hook,forwarded=false;
+    const ctx={on:(_name,listener)=>{hook=listener;},get:name=>name==='sandboxPolicy'?{resolve:()=>({mode:'workspace-write',workspaceRoot:'/project'})}:filesystem,
+      tools:{get:()=>null,execute:async exec=>{await hook(target,{...exec,agent},async()=>{forwarded=true;});throw Error('must not forward');}}};
+    const cas=createNativeCas(ctx,{get:()=>({root:process.cwd()}),execFor:()=>({})});
+    const result=await cas.apply(agent,{mode:'replace_exact',file:'source.txt',expectedText:'after'},{revision:'opaque',target},AbortSignal.timeout(20000));
+    assert.equal(result.ok,false);assert.equal(result.effectState,'none');assert.equal(result.permissionDenied,true);assert.equal(forwarded,false);
+    assert.match(result.error.message,filesystem?/outside the session workspace/u:/cannot resolve the session workspace/u);
+  }
+});
+
 test('a native PTC invocation reaches the conditional edit through the real nested write token',async()=>{
   const plan={summary:'Edit through native PTC',apply:true,edits:[{file:'source.txt',mode:'replace_exact',old_text:'before',new_text:'after'}]};
   const host=await startHost({toolMode:'ptc',extraMounts:[['dsh-ptc-runtime-node']],workspace:{nativeVerifiedEdits:true},

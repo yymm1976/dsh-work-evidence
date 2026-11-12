@@ -16,8 +16,10 @@ export function createNativeCas(ctx,runtime,registeredWrite=ctx.tools.get('write
       state.denied=true;throw new Error('Conditional edit requires the current session to permit file writes.');
     }
     if(policy.mode==='workspace-write'){
-      const workspace=await ctx.fs.resolve(policy.workspaceRoot,{cwd:policy.workspaceRoot,signal:actor.signal});
-      if(!ctx.fs.contains(workspace,target)){state.denied=true;throw new Error('Conditional edit is outside the session workspace.');}
+      const filesystem=ctx.get('fs');
+      if(!filesystem){state.denied=true;throw new Error('Conditional edit cannot resolve the session workspace.');}
+      const workspace=await filesystem.resolve(policy.workspaceRoot,{cwd:policy.workspaceRoot,signal:actor.signal});
+      if(!filesystem.contains(workspace,target)){state.denied=true;throw new Error('Conditional edit is outside the session workspace.');}
     }
     const inherited=await next();
     if(inherited&&(inherited.kind!==state.intent.kind||inherited.version!==state.intent.version))

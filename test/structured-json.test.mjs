@@ -43,6 +43,8 @@ test('the real host renders a deep root selection as an explicit serialized prev
       selectors:[{pointer:'',op:'value'}]},callId:'deep-root',rootCallId:'deep-root',agent,signal:signal()});
     assert.equal(result.isError,false,JSON.stringify(result));const view=result.value.results[0];
     assert.equal(view.complete,false);assert.equal(view.valueOmittedReason,'nesting-depth-limit');assert.equal(view.serializedPreview,source);
+    const rendered=JSON.parse(result.content.filter(block=>block.type==='text').map(block=>block.text).join('\n'));
+    assert.equal(rendered.results[0].serializedPreview,source);assert.equal(rendered.results[0].complete,false);
   }finally{await host.close();}
 });
 test('native JSON rejects concurrent changes, invalid encoding and unsafe numbers without false results',async()=>{
@@ -50,7 +52,7 @@ test('native JSON rejects concurrent changes, invalid encoding and unsafe number
   try{
     const filename=path.join(host.cwd,'source.json');await fs.writeFile(filename,'{"x":1}');const backend=host.ctx.get('fs');
     const modified=new Proxy(backend,{get(target,key){
-      if(key==='readBytes')return async(...args)=>{const bytes=await backend.readBytes(...args);await fs.writeFile(filename,'{"x":200}');return bytes;};
+      if(key==='readBytes')return async(...args)=>{const bytes=await backend.readBytes(...args);await fs.writeFile(filename,'{"x":2}');return bytes;};
       return Reflect.get(target,key);
     }});
     const input={path:'source.json',selectors:[{pointer:'/x',op:'value'}]};
