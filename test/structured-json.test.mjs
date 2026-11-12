@@ -18,6 +18,16 @@ test('native JSON selection reads long single-line data intact with source ident
     assert.equal(result.sha256,createHash('sha256').update(source).digest('hex'));assert.equal(result.versionKind,'native-opaque');assert.ok(result.version);
   }finally{await host.close();}
 });
+test('the real host renders a deep root selection as an explicit serialized preview',async()=>{
+  const host=await startHost({workspace:{structuredJson:true},script:()=>[text('done')]});
+  try{
+    const source='['.repeat(7000)+'0'+']'.repeat(7000);await fs.writeFile(path.join(host.cwd,'deep.json'),source);
+    const agent=await host.createAgent(),result=await host.ctx.tools.execute({name:'structured_json',arguments:{path:'deep.json',maxValueChars:16000,
+      selectors:[{pointer:'',op:'value'}]},callId:'deep-root',rootCallId:'deep-root',agent,signal:signal()});
+    assert.equal(result.isError,false,JSON.stringify(result));const view=result.value.results[0];
+    assert.equal(view.complete,false);assert.equal(view.valueOmittedReason,'nesting-depth-limit');assert.equal(view.serializedPreview,source);
+  }finally{await host.close();}
+});
 test('native JSON rejects concurrent changes, invalid encoding and unsafe numbers without false results',async()=>{
   const host=await startHost({mountPlugin:false,script:()=>[text('done')]});
   try{

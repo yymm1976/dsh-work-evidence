@@ -59,24 +59,25 @@ export function createNativeCas(ctx,runtime,registeredWrite=ctx.tools.get('write
   }
   async function apply(agent,group,observation,signal){
     const active=runtime.execFor(agent,signal),callId='work-evidence:native-cas:'+randomUUID();
+    const file=group.full??group.file;
     const intent=group.mode==='create'?{kind:'createIfAbsent'}:{kind:'replaceIfVersion',version:observation.revision};
     const state={agent,target:observation.target,intent,guarded:false};
     pending.set(callId,state);
     let result;
     try{
-      result=await ctx.tools.execute({name:'write',arguments:{file_path:group.file,content:group.expectedText},
+      result=await ctx.tools.execute({name:'write',arguments:{file_path:file,content:group.expectedText},
         agent,callId,rootCallId:active.rootCallId??callId,parent:active.token,signal});
     }catch(error){
-      return {ok:false,status:'error',effectState:'unknown',error:{message:String(error.message??error).slice(0,1200)}};
+      return {ok:false,status:'error',effectState:state.guarded?'unknown':'none',error:{message:String(error.message??error).slice(0,1200)}};
     }finally{pending.delete(callId);}
-    if(result.isError)return {ok:false,status:'error',effectState:state.denied?'none':result.error?.info?.effectState??'unknown',error:result.error??{message:'Native write failed.'}};
+    if(result.isError)return {ok:false,status:'error',effectState:state.denied||!state.guarded?'none':result.error?.info?.effectState??'unknown',error:result.error??{message:'Native write failed.'}};
     const value=result.value;
     if(!state.guarded||!value||value.after!==normalize(group.expectedText))return {ok:false,status:'unknown',effectState:'unknown',
       error:{message:!state.guarded?'Native write did not consume the conditional intent.':'Native write returned content different from the planned edit.'}};
     try{
-      const after=await stat(agent,group.file,signal);
+      const after=await stat(agent,file,signal);
       if(!after.ok||!after.exists)return {ok:false,status:'partial',effectState:'applied',error:after.error??{message:'Applied file is unavailable.'}};
-      const observed=await read(agent,group.file,after.revision,signal);
+      const observed=await read(agent,file,after.revision,signal);
       if(!observed.ok||observed.sha256!==sha(group.expectedText))return {ok:false,status:'partial',effectState:'applied',
         error:observed.error??{message:'Post-write content does not match the conditional edit.'}};
       return {ok:true,status:'completed',effectState:'applied',revision:after.revision,contentHash:observed.sha256,

@@ -2,6 +2,8 @@ import path from 'node:path';
 import {createHash,randomUUID} from 'node:crypto';
 import {within,assertExistingFileWithin,readUtf8File} from './evidence.mjs';
 import {createNativeCas} from './native-cas.mjs';
+import {reportedExecutionChecks} from './recovery.mjs';
+import {dependencyExecutionComplete} from './execution-dependencies.mjs';
 
 export const VERSION='0.8.3';
 
@@ -64,7 +66,7 @@ function validatePlan(input){
 
 function countExact(text,needle){
   const positions=[];let offset=0;
-  while((offset=text.indexOf(needle,offset))>=0){positions.push(offset);offset+=Math.max(1,needle.length);if(positions.length>1)break;}
+  while((offset=text.indexOf(needle,offset))>=0){positions.push(offset);offset++;if(positions.length>1)break;}
   return positions;
 }
 
@@ -146,11 +148,12 @@ async function runValidation(ctx,call,runtime,agent,validation,signal){
   const status=outcomeStatus(result.value);
   const statusOk=status===null||status==='completed';
   const conclusive=exitCode!==null||status!==null||result.isError;
-  const passed=!result.isError&&statusOk&&payload.timedOut!==true&&payload.cancelled!==true&&!payload.error
-    &&(exitCode===0||(exitCode===null&&status==='completed'));
+  const reportedChecks=reportedExecutionChecks(result);
+  const passed=statusOk&&dependencyExecutionComplete(result)&&!reportedChecks;
   const stdout=typeof payload.stdout==='string'?payload.stdout:payload.stdout?.text;
   const stderr=typeof payload.stderr==='string'?payload.stderr:payload.stderr?.text;
   return {passed,tool,description:validation.description,status:status||(result.isError?'error':'completed'),exitCode,
+    ...(reportedChecks?{reportedChecks}:{}),
     ...(!passed&&!conclusive?{deopt:'ambiguous-shell-result'}:{}),
     timedOut:payload.timedOut===true,stdout:boundedOutput(stdout??payload.stdoutText??textOf(result)),
     stderr:boundedOutput(stderr??payload.stderrText??''),
@@ -202,7 +205,13 @@ export function createVerifiedExec(ctx,runtime,call){
       return effects.some(effect=>effect.ok||['applied','partial'].includes(effect.effectState))?'applied':'none';
     }
     async function saveOutcome(){
-      try{await save();return {reportSaved:true};}
+      try{
+        // File effects must remain inspectable after the caller cancels. This
+        // detached write is restricted by runtime.save to plugin-owned storage.
+        if(signal.aborted)await runtime.save(agent,reportPath,record,AbortSignal.timeout(5000),{background:true});
+        else await save();
+        return {reportSaved:true};
+      }
       catch(error){return {reportSaved:false,reportError:String(error?.message||error).slice(0,1200)};}
     }
     let groups;

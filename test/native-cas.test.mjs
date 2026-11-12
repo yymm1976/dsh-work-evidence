@@ -205,3 +205,35 @@ test('an aborted readback retains a write that already returned a guarded succes
   assert.equal(result.ok,false);assert.equal(result.status,'partial');assert.equal(result.effectState,'applied');
   assert.match(result.error.message,/write completed; readback failed/u);
 });
+
+test('native edits keep their project-root target after the session changes directory',async()=>{
+  const host=await startHost({workspace:{nativeVerifiedEdits:true},script:()=>[text('Ready.')]});
+  try{
+    await fs.writeFile(path.join(host.cwd,'source.txt'),'before');await fs.mkdir(path.join(host.cwd,'sub'));
+    const agent=await host.createAgent();await host.ctx.workingDirectory.set(agent,'sub',AbortSignal.timeout(10000));
+    const result=await invoke(host,agent,{summary:'Edit the preflighted project-root file',apply:true,
+      edits:[{file:'source.txt',mode:'replace_exact',old_text:'before',new_text:'after'}]});
+    if(!nativeSupported){assert.equal(result.status,'deopt');return;}
+    assert.equal(result.status,'applied',JSON.stringify(result));
+    assert.equal(await fs.readFile(path.join(host.cwd,'source.txt'),'utf8'),'after');
+    await assert.rejects(fs.stat(path.join(host.cwd,'sub','source.txt')),error=>error.code==='ENOENT');
+  }finally{await host.close();}
+});
+
+test('the real native tool channel retains cancelled file effects and a saved report',async()=>{
+  const host=await startHost({workspace:{nativeVerifiedEdits:true},script:()=>[text('Ready.')]});
+  try{
+    await fs.writeFile(path.join(host.cwd,'source.txt'),'before');const agent=await host.createAgent(),controller=new AbortController();let aborted=false;
+    host.ctx.on('tools/result',exec=>{
+      if(!aborted&&exec.name==='write'&&exec.callId?.startsWith('work-evidence:native-cas:')){aborted=true;controller.abort(new Error('cancel after native write'));}
+    });
+    const result=await host.ctx.tools.execute({name:'verified_exec',arguments:{summary:'Keep cancellation effects',apply:true,
+      edits:[{file:'source.txt',mode:'replace_exact',old_text:'before',new_text:'after'}]},callId:'cancel-effects',rootCallId:'cancel-effects',agent,signal:controller.signal});
+    if(!nativeSupported){assert.equal(aborted,false);return;}
+    assert.equal(aborted,true);assert.equal(result.isError,true);assert.equal(await fs.readFile(path.join(host.cwd,'source.txt'),'utf8'),'after');
+    const body=output(result),start=body.indexOf('{');assert.ok(start>=0,body);
+    const report=JSON.parse(body.slice(start));assert.equal(report.status,'partial');assert.equal(report.effectState,'applied');
+    assert.equal(report.files[0].effectState,'applied');assert.equal(report.reportSaved,true);
+    const saved=JSON.parse(await fs.readFile(report.reportPath,'utf8'));assert.equal(saved.files[0].effect.effectState,'applied');
+  }finally{await host.close();}
+});

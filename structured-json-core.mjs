@@ -6,8 +6,51 @@ const integer=(value,min,max)=>Number.isSafeInteger(value)&&value>=min&&value<=m
 const ownObject=value=>value&&typeof value==='object'&&!Array.isArray(value);
 const clip=(text,limit)=>{let end=limit;if(end>0&&text.charCodeAt(end-1)>=0xD800&&text.charCodeAt(end-1)<=0xDBFF)end--;return text.slice(0,end);};
 function valueView(value,maxChars){
-  const serialized=JSON.stringify(value);
-  return serialized.length<=maxChars?{value,complete:true}:{serializedPreview:clip(serialized,maxChars),serializedChars:serialized.length,complete:false};
+  let serializedChars=0,preview='',previewClosed=false,maxDepth=0;
+  const append=text=>{
+    serializedChars+=text.length;
+    if(previewClosed)return;
+    preview+=text.slice(0,maxChars+1-preview.length);
+    if(preview.length>maxChars)previewClosed=true;
+  };
+  const pending=[{value,depth:0}];
+  while(pending.length){
+    const item=pending.pop();
+    if(item.array&&item.index>=item.value.length){append(']');continue;}
+    if(item.keys&&item.index>=item.keys.length){append('}');continue;}
+    if(item.array){
+      if(item.index>0)append(',');
+      pending.push({...item,index:item.index+1});
+      pending.push({value:item.value[item.index],depth:item.depth+1});
+      continue;
+    }
+    if(item.keys){
+      if(item.index>0)append(',');
+      append(JSON.stringify(item.keys[item.index])+':');
+      pending.push({...item,index:item.index+1});
+      pending.push({value:item.value[item.keys[item.index]],depth:item.depth+1});
+      continue;
+    }
+    const current=item.value;
+    if(current===null||typeof current!=='object'){
+      append(JSON.stringify(current));
+      continue;
+    }
+    const array=Array.isArray(current);
+    maxDepth=Math.max(maxDepth,item.depth+1);
+    append(array?'[':'{');
+    if(array&&current.length===0)append(']');
+    else if(array)pending.push({array:true,value:current,index:0,depth:item.depth});
+    else{
+      const keys=Object.keys(current);
+      if(keys.length===0)append('}');else pending.push({keys,value:current,index:0,depth:item.depth});
+    }
+  }
+  // Host renderers and older output snapshots use recursive JSON operations.
+  // Keep deep selections as text even when their character count is small.
+  return serializedChars<=maxChars&&maxDepth<=128?{value,complete:true}:
+    {serializedPreview:clip(preview,maxChars),serializedChars,complete:false,
+      ...(maxDepth>128?{valueOmittedReason:'nesting-depth-limit'}:{})};
 }
 function parse(text,line){
   const location=line===undefined?{}:{physicalLine:line};let root;

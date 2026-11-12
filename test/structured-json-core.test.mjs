@@ -32,8 +32,29 @@ test('malformed JSON errors never echo source data and JSONL reports the physica
   assert.equal(queryStructuredJson('',[{pointer:'',op:'count'}],{format:'jsonl'}).results[0].count,0);
 });
 test('oversize selected values return an explicitly incomplete serialized preview',()=>{
-  const value=queryStructuredJson(JSON.stringify({text:'x'.repeat(400)}),[{pointer:'',op:'value'}],{maxValueChars:256}).results[0];
-  assert.equal(value.complete,false);assert.equal(value.value,undefined);assert.equal(value.serializedPreview.length,256);assert.ok(value.serializedChars>256);
+  const selected={text:'x'.repeat(400)},serialized=JSON.stringify(selected);
+  const value=queryStructuredJson(serialized,[{pointer:'',op:'value'}],{maxValueChars:256}).results[0];
+  assert.equal(value.complete,false);assert.equal(value.value,undefined);assert.equal(value.serializedPreview,serialized.slice(0,256));
+  assert.equal(value.serializedChars,serialized.length);
+});
+test('deep root values return a bounded preview without recursive serialization',()=>{
+  const source='['.repeat(10_000)+'0'+']'.repeat(10_000);
+  const value=queryStructuredJson(source,[{pointer:'',op:'value'}],{maxValueChars:256}).results[0];
+  assert.equal(value.status,'selected');assert.equal(value.complete,false);assert.equal(value.value,undefined);
+  assert.equal(value.serializedChars,source.length);assert.equal(value.serializedPreview,'['.repeat(256));
+});
+test('serialized value limits use the maxValueChars boundary exactly',()=>{
+  const exact=queryStructuredJson(JSON.stringify('x'.repeat(254)),[{pointer:'',op:'value'}],{maxValueChars:256}).results[0];
+  assert.equal(exact.complete,true);assert.equal(exact.value,'x'.repeat(254));
+  const over=queryStructuredJson(JSON.stringify('x'.repeat(255)),[{pointer:'',op:'value'}],{maxValueChars:256}).results[0];
+  assert.equal(over.complete,false);assert.equal(over.value,undefined);assert.equal(over.serializedChars,257);
+  assert.equal(over.serializedPreview,'"'+'x'.repeat(255));
+});
+test('small serialized deep values stay safe for recursive host output renderers',()=>{
+  const source='['.repeat(7000)+'0'+']'.repeat(7000);
+  const result=queryStructuredJson(source,[{pointer:'',op:'value'}],{maxValueChars:16000}),view=result.results[0];
+  assert.equal(view.complete,false);assert.equal(view.value,undefined);assert.equal(view.valueOmittedReason,'nesting-depth-limit');
+  assert.equal(view.serializedPreview,source);assert.equal(view.serializedChars,source.length);assert.doesNotThrow(()=>JSON.stringify(result));
 });
 
 test('a shallow JSON selection survives an unrelated deeply nested subtree',()=>{

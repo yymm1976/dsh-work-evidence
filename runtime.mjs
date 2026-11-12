@@ -420,10 +420,10 @@ export function createRuntime(ctx,call,initial={}){
     }
     throw new Error('Stored record exceeds the local page budget');
   }
-  async function save(agent,file,value,signal){
+  async function save(agent,file,value,signal,{background=false}={}){
     const text=typeof value==='string'?value:JSON.stringify(value,null,2)+'\n',exec=execFor(agent,signal);
-    if(!exec.token){
-      const s=await init(agent,signal),target=within(s.root,file),relative=path.relative(s.dir,target);
+    if(!exec.token||background){
+      const s=background?get(agent):await init(agent,signal),target=within(s.root,file),relative=path.relative(s.dir,target);
       if(relative==='..'||relative.startsWith('..'+path.sep)||path.isAbsolute(relative))throw new Error('Background Work Evidence writes must remain inside its storage directory');
       signal?.throwIfAborted();
       await fs.mkdir(path.dirname(target),{recursive:true});

@@ -32,6 +32,10 @@ export function registerManagementTools({ctx,runtime,state,effects,available,fea
               result?.reason??(unavailable?status:pending?'native-execution-pending':failed?reportedFailure?'reported-checks-failed':'native-execution-failed':complete?'native-execution-completed':'native-execution-incomplete'));
           }else effects.decide(exec.agent,feature,['deopt','unavailable','disabled'].includes(status)?'unavailable':['failed','partial','unknown','different'].includes(status)?'failed':'applied',result?.reason??status??'explicit-tool-executed');
         }
+        // The host replaces successful returns after cancellation. Preserve the
+        // already-observed per-file effects as a tool-owned error instead.
+        if(name==='verified_exec'&&exec.signal.aborted&&result?.reportPath&&result.files?.length)
+          throw new Error('verified_exec interrupted: '+JSON.stringify({...result,interrupted:true}));
         return result;
       }finally{await runtime.receipt(exec.agent,exec.signal,true);}
     })});
@@ -39,7 +43,7 @@ export function registerManagementTools({ctx,runtime,state,effects,available,fea
     {files:{type:'array',minItems:1,maxItems:8,items:{type:'object',additionalProperties:false,properties:{path:{type:'string'},format:{type:'string',enum:['text','csv']},delimiter:{type:'string'}},required:['path']}},
       scan:{type:'string',enum:['sample','complete']},maxBytes:{type:'integer',minimum:4096,maximum:512000000}},['files'],
     (args,exec)=>fileProfiler.observe(exec.agent,args,exec.signal));
-  register('structured_json','Select values from a bounded native UTF-8 JSON/JSONL file using RFC6901 pointers without a script. Selectors use op:value, object keys, container count or array page. Empty pointer selects root; /a~1b selects key a/b. offset/limit page keys or arrays. Missing differs from null, clipped values have complete:false, and unsafe integers are rejected. JSONL indices address nonempty records. Source limit 2 MiB; JSON.parse duplicate-key and decimal semantics apply.',
+  register('structured_json','Select values from a bounded native UTF-8 JSON/JSONL file using RFC6901 pointers without a script. Selectors use op:value, object keys, container count or array page. Empty pointer selects root; /a~1b selects key a/b. offset/limit page keys or arrays. Missing differs from null. Values over the character budget or 128 nesting levels return a serialized preview with complete:false. Unsafe integers are rejected. JSONL indices address nonempty records. Source limit 2 MiB; JSON.parse duplicate-key and decimal semantics apply.',
     {path:{type:'string'},format:{type:'string',enum:['json','jsonl']},maxValueChars:{type:'integer',minimum:256,maximum:16000},
       selectors:{type:'array',minItems:1,maxItems:32,items:{type:'object',additionalProperties:false,properties:{pointer:{type:'string'},op:{type:'string',enum:['value','keys','count','page']},offset:{type:'integer',minimum:0},limit:{type:'integer',minimum:1,maximum:100}},required:['pointer','op']}}},['path','selectors'],
     (args,exec)=>structuredJson.query(exec.agent,args,exec.signal));
