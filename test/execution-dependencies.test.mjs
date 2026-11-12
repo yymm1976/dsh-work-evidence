@@ -13,6 +13,7 @@ test('legacy zero exit and completed job observations remain complete',()=>{
   assert.equal(dependencyExecutionComplete({exitCode:0}),true);
   assert.equal(dependencyExecutionComplete({job:{status:'completed'}}),true);
   assert.equal(dependencyExecutionComplete({status:'completed',state:'completed',job:{status:'completed'},exitCode:0}),true);
+  assert.equal(dependencyExecutionComplete({value:{data:{data:{exitCode:0}}}}),true);
 });
 
 test('an inner zero exit cannot erase explicit failures or incomplete flags in any outer data layer',()=>{

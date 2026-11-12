@@ -11,15 +11,30 @@ export function declaredFileSources(sources=[]){
   return sources.slice();
 }
 
+/** Supported execution envelopes, from the tool wrapper to the deepest data payload. */
+export function executionResultLayers(result){
+  const raw=result?.value??result;
+  const layers=[];
+  if(result!==raw&&result&&typeof result==='object')layers.push(result);
+  for(let node=raw;node&&typeof node==='object'&&!layers.includes(node);node=node.data)layers.push(node);
+  return layers;
+}
+
+/** Keep the deepest producer's actual exit separate from envelope failure markers. */
+export function executionExitCode(result){
+  for(const node of executionResultLayers(result).reverse()){
+    if(Number.isInteger(node.exitCode))return node.exitCode;
+    if(Number.isInteger(node.exit_code))return node.exit_code;
+  }
+  return null;
+}
+
 /** File applicability has a narrower meaning than process success or task correctness. */
 export function dependencyExecutionComplete(result){
-  const raw=result?.value??result,value=raw?.data??raw;
-  const statuses=[value?.status,value?.state,value?.job?.status].filter(status=>status!=null).map(status=>String(status).toLowerCase());
-  const completed=statuses.includes('completed');
-  const layers=[];
-  for(let node=raw;node&&typeof node==='object'&&!layers.includes(node);node=node.data)layers.push(node);
-  if(result!==raw&&result&&typeof result==='object')layers.push(result);
-  return (value?.exitCode===0||value?.exit_code===0||completed)&&layers.every(node=>
+  const layers=executionResultLayers(result);
+  const completed=layers.some(node=>node.exitCode===0||node.exit_code===0||
+    [node.status,node.state,node.job?.status].some(status=>String(status).toLowerCase()==='completed'));
+  return completed&&layers.every(node=>
     !node.isError&&!node.error&&node.success!==false&&node.ok!==false&&
     (node.exitCode==null||node.exitCode===0)&&(node.exit_code==null||node.exit_code===0)&&
     ![node.kind,node.job?.kind].some(kind=>['background','promoted'].includes(kind))&&

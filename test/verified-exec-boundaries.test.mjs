@@ -11,8 +11,8 @@ async function fixture(body,validation={status:'completed',exitCode:0,stdout:{te
   const root=await fs.mkdtemp(path.join(os.tmpdir(),'verified-boundary-'));
   await fs.writeFile(path.join(root,'source.txt'),body);
   const record={root,dir:path.join(root,'.dsh'),id:'boundary',config:{},metrics:{verifiedExecDeopts:0,verifiedExecPreviews:0,verifiedExecApplies:0,verifiedExecPartial:0,verifiedExecValidationFailures:0}};
-  let writes=0;
-  const runtime={init:async()=>record,save:async()=>{},execFor:()=>({})};
+  let writes=0,saved;
+  const runtime={init:async()=>record,save:async(_agent,_file,value)=>{saved=structuredClone(value);},execFor:()=>({})};
   const service=createVerifiedExec({on(){},tools:{get:name=>['ops_stat','ops_edit_file','pwsh'].includes(name)?{name}:null}},runtime,async(name,args)=>{
     const text=await fs.readFile(path.join(root,'source.txt'),'utf8');
     if(name==='ops_stat')return {value:{status:'completed',exists:true,revision:hash(text),bytes:Buffer.byteLength(text)},isError:false};
@@ -25,7 +25,7 @@ async function fixture(body,validation={status:'completed',exitCode:0,stdout:{te
     if(name==='pwsh')return {isError:false,value:validation};
     throw new Error('Unexpected tool '+name);
   });
-  return {root,service,writes:()=>writes,close:()=>fs.rm(root,{recursive:true,force:true})};
+  return {root,service,writes:()=>writes,saved:()=>saved,close:()=>fs.rm(root,{recursive:true,force:true})};
 }
 
 test('verified edits reject overlapping occurrences in preview and apply before mutation',async()=>{
@@ -178,6 +178,34 @@ test('validation needs an observed zero exit and accepts both native exit fields
         edits:[{file:'source.txt',mode:'replace_exact',old_text:'before',new_text:'after'}],validations:[{command:'requested-check',description:'Observe the exit',tool:'pwsh'}]},AbortSignal.timeout(10000));
       assert.equal(result.status,validation.exit_code===0?'validated':'partial');
       if(validation.exit_code===0)assert.equal(result.validations[0].exitCode,0);
+    }finally{await f.close();}
+  }
+});
+
+test('validation retains failed program reports from every execution data layer',async()=>{
+  for(const failure of [{stdout:{text:"FAILURES: ['case']"}},{stderr:{text:'Ran 2 tests in 0.001s\n\nFAILED (failures=1)'}}]){
+    const f=await fixture('before',{status:'completed',data:{status:'completed',exitCode:0,
+      stdout:{text:'PASS: outer summary'},data:{status:'completed',...failure}}});
+    try{
+      const result=await f.service.execute({}, {summary:'Keep deeper producer reports',apply:true,
+        edits:[{file:'source.txt',mode:'replace_exact',old_text:'before',new_text:'after'}],
+        validations:[{command:'requested-check',description:'Inspect actual program output',tool:'pwsh'}]},AbortSignal.timeout(10000));
+      assert.equal(result.status,'partial');assert.equal(result.validation.passed,false);
+      assert.equal(result.validation.exitCode,0);assert.equal(result.validation.reportedChecks.status,'reported-failed');
+      assert.equal(await fs.readFile(path.join(f.root,'source.txt'),'utf8'),'after');
+    }finally{await f.close();}
+  }
+});
+
+test('validation accepts a zero producer exit and output below the first data layer',async()=>{
+  for(const exit of [{exitCode:0},{exit_code:0}]){
+    const f=await fixture('before',{status:'completed',data:{status:'completed',data:{status:'completed',...exit,stdout:{text:'PASS: deep producer'}}}});
+    try{
+      const result=await f.service.execute({}, {summary:'Retain a deeper completed producer',apply:true,
+        edits:[{file:'source.txt',mode:'replace_exact',old_text:'before',new_text:'after'}],
+        validations:[{command:'requested-check',description:'Observe the actual exit',tool:'pwsh'}]},AbortSignal.timeout(10000));
+      assert.equal(result.status,'validated');assert.equal(result.validations[0].exitCode,0);
+      assert.equal(f.saved().validationResults[0].stdout,'PASS: deep producer');
     }finally{await f.close();}
   }
 });

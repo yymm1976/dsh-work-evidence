@@ -4,7 +4,7 @@ import {createHash,randomUUID} from 'node:crypto';
 import {within,assertExistingFileWithin,readUtf8File} from './evidence.mjs';
 import {createNativeCas} from './native-cas.mjs';
 import {reportedExecutionChecks} from './recovery.mjs';
-import {dependencyExecutionComplete} from './execution-dependencies.mjs';
+import {dependencyExecutionComplete,executionResultLayers,executionExitCode} from './execution-dependencies.mjs';
 import {createNativeFiles} from './native-files.mjs';
 
 export const VERSION='0.8.3';
@@ -245,33 +245,26 @@ function failedEffect(error){
 
 function shellTool(ctx,agent){return (process.platform==='win32'?['pwsh','ops_bash','bash']:['ops_bash','bash','pwsh']).find(name=>{try{return Boolean(ctx.tools.get(name,agent));}catch{return false;}})||null;}
 
-function shellPayload(value){
-  const data=wrapped(value);
-  return data&&typeof data==='object'?data:{};
-}
-
 async function runValidation(ctx,call,runtime,agent,validation,signal){
   const requested=validation.tool;
   if(requested&&(()=>{try{return !ctx.tools.get(requested,agent);}catch{return true;}})())return {passed:false,deopt:'requested-shell-unavailable',tool:requested,description:validation.description};
   const tool=requested||shellTool(ctx,agent);
   if(!tool)return {passed:false,deopt:'no-authorized-shell',tool:null,description:validation.description};
   const result=await call(tool,{command:validation.command,description:validation.description,timeoutMs:validation.timeoutMs},runtime.execFor(agent,signal));
-  const outerPayload=result.value,hasInner=outerPayload&&typeof outerPayload==='object'&&outerPayload.data!=null;
-  const payload=shellPayload(outerPayload),exitCode=Number.isInteger(payload.exitCode)?payload.exitCode:Number.isInteger(payload.exit_code)?payload.exit_code:null;
-  const outerStatus=outerPayload?.status??null,innerStatus=hasInner?outerPayload.data?.status??null:null;
-  const status=outerStatus??innerStatus??(result.isError?'error':'completed');
+  const layers=executionResultLayers(result),producerLayers=[...layers].reverse(),exitCode=executionExitCode(result);
+  const status=layers.map(node=>node.status??node.state??node.job?.status).find(value=>value!=null)??(result.isError?'error':'completed');
   const executionComplete=dependencyExecutionComplete(result);
   const conclusive=exitCode!==null||result.isError;
   const reportedChecks=reportedExecutionChecks(result);
   const passed=exitCode===0&&executionComplete&&!reportedChecks;
-  const stdout=typeof payload.stdout==='string'?payload.stdout:payload.stdout?.text;
-  const stderr=typeof payload.stderr==='string'?payload.stderr:payload.stderr?.text;
+  const stream=name=>producerLayers.map(node=>typeof node[name]==='string'?node[name]:node[name]?.text??node[name+'Text']).find(value=>value!==undefined);
+  const stdout=stream('stdout'),stderr=stream('stderr');
   return {passed,tool,description:validation.description,status:status||(result.isError?'error':'completed'),exitCode,
     ...(reportedChecks?{reportedChecks}:{}),
     ...(!passed&&!conclusive?{deopt:'ambiguous-shell-result'}:{}),
-    timedOut:payload.timedOut===true,stdout:boundedOutput(stdout??payload.stdoutText??textOf(result)),
-    stderr:boundedOutput(stderr??payload.stderrText??''),
-    error:passed?null:payload.error||outerPayload?.error||result.error||null};
+    timedOut:layers.some(node=>node.timedOut===true),stdout:boundedOutput(stdout??textOf(result)),
+    stderr:boundedOutput(stderr??''),
+    error:passed?null:producerLayers.find(node=>node.error)?.error??null};
 }
 
 export function createVerifiedExec(ctx,runtime,call){
