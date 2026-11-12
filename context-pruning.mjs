@@ -8,11 +8,26 @@ const READ=new Set(['read','ops_read_files','ops_inspect_local_file','project_ev
 export const prunableMessage=message=>!!message&&!message.isError&&Array.isArray(message.content)&&
   message.content.length>0&&message.content.every(block=>block?.type==='text')&&!hasPruneProblem(message.content);
 
+const PRUNE_PROBLEM=/(?:^|\n)\s*(?:fatal:|Traceback\b|\w*(?:Error|Exception):|FAIL(?:ED)?\b|[1-9]\d*\s+(?:failed|failures)\b)|["']passed["']\s*:\s*false|\b(?:exit(?:\s+code)?|exitCode|exit_code)\s*["']?\s*[:= ]\s*-?[1-9]\d*\b/i;
 export function hasPruneProblem(content,value=null){
   const text=resultText(content),parsed=value??parseResult(text);
   if(resultHasProblem(parsed??text))return true;
   // A successful wrapper can contain a failed command or a failed assertion.
-  return /(?:^|\n)\s*(?:fatal:|Traceback\b|\w*(?:Error|Exception):|FAIL(?:ED)?\b|[1-9]\d*\s+(?:failed|failures)\b)|["']passed["']\s*:\s*false|\b(?:exit(?:\s+code)?|exitCode|exit_code)\s*["']?\s*[:= ]\s*-?[1-9]\d*\b/i.test(text);
+  if(PRUNE_PROBLEM.test(text))return true;
+  // Serialized command output contains escaped newlines. Inspect the decoded
+  // streams before a request view can remove the middle of their output.
+  const pending=[{node:parsed,depth:0}];let remaining=2048;
+  while(pending.length){
+    const {node,depth}=pending.pop();if(--remaining<0||depth>16)return true;
+    if(!node||typeof node!=='object')continue;
+    for(const key of ['stdout','stderr','stdoutText','stderrText']){
+      const stream=node[key],body=typeof stream==='string'?stream:stream?.text;
+      if(typeof body==='string'&&PRUNE_PROBLEM.test(body))return true;
+    }
+    const children=Array.isArray(node)?node:['value','data','result','results','items'].map(key=>node[key]);
+    for(const child of children)if(child&&typeof child==='object')pending.push({node:child,depth:depth+1});
+  }
+  return false;
 }
 
 function excerpt(text,{seq,offset=0,sourcePath,thresholdChars,headChars,tailChars}){

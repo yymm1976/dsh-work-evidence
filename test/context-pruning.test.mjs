@@ -81,6 +81,21 @@ test('positive line-leading failure counts block pruning while zero counts remai
   assert.ok(planContextPrune(textMessage(zeroText), [], options({dedupSegments: false})));
 });
 
+test('serialized native stdout retains positive failure counts in the middle of long output',()=>{
+  const body=generated(40000,17);
+  for(const count of [0,1]){
+    const output=body.slice(0,20000)+'\n'+count+' failed, 10 passed\n'+body.slice(20000);
+    const native={status:'completed',exitCode:0,stdout:{text:output}};
+    for(const value of [native,{value:{data:native}},{result:native},[native]]){
+      const message=textMessage(JSON.stringify(value));
+      assert.equal(hasPruneProblem(message.content),count>0);
+      assert.equal(hasPruneProblem([{type:'text',text:'outer view'}],value),count>0);
+      assert.equal(prunableMessage(message),count===0);
+      assert.equal(planContextPrune(message,[],options({dedupSegments:false}))!==null,count===0);
+    }
+  }
+});
+
 test('prunableMessage requires a non-empty text-only result', () => {
   assert.equal(prunableMessage(textMessage('ordinary text')), true);
   assert.equal(prunableMessage({isError: false, content: []}), false);
