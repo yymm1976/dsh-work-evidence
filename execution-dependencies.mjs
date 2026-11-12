@@ -23,7 +23,7 @@ export function dependencyExecutionComplete(result){
     !node.isError&&!node.error&&node.success!==false&&node.ok!==false&&
     (node.exitCode==null||node.exitCode===0)&&(node.exit_code==null||node.exit_code===0)&&
     ![node.kind,node.job?.kind].some(kind=>['background','promoted'].includes(kind))&&
-    [node.status,node.state,node.job?.status].every(status=>!['background','promoted','running','pending','queued','stopping','stopped','partial','unknown','unavailable','deopt','disabled','failed','error','killed','cancelled','aborted','blocked','not-attempted','rejected'].includes(String(status??'').toLowerCase()))&&
+    [node.status,node.state,node.job?.status].every(status=>status==null||String(status).toLowerCase()==='completed')&&
     node.timedOut!==true&&node.aborted!==true&&node.cancelled!==true&&node.signal==null&&node.stopped===undefined&&
     node.complete!==false&&node.completed!==false&&node.executionCompleted!==false&&node.partial!==true&&node.outputPartial!==true&&
     node.truncated!==true&&node.lossy!==true&&node.stdout?.truncated!==true&&node.stderr?.truncated!==true&&

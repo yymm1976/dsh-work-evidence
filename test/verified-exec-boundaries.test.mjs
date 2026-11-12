@@ -158,6 +158,18 @@ test('validation retains the completed-only status rule for unrecognized termina
     }finally{await f.close();}
   }
 });
+
+test('validation rejects unknown or incomplete states in deeper data envelopes',async()=>{
+  for(const status of ['incomplete','success','running','failed']){
+    const f=await fixture('before',{status:'completed',data:{status:'completed',exitCode:0,data:{status}}});
+    try{
+      const result=await f.service.execute({}, {summary:'Keep deeper terminal states explicit',apply:true,
+        edits:[{file:'source.txt',mode:'replace_exact',old_text:'before',new_text:'after'}],
+        validations:[{command:'requested-check',description:'Inspect the complete result envelope',tool:'pwsh'}]},AbortSignal.timeout(10000));
+      assert.equal(result.status,'partial',status);assert.equal(result.validation.passed,false);assert.equal(result.validation.exitCode,0);
+    }finally{await f.close();}
+  }
+});
 test('validation needs an observed zero exit and accepts both native exit fields',async()=>{
   for(const validation of [{status:'completed',stdout:{text:'finished'}},{status:'completed',exit_code:0,stdout:{text:'PASS: complete'}}]){
     const f=await fixture('before',validation);

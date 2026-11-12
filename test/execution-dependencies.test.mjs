@@ -25,3 +25,13 @@ test('an inner zero exit cannot erase explicit failures or incomplete flags in a
     }
   }
 });
+
+test('every declared status in a data chain must be completed before completion can be certified',()=>{
+  for(const status of ['incomplete','success','succeeded','not-a-terminal-status',''])for(const field of ['status','state','job']){
+    const marker=field==='job'?{job:{status}}:{[field]:status};
+    for(const data of [marker,{status:'completed',exitCode:0,data:marker}]){
+      assert.equal(dependencyExecutionComplete({value:{status:'completed',exitCode:0,data:{status:'completed',exitCode:0,data}}}),false);
+    }
+  }
+  assert.equal(dependencyExecutionComplete({value:{status:'completed',data:{status:'completed',exitCode:0,data:{status:'completed'}}}}),true);
+});
