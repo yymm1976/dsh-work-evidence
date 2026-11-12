@@ -19,14 +19,17 @@ async function installBashDockerShim(){
   const executable=path.join(directory,'bash');
   await fs.writeFile(executable,`#!/bin/sh
 set -eu
-exec /usr/bin/docker run --rm -i --pull never --network none -v "$PWD:$PWD" -w "$PWD" "$WORK_EXEC_TEST_IMAGE" /usr/bin/bash "$@"
+exec /usr/bin/docker run --rm -i --pull never --network none -e DSH_WORK_EVIDENCE_STDIN_ID -e DSH_WORK_EVIDENCE_STDIN_0 -e DSH_WORK_EVIDENCE_STDIN_1 -e DSH_WORK_EVIDENCE_STDIN_2 -v "$PWD:$PWD" -w "$PWD" "$WORK_EXEC_TEST_IMAGE" /usr/bin/bash "$@"
 `,{mode:0o755});
-  const previousPath=process.env.PATH??'';
-  process.env.PATH=directory+path.delimiter+previousPath;
+  const hadPath=Object.hasOwn(process.env,'PATH'),previousPath=process.env.PATH;
+  const hadImage=Object.hasOwn(process.env,'WORK_EXEC_TEST_IMAGE'),previousImage=process.env.WORK_EXEC_TEST_IMAGE;
+  process.env.PATH=directory+path.delimiter+(previousPath??'');
   process.env.WORK_EXEC_TEST_IMAGE=pythonImage;
   return async()=>{
-    process.env.PATH=previousPath;
-    delete process.env.WORK_EXEC_TEST_IMAGE;
+    if(hadPath)process.env.PATH=previousPath;
+    else delete process.env.PATH;
+    if(hadImage)process.env.WORK_EXEC_TEST_IMAGE=previousImage;
+    else delete process.env.WORK_EXEC_TEST_IMAGE;
     await fs.rm(directory,{recursive:true,force:true});
   };
 }
@@ -61,41 +64,76 @@ async function assertWindowsNativeShell(){
   }finally{await host.close();}
 }
 
+function paddedProgram(runtime,body){
+  const prefix=runtime==='python'?'#':'//';
+  const code=prefix+'界'.repeat(64000-prefix.length-body.length)+body;
+  if(code.length!==64000)throw new Error('fixture program must contain exactly 64000 characters');
+  return code;
+}
+
 async function assertLinuxNativeBash(){
+  const expectedPath=process.env.PATH;
+  const hadImage=Object.hasOwn(process.env,'WORK_EXEC_TEST_IMAGE'),expectedImage=process.env.WORK_EXEC_TEST_IMAGE;
   const restoreShim=await installBashDockerShim();
   const trickyText="single ' double \" backslash \\\\ $(touch python-injected) `touch tick-injected` ${HOME} 你好";
   const pythonCode='text = '+JSON.stringify(trickyText)+'\nprint(text)';
   const nodeCode='console.log('+JSON.stringify(trickyText)+');';
+  const largePython=paddedProgram('python','\nprint("large-python-ok")');
+  const largeNode=paddedProgram('node','\nconsole.log("large-node-ok");');
+  const largeTimeout=paddedProgram('python','\nimport time\nprint("large-timeout-start", flush=True)\ntime.sleep(30)');
   let nodeRef;
-  const host=await startHost({
-    mountShell:false,extraMounts:[['dsh-bash-local',{}],['dsh-tool-bash',{}]],
-    script:(options,request)=>{
-      if(request===1){
-        process.env.WORK_EXEC_TEST_IMAGE=pythonImage;
-        return [tool('work_exec',{runtime:'python',executable:'/usr/bin/python3',code:pythonCode})];
-      }
-      if(request===2){
-        process.env.WORK_EXEC_TEST_IMAGE=nodeImage;
-        return [tool('work_exec',{runtime:'node',executable:'node',code:nodeCode})];
-      }
-      if(request===3){
-        nodeRef=lastValue(options).scriptRef;
-        return [tool('work_exec',{runtime:'node',format:'commonjs',executable:'node',code:'const assert=require("node:assert/strict"); assert.equal(6*7,42); console.log("commonjs-ok");'})];
-      }
-      if(request===4){
-        process.env.WORK_EXEC_TEST_IMAGE=pythonImage;
-        return [tool('work_exec',{runtime:'python',executable:'/usr/bin/python3',code:'import sys\nprint("native failure", file=sys.stderr)\nsys.exit(42)'})];
-      }
-      if(request===5){
-        process.env.WORK_EXEC_TEST_IMAGE=nodeImage;
-        return [tool('work_exec',{scriptRef:nodeRef,edits:[{before:JSON.stringify(trickyText),after:JSON.stringify('edited')}]})];
-      }
-      return [text('Linux work_exec 已按原生 bash 路径完成。')];
-    }});
+  let host,failure;
   try{
+    host=await startHost({
+      workspace:{toolSurface:'full'},
+      mountShell:false,extraMounts:[['dsh-bash-local',{}],['dsh-tool-bash',{}],['dsh-tool-jobs',{}]],
+      script:(options,request)=>{
+        if(request===1){
+          process.env.WORK_EXEC_TEST_IMAGE=pythonImage;
+          return [tool('work_exec',{runtime:'python',executable:'/usr/bin/python3',code:pythonCode})];
+        }
+        if(request===2){
+          process.env.WORK_EXEC_TEST_IMAGE=nodeImage;
+          return [tool('work_exec',{runtime:'node',executable:'node',code:nodeCode})];
+        }
+        if(request===3){
+          nodeRef=lastValue(options).scriptRef;
+          return [tool('work_exec',{runtime:'node',format:'commonjs',executable:'node',code:'const assert=require("node:assert/strict"); assert.equal(6*7,42); console.log("commonjs-ok");'})];
+        }
+        if(request===4){
+          process.env.WORK_EXEC_TEST_IMAGE=pythonImage;
+          return [tool('work_exec',{runtime:'python',executable:'/usr/bin/python3',code:'import sys\nprint("native failure", file=sys.stderr)\nsys.exit(42)'})];
+        }
+        if(request===5){
+          process.env.WORK_EXEC_TEST_IMAGE=nodeImage;
+          return [tool('work_exec',{scriptRef:nodeRef,edits:[{before:JSON.stringify(trickyText),after:JSON.stringify('edited')}]})];
+        }
+        if(request===6){
+          process.env.WORK_EXEC_TEST_IMAGE=pythonImage;
+          return [tool('work_exec',{runtime:'python',executable:'/usr/bin/python3',code:largePython,timeoutMs:60000})];
+        }
+        if(request===7){
+          process.env.WORK_EXEC_TEST_IMAGE=nodeImage;
+          return [tool('work_exec',{runtime:'node',executable:'node',code:largeNode,timeoutMs:60000})];
+        }
+        if(request===8){
+          process.env.WORK_EXEC_TEST_IMAGE=pythonImage;
+          return [tool('work_exec',{runtime:'python',executable:'/usr/bin/python3',code:largeTimeout,timeoutMs:3000})];
+        }
+        if(request===9){
+          process.env.WORK_EXEC_TEST_IMAGE=nodeImage;
+          return [tool('work_exec',{runtime:'node',code:'console.log(JSON.stringify(Object.keys(process.env).filter(key=>key.startsWith("DSH_WORK_EVIDENCE_STDIN"))));'})];
+        }
+        if(request===10)return [tool('bash',{description:'Check completed transport environment is absent',command:'env | grep "^DSH_WORK_EVIDENCE_STDIN"; result=$?; if [ "$result" = 1 ]; then printf "stdin-env-absent\\n"; else exit 1; fi',timeoutMs:10000})];
+        return [text('Linux work_exec 已按原生 bash 路径完成。')];
+      }
+    });
+    const nativeResults=[];
+    host.ctx.on('tools/result',(execution,result)=>{if(execution.name==='bash')nativeResults.push(result.value?.data??result.value??result);});
     const agent=await host.createAgent('max');
     await host.send(agent,'用 work_exec 执行 Python 和 Node，并沿用准确程序版本。');
-    const [python,node,commonjs,pythonFailure,edited]=outputs(host);
+    const [python,node,commonjs,pythonFailure,edited,largePythonResult,largeNodeResult,largeTimeoutResult,privateEnvironment]=outputs(host);
+    const laterBash=nativeResults.at(-1);
     assert.equal(python.exitCode,0);
     assert.equal(python.stdout.text,trickyText+'\n');
     assert.equal(node.exitCode,0);
@@ -111,14 +149,45 @@ async function assertLinuxNativeBash(){
     assert.deepEqual(edited.scriptSourceRefs,[nodeRef]);
     assert.equal(edited.scriptRuntime,'node');
     assert.equal(edited.scriptExecutable,'node');
+    assert.equal(largePythonResult.exitCode,0);
+    assert.equal(largePythonResult.stdout.text,'large-python-ok\n');
+    assert.equal(largePythonResult.cwd,host.cwd);
+    assert.equal(largeNodeResult.exitCode,0);
+    assert.equal(largeNodeResult.stdout.text,'large-node-ok\n');
+    assert.equal(largeNodeResult.cwd,host.cwd);
+    assert.equal(largeTimeoutResult.kind,'promoted');
+    assert.match(largeTimeoutResult.jobId,/^bash-/u);
+    assert.equal(largeTimeoutResult.scriptChars,64000);
+    assert.equal(largeTimeoutResult.scriptRuntime,'python');
+    assert.equal(largeTimeoutResult.scriptExecutable,'/usr/bin/python3');
+    assert.equal(privateEnvironment.exitCode,0);
+    assert.equal(privateEnvironment.stdout.text,'[]\n');
+    assert.equal(laterBash.exitCode,0,JSON.stringify(laterBash));
+    assert.equal(laterBash.stdout.text,'stdin-env-absent\n');
     assert.equal(await fs.stat(path.join(host.cwd,'python-injected')).then(()=>true,()=>false),false);
     assert.equal(await fs.stat(path.join(host.cwd,'tick-injected')).then(()=>true,()=>false),false);
     const status=await host.command(agent,'detail');
-    assert.equal(status.observability.features.inlineExec.applied,4);
+    assert.equal(status.observability.features.inlineExec.applied,7);
     assert.equal(status.observability.features.inlineExec.failed,1);
+    assert.equal(host.ctx.jobs.kill(largeTimeoutResult.jobId,agent.session.id,'transport fixture complete'),'requested');
+    const settled=await host.ctx.jobs.wait(largeTimeoutResult.jobId,30000,agent.session.id,AbortSignal.timeout(32000));
+    assert.equal(settled.status,'killed');
+    assert.deepEqual((await fs.readdir(host.cwd)).filter(name=>name.startsWith('.dsh-work-exec-')),[]);
+  }catch(error){
+    failure=error;
   }finally{
-    await host.close();
-    await restoreShim();
+    const cleanupErrors=[];
+    if(host)try{await host.close();}catch(error){cleanupErrors.push(error);}
+    try{await restoreShim();}catch(error){cleanupErrors.push(error);}
+    if(process.env.PATH!==expectedPath)cleanupErrors.push(new Error('work_exec Linux test did not restore PATH'));
+    if(hadImage?process.env.WORK_EXEC_TEST_IMAGE!==expectedImage:Object.hasOwn(process.env,'WORK_EXEC_TEST_IMAGE'))
+      cleanupErrors.push(new Error('work_exec Linux test did not restore WORK_EXEC_TEST_IMAGE'));
+    if(failure){
+      if(cleanupErrors.length)failure.cleanupErrors=cleanupErrors;
+      throw failure;
+    }
+    if(cleanupErrors.length===1)throw cleanupErrors[0];
+    if(cleanupErrors.length>1)throw new AggregateError(cleanupErrors,'work_exec Linux test cleanup failed');
   }
 }
 

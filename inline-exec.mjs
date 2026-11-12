@@ -309,20 +309,52 @@ function resolveIndexedScript(input,calls,resultExecutables,eventRefs,signal){
   return {...resolved,sourceCallIds};
 }
 
-/** Transfer UTF-8 bytes through the selected native shell while treating the program as stdin data. */
-export function inlineCommand(input,root,shell='pwsh'){
+export const INLINE_ENV_KEYS=Object.freeze(['DSH_WORK_EVIDENCE_STDIN_ID',...Array.from({length:3},(_,index)=>'DSH_WORK_EVIDENCE_STDIN_'+index)]);
+const validTransferId=value=>typeof value==='string'&&/^[A-Za-z0-9_-]{1,128}$/u.test(value);
+function validateInlineInput(input){
   if(!input||!['python','node'].includes(input.runtime)||typeof input.code!=='string'||!input.code.trim()||input.code.length>64000)
     throw new Error('runtime must be python or node and code must contain 1–64000 characters');
   if(input.format!==undefined&&(input.runtime!=='node'||!['module','commonjs'].includes(input.format)))throw new Error('format applies only to Node');
   const executable=input.executable??input.runtime;
   if(!validExecutable(executable))throw new Error('Invalid existing executable');
+  return executable;
+}
+
+/** Keep each environment string below Linux's per-string exec limit, including UTF-8 and NUL bytes. */
+export function inlineEnvironment(input,transferId){
+  validateInlineInput(input);
+  if(!validTransferId(transferId))throw new Error('bash transport requires a valid transfer ID');
+  const bytes=Buffer.from(input.code.replaceAll('\\','\\\\').replaceAll('\0','\\000'),'utf8');
+  const values={[INLINE_ENV_KEYS[0]]:transferId};let offset=0;
+  for(const key of INLINE_ENV_KEYS.slice(1)){
+    let end=Math.min(offset+96000,bytes.length);
+    while(end<bytes.length&&(bytes[end]&0xc0)===0x80)end--;
+    values[key]=bytes.subarray(offset,end).toString('utf8');offset=end;
+  }
+  if(offset!==bytes.length)throw new Error('work_exec source exceeds the native environment transport capacity');
+  return Object.freeze(values);
+}
+
+/** Transfer UTF-8 bytes through the selected native shell while treating the program as stdin data. */
+export function inlineCommand(input,root,shell='pwsh',transferId=null){
+  const executable=validateInlineInput(input);
   if(shell==='bash'){
+    if(!validTransferId(transferId))throw new Error('bash transport requires a valid transfer ID');
     const args=input.runtime==='python'?['-B','-X','utf8','-']:['--input-type='+(input.format??'module'),'-'];
     const environment=input.runtime==='python'?'PYTHONIOENCODING=utf-8 PYTHONDONTWRITEBYTECODE=1 ':'';
     const invocation=environment+[executable,...args].map(bashQuote).join(' ');
+    const present=INLINE_ENV_KEYS.slice(1).map(key=>'"${'+key+'+present}" = present').join(' && ');
+    const content=INLINE_ENV_KEYS.slice(1).map(key=>'${'+key+'-}').join('');
     return `set -o pipefail
+if ! [[ "\${${INLINE_ENV_KEYS[0]}-}" = ${bashQuote(transferId)} && ${present} ]]; then
+  printf '%s\\n' 'work_exec stdin environment is unavailable' >&2
+  exit 125
+fi
 cd -- ${bashQuote(root)} || exit $?
-printf '%s' ${bashQuote(input.code)} | ${invocation}`;
+builtin printf '%b' "${content}" | (
+  unset ${INLINE_ENV_KEYS.join(' ')}
+  ${invocation}
+)`;
   }
   if(shell!=='pwsh')throw new Error('shell must be pwsh or bash');
   const args=input.runtime==='python'?'-B -X utf8 -':'--input-type='+(input.format??'module')+' -';

@@ -7,9 +7,36 @@ const SHELL_TOOLS=new Set(['pwsh','bash','ops_bash']);
 const MAX_REPAIRS=2;
 const messageOf=event=>event?.data?.message??event?.data;
 const STRICT_JSON_OUTPUT=/(?:只|仅)(?:能|需)?(?:返回|输出)|\b(?:return|output)\s+only\b/iu;
+const PROMPT_REFERENCE=/(?:(?:解释|说明|翻译|分析|审查|评审|修改|编辑|改写|替换|更新|检查|explain|translate|describe|review|analy[sz]e|edit|modify|rewrite|replace|update|inspect)[^。！？;\n]{0,140}(?:指令|要求|提示|示例|例子|README|instruction|prompt|example)|(?:指令|要求|提示|示例|例子|README|instruction|prompt|example)[^。！？;\n]{0,140}(?:解释|说明|翻译|分析|审查|评审|修改|编辑|改写|替换|更新|检查|explain|translate|describe|review|analy[sz]e|edit|modify|rewrite|replace|update|inspect))/iu;
+const JSON_TOPIC_REFERENCE=/(?:最终|最后)\s*JSON\s*(?:解析|处理|校验|验证|格式|代码|文件|逻辑|函数|模块|配置|路径|字段|问题|实现|方案|需求|要求|示例|说明)|\bfinal\s+JSON\s+(?:parsing|handling|validation|format|code|file|logic|function|module|config|schema|example|instruction)\b/iu;
+function requestDirectives(text){
+  return text
+    .replace(/```[\s\S]*?```/gu,'\n')
+    .replace(/`[^`\r\n]*`/gu,' ')
+    .replace(/"[^"\r\n]*"|“[^”\r\n]*”|'[^'\r\n]*'/gu,' ');
+}
 function expectsFinalJson(text){
-  if(/(?:故意|无效|非法|不合法|malformed|invalid)\s*JSON[^。；;\n]{0,16}(?:示例|例子|example|sample)/iu.test(text))return false;
-  return /(?:最终|最后)[^。；;\n]{0,80}JSON|(?:只|仅)(?:能|需)?(?:返回|输出)[^。；;\n]{0,24}JSON|(?:返回|输出)(?:一[个份段])?(?:合法|有效|完整的?)?\s*JSON(?:对象|数组|代码块)|\b(?:final\s+(?:answer|response|result)|return\s+only|output\s+only)\b[^\n.]{0,80}\bJSON\b/iu.test(text);
+  const request=requestDirectives(String(text??''));
+  if(/(?:故意|无效|非法|不合法|malformed|invalid)\s*JSON[^。；;\n]{0,16}(?:示例|例子|example|sample)/iu.test(request))return false;
+  if(PROMPT_REFERENCE.test(request))return false;
+  if(JSON_TOPIC_REFERENCE.test(request))return false;
+  const rawOutput=/(?:裸|原始|纯|\braw\b|\bbare\b|\bunwrapped\b|\bplain\b|\bnaked\b|\bunformatted\b)[^。！？;\n]{0,16}JSON/iu.test(request)&&
+    /(?:最终|返回|输出|作为|return|output|final)/iu.test(request);
+  return rawOutput||/(?:最终|最后)[^。；;\n]{0,80}JSON|(?:只|仅)(?:能|需|须|可)?(?:返回|输出)[^。；;\n]{0,24}JSON|(?:返回|输出)(?:一[个份段])?(?:合法|有效|完整的?)?(?:裸|原始|纯)?\s*JSON(?:对象|数组|值|文本|代码块)|JSON[^。；;\n]{0,40}(?:作为|是)[^。；;\n]{0,16}(?:最终|回答|输出)|(?:返回|输出|提供)[^。；;\n]{0,80}JSON[^。；;\n]{0,80}(?:直接|原样)|(?:返回|输出|提供)[^。；;\n]{0,80}(?:直接|原样)[^。；;\n]{0,80}JSON/iu.test(request)||
+    /\b(?:final\s+(?:assistant\s+)?(?:answer|response|result|text|output)|(?:return|output)\s+only)\b[^\n.]{0,80}\bJSON\b|\bJSON\b[^\n.]{0,80}\bfinal\s+(?:assistant\s+)?(?:answer|response|result|text|output)\b|\b(?:return|output|provide)\b[^\n.]{0,80}\bJSON\b[^\n.]{0,80}\bdirectly\b/iu.test(request);
+}
+function hasAllowedFenceOutput(text){
+  return /JSON\s*代码块|(?:使用|用|放在|包装(?:在|成))[^。；;\n]{0,24}(?:(?:Markdown|markdown)\s*)?(?:代码块|围栏)|\bJSON\s+(?:Markdown\s+)?(?:code\s+)?(?:block|fence)\b|(?:return|output|provide)\b[^\n.]{0,24}\b(in|as|inside|within|using)\s+(?:a|the)\s+(?:Markdown\s+|JSON\s+)?(?:code\s+block|fence)\b/iu.test(text);
+}
+function requiresRawFinalJson(text){
+  const englishRaw=/\b(raw|bare|unwrapped|plain|naked|unformatted)\s+JSON\b/iu.test(text);
+  const chineseRaw=/(?:裸|未包装|未经包装|原始|纯)\s*JSON/iu.test(text);
+  const englishNoFence=/(?:\bno\b|\bwithout\b)[^\n.]{0,40}\b(?:Markdown\s+)?(?:code\s+)?(?:fence|block)\b|\b(?:do|must|should)\s+not\b[^\n.]{0,40}(?:use|include|add|wrap)[^\n.]{0,20}\b(?:Markdown\s+)?(?:code\s+)?(?:fence|block)\b|\bno\s+Markdown\s+formatting\b/iu.test(text);
+  const chineseNoFence=/(?:不要|不得|禁止|无需|不加|不使用|不能使用|不允许)[^。；;\n]{0,24}(?:Markdown|markdown)?\s*(?:代码围栏|围栏|代码块)/iu.test(text);
+  const englishDirect=/(?:return|output|provide)\b[^\n.]{0,100}\bJSON\b[^\n.]{0,80}\bdirectly\b|\bJSON\b[^\n.]{0,80}\bdirectly\s+as\s+(?:the\s+)?final\s+(?:assistant\s+)?(?:answer|response|result|text)\b/iu.test(text);
+  const chineseDirect=/(?:直接|原样)[^。；;\n]{0,80}(?:作为|是)[^。；;\n]{0,16}(?:最终|回答|输出)|(?:直接|原样)[^。；;\n]{0,24}(?:返回|输出|提供|给出)[^。；;\n]{0,24}JSON|(?:返回|输出|提供)[^。；;\n]{0,80}(?:直接|原样)[^。；;\n]{0,24}JSON/iu.test(text);
+  const strictOnly=STRICT_JSON_OUTPUT.test(text)&&/JSON/iu.test(text)&&!hasAllowedFenceOutput(text);
+  return englishNoFence||chineseNoFence||((englishRaw||chineseRaw||englishDirect||chineseDirect)&&!hasAllowedFenceOutput(text))||strictOnly;
 }
 // Unlabeled fences are ambiguous with shell/JS, so require a JSON-shaped leading token.
 function looksLikeJsonBlock(raw){
@@ -47,7 +74,12 @@ function fencedCandidates(text){
 export function finalJsonSyntaxIssue(text,request){
   const requestText=String(request??''),source=String(text??'');
   if(!expectsFinalJson(requestText))return null;
-  const trimmed=source.trim(),plain=trimmed.startsWith('{')||trimmed.startsWith('[');
+  const trimmed=source.trim();
+  if(requiresRawFinalJson(requestDirectives(requestText))){
+    try{JSON.parse(trimmed);}catch(error){return {raw:trimmed,error:String(error.message).slice(0,300),rawFinal:true};}
+    return null;
+  }
+  const plain=trimmed.startsWith('{')||trimmed.startsWith('[');
   const candidates=fencedCandidates(source);
   if(!candidates.length&&plain&&STRICT_JSON_OUTPUT.test(requestText))candidates.push(trimmed);
   for(const raw of candidates){
@@ -167,9 +199,15 @@ export function createFinalJsonGuard(ctx,runtime){
       return;
     }
     syntaxRepairing.set(agent.session.id,{turn,kind,afterSeq:current.assistant.seq});
+    const rawFinal=current.issue.rawFinal===true;
+    const rawInstruction=rawFinal
+      ?(/[\u3400-\u9fff]/u.test(textOf(messageOf(current.request)))
+        ?'只输出一个 JSON 值作为最终助手文本，不得添加说明、前缀或后缀，也不得使用 Markdown 代码围栏。'
+        :'Output exactly one JSON value directly as the final assistant text, with no prose, prefix, suffix, or Markdown fence.')
+      :'输出一个紧凑JSON代码块。';
     const notice=kind==='observed-result-repair'
       ?'[work-evidence] 用户要求完整实际执行结果。助手事件'+current.assistant.seq+'的最终JSON与本轮完整可见的原生结果不一致。差异位置（数据）：'+JSON.stringify({sourceSeq:current.issue.sourceSeq,fields:current.issue.fields})+'。只依据该结果原样重写exitCode、stdout、stderr，保留字符串内的全部字符和末尾换行，使用JSON转义。已有结果足够，不重新执行、读取或计算。原答复保留。'
-      :'[work-evidence] 用户明确要求的最终JSON在助手事件'+current.assistant.seq+'中无法严格解析。解析信息（数据）：'+JSON.stringify(current.issue.error)+'。只使用本会话已经成功取得的实际结果重写这份交付，不重新读取、执行或计算；依据错误只修正语法、转义、括号或漏掉的原有条目，保持相同数据和字段，输出一个紧凑JSON代码块。只有已有结果本身缺失时才补一个最小必要动作；不要只在说明中承认笔误，也不要只给改动片段。原答复保留，当前只修正这份交付。';
+      :'[work-evidence] 用户明确要求的最终JSON在助手事件'+current.assistant.seq+'中无法严格解析。解析信息（数据）：'+JSON.stringify(current.issue.error)+'。只使用本会话已经成功取得的实际结果重写这份交付，不重新读取、执行或计算；依据错误只修正语法、转义、括号或漏掉的原有条目，保持相同数据和字段，'+rawInstruction+'只有已有结果本身缺失时才补一个最小必要动作；不要只在说明中承认笔误，也不要只给改动片段。原答复保留，当前只修正这份交付。';
     try{agent.steer({id:randomUUID(),role:'user',source:{kind:SOURCE,finalJson:{kind,requestSeq:current.request.seq,afterSeq:current.assistant.seq}},
       content:[{type:'text',text:notice}]});}
     catch(error){

@@ -1,14 +1,31 @@
-import {VERSION} from "./runtime.mjs";
+import {VERSION,argsOf} from "./runtime.mjs";
 import {toolModeFor} from './tool-execution.mjs';
 import path from 'node:path';
+import {randomUUID} from 'node:crypto';
 import {stat} from 'node:fs/promises';
 import {recallHistory} from "./compaction-handoff.mjs";
 import {recallCall} from "./history-hygiene.mjs";
-import {inlineCommand,resolveInlineScript,declaredInlineExecutable,namedInlineExecutable,inlineFailureLocation,inlineFormatRecovery,inlineScriptEventRef} from './inline-exec.mjs';
+import {inlineCommand,inlineEnvironment,INLINE_ENV_KEYS,resolveInlineScript,declaredInlineExecutable,namedInlineExecutable,inlineFailureLocation,inlineFormatRecovery,inlineScriptEventRef} from './inline-exec.mjs';
 import {declaredFileSources,dependencyExecutionComplete} from './execution-dependencies.mjs';
 import {reportedExecutionChecks} from './recovery.mjs';
 
 export function registerManagementTools({ctx,runtime,state,effects,available,featureControl,capabilityDiagnostic,contextEconomics,taskFlow,taskHandoff,retainedCompute,finalJson,qualityReview,executionEvidence,executionDependencies,refreshExecutionEvidence,hostReferences,workingSet,compressionControl,compactionHandoff,contextWindow,observationLedger,historyCoordinator,clearPluginState,index,candidates,ptcPatterns,ptcFastpath,verifiedExec,fastEditJava,fileProfiler,structuredJson,preserveContextResult,retainRecalledSources,hasHistoricalReferences,applyToolSurface,call,disabledResult,output,COMPACT_HIDDEN_TOOLS,assertParameterBounds,parameters}){
+  const pendingStdin=new Map();let registeredShellEnv=null,disposeShellEnv=null;
+  function prepareShellEnvironment(){
+    const registry=ctx.get('shellEnv');
+    if(typeof registry?.register!=='function')return false;
+    if(registry===registeredShellEnv)return true;
+    disposeShellEnv?.();registeredShellEnv=null;disposeShellEnv=null;
+    disposeShellEnv=registry.register({name:'work-evidence-stdin',
+      variables:Object.fromEntries(INLINE_ENV_KEYS.map(key=>[key,{description:'Private work_exec stdin transport for its matching native Bash execution.'}])),
+      resolve(execution){
+        if(execution.name!=='bash')return {};
+        const pending=pendingStdin.get(argsOf(execution.arguments)?.command);
+        return pending?.agent===execution.agent?pending.values:{};
+      }});
+    registeredShellEnv=registry;return true;
+  }
+  ctx.on('dispose',()=>{pendingStdin.clear();disposeShellEnv?.();registeredShellEnv=null;disposeShellEnv=null;});
   const register=(name,description,properties,required,execute,{gate=true,resultSchema=output.schema}={})=>ctx.tools.register({name,description,
     parameters:{...parameters(properties),required},output:{...output,schema:resultSchema},isConcurrencySafe:()=>false,execute:async(args,exec)=>runtime.withExecution(exec,async()=>{
       if(!exec.agent)throw new Error('Agent required');await runtime.init(exec.agent,exec.signal);await effects.load(exec.agent);runtime.sync(exec.agent);
@@ -79,6 +96,7 @@ export function registerManagementTools({ctx,runtime,state,effects,available,fea
       const sources=declaredFileSources(args.sources);
       const shell=process.platform==='win32'?'pwsh':'bash';
       if(!available(exec.agent,shell))return {status:'unavailable',reason:`native-${shell}-unavailable`,executionOccurred:false};
+      if(shell==='bash'&&!prepareShellEnvironment())return {status:'unavailable',reason:'native-shell-env-unavailable',executionOccurred:false};
       let script;
       try{script=resolveInlineScript(args,exec.agent.session,exec.signal);}catch(error){
         if(error.message==='runtime must be python or node'&&args.runtime===undefined&&args.language===undefined&&typeof args.code==='string'&&args.code.trim()&&args.code.length<=64000&&exec.callId)
@@ -106,28 +124,31 @@ export function registerManagementTools({ctx,runtime,state,effects,available,fea
             namedExecutable?'No program was executed. The task names a specific interpreter path. Supply that interpreter at an existing absolute path or report the unmet requirement; do not substitute PATH. Reuse the returned scriptRef to retain the complete program.':
             'No program was executed. Supply an existing absolute interpreter path. If the task permits changing environments, explicitly set executable to python or node (matching the runtime) to use PATH. Omitting executable retains the recorded or declared path. Reuse the returned scriptRef to retain the complete program.'};
       }
-      const command=inlineCommand(script,root,shell);
       // Inline scripts may print source files. Their output has no native read
       // windows, so it must not be treated as disposable generic shell output.
       preserveContextResult(exec.agent.session.id,exec.rootCallId??exec.callId);
       const dependencies=await executionDependencies.capture(root,sources,exec.signal);
       const description='Run '+script.runtime+' script via stdin';
-      const result=shell==='bash'
-        ?await call('bash',{description,command,timeoutMs:script.timeoutMs??10000},exec)
-        :await call('pwsh',{command,description,timeoutMs:script.timeoutMs??10000},exec);
-      const fileEvidence=await executionDependencies.finish(dependencies,dependencyExecutionComplete(result),exec.signal);
-      const scriptEditsSubmitted=args.edits?.length??0,scriptEditCount=(args.edits??[]).filter(edit=>edit.before!==edit.after).length;
-      if(args.scriptRef)effects.decide(exec.agent,'inlineScriptReuse','applied','explicit-same-session-script-reference',{scriptChars:script.code.length,sourceCallId:args.scriptRef,scriptEditsSubmitted,scriptEditCount});
-      const aliases=['language','interpreter','cwd','workdir'].filter(key=>Object.hasOwn(args,key));
-      if(aliases.length)effects.decide(exec.agent,'inlineArgumentRecovery','applied','unambiguous-explicit-script-arguments',{aliases});
-      const scriptEventRef=inlineScriptEventRef(exec.agent.session,exec.callId);
-      const failureLocation=inlineFailureLocation(script,result.value??result),recovery=inlineFormatRecovery(script,result.value??result,scriptEventRef??exec.callId,failureLocation);
-      const metadata={...fileEvidence,scriptRef:exec.callId??null,scriptEventRef,scriptChars:script.code.length,scriptRuntime:script.runtime,scriptExecutable:script.executable??script.runtime,scriptEditsSubmitted,scriptEditCount,
-        scriptExecutableSource:declaredExecutable?.source??null,scriptSourceRefs:script.sourceCallIds??[],scriptReused:!!args.scriptRef,
-        failureLocation,...(recovery?{recovery}:{})};
-      const reportedChecks=reportedExecutionChecks(result);
-      if(reportedChecks)metadata.reportedChecks=reportedChecks;
-      return result.value!==undefined?{...result.value,...metadata,isError:!!result.isError}:{...metadata,isError:!!result.isError,error:result.error,content:result.content};
+      const transferId=shell==='bash'?randomUUID():null,command=inlineCommand(script,root,shell,transferId);
+      if(shell==='bash')pendingStdin.set(command,{agent:exec.agent,values:inlineEnvironment(script,transferId)});
+      try{
+        const result=shell==='bash'
+          ?await call('bash',{description,command,timeoutMs:script.timeoutMs??10000},exec)
+          :await call('pwsh',{command,description,timeoutMs:script.timeoutMs??10000},exec);
+        const fileEvidence=await executionDependencies.finish(dependencies,dependencyExecutionComplete(result),exec.signal);
+        const scriptEditsSubmitted=args.edits?.length??0,scriptEditCount=(args.edits??[]).filter(edit=>edit.before!==edit.after).length;
+        if(args.scriptRef)effects.decide(exec.agent,'inlineScriptReuse','applied','explicit-same-session-script-reference',{scriptChars:script.code.length,sourceCallId:args.scriptRef,scriptEditsSubmitted,scriptEditCount});
+        const aliases=['language','interpreter','cwd','workdir'].filter(key=>Object.hasOwn(args,key));
+        if(aliases.length)effects.decide(exec.agent,'inlineArgumentRecovery','applied','unambiguous-explicit-script-arguments',{aliases});
+        const scriptEventRef=inlineScriptEventRef(exec.agent.session,exec.callId);
+        const failureLocation=inlineFailureLocation(script,result.value??result),recovery=inlineFormatRecovery(script,result.value??result,scriptEventRef??exec.callId,failureLocation);
+        const metadata={...fileEvidence,scriptRef:exec.callId??null,scriptEventRef,scriptChars:script.code.length,scriptRuntime:script.runtime,scriptExecutable:script.executable??script.runtime,scriptEditsSubmitted,scriptEditCount,
+          scriptExecutableSource:declaredExecutable?.source??null,scriptSourceRefs:script.sourceCallIds??[],scriptReused:!!args.scriptRef,
+          failureLocation,...(recovery?{recovery}:{})};
+        const reportedChecks=reportedExecutionChecks(result);
+        if(reportedChecks)metadata.reportedChecks=reportedChecks;
+        return result.value!==undefined?{...result.value,...metadata,isError:!!result.isError}:{...metadata,isError:!!result.isError,error:result.error,content:result.content};
+      }finally{pendingStdin.delete(command);}
     },{resultSchema:{type:'object',additionalProperties:true,properties:{
       status:{type:'string'},mode:{type:'string'},logs:{type:'array',items:{type:'string'}},
       scriptRef:{oneOf:[{type:'string'},{type:'null'}]},scriptChars:{type:'number'},scriptRuntime:{type:'string'},scriptReused:{type:'boolean'},
