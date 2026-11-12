@@ -422,8 +422,21 @@ export function createRuntime(ctx,call,initial={}){
   }
   async function save(agent,file,value,signal,{background=false}={}){
     const text=typeof value==='string'?value:JSON.stringify(value,null,2)+'\n',exec=execFor(agent,signal);
-    if(!exec.token||background){
-      const s=background?get(agent):await init(agent,signal),target=within(s.root,file),relative=path.relative(s.dir,target);
+    if(background){
+      const s=get(agent),targetPath=within(s.root,file),relative=path.relative(s.dir,targetPath);
+      if(relative==='..'||relative.startsWith('..'+path.sep)||path.isAbsolute(relative))throw new Error('Background Work Evidence writes must remain inside its storage directory');
+      const backend=ctx.get('fs'),policy=ctx.get('sandboxPolicy')?.resolve({session:agent.session});
+      if(!backend?.writeText||!policy||!['workspace-write','danger-full-access'].includes(policy.mode))
+        throw new Error('Background report storage requires an authorized native file provider');
+      const workspace=await backend.resolve(s.root,{cwd:s.root,signal}),storage=await backend.resolve(s.dir,{cwd:s.root,signal}),target=await backend.resolve(targetPath,{cwd:s.root,signal});
+      if(!backend.contains(workspace,storage)||!backend.contains(storage,target))throw new Error('Background report storage resolves outside its workspace storage directory');
+      const info=await backend.stat(target,signal);
+      if(info&&info.type!=='file')throw new Error('Background report target is not a regular file');
+      await backend.writeText(target,text,info?{kind:'replaceIfVersion',version:info.version}:{kind:'createIfAbsent'},signal,policy);
+      return file;
+    }
+    if(!exec.token){
+      const s=await init(agent,signal),target=within(s.root,file),relative=path.relative(s.dir,target);
       if(relative==='..'||relative.startsWith('..'+path.sep)||path.isAbsolute(relative))throw new Error('Background Work Evidence writes must remain inside its storage directory');
       signal?.throwIfAborted();
       await fs.mkdir(path.dirname(target),{recursive:true});

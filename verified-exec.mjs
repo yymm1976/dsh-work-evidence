@@ -1,4 +1,5 @@
 import path from 'node:path';
+import fs from 'node:fs/promises';
 import {createHash,randomUUID} from 'node:crypto';
 import {within,assertExistingFileWithin,readUtf8File} from './evidence.mjs';
 import {createNativeCas} from './native-cas.mjs';
@@ -70,17 +71,19 @@ function countExact(text,needle){
   return positions;
 }
 
-function groupEdits(edits,root){
+async function groupEdits(edits,root){
   const groups=new Map();
   for(const edit of edits){
     const full=within(root,edit.file),file=path.relative(root,full).replaceAll('\\','/');
-    const group=groups.get(file)||{file,full,mode:edit.mode,edits:[],content:null};
+    let identity;
+    try{identity=await fs.realpath(full);}catch(error){if(error.code!=='ENOENT')throw error;identity=process.platform==='win32'?full.toLowerCase():full;}
+    const group=groups.get(identity)||{file,full,mode:edit.mode,edits:[],content:null};
     if(group.mode!==edit.mode)throw new Error(`Conflicting create/replace modes for ${file}`);
     if(edit.mode==='create'){
       if(group.content!==null)throw new Error(`More than one create operation for ${file}`);
       group.content=edit.content;
     }else group.edits.push({oldText:edit.old_text,newText:edit.new_text});
-    groups.set(file,group);
+    groups.set(identity,group);
   }
   return [...groups.values()];
 }
@@ -212,10 +215,15 @@ export function createVerifiedExec(ctx,runtime,call){
         else await save();
         return {reportSaved:true};
       }
-      catch(error){return {reportSaved:false,reportError:String(error?.message||error).slice(0,1200)};}
+      catch(error){
+        if(signal.aborted)try{
+          await runtime.save(agent,reportPath,record,AbortSignal.timeout(5000),{background:true});return {reportSaved:true};
+        }catch(retry){error=retry;}
+        return {reportSaved:false,reportError:String(error?.message||error).slice(0,1200)};
+      }
     }
     let groups;
-    try{groups=groupEdits(plan.edits,s.root);}catch(error){
+    try{groups=await groupEdits(plan.edits,s.root);}catch(error){
       record.status='deopt';record.reason='invalid-plan';record.error=error.message;s.metrics.verifiedExecDeopts++;await save();
       return {status:'deopt',reason:record.reason,error:error.message,reportPath,effectState:'none'};
     }
@@ -341,7 +349,8 @@ export function createVerifiedExec(ctx,runtime,call){
       if(!effect.ok){
         record.status='partial';record.reason='file-apply-failed';
         s.metrics.verifiedExecPartial++;const saved=await saveOutcome();
-        return {status:'partial',reason:record.reason,file:item.group.file,effectState:record.effectState,error:effect.error,reportPath,...saved,
+        return {status:'partial',reason:record.reason,file:item.group.file,effectState:record.effectState,error:effect.error,
+          ...(effect.permissionDenied?{permissionDenied:true}:{}),reportPath,...saved,
           files:fileEffects(),note:'Per-file effects are listed. Inspect applied and unknown files before deciding the next edit.'};
       }
       if(!HEX_REVISION.test(String(useNative?effect.contentHash:effect.revision||''))||(useNative?effect.contentHash:effect.revision)!==file.expectedAfterHash){

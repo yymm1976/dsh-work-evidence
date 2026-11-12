@@ -100,6 +100,7 @@ test('a native replacement race preserves the newer file and reports that the ed
     const result=await invoke(host,agent,{summary:'Keep newer source',apply:true,edits:[{file:'source.txt',mode:'replace_exact',old_text:'original',new_text:'changed'}]});
     if(!nativeSupported){assert.equal(result.reason,'cas-file-tools-unavailable');assert.equal(race,false);return;}
     assert.equal(race,true);assert.equal(result.status,'partial');assert.equal(result.reason,'file-apply-failed');
+    assert.equal(result.effectState,'none');assert.equal(result.files[0].effectState,'none');
     assert.equal(await fs.readFile(file,'utf8'),'concurrent update');
   }finally{await host.close();}
 });
@@ -125,8 +126,10 @@ test('native conditional editing retains the native read-only permission denial'
   try{
     const file=path.join(host.cwd,'source.txt');await fs.writeFile(file,'original');
     const agent=await host.createAgent();agent.session.append('sandbox/mode',{mode:'read-only',workspaceRoot:host.cwd});
-    const result=await invoke(host,agent,{summary:'Respect the read-only session',apply:true,edits:[{file:'source.txt',mode:'replace_exact',old_text:'original',new_text:'changed'}]});
-    assert.notEqual(result.status,'applied');assert.notEqual(result.status,'validated');
+    const result=await host.ctx.tools.execute({name:'verified_exec',arguments:{summary:'Respect the read-only session',apply:true,
+      edits:[{file:'source.txt',mode:'replace_exact',old_text:'original',new_text:'changed'}]},callId:'read-only-edit',rootCallId:'read-only-edit',agent,signal:AbortSignal.timeout(20000)});
+    if(nativeSupported){assert.equal(result.isError,true);assert.match(output(result),/denied|read-only/iu);}
+    else {assert.equal(result.isError,false);assert.equal(result.value.status,'deopt');}
     assert.equal(await fs.readFile(file,'utf8'),'original');
   }finally{await host.close();}
 });
@@ -235,5 +238,34 @@ test('the real native tool channel retains cancelled file effects and a saved re
     const report=JSON.parse(body.slice(start));assert.equal(report.status,'partial');assert.equal(report.effectState,'applied');
     assert.equal(report.files[0].effectState,'applied');assert.equal(report.reportSaved,true);
     const saved=JSON.parse(await fs.readFile(report.reportPath,'utf8'));assert.equal(saved.files[0].effect.effectState,'applied');
+  }finally{await host.close();}
+});
+test('native edits merge Windows case aliases of one existing file before planning changes',async()=>{
+  const host=await startHost({workspace:{nativeVerifiedEdits:true},script:()=>[text('Ready.')]});
+  try{
+    const file=path.join(host.cwd,'Case.txt');await fs.writeFile(file,'AB');const agent=await host.createAgent();
+    const alias=process.platform==='win32'?'case.txt':'Case.txt';
+    const result=await invoke(host,agent,{summary:'Apply both edits to the same file identity',apply:true,edits:[
+      {file:'Case.txt',mode:'replace_exact',old_text:'A',new_text:'X'},{file:alias,mode:'replace_exact',old_text:'B',new_text:'Y'}]});
+    if(!nativeSupported){assert.equal(result.status,'deopt');return;}
+    assert.equal(result.status,'applied',JSON.stringify(result));assert.equal(result.files.length,1);
+    assert.equal(await fs.readFile(file,'utf8'),'XY');
+  }finally{await host.close();}
+});
+test('cancellation after an outcome report commits preserves its saved state',async()=>{
+  const host=await startHost({workspace:{nativeVerifiedEdits:true},script:()=>[text('Ready.')]});
+  try{
+    await fs.writeFile(path.join(host.cwd,'source.txt'),'before');const agent=await host.createAgent(),controller=new AbortController();let sourceWritten=false,aborted=false;
+    host.ctx.on('tools/result',(exec,result)=>{
+      if(exec.name!=='write'||result.isError)return;
+      if(exec.callId?.startsWith('work-evidence:native-cas:'))sourceWritten=true;
+      else if(sourceWritten&&!aborted&&exec.arguments.file_path.endsWith('.json')){aborted=true;controller.abort(new Error('cancel after report commit'));}
+    });
+    const result=await host.ctx.tools.execute({name:'verified_exec',arguments:{summary:'Keep the committed report',apply:true,
+      edits:[{file:'source.txt',mode:'replace_exact',old_text:'before',new_text:'after'}]},callId:'cancel-report',rootCallId:'cancel-report',agent,signal:controller.signal});
+    if(!nativeSupported){assert.equal(aborted,false);return;}
+    assert.equal(aborted,true);assert.equal(result.isError,true);const body=output(result),at=body.indexOf('{');assert.ok(at>=0,body);
+    const report=JSON.parse(body.slice(at));assert.equal(report.reportSaved,true,body);
+    assert.equal(JSON.parse(await fs.readFile(report.reportPath,'utf8')).effectState,'applied');
   }finally{await host.close();}
 });

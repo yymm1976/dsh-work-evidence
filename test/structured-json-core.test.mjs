@@ -56,6 +56,10 @@ test('small serialized deep values stay safe for recursive host output renderers
   assert.equal(view.complete,false);assert.equal(view.value,undefined);assert.equal(view.valueOmittedReason,'nesting-depth-limit');
   assert.equal(view.serializedPreview,source);assert.equal(view.serializedChars,source.length);assert.doesNotThrow(()=>JSON.stringify(result));
 });
+test('negative zero is rejected before an unrepresentable value reaches the host',()=>{
+  for(const source of ['-0','{"value":-0}','[-1e-999]'])
+    assert.throws(()=>queryStructuredJson(source,[{pointer:'',op:'value'}]),error=>error.code==='JSON_NUMBER_UNSAFE');
+});
 
 test('a shallow JSON selection survives an unrelated deeply nested subtree',()=>{
   const nested='['.repeat(10000)+'0'+']'.repeat(10000),source='{"answer":42,"nested":'+nested+'}';

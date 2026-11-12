@@ -36,6 +36,8 @@ export function registerManagementTools({ctx,runtime,state,effects,available,fea
         // already-observed per-file effects as a tool-owned error instead.
         if(name==='verified_exec'&&exec.signal.aborted&&result?.reportPath&&result.files?.length)
           throw new Error('verified_exec interrupted: '+JSON.stringify({...result,interrupted:true}));
+        if(name==='verified_exec'&&result?.permissionDenied)
+          throw new Error('verified_exec permission denied: '+JSON.stringify(result));
         return result;
       }finally{await runtime.receipt(exec.agent,exec.signal,true);}
     })});

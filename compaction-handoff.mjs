@@ -3,6 +3,7 @@ import {hasPruneProblem} from './context-pruning.mjs';
 import {stageCheckpoints,stageReuseCandidate} from './stage-checkpoints.mjs';
 import {messageTokens} from './context-economics.mjs';
 import {subagentResultIndex} from './host-references.mjs';
+import {reportedCheckFailure,reportedExecutionChecks} from './recovery.mjs';
 
 const POLICY='kimi-codex-handoff-v10-stub';
 const INSTRUCTION='Produce one consolidated continuation checkpoint with these sections: Goal and user decisions; Work and artifacts; Evidence and failed approaches; Open work and next action. Preserve current requirements and corrections, separating user decisions from assistant assumptions. Keep exact paths, symbols, configuration values, input conditions, error strings, job IDs and source event seqs needed to continue. Describe what actually changed in each relevant artifact and what remains unfinished. Preserve unresolved failures, excluded approaches and their reasons; distinguish process success from correctness.\n'+
@@ -108,7 +109,13 @@ export function stubCheckpoint(agent){
     if(callId&&target&&row.kind==='call')callTargets.set(callId,target);
     const resolvedTarget=target??(row.kind==='result'&&callId?callTargets.get(callId):null);
     if(resolvedTarget)targetBySeq.set(event.seq,resolvedTarget);
-    const isProblem=event.type==='tool/result'&&(message?.isError===true||hasPruneProblem([{type:'text',text}]));
+    const commandTool=['bash','pwsh','ops_bash','work_exec'].includes(name);
+    let reportedFailure=null;
+    if(event.type==='tool/result'&&commandTool){
+      let parsed;try{parsed=JSON.parse(text);}catch{}
+      reportedFailure=reportedExecutionChecks(parsed)??reportedCheckFailure(text);
+    }
+    const isProblem=event.type==='tool/result'&&(message?.isError===true||hasPruneProblem([{type:'text',text}])||!!reportedFailure);
     if(isProblem){problems.push(row);problemSeqs.add(event.seq);}
   }
   const line=row=>'- '+JSON.stringify(row)+'\n  recall: work_recall({kind:"event",seq:'+row.seq+',offset:0})';

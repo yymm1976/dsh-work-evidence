@@ -68,9 +68,13 @@ export function createNativeCas(ctx,runtime,registeredWrite=ctx.tools.get('write
       result=await ctx.tools.execute({name:'write',arguments:{file_path:file,content:group.expectedText},
         agent,callId,rootCallId:active.rootCallId??callId,parent:active.token,signal});
     }catch(error){
-      return {ok:false,status:'error',effectState:state.guarded?'unknown':'none',error:{message:String(error.message??error).slice(0,1200)}};
+      return {ok:false,status:'error',effectState:state.guarded?'unknown':'none',...(state.denied?{permissionDenied:true}:{}),error:{message:String(error.message??error).slice(0,1200)}};
     }finally{pending.delete(callId);}
-    if(result.isError)return {ok:false,status:'error',effectState:state.denied||!state.guarded?'none':result.error?.info?.effectState??'unknown',error:result.error??{message:'Native write failed.'}};
+    if(result.isError){
+      const prepublication=result.error?.info?.name==='FsError'&&['FS_STALE_VERSION','FS_NOT_OBSERVED'].includes(result.error.info.code);
+      return {ok:false,status:'error',effectState:state.denied||!state.guarded||prepublication?'none':result.error?.info?.effectState??'unknown',
+        ...(state.denied?{permissionDenied:true}:{}),error:result.error??{message:'Native write failed.'}};
+    }
     const value=result.value;
     if(!state.guarded||!value||value.after!==normalize(group.expectedText))return {ok:false,status:'unknown',effectState:'unknown',
       error:{message:!state.guarded?'Native write did not consume the conditional intent.':'Native write returned content different from the planned edit.'}};

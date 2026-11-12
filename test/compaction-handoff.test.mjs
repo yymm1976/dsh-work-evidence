@@ -383,6 +383,17 @@ test('a background or incomplete retry cannot mark a problem checked in the stub
     assert.equal(row.checked,false,JSON.stringify(value));
   }
 });
+test('a zero-exit retry that reports failed checks remains unresolved in the stub',()=>{
+  for(const body of [JSON.stringify({exitCode:0,stdout:{text:"FAILURES: ['case']"}}),"FAILURES: ['case']"]){
+    const log=[event(1,'tool/call',{name:'bash',callId:'first',arguments:{command:'check'}}),
+      toolResult(2,'bash','Initial check did not finish',{isError:true,source:{callId:'first'}}),
+      event(3,'tool/call',{name:'bash',callId:'retry',arguments:{command:'check'}}),
+      toolResult(4,'bash',body,{isError:false,source:{callId:'retry'}})];
+    const stub=stubCheckpoint(eventLogAgent(log));
+    const row=JSON.parse(stub.text.match(/^- (\{"seq":2,"kind":"result"[^\n]*,"checked":(?:true|false)\})$/mu)[1]);
+    assert.equal(row.checked,false);assert.equal(stub.problemRows,2);
+  }
+});
 
 test('recallHistory event pages use JavaScript string offsets and reassemble exactly', () => {
   const original = `BEGIN-\u{1F642}-${'x'.repeat(280)}-\u{1F642}-END`;

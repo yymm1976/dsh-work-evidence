@@ -59,7 +59,7 @@ function parse(text,line){
   const pending=[root];
   while(pending.length){
     const value=pending.pop();
-    if(typeof value==='number'&&(!Number.isFinite(value)||Number.isInteger(value)&&!Number.isSafeInteger(value)))
+    if(typeof value==='number'&&(Object.is(value,-0)||!Number.isFinite(value)||Number.isInteger(value)&&!Number.isSafeInteger(value)))
       throw failure('JSON_NUMBER_UNSAFE','A number cannot be represented safely; use a lossless reader.',location);
     if(value&&typeof value==='object')for(const child of Object.values(value))pending.push(child);
   }
