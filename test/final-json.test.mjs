@@ -153,6 +153,20 @@ test('prohibiting fences preserves an affirmative JSON requirement',()=>{
     assert.equal(finalJsonSyntaxIssue(malformed,request),null,request);
 });
 
+test('JSON prohibitions on files, fields or fenced content keep final-output requirements',()=>{
+  const fenced='```json\n{"answer":42}\n```';
+  for(const request of ['Return only raw JSON as the final answer. The README must not contain JSON.',
+    'Return only raw JSON as the final answer. The response must not contain JSON inside Markdown fences.',
+    "Return only raw JSON as the final answer. Don't use a JSON code block.",
+    'Return only raw JSON as the final answer. Don’t use a JSON code block.',
+    'Return only raw JSON as the final answer using the schema provided in README.md.',
+    'Return only raw JSON as the final answer using the schema supplied by the team in README.md.'])
+    assert.equal(finalJsonSyntaxIssue(fenced,request)?.rawFinal,true,request);
+  const nested='The final answer must be JSON, but the payload must not contain JSON objects.';
+  assert.ok(finalJsonSyntaxIssue('```json\n{"answer":}\n```',nested),'the final JSON validity requirement remains active');
+  assert.equal(finalJsonSyntaxIssue(fenced,nested),null,'a field constraint does not add a raw-output requirement');
+});
+
 test('raw final JSON rejects a valid fenced answer and accepts bare JSON', () => {
   const issue = finalJsonSyntaxIssue('```json\n{"answer": 42}\n```', RAW_FINAL_REQUEST);
   assert.ok(issue);
