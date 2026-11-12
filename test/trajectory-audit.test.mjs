@@ -610,6 +610,25 @@ test('complete native and legacy settlement exit zero paths still support covera
   }
 });
 
+test('outer or nested failure markers survive inner completion and producer exit zero',()=>{
+  const failures=[...['failed','error','cancelled','killed','aborted'].map(status=>({status})),
+    {success:false},{ok:false},{isError:true},{error:{message:'outer failure'}},{err:'outer failure'},{exitCode:2}];
+  for(const failure of failures)for(const wrapped of [false,true]){
+    const value={...failure,data:{status:'completed',exitCode:0}},body=JSON.stringify(wrapped?{status:'completed',data:value}:value);
+    const {f,result}=processFixture({body,exitCode:0});
+    const assessment={schema:ASSESSMENT_SCHEMA,sourceId:'failed-envelope',throughSeq:result.seq,reviewer:'human',allExplicitRequirementsCovered:true,
+      criteria:[{id:'source',requirementSeqs:[1],eventSeqs:[result.seq],outcome:'pass'}],
+      checks:[recordedCheck(f,{resultSeq:result.seq},'source','addresses')]};
+    const audited=auditDshSession(f.events,{sourceId:assessment.sourceId,assessment}),call=normalizeDshEvents(f.events).calls.find(row=>row.name==='pwsh');
+    assert.equal(call.toolOutcome,'failed',JSON.stringify({failure,wrapped}));
+    assert.notEqual(audited.requirements.requirements[0].status,'supported');
+    if(!wrapped||failure.exitCode===undefined){
+      assert.equal(audited.requirements.requirements[0].status,'unknown');
+    }
+    if(!wrapped||failure.exitCode===undefined){assert.equal(call.processOutcome,'exited-zero');assert.equal(call.exitCode,0);}
+  }
+});
+
 test('verified_exec file effects retain paths and per-file states without extra mutation epochs',()=>{
   for(const channel of ['native','prefix-error']){
     const f=fixture(),outcome={status:'partial',effectState:'applied',files:[

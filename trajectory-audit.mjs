@@ -24,6 +24,13 @@ const forecastRoute=value=>Object.fromEntries(['provider','model','reasoningEffo
 const completeRoute=value=>['provider','model','reasoningEffort'].every(key=>typeof value?.[key]==='string'&&value[key].trim());
 const fileOf=args=>args?.file_path??args?.path??args?.file??null;
 const isReadOnlyJava=call=>call.name==='fastedit_java'&&['find_entity','read_entity'].includes(call.arguments.operation);
+const failedPayload=value=>{
+  if(!value||typeof value!=='object')return false;
+  const exit=value.exitCode??value.exit_code;
+  return value.isError===true||value.success===false||value.ok===false||!!value.error||!!value.err||
+    Number.isInteger(exit)&&exit!==0||['failed','killed','cancelled','error','aborted'].includes(String(value.status??value.state??'').toLowerCase())||
+    value.data&&typeof value.data==='object'&&failedPayload(value.data);
+};
 const incompletePayload=value=>{
   const inspect=node=>{
     if(!node||typeof node!=='object')return false;
@@ -274,8 +281,7 @@ export function normalizeDshEvents(input){
     call.resultSeq=event.seq??null;call.resultText=resultText(content);
     const raw=toolResultValue(call.name,{value:nativeValue,content,isError}),value=raw?.data??raw;
     const exit=value?.exitCode??value?.exit_code;
-    const explicitFailure=isError===true||Number.isInteger(exit)&&exit!==0||value?.success===false||value?.ok===false||
-      ['failed','killed','cancelled','error'].includes(value?.status);
+    const explicitFailure=isError===true||failedPayload(raw);
     call.outcome=explicitFailure?'failed':isError===false?'succeeded':'unknown';
     call.outputIncomplete=incompletePayload(raw)||/\.\.\. \(line truncated to \d+ chars\)$/mu.test(call.resultText);
     call.exitCode=Number.isInteger(exit)?exit:null;
