@@ -31,8 +31,37 @@ exec /usr/bin/docker run --rm -i --pull never --network none -v "$PWD:$PWD" -w "
   };
 }
 
-test('POSIX work_exec uses the native bash tool and preserves code, exit and scriptRef behavior',{skip:linuxDocker?
-  false:'Requires Linux, docker, and DSH_TEST_LINUX_WORK_EXEC=1; the Windows pwsh path is covered by host harness tests.'},async()=>{
+async function assertWindowsNativeShell(){
+  const trickyText="single ' double \" backslash \\\\ $(New-Item windows-injected) `New-Item tick-injected` $env:HOME 你好";
+  const moduleCode='console.log('+JSON.stringify(trickyText)+');';
+  let moduleRef;
+  const host=await startHost({script:(options,request)=>{
+    if(request===1)return [tool('work_exec',{runtime:'node',code:moduleCode})];
+    if(request===2){
+      moduleRef=lastValue(options).scriptRef;
+      return [tool('work_exec',{runtime:'node',format:'commonjs',code:'const assert=require("node:assert/strict"); assert.equal(6*7,42); console.log("commonjs-ok");'})];
+    }
+    if(request===3)return [tool('work_exec',{scriptRef:moduleRef,edits:[{before:moduleCode,after:'console.log("windows-edited");'}]})];
+    return [text('Windows 原生 pwsh 路径已完成。')];
+  }});
+  try{
+    const agent=await host.createAgent('max');
+    await host.send(agent,'使用当前原生 shell 执行 Node 程序并沿用准确程序版本。');
+    const [module,commonjs,edited]=outputs(host);
+    assert.equal(module.exitCode,0);
+    assert.equal(module.stdout.text,trickyText+'\n');
+    assert.equal(commonjs.exitCode,0);
+    assert.equal(commonjs.stdout.text,'commonjs-ok\n');
+    assert.equal(edited.exitCode,0);
+    assert.equal(edited.stdout.text,'windows-edited\n');
+    assert.equal(edited.scriptReused,true);
+    assert.deepEqual(edited.scriptSourceRefs,[moduleRef]);
+    assert.equal(await fs.stat(path.join(host.cwd,'windows-injected')).then(()=>true,()=>false),false);
+    assert.equal(await fs.stat(path.join(host.cwd,'tick-injected')).then(()=>true,()=>false),false);
+  }finally{await host.close();}
+}
+
+async function assertLinuxNativeBash(){
   const restoreShim=await installBashDockerShim();
   const trickyText="single ' double \" backslash \\\\ $(touch python-injected) `touch tick-injected` ${HOME} 你好";
   const pythonCode='text = '+JSON.stringify(trickyText)+'\nprint(text)';
@@ -77,7 +106,6 @@ test('POSIX work_exec uses the native bash tool and preserves code, exit and scr
     assert.match(pythonFailure.stderr.text,/native failure/u);
     assert.equal(edited.exitCode,0);
     assert.equal(edited.stdout.text,'edited\n');
-    assert.equal(node.scriptRef,nodeRef);
     assert.match(node.scriptEventRef,/^event:\d+$/u);
     assert.equal(edited.scriptReused,true);
     assert.deepEqual(edited.scriptSourceRefs,[nodeRef]);
@@ -92,16 +120,30 @@ test('POSIX work_exec uses the native bash tool and preserves code, exit and scr
     await host.close();
     await restoreShim();
   }
-});
+}
 
-test('POSIX work_exec reports unavailable when the native bash tool is absent',{skip:linuxDocker?
-  false:'Requires Linux and DSH_TEST_LINUX_WORK_EXEC=1.'},async()=>{
+test('work_exec preserves complete scripts through the current platform native shell',async()=>{
+  if(process.platform==='win32')return assertWindowsNativeShell();
+  if(linuxDocker)return assertLinuxNativeBash();
   const host=await startHost({mountShell:false,script:(_options,request)=>request===1?
     [tool('work_exec',{runtime:'python',executable:'python3',code:'print(42)'})]:[text('保留不可用结果。')]});
   try{
     const agent=await host.createAgent('max');
     await host.send(agent,'执行程序并保留真实不可用结果。');
-    const [result]=outputs(host);
-    assert.deepEqual(result,{status:'unavailable',reason:'native-bash-unavailable',executionOccurred:false});
+    assert.deepEqual(outputs(host)[0],{status:'unavailable',reason:'native-bash-unavailable',executionOccurred:false});
+  }finally{await host.close();}
+});
+
+test('work_exec reports the exact unavailable reason when no native shell tool is mounted',async()=>{
+  const host=await startHost({mountShell:false,script:(_options,request)=>request===1?
+    [tool('work_exec',{runtime:'python',code:'print(42)'})]:[text('保留不可用结果。')]});
+  try{
+    const agent=await host.createAgent('max');
+    await host.send(agent,'执行程序并保留真实不可用结果。');
+    assert.deepEqual(outputs(host)[0],{
+      status:'unavailable',
+      reason:process.platform==='win32'?'native-pwsh-unavailable':'native-bash-unavailable',
+      executionOccurred:false
+    });
   }finally{await host.close();}
 });

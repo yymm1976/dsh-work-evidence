@@ -65,6 +65,8 @@ async function* emit(turn,usage){
  * Start a host with the plugin mounted.
  * script(options, calls) returns an array of text()/tool() items for each main request;
  * auxiliary(options) answers non-loop calls (quality review, compaction).
+ * mountShell:false only omits the default pwsh mounts; platform fixtures can
+ * mount their native bash executor without replacing the existing pwsh service.
  */
 export async function startHost({script,auxiliary=()=>[text('{}')],pluginConfig={},workspace=null,efforts=['low','high','max'],toolMode='native',mountPlugin=true,
   extraMounts=[],usage=null,contextWindow=200000,pluginDirectory=PLUGIN,sessionQueryMount=['dsh-session-query'],filesystem='dsh-fs-local',fileTools={},mountShell=true}={}){
