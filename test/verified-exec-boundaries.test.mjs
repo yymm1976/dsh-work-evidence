@@ -89,3 +89,28 @@ test('duplicate missing create targets through a directory alias reject before a
     }
   }finally{await fs.rm(root,{recursive:true,force:true});}
 });
+
+test('missing-target case aliases follow the actual directory and an unknown empty directory cannot certify distinctness',async()=>{
+  const root=await fs.mkdtemp(path.join(os.tmpdir(),'verified-case-volume-'));
+  try{
+    await fs.writeFile(path.join(root,'case-probe.txt'),'probe');
+    const caseSensitive=await fs.lstat(path.join(root,'CASE-PROBE.txt')).then(()=>false,error=>{if(error.code!=='ENOENT')throw error;return true;});
+    const record={root,dir:path.join(root,'.dsh'),id:'volume-boundary',config:{},metrics:{verifiedExecDeopts:0,verifiedExecPreviews:0}};
+    const service=createVerifiedExec({on(){},tools:{get:()=>({})}},
+      {init:async()=>record,save:async()=>{},execFor:()=>({})},async()=>({isError:false,value:{status:'completed',exists:false}}));
+    const plan={summary:'Resolve the directory case behavior',edits:[{file:'new.txt',mode:'create',content:'one'},{file:'NEW.txt',mode:'create',content:'two'}]};
+    const result=await service.execute({},plan,AbortSignal.timeout(10000));
+    assert.equal(result.status,caseSensitive?'previewed':'deopt');
+    if(caseSensitive)assert.equal(result.files.length,2);else assert.match(result.error,/More than one create operation/u);
+    if(caseSensitive){
+      await fs.mkdir(path.join(root,'hardlink-names'));await fs.writeFile(path.join(root,'hardlink-names','a'),'same inode');
+      await fs.link(path.join(root,'hardlink-names','a'),path.join(root,'hardlink-names','A'));
+      const linked=await service.execute({}, {...plan,edits:plan.edits.map(edit=>({...edit,file:'hardlink-names/'+edit.file}))},AbortSignal.timeout(10000));
+      assert.equal(linked.status,'previewed');assert.equal(linked.files.length,2,'exact case-distinct hard-link entries do not imply a case-insensitive directory');
+    }
+    await fs.mkdir(path.join(root,'empty'));
+    const uncertain=await service.execute({}, {...plan,apply:true,edits:plan.edits.map(edit=>({...edit,file:'empty/'+edit.file}))},AbortSignal.timeout(10000));
+    assert.equal(uncertain.status,'deopt');assert.match(uncertain.error,/Cannot establish/u);assert.equal(uncertain.effectState,'none');
+    assert.deepEqual(await fs.readdir(path.join(root,'empty')),[]);
+  }finally{await fs.rm(root,{recursive:true,force:true});}
+});

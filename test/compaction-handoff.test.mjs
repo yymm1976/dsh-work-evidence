@@ -395,6 +395,19 @@ test('a zero-exit retry that reports failed checks remains unresolved in the stu
   }
 });
 
+test('stubCheckpoint resolves a missing result tool name from its callId',()=>{
+  const result=JSON.stringify({exitCode:0,stdout:{text:"FAILURES: ['case']"}});
+  const stub=stubCheckpoint(eventLogAgent([
+    event(1,'tool/call',{name:'pwsh',callId:'pwsh-call-1',arguments:{command:'pwsh check'}}),
+    event(2,'tool/result',{message:{role:'tool',source:{kind:'tool',callId:'pwsh-call-1'},
+      content:[{type:'text',text:result}]}}),
+  ]));
+  const row=JSON.parse(stub.text.match(/^- (\{"seq":2,"kind":"result"[^\n]*,"checked":(?:true|false)\})$/mu)[1]);
+  assert.equal(stub.problemRows,1);
+  assert.equal(row.tool,'pwsh');
+  assert.match(row.head,/FAILURES/);
+});
+
 test('recallHistory event pages use JavaScript string offsets and reassemble exactly', () => {
   const original = `BEGIN-\u{1F642}-${'x'.repeat(280)}-\u{1F642}-END`;
   const agent = eventLogAgent([userMessage(5, original)]);

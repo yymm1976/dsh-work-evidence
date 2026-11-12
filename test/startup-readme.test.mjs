@@ -20,14 +20,17 @@ function fixture(files,{blocked=[],stepPacing=true}={}){
   return {lookups,globs,decisions,run:value=>flow.startupPaths({session:{id:'source-location'}},pending(value),AbortSignal.timeout(10000))};
 }
 
-test('README routes subagents through ZCode and forbids Codex CLI fallbacks',async()=>{
+test('README preserves the authorized Magpie route and prevents model fallbacks',async()=>{
   const readme=await fs.readFile(path.resolve(import.meta.dirname,'..','README.md'),'utf8');
-  assert.match(readme,/必须使用 ZCode 的 Agent 工具启动/u);
-  assert.match(readme,/不得使用 Codex CLI、`codex exec`、`multi_agent_v1__spawn_agent`/u);
+  assert.match(readme,/必须使用宿主提供的 Magpie 子代理入口/u);
+  assert.match(readme,/`model: "opendesign\/deepseek-v4\.1-flash-eco"`/u);
+  assert.match(readme,/`reasoning_effort: "max"`/u);
+  assert.match(readme,/不得通过其他模型、后台 CLI 或另建用户聊天替代/u);
   assert.match(readme,/复审子代理只读/u);
   assert.match(readme,/没有报告不能记为已复审/u);
   assert.match(readme,/`subagent-unavailable`/u);
   assert.doesNotMatch(readme,/multi_agent_v1__spawn_agent\(\{/u);
+  assert.doesNotMatch(readme,/必须使用 ZCode 的 Agent 工具启动/u);
 });
 
 test('reStructuredText paths are recognized alongside the existing source extensions',()=>{

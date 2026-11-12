@@ -66,6 +66,21 @@ test('prunableMessage rejects errors and hasPruneProblem marks failure text', ()
   }
 });
 
+test('positive line-leading failure counts block pruning while zero counts remain ordinary output', () => {
+  const body = generated(10000, 5);
+  for (const line of ['1 failed, 10 passed in 12.34s', '2 failures, 9 passed in 12.34s']) {
+    const text = `${body.slice(0, 5000)}\n${line}\n${body.slice(5000)}`;
+    assert.equal(hasPruneProblem([{type: 'text', text}]), true, line);
+    assert.equal(prunableMessage(textMessage(text)), false, line);
+    assert.equal(planContextPrune(textMessage(text), [], options({dedupSegments: false})), null, line);
+  }
+
+  const zeroText = `${body.slice(0, 5000)}\n0 failed, 10 passed in 12.34s\n${body.slice(5000)}`;
+  assert.equal(hasPruneProblem([{type: 'text', text: zeroText}]), false);
+  assert.equal(prunableMessage(textMessage(zeroText)), true);
+  assert.ok(planContextPrune(textMessage(zeroText), [], options({dedupSegments: false})));
+});
+
 test('prunableMessage requires a non-empty text-only result', () => {
   assert.equal(prunableMessage(textMessage('ordinary text')), true);
   assert.equal(prunableMessage({isError: false, content: []}), false);

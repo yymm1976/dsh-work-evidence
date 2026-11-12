@@ -12,7 +12,7 @@ export function hasPruneProblem(content,value=null){
   const text=resultText(content),parsed=value??parseResult(text);
   if(resultHasProblem(parsed??text))return true;
   // A successful wrapper can contain a failed command or a failed assertion.
-  return /(?:^|\n)\s*(?:fatal:|Traceback\b|\w*(?:Error|Exception):|FAIL(?:ED)?\b)|["']passed["']\s*:\s*false|\b(?:exit(?:\s+code)?|exitCode|exit_code)\s*["']?\s*[:= ]\s*-?[1-9]\d*\b/i.test(text);
+  return /(?:^|\n)\s*(?:fatal:|Traceback\b|\w*(?:Error|Exception):|FAIL(?:ED)?\b|[1-9]\d*\s+(?:failed|failures)\b)|["']passed["']\s*:\s*false|\b(?:exit(?:\s+code)?|exitCode|exit_code)\s*["']?\s*[:= ]\s*-?[1-9]\d*\b/i.test(text);
 }
 
 function excerpt(text,{seq,offset=0,sourcePath,thresholdChars,headChars,tailChars}){

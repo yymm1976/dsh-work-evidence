@@ -83,14 +83,15 @@ function targetFromArguments(value){
 // Problem rows get checked markers only
 // when a later successful result has the same tool and path/command target.
 export function stubCheckpoint(agent){
-  const log=eventLog(agent.session),events=[],problems=[],humans=[],problemSeqs=new Set(),targetBySeq=new Map(),callTargets=new Map();
+  const log=eventLog(agent.session),events=[],problems=[],humans=[],problemSeqs=new Set(),targetBySeq=new Map(),callTargets=new Map(),callNames=new Map();
   const reports=subagentResultIndex(log,agent.session.id,{inherited:agent.session.inheritedEventCount??(agent.session.header?.isSeeded?null:0),recallAvailable:true});
   for(const event of log){
     const message=messageOf(event),data=event.data??{};
     const isTool=['tool/call','tool/result','tool/ptc-dispatch','tool/code-dispatch'].includes(event.type);
     const human=isUserRequestMessage(message);
     if(!isTool&&!human&&!['assistant/message','todo/write','compaction/summary'].includes(event.type))continue;
-    const name=data.name??null,callId=message?.source?.callId??message?.toolCallId??data.subCallId??data.callId??null;
+    const name=typeof data.name==='string'&&data.name.trim()?data.name:null,
+      callId=message?.source?.callId??message?.toolCallId??data.subCallId??data.callId??null;
     const text=message?textOf(message):event.type==='todo/write'?JSON.stringify(data.todos??[]):
       event.type==='tool/call'?(typeof data.arguments==='string'?data.arguments:JSON.stringify(data.arguments??{})):
       isTool?textOf({content:message?.content??(Array.isArray(data.content)?data.content:[{type:'text',text:String(data.content??'')}])}):
@@ -101,15 +102,18 @@ export function stubCheckpoint(agent){
       humans.push(row);events.push(row);
       continue;
     }
-    const row={seq:event.seq,kind:event.type==='tool/call'||event.type==='tool/ptc-dispatch'||event.type==='tool/code-dispatch'?'call':
-      event.type==='tool/result'?'result':event.type==='assistant/message'?'assistant':event.type==='todo/write'?'todos':'prior-compaction',
-      ...(isTool||event.type==='assistant/message'?{tool:name}:{}),...(callId?{callId}:{}),head:text.slice(0,STUB_ROW_MAX_CHARS).replace(/\s+/g,' ').trim()};
+    const kind=event.type==='tool/call'||event.type==='tool/ptc-dispatch'||event.type==='tool/code-dispatch'?'call':
+      event.type==='tool/result'?'result':event.type==='assistant/message'?'assistant':event.type==='todo/write'?'todos':'prior-compaction';
+    if(callId&&name&&kind==='call')callNames.set(callId,name);
+    const resolvedName=name??(kind==='result'&&callId?callNames.get(callId)??null:null);
+    const row={seq:event.seq,kind,
+      ...(isTool||event.type==='assistant/message'?{tool:resolvedName}:{}),...(callId?{callId}:{}),head:text.slice(0,STUB_ROW_MAX_CHARS).replace(/\s+/g,' ').trim()};
     events.push(row);
     const target=targetFromArguments(data.arguments);
     if(callId&&target&&row.kind==='call')callTargets.set(callId,target);
     const resolvedTarget=target??(row.kind==='result'&&callId?callTargets.get(callId):null);
     if(resolvedTarget)targetBySeq.set(event.seq,resolvedTarget);
-    const commandTool=['bash','pwsh','ops_bash','work_exec'].includes(name);
+    const commandTool=['bash','pwsh','ops_bash','work_exec'].includes(resolvedName);
     let reportedFailure=null;
     if(event.type==='tool/result'&&commandTool){
       let parsed;try{parsed=JSON.parse(text);}catch{}

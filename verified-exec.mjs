@@ -72,20 +72,65 @@ function countExact(text,needle){
   return positions;
 }
 
+async function directoryCaseSensitivity(directory){
+  try{
+    const entries=await fs.opendir(directory,{bufferSize:16}),names=[];
+    let complete=true;
+    for await(const entry of entries){
+      if(names.length===32){complete=false;break;}
+      names.push(entry.name);
+    }
+    for(const name of names){
+      const alternate=name.replace(/[a-zA-Z]/u,char=>char===char.toLowerCase()?char.toUpperCase():char.toLowerCase());
+      if(alternate===name)continue;
+      // Two exact directory entries prove distinct names even if they are hard links.
+      if(names.includes(alternate))return true;
+      const source=path.join(directory,name),other=path.join(directory,alternate);
+      let before;
+      try{before=await fs.lstat(source,{bigint:true});}catch(error){if(error.code==='ENOENT')continue;throw error;}
+      try{
+        const aliased=await fs.lstat(other,{bigint:true});
+        const current=await fs.lstat(source,{bigint:true});
+        if(before.dev!==current.dev||before.ino!==current.ino)continue;
+        if(before.ino!==0n&&aliased.ino!==0n&&(before.dev!==aliased.dev||before.ino!==aliased.ino))return true;
+        if(complete)return false;
+      }catch(error){
+        if(error.code!=='ENOENT')throw error;
+        const current=await fs.lstat(source,{bigint:true});
+        if(before.dev===current.dev&&before.ino===current.ino)return true;
+      }
+    }
+  }catch{}
+  return null;
+}
+
 async function groupEdits(edits,root){
-  const groups=new Map();
+  const groups=new Map(),foldedMissing=new Map(),caseSensitivity=new Map(),realRoot=await fs.realpath(root);
   for(const edit of edits){
     const full=within(root,edit.file),file=path.relative(root,full).replaceAll('\\','/');
     let parent=full,identity;
     const missing=[];
     for(;;){
-      try{identity=path.join(await fs.realpath(parent),...missing);break;}
+      try{parent=await fs.realpath(parent);identity=path.join(parent,...missing);break;}
       catch(error){
         if(error.code!=='ENOENT'||path.dirname(parent)===parent)throw error;
         missing.unshift(path.basename(parent));parent=path.dirname(parent);
       }
     }
-    if(missing.length&&process.platform==='win32')identity=identity.toLowerCase();
+    within(realRoot,identity);
+    if(missing.length){
+      const info=await fs.stat(parent,{bigint:true});
+      const directoryKey=info.ino!==0n?`${info.dev}:${info.ino}`:parent;
+      identity=directoryKey+':'+JSON.stringify(missing);
+      const folded=directoryKey+':'+JSON.stringify(missing.map(component=>component.toLowerCase())),alias=foldedMissing.get(folded);
+      if(alias&&alias!==identity){
+        if(!caseSensitivity.has(directoryKey))caseSensitivity.set(directoryKey,await directoryCaseSensitivity(parent));
+        const sensitive=caseSensitivity.get(directoryKey);
+        if(sensitive===null)throw new Error('Cannot establish whether case-different missing targets are distinct in '+parent);
+        if(!sensitive)identity=alias;
+      }
+      if(!foldedMissing.has(folded))foldedMissing.set(folded,identity);
+    }
     const group=groups.get(identity)||{file,full,mode:edit.mode,edits:[],content:null};
     if(group.mode!==edit.mode)throw new Error(`Conflicting create/replace modes for ${file}`);
     if(edit.mode==='create'){
