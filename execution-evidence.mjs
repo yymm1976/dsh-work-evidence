@@ -272,7 +272,7 @@ export function createExecutionEvidence(ctx,runtime,call,{executionDependencies=
   }
 
   async function execute(agent,input,signal){
-    let plan=checked(input),replayState=null,replayRoot=null;const s=await runtime.init(agent,signal);
+    let plan=checked(input),replayState=null,replayRoot=null,replayLock=null;const s=await runtime.init(agent,signal);
     if(plan.mode==='recall')return s.config.executionTriage?recall(agent,plan,signal):
       {status:'disabled',feature:'executionTriage'};
     if(!s.config.executionTriage)return {status:'disabled',feature:'executionTriage'};
@@ -282,7 +282,7 @@ export function createExecutionEvidence(ctx,runtime,call,{executionDependencies=
       replayState=evidenceState(agent);replayRoot=plan.replayOf.rootProbeId;
       if(replayState.replayLocks.get(replayRoot)?.inFlight)return {status:'unavailable',reason:'probe-replay-in-flight',executionOccurred:false,replayOf:plan.replayOf};
       try{assertReplayFamilySettled(agent,plan.replayOf.rootProbeId);}catch(error){return {status:'unavailable',reason:'probe-replay-pending',executionOccurred:false,replayOf:plan.replayOf,error:String(error.message)};}
-      replayState.replayLocks.set(replayRoot,{inFlight:true});
+      replayLock={inFlight:true};replayState.replayLocks.set(replayRoot,replayLock);
     }
     try{
     if(plan.mode==='inspect')return {status:'available',tools:available(agent),
@@ -316,7 +316,7 @@ export function createExecutionEvidence(ctx,runtime,call,{executionDependencies=
     finishRecord(state,record,outcome);
     s.dirty=true;
     return observation;
-    }finally{if(replayState?.replayLocks.get(replayRoot)?.inFlight)replayState.replayLocks.delete(replayRoot);}
+    }finally{if(replayLock&&replayState.replayLocks.get(replayRoot)===replayLock)replayState.replayLocks.delete(replayRoot);}
   }
 
   function summary(agent){

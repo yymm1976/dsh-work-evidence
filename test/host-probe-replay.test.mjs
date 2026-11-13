@@ -4,6 +4,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import {startHost as baseStartHost,text,tool} from './helpers/host.mjs';
 import {defaults} from '../runtime.mjs';
+import {createExecutionEvidence} from '../execution-evidence.mjs';
 
 const shell=process.platform==='win32'?'pwsh':'bash';
 const startHost=options=>baseStartHost({...options,...(process.platform==='win32'?{}:
@@ -223,4 +224,47 @@ test('concurrent replay calls cannot dispatch the same original check twice',asy
     assert.equal(dispatches,1);
     assert.equal(values.filter(value=>value.value?.reason==='probe-replay-in-flight').length,1);
   }finally{await host.close();}
+});
+
+test('an older pending replay cannot release a newer invocation lock',async()=>{
+  const deferred=()=>{let resolve;const promise=new Promise(done=>{resolve=done;});return {promise,resolve};};
+  const pendingSaved=deferred(),releasePending=deferred(),secondStarted=deferred(),releaseSecond=deferred();
+  const log=[],session={id:'replay-lock-owner',log,get seq(){return log.length;},
+    append(type,data){log.push({seq:log.length,type,data});}},agent={session};
+  const state={id:session.id,root:process.cwd(),dir:process.cwd(),config:{executionTriage:true,probeReplay:true}};
+  const runtime={init:async()=>state,get:()=>state,execFor:()=>({}),save:async(_agent,_path,source)=>{
+    if(JSON.parse(source).observation.background){pendingSaved.resolve();await releasePending.promise;}
+  }};
+  let dispatches=0,registration;
+  const foreground=()=>({value:{kind:'foreground',exitCode:0,stdout:{text:'{}',truncated:false},stderr:{text:'',truncated:false}}});
+  const evidence=createExecutionEvidence({tools:{get:()=>({})},get:()=>null},runtime,async()=>{
+    dispatches++;
+    if(dispatches===2){
+      registration={jobId:'replay-owner-job',owner:session.id,kind:shell,
+        toolCall:{callId:'inner-pending',rootCallId:'outer-pending'}};
+      session.append('job/registered',registration);
+      return {value:{kind:'promoted',jobId:registration.jobId}};
+    }
+    if(dispatches===3){secondStarted.resolve();await releaseSecond.promise;}
+    return foreground();
+  },{executionDependencies:{capture:async()=>({}),finish:async()=>({})}});
+  const signal=AbortSignal.timeout(10000),originalPlan={question:'Observe this exact check.',tool:shell,
+    arguments:{command:'original command'},sources:[],cases:[]};
+  session.append('tool/call',{callId:'original',name:'work_probe',arguments:originalPlan});
+  const original=await evidence.execute(agent,originalPlan,signal);
+  session.append('tool/result',{message:{source:{callId:'original'},content:[{type:'text',text:JSON.stringify(original)}]}});
+  const replay=()=>evidence.execute(agent,{mode:'replay',id:original.id},signal);
+  const first=replay();let second;
+  try{
+    await pendingSaved.promise;
+    session.append('job/settled',{...registration,status:'completed',cause:'producer',producerReported:true});
+    second=replay();await secondStarted.promise;
+    releasePending.resolve();assert.equal((await first).status,'pending');
+    const third=await replay();
+    assert.equal(third.executionOccurred,false);
+    assert.equal(third.reason,'probe-replay-in-flight');
+    assert.equal(dispatches,3,'Only the original and two sequential native executions are dispatched');
+  }finally{
+    releasePending.resolve();releaseSecond.resolve();await first;await second;evidence.dispose();
+  }
 });
