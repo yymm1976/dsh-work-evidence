@@ -67,7 +67,7 @@ test('fastedit_java finds, reads and replaces one method through the native pwsh
     [tool('fastedit_java',{file:'Calc.java',operation:'replace_symbol',symbol:'Calc.add',snippet:replacement})],
     [tool('fastedit_java',{file:'Calc.java',operation:'replace_symbol',symbol:'Calc.add',snippet:replacement,apply:true})],
     [tool('fastedit_java',{file:'Calc.java',operation:'read_entity',symbol:'Calc.missing'})],
-  ],{'Calc.java':java},{fastEditPython:PYTHON});
+  ],{'Calc.java':java},{fastEditPython:PYTHON,fastEditEnabled:true});
   assert.equal(results[0].status,'found');
   assert.equal(results[0].matches[0].line_start,2);
   assert.equal(results[1].status,'read');
