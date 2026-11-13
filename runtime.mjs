@@ -474,8 +474,13 @@ export function createRuntime(ctx,call,initial={}){
     const s=get(agent);if(String(exec.callId||'').startsWith('work-evidence:')||String(exec.rootCallId||'').startsWith('work-evidence-runtime:'))return;
     // Stored display text can be clipped mid-JSON. Do not let this lossy event
     // claim the call ID before the live structured result can be observed.
+    // This is event ordering, not an OPS adapter: keep it for every ops_* event
+    // even when the adapters are disabled, or the live result is dropped.
     const opsAdapters=s.config.opsAdapters===true;
-    if(opsAdapters&&seq!==null&&exec.name.startsWith('ops_')&&result.value===undefined&&!result.isError){s.metrics.opaqueOpsResults++;return;}
+    if(seq!==null&&exec.name.startsWith('ops_')&&result.value===undefined&&!result.isError){
+      if(opsAdapters)s.metrics.opaqueOpsResults++;
+      return;
+    }
     if(s.seen.has(exec.callId))return;s.seen.add(exec.callId);if(s.seen.size>4096)s.seen.delete(s.seen.values().next().value);
     if(seq===null)s.metrics.liveResults++;
     const argumentRecovery=recoveryOf(result);
