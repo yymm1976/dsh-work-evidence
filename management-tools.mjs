@@ -117,7 +117,14 @@ export function registerManagementTools({ctx,runtime,state,effects,available,fea
       const namedExecutable=namedInlineExecutable(exec.agent.session,script.runtime);
       const declaredExecutable=script.executable===undefined?requiredExecutable:null;
       if(declaredExecutable)script={...script,executable:declaredExecutable.executable};
-      let hostRuntimeSelection=null;
+      let hostRuntimeSelection=script.inheritedHostRuntime?{...script.inheritedHostRuntime,inherited:true}:null;
+      if(hostRuntimeSelection&&hasInterpreterConstraint(exec.agent.session)){
+        effects.decide(exec.agent,'hostNodeFallback','blocked','inherited-host-runtime-conflicts-with-task');
+        return {status:'failed',isError:true,executionOccurred:false,reason:'inherited-host-runtime-conflicts-with-task',
+          error:{code:'WORK_EXEC_INTERPRETER_CONSTRAINT',message:'The recorded program used the host runtime. The current task constrains the interpreter; supply the required executable explicitly.'},
+          scriptRef:exec.callId??null,scriptChars:script.code.length,scriptRuntime:script.runtime,
+          scriptExecutable:script.executable,scriptExecutableSource:'host-node-runtime',hostRuntimeSelection};
+      }
       if(runtime.get(exec.agent).config.hostNodeFallback&&script.runtime==='node'&&
         script.executable===undefined&&!requiredExecutable&&!namedExecutable&&!hasInterpreterConstraint(exec.agent.session)&&
         ['workspace-write','danger-full-access'].includes(ctx.get('sandboxPolicy')?.resolve({session:exec.agent.session})?.mode)){
@@ -169,7 +176,7 @@ export function registerManagementTools({ctx,runtime,state,effects,available,fea
           :await call('pwsh',{command,description,timeoutMs:script.timeoutMs??10000},exec);
         const fileEvidence=await executionDependencies.finish(dependencies,dependencyExecutionComplete(result),exec.signal);
         if(hostRuntimeSelection)effects.decide(exec.agent,'hostNodeFallback',dependencyExecutionComplete(result)?'applied':'failed',
-          'native-node-missing-host-runtime-selected',hostRuntimeSelection);
+          hostRuntimeSelection.inherited?'recorded-host-runtime-reused':'native-node-missing-host-runtime-selected',hostRuntimeSelection);
         const scriptEditsSubmitted=args.edits?.length??0,scriptEditCount=(args.edits??[]).filter(edit=>edit.before!==edit.after).length;
         if(args.scriptRef)effects.decide(exec.agent,'inlineScriptReuse','applied','explicit-same-session-script-reference',{scriptChars:script.code.length,sourceCallId:args.scriptRef,scriptEditsSubmitted,scriptEditCount});
         const aliases=['language','interpreter','cwd','workdir'].filter(key=>Object.hasOwn(args,key));

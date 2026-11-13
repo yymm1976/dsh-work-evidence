@@ -4,6 +4,7 @@ import path from 'node:path';
 import {defaults,RETIRED_SETTINGS,VERSION} from './runtime.mjs';
 import {archiveDecoderStatus} from './archive-store.mjs';
 import {featureSetting} from './effect-observer.mjs';
+import {hasInterpreterConstraint} from './inline-exec.mjs';
 
 const DEFINITIONS=[
   ['enabled','总开关','允许当前工作区使用插件'],
@@ -122,6 +123,16 @@ export function createFeatureControl(ctx,runtime,{available,canRecall,workingSet
         if(key==='deferPressureCompaction'&&runtime.hasRequestBudgetView?.(agent)!==true)reasons.push('request-budget-view-unavailable');
         if(['nativeProgramReuse','structuredCalls'].includes(key)&&!ptc)reasons.push('requires-ptc-tool-mode');
         if(key==='structuredCalls'&&(native?.language!=='typescript'||native?.programFormat!=='function-body'))reasons.push('requires-typescript-function-body-runtime');
+        if(key==='hostNodeFallback'){
+          if(!available(agent,'work_exec'))reasons.push('tool-unavailable:work_exec');
+          const shell=process.platform==='win32'?'pwsh':'bash';
+          if(!available(agent,shell))reasons.push('tool-unavailable:'+shell);
+          if(shell==='bash'&&typeof service('shellEnv')?.register!=='function')reasons.push('native-shell-env-unavailable');
+          let mode;try{mode=service('sandboxPolicy')?.resolve({session:agent.session})?.mode;}catch{}
+          if(!['workspace-write','danger-full-access'].includes(mode))reasons.push('requires-writable-session');
+          if(process.getBuiltinModule?.('node:sea')?.isSea?.()!==false)reasons.push('ordinary-host-node-unavailable');
+          if(hasInterpreterConstraint(agent.session))reasons.push('task-interpreter-constraint');
+        }
         if(['archiveReadRouting','memberParsing','mavenSourceBinding'].includes(key)&&!service('fs'))reasons.push('native-filesystem-unavailable');
         if(['archiveReadRouting','mavenSourceBinding'].includes(key)&&!archiveDecoder.available)reasons.push('archive-decoder-unavailable:fflate');
         if(key==='fastEditEnabled'){

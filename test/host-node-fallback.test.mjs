@@ -29,10 +29,10 @@ test('missing PATH Node reuses the installed host runtime through the native she
   let reference;
   const host=await startHost({pluginConfig:{hostNodeFallback:true,stepPacing:false},script:(options,n)=>{
     if(n===1)return [tool('work_exec',{runtime:'node',code:'console.log(JSON.stringify({answer:42,executable:process.execPath}));'})];
-    if(n===2){
+    if(n===2||n===3){
       const message=options.messages.findLast(message=>message.role==='tool');
       reference=JSON.parse(message.content.map(block=>block.text??'').join('')).scriptRef;
-      return [tool('work_exec',{scriptRef:reference,edits:[{before:'answer:42',after:'answer:63'}]})];
+      return [tool('work_exec',{scriptRef:reference,edits:[{before:n===2?'answer:42':'answer:63',after:n===2?'answer:63':'answer:84'}]})];
     }
     return [text('done')];
   }});
@@ -40,7 +40,7 @@ test('missing PATH Node reuses the installed host runtime through the native she
     const agent=await host.createAgent('max');
     await withNoPathNode(()=>host.send(agent,'Run the JavaScript program and revise its exact version.'));
     const rows=outputs(host);
-    assert.equal(rows.length,2);
+    assert.equal(rows.length,3);
     assert.equal(rows[0].exitCode,0);
     assert.deepEqual(JSON.parse(rows[0].stdout.text),{answer:42,executable:process.execPath});
     assert.equal(rows[0].scriptExecutable,process.execPath);
@@ -50,6 +50,92 @@ test('missing PATH Node reuses the installed host runtime through the native she
     assert.equal(JSON.parse(rows[1].stdout.text).answer,63);
     assert.equal(rows[1].scriptExecutable,process.execPath);
     assert.equal(rows[1].scriptReused,true);
+    for(const row of rows.slice(1)){
+      assert.equal(row.scriptExecutableSource,'host-node-runtime');
+      assert.equal(row.hostRuntimeSelection.executable,process.execPath);
+      assert.equal(row.hostRuntimeSelection.inherited,true);
+    }
+    assert.equal(JSON.parse(rows[2].stdout.text).answer,84);
+  }finally{await host.close();}
+});
+
+test('a later interpreter constraint blocks inherited host paths until explicitly replaced',async()=>{
+  let reference;
+  const host=await startHost({pluginConfig:{hostNodeFallback:true,stepPacing:false},script:(options,n)=>{
+    if(n===1)return [tool('work_exec',{runtime:'node',code:'console.log(42);'})];
+    if(n===3||n===5)return [tool('work_exec',{scriptRef:reference,...(n===5?{executable:process.execPath}:{})})];
+    return [text('done')];
+  }});
+  try{
+    const agent=await host.createAgent('max');
+    await withNoPathNode(()=>host.send(agent,'Run the JavaScript program.'));
+    reference=outputs(host)[0].scriptRef;
+    await withNoPathNode(()=>host.send(agent,'Use only the system Node interpreter; do not substitute a bundled runtime.'));
+    const blocked=outputs(host)[1];
+    assert.equal(blocked.executionOccurred,false);
+    assert.equal(blocked.error.code,'WORK_EXEC_INTERPRETER_CONSTRAINT');
+    assert.equal(blocked.scriptExecutableSource,'host-node-runtime');
+    assert.equal(blocked.hostRuntimeSelection.inherited,true);
+    await host.send(agent,'For this invocation use the explicitly supplied executable path.');
+    const overridden=outputs(host)[2];
+    assert.equal(overridden.exitCode,0);
+    assert.equal(overridden.stdout.text.trim(),'42');
+    assert.equal(overridden.scriptExecutable,process.execPath);
+    assert.equal(overridden.scriptExecutableSource,null);
+    assert.equal(overridden.hostRuntimeSelection,undefined);
+  }finally{await host.close();}
+});
+
+test('host recovery readiness follows the native shell, sandbox and task constraints',async()=>{
+  const host=await startHost({pluginConfig:{hostNodeFallback:true,stepPacing:false},script:()=>[text('done')]});
+  try{
+    const agent=await host.createAgent('max');
+    let entry=(await host.command(agent,'feature hostNodeFallback')).features[0];
+    assert.equal(entry.status,'ready');
+    agent.session.append('sandbox/mode',{mode:'read-only',workspaceRoot:host.cwd});
+    entry=(await host.command(agent,'feature hostNodeFallback')).features[0];
+    assert.equal(entry.status,'blocked');
+    assert.ok(entry.reasons.includes('requires-writable-session'));
+    agent.session.append('sandbox/mode',{mode:'danger-full-access',workspaceRoot:host.cwd});
+    await host.send(agent,'Use only the system Node interpreter.');
+    entry=(await host.command(agent,'feature hostNodeFallback')).features[0];
+    assert.equal(entry.status,'blocked');
+    assert.ok(entry.reasons.includes('task-interpreter-constraint'));
+  }finally{await host.close();}
+  const noShell=await baseStartHost({mountShell:false,pluginConfig:{hostNodeFallback:true,stepPacing:false},script:()=>[text('done')]});
+  try{
+    const agent=await noShell.createAgent('max');
+    const entry=(await noShell.command(agent,'feature hostNodeFallback')).features[0];
+    assert.equal(entry.status,'blocked');
+    assert.ok(entry.reasons.includes('tool-unavailable:'+(process.platform==='win32'?'pwsh':'bash')));
+  }finally{await noShell.close();}
+});
+
+test('uncertain native availability never dispatches the submitted program',async()=>{
+  const host=await startHost({pluginConfig:{hostNodeFallback:true,stepPacing:false},script:()=>[text('unused')]});
+  try{
+    const agent=await host.createAgent('max'),shell=process.platform==='win32'?'pwsh':'bash';
+    const original=host.ctx.tools.get(shell,agent);
+    let selected,calls=0;
+    agent.ctx.tools.register({...original,execute:async(args)=>{
+      calls++;
+      assert.equal(args.description,'Locate the existing Node interpreter','the user program must never be dispatched');
+      const marker=args.command.match(/work-node-[a-f0-9-]+/u)[0];
+      const value=selected==='background'?{kind:'promoted',cwd:host.cwd,jobId:'availability-probe',timeoutMs:10000,output:marker+':missing'}:
+        {kind:'foreground',cwd:host.cwd,exitCode:selected==='failure'?1:0,signal:null,timeoutMs:10000,
+          timedOut:selected==='timeout',aborted:selected==='cancelled',stderr:{text:'',truncated:false},
+          stdout:{text:selected==='unknown'?'unexpected':selected==='duplicate'?marker+':missing\n'+marker+':missing':marker+':missing',truncated:selected==='truncated'}};
+      return value;
+    }});
+    for(selected of ['unknown','duplicate','timeout','cancelled','background','truncated','failure']){
+      const callId='uncertain-node-'+selected;
+      const result=await host.ctx.tools.execute({name:'work_exec',arguments:{runtime:'node',code:'throw new Error("must not execute");'},
+        callId,rootCallId:callId,agent,signal:AbortSignal.timeout(20000)});
+      assert.equal(result.value.executionOccurred,false,selected);
+      assert.equal(result.value.reason,['unknown','duplicate'].includes(selected)?'native-node-availability-unknown':'native-node-availability-incomplete',selected+': '+JSON.stringify(result));
+      assert.equal(result.value.hostRuntimeSelection,undefined,selected);
+    }
+    assert.equal(calls,7);
   }finally{await host.close();}
 });
 

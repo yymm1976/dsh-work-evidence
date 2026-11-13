@@ -60,7 +60,7 @@ test('declared package files independently load all retained controls and preser
     assert.equal(features.pluginEffective,true);assert.ok(features.dependencies.archiveDecoder.available);
     assert.ok(features.dependencies.nativeCompactionAttached);
     assert.deepEqual(features.features.map(item=>item.key),FEATURE_KEYS);
-    assert.equal(new Set(features.features.map(item=>item.key)).size,41);
+    assert.equal(new Set(features.features.map(item=>item.key)).size,FEATURE_KEYS.length);
     assert.deepEqual(features.tools.map(item=>item.name),TOOL_NAMES);
     assert.equal(new Set(features.tools.map(item=>item.name)).size,16);
     assert.ok(features.tools.every(item=>item.exposed===true),JSON.stringify(features.tools.filter(item=>!item.exposed)));

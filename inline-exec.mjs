@@ -40,6 +40,14 @@ function scriptExecutableOf(event){
   const declared=[metadata?.scriptRef,metadata?.scriptRuntime,metadata?.scriptChars].some(value=>value!==undefined);
   return declared&&validExecutable(metadata?.scriptExecutable)?metadata.scriptExecutable:null;
 }
+function scriptHostRuntimeOf(event){
+  const data=event.data??{};
+  const metadata=event.type==='tool/result'?metadataOf(data.message?.content):metadataOf(data.content);
+  const selection=metadata?.hostRuntimeSelection;
+  return metadata?.scriptExecutableSource==='host-node-runtime'&&selection?.source==='host-node-runtime'&&
+    validExecutable(selection.executable)&&selection.executable===metadata.scriptExecutable?
+    {...selection}:null;
+}
 const messageOf=event=>event.data?.message??event.data??{};
 export function inlineScriptEventRef(session,callId){
   if(typeof callId!=='string')return null;
@@ -201,7 +209,7 @@ export function declaredInlineExecutable(session,runtime){
 
 /** Reconstruct explicitly referenced scripts from this session's original calls. */
 export function resolveInlineScript(input,session,signal){
-  const events=typeof input?.scriptRef==='string'?eventLog(session):[],calls=new Map(),resultExecutables=new Map();
+  const events=typeof input?.scriptRef==='string'?eventLog(session):[],calls=new Map(),resultExecutables=new Map(),resultHostRuntimes=new Map();
   for(const event of events){
     const data=event.data??{};
     if(!CALL_EVENT_TYPES.has(event.type))continue;
@@ -219,10 +227,12 @@ export function resolveInlineScript(input,session,signal){
     if(call?.name!=='work_exec')continue;
     const executable=scriptExecutableOf(event);
     if(executable)resultExecutables.set(id,executable);
+    const hostRuntime=scriptHostRuntimeOf(event);
+    if(hostRuntime)resultHostRuntimes.set(id,hostRuntime);
   }
   const eventRefs=new Map(events.filter(event=>CALL_EVENT_TYPES.has(event.type)&&event.data?.name==='work_exec'&&Number.isSafeInteger(event.seq)&&event.seq>=0)
     .map(event=>['event:'+event.seq,eventCallId(event.type,event.data)]).filter(([,id])=>typeof id==='string'&&calls.has(id)));
-  try{return resolveIndexedScript(input,calls,resultExecutables,eventRefs,signal);}catch(error){
+  try{return resolveIndexedScript(input,calls,resultExecutables,resultHostRuntimes,eventRefs,signal);}catch(error){
     if(error.code!=='WORK_EXEC_SCRIPT_REF_NOT_FOUND')throw error;
     const request=events.findLast(event=>event.type==='user/message'&&isUserRequestMessage(messageOf(event)));
     const requestedRuntime=input.runtime??input.language,available=[];
@@ -230,9 +240,9 @@ export function resolveInlineScript(input,session,signal){
       signal?.throwIfAborted();
       if(scriptRef.length>256)continue;
       try{
-        const script=resolveIndexedScript({scriptRef,...(requestedRuntime===undefined?{}:{runtime:requestedRuntime})},calls,resultExecutables,eventRefs,signal);
+        const script=resolveIndexedScript({scriptRef,...(requestedRuntime===undefined?{}:{runtime:requestedRuntime})},calls,resultExecutables,resultHostRuntimes,eventRefs,signal);
         if(typeof script.code!=='string'||!script.code.trim()||script.code.length>64000)continue;
-        if(input.edits!==undefined)resolveIndexedScript({...input,scriptRef},calls,resultExecutables,eventRefs,signal);
+        if(input.edits!==undefined)resolveIndexedScript({...input,scriptRef},calls,resultExecutables,resultHostRuntimes,eventRefs,signal);
         available.push({scriptRef,scriptEventRef:'event:'+call.seq,seq:call.seq,runtime:script.runtime,scriptChars:script.code.length});
         if(available.length===3)break;
       }catch{signal?.throwIfAborted();}
@@ -264,7 +274,7 @@ function scriptEditMismatch(code,edit,editIndex,scriptRef){
     {code:'WORK_EXEC_SCRIPT_EDIT_MISMATCH',editMismatch:detail});
 }
 
-function resolveIndexedScript(input,calls,resultExecutables,eventRefs,signal){
+function resolveIndexedScript(input,calls,resultExecutables,resultHostRuntimes,eventRefs,signal){
   const chain=[],seen=new Set(),sourceCallIds=[];let candidate=input,callId=null,runtime;
   while(true){
     signal?.throwIfAborted();
@@ -273,7 +283,10 @@ function resolveIndexedScript(input,calls,resultExecutables,eventRefs,signal){
       if(runtime!==undefined&&candidate.runtime!==runtime)throw new Error('scriptRef runtime must match the original script');
       runtime=candidate.runtime;
     }
-    if(candidate.executable===undefined&&resultExecutables.has(callId))candidate.executable=resultExecutables.get(callId);
+    if(candidate.executable===undefined&&resultExecutables.has(callId)){
+      candidate.executable=resultExecutables.get(callId);
+      candidate.inheritedHostRuntime=resultHostRuntimes.get(callId)??null;
+    }
     const hasCode=typeof candidate.code==='string',hasRef=typeof candidate.scriptRef==='string'&&candidate.scriptRef.length>0;
     if(hasCode===hasRef)throw new Error('Provide exactly one of code or scriptRef');
     if(candidate.scriptRef!==undefined&&(!hasRef||candidate.scriptRef.length>256))throw new Error('Invalid same-session scriptRef');
@@ -292,6 +305,7 @@ function resolveIndexedScript(input,calls,resultExecutables,eventRefs,signal){
   const initial=chain.pop();
   if(!['python','node'].includes(runtime))throw new Error('runtime must be python or node');
   let resolved={runtime,code:initial.code,...(initial.executable!==undefined?{executable:initial.executable}:{}),...(initial.format!==undefined?{format:initial.format}:{}),...(initial.timeoutMs!==undefined?{timeoutMs:initial.timeoutMs}:{})};
+  let inheritedHostRuntime=initial.inheritedHostRuntime??null;
   for(const next of chain.reverse()){
     signal?.throwIfAborted();
     for(const [editIndex,edit]of (next.edits??[]).entries()){
@@ -302,11 +316,11 @@ function resolveIndexedScript(input,calls,resultExecutables,eventRefs,signal){
       resolved.code=resolved.code.slice(0,first)+edit.after+resolved.code.slice(first+edit.before.length);
       if(!resolved.code.trim()||resolved.code.length>64000)throw new Error('Edited script must contain 1–64000 characters');
     }
-    if(next.executable!==undefined)resolved.executable=next.executable;
+    if(next.executable!==undefined){resolved.executable=next.executable;inheritedHostRuntime=next.inheritedHostRuntime??null;}
     if(next.format!==undefined)resolved.format=next.format;
     if(next.timeoutMs!==undefined)resolved.timeoutMs=next.timeoutMs;
   }
-  return {...resolved,sourceCallIds};
+  return {...resolved,sourceCallIds,...(inheritedHostRuntime?{inheritedHostRuntime}:{})};
 }
 
 export const INLINE_ENV_KEYS=Object.freeze(['DSH_WORK_EVIDENCE_STDIN_ID',...Array.from({length:3},(_,index)=>'DSH_WORK_EVIDENCE_STDIN_'+index)]);
