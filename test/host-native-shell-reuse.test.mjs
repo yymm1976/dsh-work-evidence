@@ -1,12 +1,28 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import path from 'node:path';
+import fs from 'node:fs/promises';
+import os from 'node:os';
+import {sameDeclaredInlineExecutable} from '../inline-exec.mjs';
 import {startHost as baseStartHost,text,tool} from './helpers/host.mjs';
 
 const startHost=options=>baseStartHost({...options,...(process.platform==='win32'?{}:
   {mountShell:false,extraMounts:[['dsh-bash-local',{}],['dsh-tool-bash',{}]]})});
 const command="node <<'JS'\nconsole.log(JSON.stringify({value:42,commonjs:typeof require==='function',argv:process.argv.length}));\nJS\n";
 const rows=host=>host.events.filter(event=>event.type==='tool/result').map(event=>JSON.parse(event.data.message.content.map(block=>block.text??'').join('')));
+
+test('a declared interpreter matches its actual file identity rather than a folded path',async()=>{
+  const directory=await fs.mkdtemp(path.join(os.tmpdir(),'interpreter-identity-'));
+  try{
+    const first=path.join(directory,'first-node'),other=path.join(directory,'other-node'),alias=path.join(directory,'alias-node');
+    await fs.writeFile(first,'same content');await fs.writeFile(other,'same content');await fs.link(first,alias);
+    assert.equal(await sameDeclaredInlineExecutable(first,first),true);
+    assert.equal(await sameDeclaredInlineExecutable(first,alias),true);
+    assert.equal(await sameDeclaredInlineExecutable(first,other),false);
+    assert.equal(await sameDeclaredInlineExecutable(first,path.join(directory,'missing')),false);
+    assert.equal(await sameDeclaredInlineExecutable(first,'node'),false);
+  }finally{await fs.rm(directory,{recursive:true,force:true});}
+});
 
 test('recorded Bash stdin text runs through the current native executor and retains its CommonJS mode',async()=>{
   let reference='recorded-shell';

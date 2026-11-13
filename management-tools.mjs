@@ -5,7 +5,7 @@ import {randomUUID} from 'node:crypto';
 import {stat} from 'node:fs/promises';
 import {recallHistory} from "./compaction-handoff.mjs";
 import {recallCall} from "./history-hygiene.mjs";
-import {inlineCommand,inlineEnvironment,INLINE_ENV_KEYS,resolveInlineScript,declaredInlineExecutable,namedInlineExecutable,inlineFailureLocation,inlineFormatRecovery,inlineScriptEventRef,nodeAvailabilityCommand,hasInterpreterConstraint,sameInlineExecutable} from './inline-exec.mjs';
+import {inlineCommand,inlineEnvironment,INLINE_ENV_KEYS,resolveInlineScript,declaredInlineExecutable,namedInlineExecutable,inlineFailureLocation,inlineFormatRecovery,inlineScriptEventRef,nodeAvailabilityCommand,hasInterpreterConstraint,sameDeclaredInlineExecutable} from './inline-exec.mjs';
 import {declaredFileSources,dependencyExecutionComplete,executionResultLayers} from './execution-dependencies.mjs';
 import {reportedExecutionChecks} from './recovery.mjs';
 
@@ -117,13 +117,13 @@ export function registerManagementTools({ctx,runtime,state,effects,available,fea
       const namedExecutable=namedInlineExecutable(exec.agent.session,script.runtime);
       const declaredExecutable=script.executable===undefined?requiredExecutable:null;
       if(declaredExecutable)script={...script,executable:declaredExecutable.executable};
-      if(script.shellSource&&requiredExecutable&&!sameInlineExecutable(requiredExecutable.executable,script.executable))
+      if(script.shellSource&&requiredExecutable&&!await sameDeclaredInlineExecutable(requiredExecutable.executable,script.executable))
         return {status:'failed',isError:true,executionOccurred:false,reason:'shell-runtime-conflicts-with-declared-interpreter',
           error:{code:'WORK_EXEC_INTERPRETER_CONSTRAINT',message:'The recorded Shell program used a different interpreter. Select the existing interpreter required by the current task explicitly.'},
           scriptRef:exec.callId??null,scriptRuntime:script.runtime,scriptExecutable:script.executable,scriptShellSource:script.shellSource};
       let hostRuntimeSelection=script.inheritedHostRuntime?{...script.inheritedHostRuntime,inherited:true}:null;
       const userRuntimeOverride=hostRuntimeSelection&&requiredExecutable?.source?.kind==='user'&&
-        sameInlineExecutable(requiredExecutable.executable,script.executable);
+        await sameDeclaredInlineExecutable(requiredExecutable.executable,script.executable);
       if(hostRuntimeSelection&&hasInterpreterConstraint(exec.agent.session)&&!userRuntimeOverride){
         effects.decide(exec.agent,'hostNodeFallback','blocked','inherited-host-runtime-conflicts-with-task');
         return {status:'failed',isError:true,executionOccurred:false,reason:'inherited-host-runtime-conflicts-with-task',

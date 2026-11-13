@@ -2,6 +2,7 @@ import {argsOf,eventLog,isUserRequestMessage,textOf} from './runtime.mjs';
 import {Script} from 'node:vm';
 import path from 'node:path';
 import {nativeShellScript} from './native-shell-script.mjs';
+import {stat} from 'node:fs/promises';
 
 const quote=value=>"'"+String(value).replaceAll("'","''")+"'";
 const bashQuote=value=>"'"+String(value).replaceAll("'","'\\''")+"'";
@@ -13,6 +14,14 @@ export function sameInlineExecutable(left,right){
   if(typeof left!=='string'||typeof right!=='string')return false;
   const normalize=value=>process.platform==='win32'?path.win32.normalize(value).toLowerCase():path.posix.normalize(value);
   return normalize(left)===normalize(right);
+}
+/** User authorization must name the actual file, including on case-sensitive Windows directories. */
+export async function sameDeclaredInlineExecutable(left,right){
+  if(typeof left!=='string'||typeof right!=='string'||!path.isAbsolute(left)||!path.isAbsolute(right))return false;
+  try{
+    const [first,second]=await Promise.all([stat(left,{bigint:true}),stat(right,{bigint:true})]);
+    return first.isFile()&&second.isFile()&&first.ino!==0n&&first.ino===second.ino&&first.dev===second.dev;
+  }catch{return false;}
 }
 function normalizeInput(input){
   if(!input||typeof input!=='object'||Array.isArray(input))throw new Error('work_exec arguments must be an object');
