@@ -32,7 +32,10 @@ test('packed tarball installs without host peers and loads with the installed ho
   try{
     const pack=runNpm(['pack','--json','--pack-destination',directory],{cwd:source,env:{...process.env,npm_config_cache:cache}});
     assert.equal(pack.status,0,output(pack));
-    const tarball=path.join(directory,JSON.parse(pack.stdout)[0].filename);
+    const packed=JSON.parse(pack.stdout),name=JSON.parse(await fs.readFile(path.join(source,'package.json'),'utf8')).name;
+    const packageInfo=Array.isArray(packed)?packed.find(item=>item.name===name):packed[name];
+    assert.ok(packageInfo?.filename,'npm pack must identify the requested package and its tarball');
+    const tarball=path.join(directory,packageInfo.filename);
     await fs.mkdir(install);
     await fs.writeFile(path.join(install,'package.json'),JSON.stringify({
       name:'we-package-install-probe',
