@@ -311,6 +311,18 @@ function resolveIndexedScript(input,calls,resultExecutables,eventRefs,signal){
 
 export const INLINE_ENV_KEYS=Object.freeze(['DSH_WORK_EVIDENCE_STDIN_ID',...Array.from({length:3},(_,index)=>'DSH_WORK_EVIDENCE_STDIN_'+index)]);
 const validTransferId=value=>typeof value==='string'&&/^[A-Za-z0-9_-]{1,128}$/u.test(value);
+/** Ask the native shell about its own executor, including local functions on Bash. */
+export function nodeAvailabilityCommand(shell,marker){
+  if(!validTransferId(marker))throw new Error('Node availability needs an exact marker');
+  if(shell==='bash')return `if command -v node >/dev/null 2>&1; then builtin printf '%s\\n' '${marker}:available'; else builtin printf '%s\\n' '${marker}:missing'; fi`;
+  if(shell==='pwsh')return `if (Get-Command node -CommandType Application -ErrorAction SilentlyContinue) { [Console]::Out.WriteLine('${marker}:available') } else { [Console]::Out.WriteLine('${marker}:missing') }`;
+  throw new Error('shell must be pwsh or bash');
+}
+/** Preserve textual interpreter constraints as well as explicit tool arguments. */
+export function hasInterpreterConstraint(session){
+  return eventLog(session).some(event=>isUserRequestMessage(messageOf(event))&&
+    /\bnode(?:\.js|js)?\b|\b(?:interpreter|runtime)\b|解释器|运行时/iu.test(textOf(messageOf(event))));
+}
 function validateInlineInput(input){
   if(!input||!['python','node'].includes(input.runtime)||typeof input.code!=='string'||!input.code.trim()||input.code.length>64000)
     throw new Error('runtime must be python or node and code must contain 1–64000 characters');

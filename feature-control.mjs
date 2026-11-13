@@ -35,6 +35,7 @@ const DEFINITIONS=[
   ['stubSummary','简短交接','条件满足时使用可恢复的交接摘要'],
   ['executionTriage','执行恢复','提供实际失败位置和程序版本'],
   ['nativeProgramReuse','PTC 程序引用','显式复用同一会话的原程序文字'],
+  ['hostNodeFallback','宿主 Node 回退','未指定解释器且原生命令找不到 Node 时复用宿主运行时'],
   ['structuredCalls','结构化调用','用现有工具参数直接提交独立动作'],
   ['nativeReasoningReplay','原生推理传递','向兼容通道传递准确的已有推理'],
   ['stageWorkingSet','阶段状态','保留当前阶段及必要来源'],

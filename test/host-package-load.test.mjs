@@ -13,7 +13,7 @@ const source=path.resolve(import.meta.dirname,'..');
 const FEATURE_KEYS=['enabled','aggressiveMode','selfIndex','fastEditEnabled','stateLedger','stateInform','completionNotice',
   'archiveReadRouting','readArgumentRecovery','requestAccounting','evidenceViews','memberParsing','mavenSourceBinding','contextProtocol',
   'historyHygiene','nativeVerifiedEdits','fileProfiling','structuredJson','ledgerReceipt','ledgerUnresolved','swLedger','swEviction','requestProjection','projectionRestore',
-  'compressionControl','deferPressureCompaction','stubSummary','executionTriage','nativeProgramReuse','structuredCalls','nativeReasoningReplay',
+  'compressionControl','deferPressureCompaction','stubSummary','executionTriage','nativeProgramReuse','hostNodeFallback','structuredCalls','nativeReasoningReplay',
   'stageWorkingSet','stepPacing','retainedCompute','finalJsonGuard','finalJsonResultGuard','qualityReview','qualityReviewEffort',
   'qualityReviewScope','toolSurface','defaultResponseView'];
 const TOOL_NAMES=['project_evidence','work_exec','work_recall','work_status','work_state','work_report','work_probe','evidence_index',

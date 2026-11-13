@@ -14,6 +14,7 @@ FEATURES.failureAdvice='executionTriage';
 FEATURES.scriptReuseAdvice='executionTriage';
 FEATURES.inlineScriptReuse=null;
 FEATURES.nativeProgramReuse='nativeProgramReuse';
+FEATURES.hostNodeFallback='hostNodeFallback';
 FEATURES.nativeProgramReference='nativeProgramReuse';
 FEATURES.structuredCalls='structuredCalls';
 FEATURES.nativeReasoningReplay='nativeReasoningReplay';

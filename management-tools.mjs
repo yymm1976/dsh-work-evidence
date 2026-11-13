@@ -5,8 +5,8 @@ import {randomUUID} from 'node:crypto';
 import {stat} from 'node:fs/promises';
 import {recallHistory} from "./compaction-handoff.mjs";
 import {recallCall} from "./history-hygiene.mjs";
-import {inlineCommand,inlineEnvironment,INLINE_ENV_KEYS,resolveInlineScript,declaredInlineExecutable,namedInlineExecutable,inlineFailureLocation,inlineFormatRecovery,inlineScriptEventRef} from './inline-exec.mjs';
-import {declaredFileSources,dependencyExecutionComplete} from './execution-dependencies.mjs';
+import {inlineCommand,inlineEnvironment,INLINE_ENV_KEYS,resolveInlineScript,declaredInlineExecutable,namedInlineExecutable,inlineFailureLocation,inlineFormatRecovery,inlineScriptEventRef,nodeAvailabilityCommand,hasInterpreterConstraint} from './inline-exec.mjs';
+import {declaredFileSources,dependencyExecutionComplete,executionResultLayers} from './execution-dependencies.mjs';
 import {reportedExecutionChecks} from './recovery.mjs';
 
 export function registerManagementTools({ctx,runtime,state,effects,available,featureControl,capabilityDiagnostic,contextEconomics,taskFlow,taskHandoff,retainedCompute,finalJson,qualityReview,executionEvidence,executionDependencies,refreshExecutionEvidence,hostReferences,workingSet,compressionControl,compactionHandoff,contextWindow,observationLedger,historyCoordinator,clearPluginState,index,candidates,ptcPatterns,ptcFastpath,verifiedExec,fastEditJava,fileProfiler,structuredJson,preserveContextResult,retainRecalledSources,hasHistoricalReferences,applyToolSurface,call,disabledResult,output,COMPACT_HIDDEN_TOOLS,assertParameterBounds,parameters}){
@@ -114,6 +114,30 @@ export function registerManagementTools({ctx,runtime,state,effects,available,fea
       const namedExecutable=namedInlineExecutable(exec.agent.session,script.runtime);
       const declaredExecutable=script.executable===undefined?requiredExecutable:null;
       if(declaredExecutable)script={...script,executable:declaredExecutable.executable};
+      let hostRuntimeSelection=null;
+      if(runtime.get(exec.agent).config.hostNodeFallback&&script.runtime==='node'&&
+        script.executable===undefined&&!requiredExecutable&&!namedExecutable&&!hasInterpreterConstraint(exec.agent.session)){
+        const sea=process.getBuiltinModule?.('node:sea');
+        if(sea?.isSea?.()===false){
+          const marker='work-node-'+randomUUID();
+          const availability=await call(shell,{description:'Locate the existing Node interpreter',
+            command:nodeAvailabilityCommand(shell,marker),timeoutMs:10000},exec);
+          if(!dependencyExecutionComplete(availability))return {status:'failed',isError:true,executionOccurred:false,
+            reason:'native-node-availability-incomplete',scriptRef:exec.callId??null,scriptChars:script.code.length,
+            scriptRuntime:script.runtime,availability};
+          const producer=executionResultLayers(availability).findLast(value=>value.stdout!==undefined);
+          const stdout=typeof producer?.stdout==='string'?producer.stdout:producer?.stdout?.text;
+          const observed=typeof stdout==='string'?stdout.trim():null;
+          if(![marker+':available',marker+':missing'].includes(observed))return {status:'failed',isError:true,
+            executionOccurred:false,reason:'native-node-availability-unknown',availability,
+            scriptRef:exec.callId??null,scriptChars:script.code.length,scriptRuntime:script.runtime};
+          if(observed===marker+':missing'){
+            script={...script,executable:process.execPath};
+            hostRuntimeSelection={source:'host-node-runtime',executable:process.execPath,
+              version:process.versions.node,pathNodeAvailable:false};
+          }
+        }
+      }
       const root=await ctx.workingDirectory.ensure(exec.agent,exec.signal);
       if(script.executable!==undefined&&path.isAbsolute(script.executable)){
         let missing=false;
@@ -140,6 +164,8 @@ export function registerManagementTools({ctx,runtime,state,effects,available,fea
           ?await call('bash',{description,command,timeoutMs:script.timeoutMs??10000},exec)
           :await call('pwsh',{command,description,timeoutMs:script.timeoutMs??10000},exec);
         const fileEvidence=await executionDependencies.finish(dependencies,dependencyExecutionComplete(result),exec.signal);
+        if(hostRuntimeSelection)effects.decide(exec.agent,'hostNodeFallback',dependencyExecutionComplete(result)?'applied':'failed',
+          'native-node-missing-host-runtime-selected',hostRuntimeSelection);
         const scriptEditsSubmitted=args.edits?.length??0,scriptEditCount=(args.edits??[]).filter(edit=>edit.before!==edit.after).length;
         if(args.scriptRef)effects.decide(exec.agent,'inlineScriptReuse','applied','explicit-same-session-script-reference',{scriptChars:script.code.length,sourceCallId:args.scriptRef,scriptEditsSubmitted,scriptEditCount});
         const aliases=['language','interpreter','cwd','workdir'].filter(key=>Object.hasOwn(args,key));
@@ -147,7 +173,8 @@ export function registerManagementTools({ctx,runtime,state,effects,available,fea
         const scriptEventRef=inlineScriptEventRef(exec.agent.session,exec.callId);
         const failureLocation=inlineFailureLocation(script,result.value??result),recovery=inlineFormatRecovery(script,result.value??result,scriptEventRef??exec.callId,failureLocation);
         const metadata={...fileEvidence,scriptRef:exec.callId??null,scriptEventRef,scriptChars:script.code.length,scriptRuntime:script.runtime,scriptExecutable:script.executable??script.runtime,scriptEditsSubmitted,scriptEditCount,
-          scriptExecutableSource:declaredExecutable?.source??null,scriptSourceRefs:script.sourceCallIds??[],scriptReused:!!args.scriptRef,
+          scriptExecutableSource:declaredExecutable?.source??hostRuntimeSelection?.source??null,
+          ...(hostRuntimeSelection?{hostRuntimeSelection}:{}),scriptSourceRefs:script.sourceCallIds??[],scriptReused:!!args.scriptRef,
           failureLocation,...(recovery?{recovery}:{})};
         const reportedChecks=reportedExecutionChecks(result);
         if(reportedChecks)metadata.reportedChecks=reportedChecks;
