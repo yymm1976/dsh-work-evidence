@@ -16,14 +16,19 @@
 
 ## 可选的新功能
 
-3 个开关均默认关闭。启用决定以真实任务与消融证据为依据。
+以下开关均默认关闭。启用决定以真实任务与消融证据为依据。
 
 | 开关 | 入口和行为 | 边界 |
 |---|---|---|
 | `nativeVerifiedEdits` | `verified_exec` 在 rc.2 通过原生权限路径执行多文件精确替换或创建。compact 模式在可写任务中提供入口。 | 仅支持已识别的 rc.2 原生工具、官方本地或沙箱文件服务；版本是宿主的不透明标记。逐文件生效，后续失败不会撤销已生效的修改。 |
 | `fileProfiling` | `file_profile` 提供文本/CSV 预览、换行、ASCII 计数及 CSV 字段分布。 | 抽样不能给出全文件计数。完整扫描受总字节预算限制，保留 BOM 和换行；文件变化、短读和非法 UTF-8 返回不可用。 |
 | `structuredJson` | `structured_json` 按 JSON 指针读取 JSON/JSONL 的值、键、计数或数组页。 | 原文上限 2 MiB。沿用 `JSON.parse` 的重复键、枚举顺序和数字规则，小数可能舍入或下溢；不安全整数、非有限数和宿主无法无损承载的负零被拒绝。超出字符预算或嵌套超过 128 层的值返回序列化预览，标记 `complete:false`。 |
+| `hostNodeFallback` | 未指定解释器且原生命令完整确认缺少 Node 时，按条件复用宿主 Node。 | 显式解释器、会话中的解释器文字限制和当前权限优先。结果保留来源；实际用户授权按解释器文件身份匹配。 |
+| `nativeShellScriptReuse` | `work_exec.scriptRef` 显式引用单个字面量 Bash stdin 程序。 | 只接受受限 Python/Node heredoc，拒绝 Shell 展开和其他命令；保留代码及生效参数，使用当前环境和权限。 |
+| `probeReplay` | `work_probe` 按本会话原调用和预期重新执行。 | 参数及预期不能在重执行调用中改写。工作区保存 JSON 不能替代原会话来源。后台任务不复制；同问题的新预期不能清除原失败。 |
 
 开关通过 `/work-evidence feature <名称> on` 修改。`features` 显示当前依赖和实际触发状态。开启开关不等于已经触发，也不能证明费用收益。
+
+只读会话拒绝新进程 `work_exec` 及不受限 Shell `work_probe`。原生只读工具和 retained 受限计算继续可用。
 
 迁移与旧包恢复分别见 [迁移说明](MIGRATION-1.1.2.md) 和 [回退说明](ROLLBACK-1.1.2.md)。

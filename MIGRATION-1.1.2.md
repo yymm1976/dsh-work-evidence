@@ -19,12 +19,23 @@
 3. 用 `/work-evidence status` 查看加载版本。
 4. 用 `/work-evidence features` 查看开关、依赖及触发状态。
 
-新设置 `nativeVerifiedEdits`、`fileProfiling`、`structuredJson` 均为 `false`。现有工作区没有这些键时采用该值。原有会话开关、工作区开关和原始证据继续保留。
+以下新增设置均默认为 `false`。现有工作区缺少这些键时采用该值。
+
+- `nativeVerifiedEdits`：原生条件编辑。
+- `fileProfiling`：文本和 CSV 概况。
+- `structuredJson`：JSON 和 JSONL 选择。
+- `hostNodeFallback`：缺少 Node 时按受限条件复用宿主运行时。
+- `nativeShellScriptReuse`：显式引用受支持的 Bash stdin 程序。
+- `probeReplay`：按会话原调用及预期重新执行检查。
+
+原有会话开关、工作区开关和原始观察继续保留。宿主运行时来源会随程序引用保留；后续解释器限制不会因为重复填写同一路径而消失。原样检查重执行需要本会话的原调用和结果。保存到工作区的观察 JSON 不能替代该来源。
 
 CSV 完整扫描会读取当前文件的全部字节。只需预览时使用抽样。JSON/JSONL 选择返回原生版本和内容摘要；该观察不保证文件之后保持不变。JSONL 的数组索引按非空记录编号，`recordPhysicalLine` 指向原始物理行。
 
 原生条件编辑没有跨文件事务。发生冲突或中止后，调用者先查看逐文件效果，再决定后续修改。`applied` 只表示修改已经生效；`validated` 只表示显式提供的命令也已通过。
 
 写入后取消时，工具错误保留逐文件效果和报告地址。插件会尝试把效果记录保存到自己的目录。未能保存时，结果包含 `reportSaved:false` 和原因。输出明确报告失败或执行未完成时，验证结果不能标为通过。
+
+只读会话拒绝 `work_exec` 的新进程执行和 `work_probe` 的不受限 Shell 执行。原生只读工具及 retained 受限计算继续可用。
 
 切回旧包前，按 [回退说明](ROLLBACK-1.1.2.md) 移除旧包不认识的新设置。
