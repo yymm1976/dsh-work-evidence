@@ -268,3 +268,51 @@ test('an older pending replay cannot release a newer invocation lock',async()=>{
     releasePending.resolve();releaseSecond.resolve();await first;await second;evidence.dispose();
   }
 });
+
+test('an outer pending native status prevents success and replay despite a completed inner payload',async()=>{
+  for(const status of ['running','pending','queued','stopping'])for(const outerResult of [false,true]){
+    const log=[],session={id:'probe-outer-'+status,log,get seq(){return log.length;}},agent={session};
+    const state={id:session.id,root:process.cwd(),dir:process.cwd(),config:{executionTriage:true,probeReplay:true}};
+    const runtime={init:async()=>state,get:()=>state,execFor:()=>({}),save:async()=>{}};
+    let dispatches=0;
+    const evidence=createExecutionEvidence({tools:{get:()=>({})},get:()=>null},runtime,async()=>{
+      dispatches++;const value={data:{status:'completed',exitCode:0,jobId:'active-'+status,
+        stdout:{text:'{"answer":42}',truncated:false},stderr:{text:'',truncated:false}}};
+      return outerResult?{status,value}:{value:{status,...value}};
+    },{executionDependencies:{capture:async()=>({}),finish:async()=>({})}});
+    const originalPlan={...plan,sources:[]},signal=AbortSignal.timeout(10000);
+    log.push({seq:0,type:'tool/call',data:{callId:'original',name:'work_probe',arguments:originalPlan}});
+    const original=await evidence.execute(agent,originalPlan,signal);
+    assert.equal(original.status,'pending',status);
+    assert.equal(original.executionCompleted,false,status);
+    assert.equal(original.cases[0].status,'unresolved',status);
+    log.push({seq:log.length,type:'tool/result',data:{message:{source:{callId:'original'},content:[{type:'text',text:JSON.stringify(original)}]}}});
+    const replay=await evidence.execute(agent,{mode:'replay',id:original.id},signal);
+    assert.equal(replay.executionOccurred,false,status);
+    assert.equal(replay.reason,'probe-replay-pending',status);
+    assert.equal(dispatches,1,status);
+    evidence.dispose();
+  }
+});
+
+test('probe observations retain outer failure, incomplete and unknown execution envelopes',async()=>{
+  for(const [outer,expected]of [
+    [{status:'failed'},'failed'],[{state:'failed'},'failed'],[{job:{status:'failed'}},'failed'],
+    [{success:false},'failed'],[{ok:false},'failed'],[{exitCode:2},'failed'],
+    [{status:'failed',data:{status:'running',exitCode:0}},'failed'],
+    [{complete:false},'partial'],[{executionCompleted:false},'partial'],[{outputPartial:true},'partial'],
+    [{lossy:true},'partial'],[{stdout:{truncated:true}},'partial'],[{status:'unknown'},'unknown']]){
+    const session={id:'probe-envelope',log:[]},agent={session};
+    const state={id:session.id,root:process.cwd(),dir:process.cwd(),config:{executionTriage:true,probeReplay:true}};
+    const runtime={init:async()=>state,get:()=>state,execFor:()=>({}),save:async()=>{}};
+    const evidence=createExecutionEvidence({tools:{get:()=>({})},get:()=>null},runtime,async()=>({value:{
+      data:{status:'completed',exitCode:0,stdout:{text:'{"answer":42}',truncated:false}},...outer}}),
+      {executionDependencies:{capture:async()=>({}),finish:async()=>({})}});
+    const observation=await evidence.execute(agent,{...plan,sources:[]},AbortSignal.timeout(10000));
+    assert.equal(observation.status,expected,JSON.stringify(outer));
+    assert.equal(observation.executionCompleted,false,JSON.stringify(outer));
+    assert.equal(observation.cases[0].status,'unresolved',JSON.stringify(outer));
+    assert.equal(observation.exitCode,0,'The actual inner producer exit remains separate from wrapper status');
+    evidence.dispose();
+  }
+});

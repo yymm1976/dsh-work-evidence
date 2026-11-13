@@ -4,7 +4,7 @@ import {randomUUID} from 'node:crypto';
 import {isDeepStrictEqual} from 'node:util';
 import {assertExistingFileWithin} from './evidence.mjs';
 import {resultText,parseResult} from './visible-results.mjs';
-import {createExecutionDependencies,declaredFileSources,dependencyView} from './execution-dependencies.mjs';
+import {createExecutionDependencies,declaredFileSources,dependencyView,executionResultLayers} from './execution-dependencies.mjs';
 import {argsOf,eventLog} from './runtime.mjs';
 
 const TOOLS=['pwsh','ops_bash','bash','job_output','read','grep','glob','ops_stat','ops_read_files','ops_inspect_local_file'];
@@ -177,6 +177,7 @@ export function createExecutionEvidence(ctx,runtime,call,{executionDependencies=
     observedAt,elapsedMs,elapsedSource,scope,sourceScope,s}){
     const value=result.value??parseResult(resultText(result.content));
     const payload=payloadOf(value);
+    const layers=executionResultLayers({...result,value}),statuses=layers.flatMap(node=>[node.status,node.state,node.job?.status].map(statusOf));
     const chunks=tool==='job_output'&&Array.isArray(payload?.chunks)?payload.chunks:null;
     const stdout=stream(payload?.stdout??payload?.stdoutText??(chunks?chunks.filter(chunk=>chunk.channel!=='stderr').map(chunk=>chunk.text??'').join(''):tool==='job_output'?payload?.text:undefined)),
       stderr=stream(payload?.stderr??payload?.stderrText??(chunks?chunks.filter(chunk=>chunk.channel==='stderr').map(chunk=>chunk.text??'').join(''):undefined));
@@ -184,17 +185,19 @@ export function createExecutionEvidence(ctx,runtime,call,{executionDependencies=
     if(tool==='job_output')stdout.truncated=true;
     const statusRaw=payload?.status??value?.status??payload?.job?.status??value?.job?.status??null;
     const nativeStatus=statusOf(statusRaw);
-    const background=['background','promoted'].includes(payload?.kind)||['background','promoted'].includes(value?.kind)||payload?.job?.kind==='background'||nativeStatus==='background';
-    const pending=background||['running','pending','queued','stopping'].includes(nativeStatus);
+    const background=layers.some(node=>[node.kind,node.job?.kind].some(kind=>['background','promoted'].includes(kind)))||nativeStatus==='background';
+    const pending=background||statuses.some(status=>['running','pending','queued','stopping'].includes(status));
     const jobId=payload?.jobId??payload?.job_id??payload?.job?.id??value?.jobId??value?.job_id??value?.job?.id??null;
     const exitRaw=payload?.exitCode??payload?.exit_code??value?.exitCode??value?.exit_code;
     const exitCode=Number.isInteger(exitRaw)?exitRaw:null;
-    const failed=!!result.isError||!!(payload?.error||value?.error)||['error','failed','killed','cancelled','rejected'].includes(nativeStatus)||
-      payload?.timedOut===true||payload?.aborted===true||payload?.cancelled===true||payload?.signal!=null||payload?.stopped!==undefined||
-      exitCode!==null&&exitCode!==0;
-    const nativePartial=nativeStatus==='partial'||payload?.complete===false||value?.complete===false||payload?.completed===false||value?.completed===false||
-      payload?.outputPartial===true||payload?.partial===true||payload?.truncated===true||payload?.lossy===true;
-    const uncertain=['unknown','unavailable','deopt'].includes(nativeStatus);
+    const failed=!!result.isError||statuses.some(status=>['error','failed','killed','cancelled','rejected'].includes(status))||
+      layers.some(node=>node.isError||node.error||node.success===false||node.ok===false||node.timedOut===true||node.aborted===true||
+        node.cancelled===true||node.signal!=null||node.stopped!==undefined||
+        Number.isInteger(node.exitCode)&&node.exitCode!==0||Number.isInteger(node.exit_code)&&node.exit_code!==0);
+    const nativePartial=statuses.includes('partial')||layers.some(node=>node.complete===false||node.completed===false||node.executionCompleted===false||
+      node.outputPartial===true||node.partial===true||node.truncated===true||node.lossy===true||
+      node.stdout?.truncated===true||node.stderr?.truncated===true||node.stdout?.complete===false||node.stderr?.complete===false);
+    const uncertain=statuses.some(status=>['unknown','unavailable','deopt'].includes(status));
     const conclusive=!pending&&!failed&&!nativePartial&&!uncertain&&
       (exitCode===0||nativeStatus==='completed'||!SHELL.has(tool)&&value!==null&&value!==undefined&&tool!=='job_output');
     let stdoutJson,stdoutJsonAvailable=false;
@@ -209,9 +212,9 @@ export function createExecutionEvidence(ctx,runtime,call,{executionDependencies=
         ...(selected.found?{actualJson:clip(JSON.stringify(selected.value),perCase),actualComplete:JSON.stringify(selected.value).length<=perCase}:{reason:selected.reason}),
         ...(hasExpected?{expectedJson:clip(item.expectedJson,perCase),expectedComplete:item.expectedJson.length<=perCase}:{})};
     });
-    const finalStatus=pending?'pending':failed?'failed':nativePartial?'partial':!conclusive?'unknown':
+    const finalStatus=failed?'failed':pending?'pending':nativePartial?'partial':!conclusive?'unknown':
       cases.some(item=>item.status==='different')?'different':cases.some(item=>item.status==='unresolved')||stdout.truncated||stderr.truncated?'partial':'observed';
-    const executionState=pending?background?'background':'pending':failed?'failed':nativePartial?'partial':
+    const executionState=failed?'failed':pending?background?'background':'pending':nativePartial?'partial':
       !conclusive?'unknown':stdout.truncated||stderr.truncated?'partial':'success';
     const cwdRequested=args?.workdir??args?.cwd??null;
     const hasNativeCwd=payload&&typeof payload==='object'&&Object.hasOwn(payload,'cwd')&&payload.cwd!=null;
