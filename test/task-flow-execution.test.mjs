@@ -231,6 +231,19 @@ test('job registry queries keep the call outcome separate from states in the ret
   }
 });
 
+test('producer job identities take precedence over wrapper aliases and settle after live or cold replay',()=>{
+  for(const live of [true,false])for(const nested of [true,false])for(const producer of [
+    {jobId:'producer-job'},{job_id:'producer-job'},{job:{id:'producer-job'}}]){
+    const t=timeline({stepPacing:false}),value={jobId:'wrapper-job',data:{kind:'background',...producer}};
+    t.command('work_exec',{runtime:'node',code:'start_server()'},value,{live,nested,output:'child operation dispatched'});
+    const before=t.flow.summary(t.agent);
+    assert.deepEqual(before.pendingJobs,['producer-job'],JSON.stringify({live,nested,producer}));
+    assert.equal(before.nativeExecutions[0].jobId,'producer-job');
+    t.add('job/settled',{jobId:'producer-job',status:'completed'});
+    assert.deepEqual(t.flow.summary(t.agent).pendingJobs,[],'producer settlement clears its own pending job');
+  }
+});
+
 test('a same-command retry with completed false cannot resolve a recorded process failure',()=>{
   for(const live of [true,false])for(const nested of [true,false]){
     const t=timeline({stepPacing:false,qualityReview:true},[],'quality'),args={command:'run-checks'};

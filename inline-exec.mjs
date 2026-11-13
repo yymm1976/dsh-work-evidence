@@ -387,7 +387,7 @@ function validateInlineInput(input){
 export function inlineEnvironment(input,transferId){
   validateInlineInput(input);
   if(!validTransferId(transferId))throw new Error('bash transport requires a valid transfer ID');
-  const bytes=Buffer.from(input.code.replaceAll('\\','\\\\').replaceAll('\0','\\000'),'utf8');
+  const bytes=Buffer.from(input.code.replaceAll('\\','\\\\').replaceAll('\0','\\x00'),'utf8');
   const values={[INLINE_ENV_KEYS[0]]:transferId};let offset=0;
   for(const key of INLINE_ENV_KEYS.slice(1)){
     let end=Math.min(offset+96000,bytes.length);

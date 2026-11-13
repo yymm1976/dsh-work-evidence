@@ -119,6 +119,10 @@ export const operationKey=(call,cwd)=>{
 const bounded=(map,key,value,max=64)=>{map.set(key,value);if(map.size>max)map.delete(map.keys().next().value);};
 const normalize=value=>String(value).replaceAll('\\','/').toLowerCase();
 const streamText=value=>typeof value==='string'?value:typeof value?.text==='string'?value.text:'';
+const executionJobId=layers=>{
+  const source=layers.findLast(node=>node?.jobId||node?.job_id||node?.job?.id);
+  return source?.jobId??source?.job_id??source?.job?.id??null;
+};
 const lineRecordRead=value=>!!value&&typeof value.path==='string'&&Number.isSafeInteger(value.offset)&&value.offset>=1&&
   Number.isSafeInteger(value.totalLines)&&value.totalLines>=0&&Array.isArray(value.lines)&&
   value.lines.every(line=>line&&Number.isSafeInteger(line.number)&&line.number>=1&&typeof line.text==='string');
@@ -223,6 +227,7 @@ export function createTaskFlow(ctx,runtime,{nativeFiles,call,executionDependenci
     }
     const value=toolResultValue(call.name,result),execution=isCommand(call.name),envelope={...result,value};
     const layers=execution?executionResultLayers(envelope):[value],payload=execution?Object.assign({},...layers):value?.data??value;
+    const jobId=execution?executionJobId(layers):payload?.jobId??payload?.job_id??payload?.job?.id??null;
     let programSource=call.name==='run_code'?String(call.args.code??''):null;
     if(call.name==='run_code'&&call.args.programRef)try{programSource=resolveNativeProgram(call.args,agent.session).code;}catch{}
     const localRecall=call.name==='work_recall'||call.name==='work_state'&&call.args.mode==='recall';
@@ -302,10 +307,9 @@ export function createTaskFlow(ctx,runtime,{nativeFiles,call,executionDependenci
     const probeFilesCurrent=payload?.evidenceValidity==='current-for-declared-files'||payload?.fileDependencies?.declaredCount===0;
     if(call.name==='work_probe'&&!failed&&payload?.status==='observed'&&payload.executionCompleted===true&&!payload.partial&&probeFilesCurrent&&payload.replayOf?.rootProbeId)
       for(const [errorKey,error]of state.errors)if(error.tool==='work_probe'&&error.probeRootId===payload.replayOf.rootProbeId)state.errors.delete(errorKey);
-    if(payload?.jobId||payload?.job_id||payload?.job?.id){
-      const id=payload.jobId??payload.job_id??payload.job.id;
-      if(pending)state.jobs.add(id);
-      else state.jobs.delete(id);
+    if(jobId){
+      if(pending)state.jobs.add(jobId);
+      else state.jobs.delete(jobId);
     }
     if(call.name==='job_output'&&!failed&&payload?.kind!=='background'&&['completed','killed','failed'].includes(payload?.status??payload?.job?.status)){
       const id=call.args.job_id??call.args.jobId??call.args.id;if(id)state.jobs.delete(id);
@@ -319,7 +323,7 @@ export function createTaskFlow(ctx,runtime,{nativeFiles,call,executionDependenci
         ...(completionObservation?{completionObservation}:{}),
         status:probeExecution?payload.status:failed?'failed':pending?'pending':complete?'observed':'partial',executionCompleted:probeExecution?payload.executionCompleted===true:complete,
         partial:partialOutput||payload?.partial===true,pending,
-        jobId:payload?.jobId??payload?.job_id??payload?.job?.id??null,
+        jobId,
         backgroundFailureSignature:pending?payload?.backgroundFailureSignature??failureSignature(streamText(payload?.output)||streamText(payload?.stderr)):null,
         ...(probeExecution?{probeId:payload.id,nativeTool:payload.tool}:{}),
         fileDependencies:payload?.fileDependencies,...dependencyView(payload),
@@ -1043,7 +1047,8 @@ export function createTaskFlow(ctx,runtime,{nativeFiles,call,executionDependenci
         ...(exec.name==='session_event_read'?{nativeSourceRead:nativeReadObservation(exec.agent.session.id,argsOf(exec.arguments),result)}:{}),
         ...(exec.name==='work_recall'||exec.name==='work_state'&&argsOf(exec.arguments).mode==='recall'?
           {localSourceRead:localRecallObservation(exec.agent,exec.name==='work_state'?{...argsOf(exec.arguments),kind:'output'}:argsOf(exec.arguments),result)}:{}),
-        exitCode:execution?executionExitCode(envelope):value?.exitCode,exit_code:value?.exit_code,jobId:value?.jobId??value?.job_id,job:value?.job,
+        exitCode:execution?executionExitCode(envelope):value?.exitCode,exit_code:value?.exit_code,
+        jobId:execution?executionJobId(layers):value?.jobId??value?.job_id,job:value?.job,
         error:layers.some(node=>!!(node?.error||node?.err)),errorCode:typeof (value?.error??raw?.error)?.code==='string'?(value?.error??raw?.error).code:null,
         timedOut:layers.some(node=>node?.timedOut===true),aborted:layers.some(node=>node?.aborted===true),cancelled:layers.some(node=>node?.cancelled===true),
         signal:layers.find(node=>node?.signal!=null)?.signal,stopped:layers.find(node=>node?.stopped!==undefined)?.stopped,effectState:value?.effectState,cwd:value?.cwd,outputPartial,comparisonText,

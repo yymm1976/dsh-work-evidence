@@ -395,6 +395,21 @@ test('a zero-exit retry that reports failed checks remains unresolved in the stu
   }
 });
 
+test('a metadata-truncated retry cannot mark an earlier problem checked',()=>{
+  for(const type of ['tool/result','tool/ptc-dispatch','tool/code-dispatch']){
+    const retry=type==='tool/result'?toolResult(4,'bash','build complete',{source:{callId:'retry'}}):
+      event(4,type,{name:'bash',subCallId:'retry',arguments:{command:'build'},content:[{type:'text',text:'build complete'}]});
+    retry.data.meta={truncated:true};
+    const stub=stubCheckpoint(eventLogAgent([
+      event(1,'tool/call',{name:'bash',callId:'first',arguments:{command:'build'}}),
+      toolResult(2,'bash','Build did not finish',{isError:true,source:{callId:'first'}}),
+      event(3,'tool/call',{name:'bash',callId:'retry',arguments:{command:'build'}}),retry]));
+    const row=JSON.parse(stub.text.match(/^- (\{"seq":2,"kind":"result"[^\n]*,"checked":(?:true|false)\})$/mu)[1]);
+    assert.equal(row.checked,false,type);
+    assert.equal(stub.problemRows,1,'truncation preserves the original problem classification');
+  }
+});
+
 test('stubCheckpoint resolves a missing result tool name from its callId',()=>{
   const result=JSON.stringify({exitCode:0,stdout:{text:"FAILURES: ['case']"}});
   const stub=stubCheckpoint(eventLogAgent([

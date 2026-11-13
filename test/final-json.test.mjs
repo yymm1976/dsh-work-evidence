@@ -124,6 +124,51 @@ test('only return and only output select whole-response JSON validation',()=>{
   }
 });
 
+test('exactly one JSON output validates the whole response and accepts scalar values',()=>{
+  for(const request of ['Return exactly one JSON value.','Output solely a single JSON document.','Return only one JSON object.']){
+    for(const answer of ['true','null','42','"answer"','[]','{}'])
+      assert.equal(finalJsonSyntaxIssue(answer,request),null,request+' '+answer);
+    for(const answer of ['', '{} {}', 'Here is the result: {}', '```json\n{}\n```', '{"answer":}'])
+      assert.equal(finalJsonSyntaxIssue(answer,request)?.rawFinal,true,request+' '+answer);
+  }
+  assert.equal(finalJsonSyntaxIssue('```json\n{}\n```','Return exactly one JSON object in a JSON code block.'),null);
+  for(const request of ['Explain "Return exactly one JSON value." in prose.',
+    'Write "Return exactly one JSON value." in README.md.',
+    'Do not return exactly one JSON value. Explain the choices.'])
+    assert.equal(finalJsonSyntaxIssue('```json\n{"answer":}\n```',request),null,request);
+});
+
+test('quoting the JSON format name preserves explicit output requests without activating quoted instructions',()=>{
+  for(const format of ['`JSON`','"JSON"','“JSON”',"'JSON'"]){
+    for(const request of ['Return only '+format+'.','Return exactly one '+format+' value.','请只返回 '+format+'。']){
+      assert.equal(finalJsonSyntaxIssue('true',request),null,request);
+      assert.equal(finalJsonSyntaxIssue('```json\n{}\n```',request)?.rawFinal,true,request);
+      assert.equal(finalJsonSyntaxIssue('{"answer":}',request)?.rawFinal,true,request);
+    }
+    assert.ok(finalJsonSyntaxIssue('```json\n{"answer":}\n```','Return a '+format+' code block.'));
+    assert.equal(finalJsonSyntaxIssue('```json\n{"answer":}\n```','Explain '+format+' in prose.'),null);
+  }
+  for(const request of ['Explain `Return only JSON` in prose.', 'Explain "Return only JSON." in prose.',
+    'Put “Return only JSON.” in the README.', '```text\nReturn only JSON\n```\nExplain this example.'])
+    assert.equal(finalJsonSyntaxIssue('```json\n{"answer":}\n```',request),null,request);
+});
+
+test('a later prohibition of a single JSON value clears the earlier final JSON request',()=>{
+  const answer='The choices are described here.\n```json\n{"illustration":}\n```';
+  for(const negative of ['Do not return exactly one JSON value.', 'Do not return a single JSON value.',
+    "Don't return solely a single JSON document.", 'The final answer must not be exactly one JSON value.'])
+    assert.equal(finalJsonSyntaxIssue(answer,'Return only JSON. '+negative+' Explain the choices.'),null,negative);
+  assert.ok(finalJsonSyntaxIssue('{"answer":}', 'Return only JSON. Do not return exactly one JSON object.'),
+    'prohibiting one object still allows a final JSON array');
+});
+
+test('literal format words and examples in prose are not final JSON format directives',()=>{
+  for(const request of ['Return an example of exactly one JSON value in prose.',
+    'Provide a sample of exactly one JSON object as plain prose.', 'Return only the word `JSON` in prose.',
+    'Output just the word "JSON".', '请只返回“JSON”这个词。'])
+    assert.equal(finalJsonSyntaxIssue('JSON\n```json\n{"illustration":}\n```',request),null,request);
+});
+
 test('final JSON composes validity confirmations without dropping explicit format requirements',()=>{
   const fenced='```json\n{"answer":42}\n```';
   for(const request of ['Return only raw JSON as the final answer. The final response must be valid JSON.',

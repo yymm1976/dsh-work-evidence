@@ -7,6 +7,7 @@ const SHELL_TOOLS=new Set(['pwsh','bash','ops_bash']);
 const MAX_REPAIRS=2;
 const messageOf=event=>event?.data?.message??event?.data;
 const STRICT_JSON_OUTPUT=/(?:只|仅)(?:能|需)?(?:返回|输出)|\b(?:(?:return|output)\s+only|only\s+(?:return|output))\b/iu;
+const EXACT_JSON_OUTPUT=/\b(?:exactly|solely)\s+(?:one|a\s+single)\s+JSON(?:\s+(?:value|object|array|document))?\b|\bonly\s+one\s+JSON(?:\s+(?:value|object|array|document))?\b|(?:最终|最后)[^。；;\n]{0,40}(?:恰好|精确|严格|仅|只)[^。；;\n]{0,20}(?:一个|一[个份])?\s*JSON\s*值/iu;
 const CLAUSE_LEAD=/^(?:(?:and|but|so|then|also|finally|please|kindly)\s+|(?:can|could|would)\s+you\s+|i\s+need\s+you\s+to\s+|you\s+(?:must|should|need\s+to|have\s+to)\s+|请(?:你)?\s*|然后|随后|并且|同时)+/iu;
 const REFERENCE_ACTION=/^(?:(?:解释|说明|翻译|分析|审查|评审|修改|编辑|改写|替换|更新|检查)|(?:describe|explain|translate|review|analy[sz]e|edit|modify|rewrite|replace|update|inspect|include|insert|write|add|put)\b)/iu;
 const ENGLISH_OUTPUT_ACTION=/^(?:(?:only|just)\s+)?(?:(?:you|assistant)\s+)?(?:(?:must|should|need\s+to|have\s+to|shall|will|can|could)\s+)?(?:return|output|provide|give|reply|respond)\b/iu;
@@ -15,10 +16,12 @@ const ENGLISH_FINAL_ACTION=/^(?:the\s+)?final\s+(?:assistant\s+)?(?:answer|respo
 const CHINESE_FINAL_ACTION=/^(?:最终|最后)(?:的)?(?:助手)?(?:回答|响应|结果|文本|输出)\s*(?:必须|应当|应该|需要|务必)[^。；;\n]{0,80}JSON/iu;
 const JSON_AS_FINAL=/^(?:the\s+)?JSON\s+(?:(?:directly|verbatim|unchanged)\s+)?(?:as|is)\s+(?:the\s+)?final\s+(?:assistant\s+)?(?:answer|response|result|text|output)\b|^(?:以下)?\s*JSON\s*(?:(?:原样|直接|完整|必须|应当|应该|需要|务必)\s*)*(?:作为|是)\s*(?:最终|最后)(?:的)?(?:助手)?(?:回答|响应|结果|文本|输出)/iu;
 function requestDirectives(text){
+  const unquoteFormat=quoted=>/^[`"“']\s*JSON\s*[`"”']$/iu.test(quoted)?' JSON ':
+    /[。.!?！？]\s*["”']$/u.test(quoted)?'. ':' ';
   return text
     .replace(/```[\s\S]*?```/gu,'\n')
-    .replace(/`[^`\r\n]*`/gu,' ')
-    .replace(/"[^"\r\n]*"|“[^”\r\n]*”|(?<![\p{L}\p{N}])'[^'\r\n]*'/gu,quoted=>/[。.!?！？]\s*["”']$/u.test(quoted)?'. ':' ');
+    .replace(/`[^`\r\n]*`/gu,unquoteFormat)
+    .replace(/"[^"\r\n]*"|“[^”\r\n]*”|(?<![\p{L}\p{N}])'[^'\r\n]*'/gu,unquoteFormat);
 }
 function requestClauses(text){
   return requestDirectives(String(text??''))
@@ -32,6 +35,7 @@ function isAssistantOutputAction(clause){
     ENGLISH_FINAL_ACTION.test(clause)||CHINESE_FINAL_ACTION.test(clause)||JSON_AS_FINAL.test(clause);
 }
 function negatesFinalJson(clause){
+  if(/^(?:(?:(?:do|must|should)\s+not|don['’]t|not|never)\s+(?:return|output|provide|give)|(?:(?:the|your)\s+)?final\s+(?:assistant\s+)?(?:answer|response|result|text|output)\s+(?:must|should|shall|will)\s+(?:not|never)\s+(?:be|contain|include|consist\s+of))\s+(?:(?:exactly|solely)\s+(?:one|a\s+single)|only\s+one|a\s+single)\s+JSON(?:\s+(?:value|document))?\s*$/iu.test(clause))return true;
   const target=/^(?:(?:the|your)\s+)?(?:(?:final\s+(?:assistant\s+)?(?:answer|response|result|text|output))|(?:(?:assistant\s+)?(?:answer|response)))\s+(?:must|should|shall|will)\s+(?:not|never)\s+(?:be|contain|include|consist\s+of)\s+(?:in\s+)?(?:(?:a|an|the|any|valid|raw|plain|bare)\s+)*JSON\b(.*)$/iu.exec(clause)||
     /^(?:(?:(?:do|must|should)\s+not|don['’]t|not|never)\s+(?:return|output|provide|give)|(?:return|output|provide|give)\s+no)\s+(?:any\s+)?JSON\b(.*)$/iu.exec(clause);
   if(target&&!/^\s+(?:objects?|arrays?|values?|documents?|in\b|inside\b|within\b|Markdown\b|code\b|blocks?\b|fences?\b)/iu.test(target[1]))return true;
@@ -39,7 +43,9 @@ function negatesFinalJson(clause){
 }
 function isReferenceAction(clause){
   if(REFERENCE_ACTION.test(clause)||
-    /^(?:provide|give|return|output)\s+(?:(?:a|an|the)\s+)?(?:prose|explanation|analysis|recommendation|translation|description)\b/iu.test(clause))return true;
+    /^(?:provide|give|return|output)\s+(?:(?:only|just)\s+)?(?:(?:a|an|the)\s+)?(?:prose|explanation|analysis|recommendation|translation|description|words?|phrase|term|format\s+name)\b/iu.test(clause)||
+    /^(?:provide|give|return|output)\s+(?:(?:a|an|the)\s+)?(?:example|sample|illustration)\b[^\n]*\b(?:in|as)\s+(?:plain\s+)?prose\b/iu.test(clause)||
+    CHINESE_OUTPUT_ACTION.test(clause)&&/JSON\s*(?:这个|这[个两])?(?:词|词语|字样|名称)/iu.test(clause))return true;
   for(const match of clause.matchAll(/\b(?:for|in|into|within|inside|to)\s+(?:(?:the|a|an)\s+)?(?:README(?:\.md)?|(?:source|output|config|documentation)\s+files?|files?\b|[\w./-]+\.(?:md|json|[cm]?js|py))\b|(?:在|写入|添加到|用于)[^。；;\n]{0,30}(?:README|文件|文档)/giu)){
     const prefix=clause.slice(0,match.index);
     const source=/\b(?:using|following|according\s+to|based\s+on|matching|conforming\s+to|per)\b([^。；;\n]{0,120})$/iu.exec(prefix);
@@ -62,7 +68,7 @@ function finalJsonDirectives(text){
       current=null;continue;
     }
     if(negatesFinalJson(clause)){directives.length=0;current=null;continue;}
-    if(isAssistantOutputAction(clause)&&(mentionsRequestedFinalJson(clause)||/JSON/iu.test(clause)&&hasAllowedFenceOutput(clause))){
+    if(isAssistantOutputAction(clause)&&(mentionsRequestedFinalJson(clause)||EXACT_JSON_OUTPUT.test(clause)||/JSON/iu.test(clause)&&hasAllowedFenceOutput(clause))){
       current={text:clause};directives.push(current);
     }else if(current&&/^(?:with\b|without\b|no\b|(?:do|must|should)\s+not\b|don't\b|use\b|using\b|in\b|as\b|不要|不得|禁止|无需|不加|不使用|不能使用|不允许|使用|用)/iu.test(clause)&&
       /Markdown|fences?|(?:code\s+)?blocks?|代码块|围栏/iu.test(clause))current.text+=' '+clause;
@@ -84,7 +90,7 @@ function requiresRawFinalJson(text){
       /(?:裸|未包装|未经包装|原始|纯)\s*JSON/iu.test(clause);
     const direct=/(?:return|output|provide)\b[^\n.]{0,100}\bJSON\b[^\n.]{0,80}\bdirectly\b|\bJSON\b[^\n.]{0,80}\bdirectly\s+as\s+(?:the\s+)?final\s+(?:assistant\s+)?(?:answer|response|result|text)\b/iu.test(clause)||
       /(?:直接|原样)[^。；;\n]{0,80}(?:作为|是)[^。；;\n]{0,16}(?:最终|回答|输出)|(?:直接|原样)[^。；;\n]{0,24}(?:返回|输出|提供|给出)[^。；;\n]{0,24}JSON|(?:返回|输出|提供)[^。；;\n]{0,80}(?:直接|原样)[^。；;\n]{0,24}JSON/iu.test(clause);
-    const exact=/\b(?:exactly|solely)\s+(?:one|a\s+single)\s+JSON(?:\s+(?:value|object|array|document))?\b|\bonly\s+one\s+JSON(?:\s+(?:value|object|array|document))?\b|(?:最终|最后)[^。；;\n]{0,40}(?:恰好|精确|严格|仅|只)[^。；;\n]{0,20}(?:一个|一[个份])?\s*JSON\s*值/iu.test(clause);
+    const exact=EXACT_JSON_OUTPUT.test(clause);
     const strictOnly=STRICT_JSON_OUTPUT.test(clause)&&/JSON/iu.test(clause);
     if(hasNoFence(clause)||!allowedFence&&(raw||direct||exact||strictOnly))required=true;
     else if(allowedFence)required=false;

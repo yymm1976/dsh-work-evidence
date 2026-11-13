@@ -1,6 +1,6 @@
 # 功能入口成熟度矩阵
 
-范围：当前 1.1.2 候选 `feature-control.mjs` 的 41 个实际入口。原生条件编辑、文件概况和 JSON 选择仍为研发候选，默认关闭。真实任务与消融未完成的候选不记为成熟。
+范围：当前 1.1.2 候选 `feature-control.mjs` 的 44 个实际入口。以下候选仍默认关闭：原生条件编辑、文件概况、JSON 选择。宿主 Node 回退、Shell 程序引用和原样检查重执行也默认关闭。真实任务与消融未完成的候选不记为成熟。
 
 | 入口 | 状态 | 启停与依赖 | 运行、恢复和组合证据 | 文档与迁移 |
 |---|---|---|---|---|
@@ -19,7 +19,7 @@
 | `mavenSourceBinding` | 成熟默认开启 | 依赖归档解码和坐标匹配 | `host-source-options.test.mjs`、Maven 来源测试 | `README.md` |
 | `contextProtocol` | 成熟默认开启 | 处理可恢复旧工具正文 | `host-context-combinations.test.mjs`、`host-compaction.test.mjs` 验证正文、压缩与恢复 | `README.md` |
 | `historyHygiene` | 成熟默认开启 | 依赖历史回收入口；异常时停用自身折叠。测试回执覆盖 pytest、ruff、compileall、gradlew/gradle/mvn 和带完整 TAP 摘要的 `node --test`；无摘要、截断、spill 或用户要求完整输出时不投影 | `host-history.test.mjs` 验证折叠和恢复；`test-output-hygiene.test.mjs` 验证测试输出回执、TAP 摘要边界、截断与召回边界；`history-full-output-request.test.mjs` 验证只有真实用户消息可停用回执 | `README.md` |
-| `nativeVerifiedEdits` | 候选，默认关闭 | 限定 rc.2 原生 tools、LocalFileSystem 或官方 SandboxedFileSystem；沿原生 write 权限路径附带版本条件。旧宿主或工具替换时明确拒绝该候选；默认 OPS 路径保留 | `native-cas.test.mjs` 覆盖创建、替换、BOM/CRLF、并发、权限、部分效果、延迟注册及真实 PTC；真实任务与消融待完成 | 当前候选尚未发布 |
+| `nativeVerifiedEdits` | 候选，默认关闭 | 限定 rc.2 原生 tools、LocalFileSystem 或官方 SandboxedFileSystem；沿原生 write 权限路径附带版本条件。旧宿主或工具替换时明确拒绝该候选；默认 OPS 路径保留 | `native-cas.test.mjs` 覆盖创建、替换、BOM/CRLF、并发、权限、逐文件成功和失败状态、延迟注册及真实 PTC；真实任务与消融待完成 | 当前候选尚未发布 |
 | `fileProfiling` | 候选，默认关闭 | 依赖原生文件服务的版本、stat 和字节范围读取；入口 `file_profile` | `file-profile-core.test.mjs`、`file-profile.test.mjs` 覆盖 CSV、UTF-8、抽样/全量、预算与并发；真实触发及消融待完成 | `RELEASE-NOTES-1.1.2.md`、`MIGRATION-1.1.2.md` |
 | `structuredJson` | 候选，默认关闭 | 依赖原生有界字节读取和版本；入口 `structured_json` | `json-pointer.test.mjs`、`structured-json-core.test.mjs`、`structured-json.test.mjs` 覆盖指针、数值规则、行号、短读及真实 PTC；真实任务及消融待完成 | `RELEASE-NOTES-1.1.2.md`、`MIGRATION-1.1.2.md` |
 | `ledgerReceipt` | 成熟默认开启 | 依赖可回收历史和来源正文 | `host-source-options.test.mjs`、`host-acp-combinations.test.mjs` 验证短回执 | `README.md` |
@@ -33,6 +33,9 @@
 | `stubSummary` | 成熟显式开启 | 默认关闭；依赖回收、原生压缩（`native-compaction-not-attached`）和完整当前状态 | `host-context-combinations.test.mjs`、`host-compaction.test.mjs` | `README.md`、`MIGRATION-1.1.1.md` |
 | `executionTriage` | 成熟默认开启 | 失败位置和程序版本记录 | `task-flow-execution.test.mjs`、`host-flow.test.mjs` | `README.md` |
 | `nativeProgramReuse` | 成熟显式开启 | 默认关闭；依赖 `executionTriage`，只在 PTC 工具模式下生效 | `program-reference.test.mjs`、`host-workflow-combinations.test.mjs` | `README.md`、`MIGRATION-1.1.1.md` |
+| `hostNodeFallback` | 候选，默认关闭 | 仅接管未指定或继承解释器的 Node `work_exec`；依赖 `work_exec`、平台 Shell、可写会话，Bash 还需 `shellEnv`。会话提及解释器、SEA、探测失败、超时、重复或不明确时不自动回退 | `host-node-fallback.test.mjs`、`inline-script-reference-recovery.test.mjs` 覆盖来源、权限、只读与未知探测。23981 的四臂实验只含一个已见合成题，on 平均费用低 27.0035%，但首组 on 高于 off；8da 工程测试不能移作模型收益 | `README.md`、`MIGRATION-1.1.2.md`、`ROLLBACK-1.1.2.md` |
+| `nativeShellScriptReuse` | 候选，默认关闭 | 依赖 `work_exec`、平台 Shell、可写会话，Bash 还需 `shellEnv`。只接受同一会话原 Bash 中单个字面量 Python/Node stdin 程序、单引号 heredoc 和受支持参数 | `native-shell-script.test.mjs`、`host-native-shell-reuse.test.mjs` 覆盖解析、文件身份、只读和打包；0580 定向 29/29 仅为工程证据。020e 四臂均为 10/10，on 平均费用高 31.7756%；默认启用已拒绝，8da 无对应模型研究 | `README.md`、`MIGRATION-1.1.2.md`、`ROLLBACK-1.1.2.md` |
+| `probeReplay` | 候选，默认关闭 | 依赖 `executionTriage`、`work_probe` 和同一会话可恢复的原调用及结果；当前文件、环境、PATH 与权限重新生效，保存到工作区的 JSON 不能提供来源 | `host-probe-replay.test.mjs`、`probe-execution-facts.test.mjs` 覆盖原失败、来源、后台、结算及 live/cold 投影；8da 定向 144/144 仅为工程证据。5029 两臂均为 31/31、均 5 请求，on 费用高 8.0216%；不证明净益 | `README.md`、`MIGRATION-1.1.2.md`、`ROLLBACK-1.1.2.md` |
 | `structuredCalls` | 成熟显式开启 | 默认关闭；依赖 `executionTriage`，只在 PTC TypeScript 函数体运行时生效 | `host-structured-calls.test.mjs` 验证参数和普通路径 | `README.md`、`MIGRATION-1.1.1.md` |
 | `nativeReasoningReplay` | 成熟显式开启 | 默认关闭；要求匹配 DeepSeek 工具历史 | `native-reasoning-replay.test.mjs` 验证未知、加密、回放和禁用恢复 | `README.md`、`MIGRATION-1.1.1.md` |
 | `stageWorkingSet` | 成熟默认开启 | 消费者是 `work_state`：请求投影与投影恢复同时开启、`work_state` 可见，或关闭 `executionTriage` 时才可达 | `host-flow.test.mjs`、`default-path-consistency.test.mjs`、`host-context-combinations.test.mjs` | `README.md`、`MIGRATION-1.1.1.md` |
@@ -48,7 +51,8 @@
 
 ## 终审结论
 
-- 41 个入口均有配置和源码接线。3 个新候选仍须完成真实任务与消融，不能由确定性回归推断成熟。
+- 44 个入口均有配置和源码接线。`nativeVerifiedEdits`、`fileProfiling`、`structuredJson`、`hostNodeFallback`、`nativeShellScriptReuse` 和 `probeReplay` 仍为候选；前 3 项的真实任务与消融未完成，后 3 项只有已见合成研究且不能证明稳定净益。
+- 23981e8、020e842 和 5029a09 的真实模型结果只属于对应源码。宿主 Node 回退的四臂结果不能证明稳定收益；Shell 程序引用的重复实验平均费用高 31.7756%；原样检查重执行高 8.0216%。这些结果不改 8da 正式成绩。
 - 默认关闭的能力通过显式配置启用。缺少依赖时返回 `blocked`、`waiting` 或明确原因。
-- 旧设置由 `runtime.mjs` 的 `RETIRED_SETTINGS` 固定关闭；迁移兼容和回退说明见 `MIGRATION-1.1.1.md` 与 `ROLLBACK-1.1.1.md`。
+- 旧设置由 `runtime.mjs` 的 `RETIRED_SETTINGS` 固定关闭；迁移兼容和回退说明见 `MIGRATION-1.1.1.md`、`MIGRATION-1.1.2.md`、`ROLLBACK-1.1.1.md` 与 `ROLLBACK-1.1.2.md`。
 - 仍需在最终候选 SHA 上重跑本矩阵引用的双宿主证据；当前矩阵不是发布通过声明。

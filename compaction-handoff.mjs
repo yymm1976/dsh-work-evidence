@@ -125,7 +125,7 @@ export function stubCheckpoint(agent){
     if(callId&&target&&row.kind==='call')callTargets.set(callId,target);
     const resolvedTarget=target??(row.kind==='result'&&callId?callTargets.get(callId):null);
     if(resolvedTarget)targetBySeq.set(event.seq,resolvedTarget);
-    if(resultEvent)resultSeqs.add(event.seq);
+    if(resultEvent&&data.meta?.truncated!==true)resultSeqs.add(event.seq);
     if(isProblem){problems.push(row);problemSeqs.add(event.seq);}
   }
   const line=row=>'- '+JSON.stringify(row)+'\n  recall: work_recall({kind:"event",seq:'+row.seq+',offset:0})';

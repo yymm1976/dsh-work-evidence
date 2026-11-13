@@ -35,7 +35,7 @@ test('Bash transport bounds individual UTF-8 environment values without losing s
     assert.equal(values.DSH_WORK_EVIDENCE_STDIN_ID,'bounded-test');
     const chunks=INLINE_ENV_KEYS.slice(1).map(key=>values[key]);
     assert.ok(chunks.every(value=>Buffer.byteLength(value,'utf8')<=96000));
-    assert.equal(chunks.join(''),code.replaceAll('\\','\\\\').replaceAll('\0','\\000'));
+    assert.equal(chunks.join(''),code.replaceAll('\\','\\\\').replaceAll('\0','\\x00'));
     assert.ok(chunks.every(value=>!value.includes('\0')));
   }
 });
