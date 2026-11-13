@@ -197,7 +197,7 @@ export function createFeatureControl(ctx,runtime,{available,canRecall,workingSet
       features,tools:only?undefined:TOOLS.map(name=>{
         const exposed=available(agent,name);
         const entry=exposed?name:name==='verified_exec'
-          ?'/work-evidence feature nativeVerifiedEdits on (or opsAdapters on)'
+          ?'/work-evidence feature nativeVerifiedEdits on (or opsAdapters on and toolSurface full)'
           :name==='fastedit_java'?'/work-evidence feature opsAdapters on; feature fastEditEnabled on; feature toolSurface full'
           :'/work-evidence feature toolSurface full';
         return {name,exposed,entry};
