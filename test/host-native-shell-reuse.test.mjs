@@ -75,3 +75,19 @@ test('a literal Shell reference cannot start a new process under the current rea
     assert.equal(result.value.reason,'native-read-only-session');
   }finally{await host.close();}
 });
+
+test('an explicitly authorized interpreter alias retains the user declaration in its result',async()=>{
+  const host=await startHost({pluginConfig:{nativeShellScriptReuse:true,stepPacing:false},script:()=>[text('unused')]});
+  try{
+    const agent=await host.createAgent('max'),alias=path.join(host.cwd,'authorized-node'+(process.platform==='win32'?'.exe':''));
+    const declared=path.join(host.cwd,'node'+(process.platform==='win32'?'.exe':''));
+    await fs.copyFile(process.execPath,declared);await fs.link(declared,alias);
+    await host.send(agent,'Use the existing interpreter at "'+declared+'".');
+    const result=await host.ctx.tools.execute({name:'work_exec',arguments:{runtime:'node',executable:alias,code:'console.log(42);'},
+      agent,callId:'authorized-alias',rootCallId:'authorized-alias',signal:AbortSignal.timeout(30000)});
+    assert.equal(result.value.exitCode,0,JSON.stringify(result));
+    assert.equal(result.value.scriptExecutableSource.kind,'user');
+    assert.equal(result.value.scriptExecutableAuthorization.declaredExecutable,declared);
+    assert.equal(result.value.scriptExecutableAuthorization.matching,'filesystem-file-identity');
+  }finally{await host.close();}
+});

@@ -122,8 +122,10 @@ export function registerManagementTools({ctx,runtime,state,effects,available,fea
           error:{code:'WORK_EXEC_INTERPRETER_CONSTRAINT',message:'The recorded Shell program used a different interpreter. Select the existing interpreter required by the current task explicitly.'},
           scriptRef:exec.callId??null,scriptRuntime:script.runtime,scriptExecutable:script.executable,scriptShellSource:script.shellSource};
       let hostRuntimeSelection=script.inheritedHostRuntime?{...script.inheritedHostRuntime,inherited:true}:null;
-      const userRuntimeOverride=hostRuntimeSelection&&requiredExecutable?.source?.kind==='user'&&
-        await sameDeclaredInlineExecutable(requiredExecutable.executable,script.executable);
+      const scriptExecutableAuthorization=requiredExecutable?.source?.kind==='user'&&
+        await sameDeclaredInlineExecutable(requiredExecutable.executable,script.executable)?
+        {...requiredExecutable.source,declaredExecutable:requiredExecutable.executable,matching:'filesystem-file-identity'}:null;
+      const userRuntimeOverride=hostRuntimeSelection&&scriptExecutableAuthorization;
       if(hostRuntimeSelection&&hasInterpreterConstraint(exec.agent.session)&&!userRuntimeOverride){
         effects.decide(exec.agent,'hostNodeFallback','blocked','inherited-host-runtime-conflicts-with-task');
         return {status:'failed',isError:true,executionOccurred:false,reason:'inherited-host-runtime-conflicts-with-task',
@@ -192,7 +194,8 @@ export function registerManagementTools({ctx,runtime,state,effects,available,fea
         const scriptEventRef=inlineScriptEventRef(exec.agent.session,exec.callId);
         const failureLocation=inlineFailureLocation(script,result.value??result),recovery=inlineFormatRecovery(script,result.value??result,scriptEventRef??exec.callId,failureLocation);
         const metadata={...fileEvidence,scriptRef:exec.callId??null,scriptEventRef,scriptChars:script.code.length,scriptRuntime:script.runtime,scriptExecutable:script.executable??script.runtime,scriptEditsSubmitted,scriptEditCount,
-          scriptExecutableSource:declaredExecutable?.source??hostRuntimeSelection?.source??null,
+          scriptExecutableSource:declaredExecutable?.source??hostRuntimeSelection?.source??(scriptExecutableAuthorization?requiredExecutable.source:null),
+          ...(scriptExecutableAuthorization?{scriptExecutableAuthorization}:{}),
           ...(hostRuntimeSelection?{hostRuntimeSelection}:{}),scriptSourceRefs:script.sourceCallIds??[],scriptReused:!!args.scriptRef,
           ...(script.shellSource?{scriptShellSource:script.shellSource}:{}),
           failureLocation,...(recovery?{recovery}:{})};

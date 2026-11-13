@@ -455,7 +455,7 @@ FastEdit Python 路径由 fastEditPython 设置。
 自动回退仅用于允许写入的原生会话。回退继续使用原生执行与权限检查。结果的 `hostRuntimeSelection` 记录路径和版本，后续 `scriptRef` 继承该准确路径。查询被拒、超时或结果不明确时，程序不执行。该选项尚未证明正式任务的稳定费用收益。
 原生会话为 `read-only` 时，`work_exec` 明确拒绝新进程程序执行。只读计算可使用受限的 retained 模式；该模式继续按原权限约束处理文件访问。
 
-`nativeShellScriptReuse` 默认关闭。开启后，`work_exec.scriptRef` 可引用同一会话中原生 `bash` 的调用 ID 或事件地址。只接受单个 Python/Node 命令和单引号 heredoc。解释器使用原 PATH 名称，保留原 stdin 参数；代码按原字节复用。含管道、环境赋值、目录覆盖、其他 Shell 命令、展开式 heredoc 或后台执行的记录会被拒绝。引用只保留程序文字和解释器参数，当前目录、权限及明确执行要求重新生效；原结果不会被当成本次成功。后续修改继续引用返回的新 `scriptRef`。
+`nativeShellScriptReuse` 默认关闭。开启后，`work_exec.scriptRef` 可引用同一会话中原生 `bash` 的调用 ID 或事件地址。只接受单个 Python/Node 命令和单引号 heredoc。解释器使用原 PATH 名称，默认保留原 stdin 参数；代码按原字节复用。显式 `format` 只替换 Node 的输入格式，保留其他参数，并记录生效参数。含管道、环境赋值、目录覆盖、其他 Shell 命令、展开式 heredoc 或后台执行的记录会被拒绝。引用只保留程序文字和解释器参数，当前目录、环境、PATH 解析结果及权限重新生效；原进程环境和二进制不被固定。原结果不会被当成本次成功。后续修改继续引用返回的新 `scriptRef`。
 Windows 继续通过原生 `pwsh` 执行。POSIX 通过宿主原生 `bash` 向 Python/Node 的 stdin 传入完整程序，保留原生权限、stdout、stderr、退出码、超时、取消和作业状态。缺少 `bash` 或逐次环境注册服务时，分别返回 `native-bash-unavailable` 或 `native-shell-env-unavailable`。程序上限为 UTF-16 字符串的 1–64000 个字符。POSIX 将正文编码为最多 3 段环境变量，每段最多 96,000 个 UTF-8 字节，由宿主 `shellEnv` 仅注入匹配 Agent 和唯一命令的原生执行。Bash 内建 `printf` 还原反斜杠和 NUL 字节并送入解释器 stdin；正文不写项目文件，也不放入 `bash -c` 参数。传输标识或分段缺失时退出 125。解释器启动前清除传输变量，原生调用返回或转后台后清除插件中的暂存正文。
 显式绝对 `executable` 路径不存在或指向目录时，调用在启动所选原生 shell 前返回 `WORK_EXEC_EXECUTABLE_NOT_FOUND`、`executionOccurred:false`，保留 `scriptRef`。程序引用继承记录的解释器路径；省略 `executable` 不会改用 PATH。只有任务允许更换环境时，才建议将 `executable` 显式设为 `python` 或 `node`，改用 PATH 中的同名运行时；任务声明特定解释器时保留缺失路径为阻塞项。权限无法确认、PATH 名称及相对路径仍交给宿主执行；这里不检查执行权限或文件格式。
 `scriptEditsSubmitted` 记录提交的编辑数，`scriptEditCount` 只计替换前后文字不同的编辑。相同文字仍会按请求再次执行原程序，不发送脚本已改动的版本提示。

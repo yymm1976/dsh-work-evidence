@@ -56,9 +56,10 @@ test('a shell ref never inherits execution success and rejects unsupported comma
 });
 
 test('explicit Node format replaces the recorded stdin arguments and records that choice',()=>{
-  const node={log:[{seq:1,type:'tool/call',data:{callId:'node-shell',name:'bash',arguments:{command:"node <<'JS'\nconsole.log(42);\nJS\n"}}}]};
+  const node={log:[{seq:1,type:'tool/call',data:{callId:'node-shell',name:'bash',arguments:{command:"node --no-warnings --input-type=commonjs - <<'JS'\nconsole.log(42);\nJS\n"}}}]};
   const script=resolveInlineScript({scriptRef:'event:1',format:'module'},node,undefined,{nativeShellScriptReuse:true});
-  assert.equal(script.format,'module');assert.equal(script.nativeArguments,undefined);
+  assert.equal(script.format,'module');assert.deepEqual(script.nativeArguments,['--no-warnings','--input-type=module','-']);
   assert.equal(script.shellSource.argumentsOverridden,true);
   assert.match(inlineCommand(script,'/app','bash','transfer-one'),/'--input-type=module' '-'/u);
+  assert.match(inlineCommand(script,'/app','bash','transfer-one'),/'--no-warnings'/u);
 });

@@ -20,7 +20,7 @@ export async function sameDeclaredInlineExecutable(left,right){
   if(typeof left!=='string'||typeof right!=='string'||!path.isAbsolute(left)||!path.isAbsolute(right))return false;
   try{
     const [first,second]=await Promise.all([stat(left,{bigint:true}),stat(right,{bigint:true})]);
-    return first.isFile()&&second.isFile()&&first.ino!==0n&&first.ino===second.ino&&first.dev===second.dev;
+    return first.isFile()&&second.isFile()&&first.ino!==0n&&first.dev!==0n&&second.dev!==0n&&first.ino===second.ino&&first.dev===second.dev;
   }catch{return false;}
 }
 function normalizeInput(input){
@@ -346,11 +346,18 @@ function resolveIndexedScript(input,calls,resultExecutables,resultHostRuntimes,e
         (inheritedHostRuntime&&sameInlineExecutable(next.executable,inheritedHostRuntime.executable)?inheritedHostRuntime:null);
       resolved.executable=next.executable;
     }
-    if(next.format!==undefined){resolved.format=next.format;if(shellSource)shellSource={...shellSource,argumentsOverridden:true};}
+    if(next.format!==undefined){
+      resolved.format=next.format;
+      if(shellSource&&runtime==='node'){
+        const args=shellSource.nativeArguments.filter(arg=>!arg.startsWith('--input-type='));
+        const position=args.indexOf('-');args.splice(position<0?args.length:position,0,'--input-type='+next.format);
+        shellSource={...shellSource,argumentsOverridden:true,effectiveArguments:args};
+      }
+    }
     if(next.timeoutMs!==undefined)resolved.timeoutMs=next.timeoutMs;
   }
   return {...resolved,sourceCallIds,...(inheritedHostRuntime?{inheritedHostRuntime}:{}),
-    ...(shellSource?{shellSource,...(!shellSource.argumentsOverridden?{nativeArguments:shellSource.nativeArguments}:{})}:{})};
+    ...(shellSource?{shellSource,nativeArguments:shellSource.effectiveArguments??shellSource.nativeArguments}:{})};
 }
 
 export const INLINE_ENV_KEYS=Object.freeze(['DSH_WORK_EVIDENCE_STDIN_ID',...Array.from({length:3},(_,index)=>'DSH_WORK_EVIDENCE_STDIN_'+index)]);
