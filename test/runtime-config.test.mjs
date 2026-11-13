@@ -41,6 +41,15 @@ test('retired pruning and compaction values normalize to current values', () => 
   assert.equal(config.compactionTiming, 'native');
 });
 
+test('OPS adapters and Java fast edit are opt-in by default', () => {
+  const config = defaults();
+  assert.equal(config.opsAdapters, false);
+  assert.equal(config.fastEditEnabled, false);
+  assert.equal(defaults({opsAdapters: true}).opsAdapters, true);
+  assert.equal(defaults({fastEditEnabled: true}).fastEditEnabled, true);
+  assert.throws(() => defaults({opsAdapters: 'yes'}), /Invalid opsAdapters/);
+});
+
 test('invalid enum values are rejected', () => {
   assert.throws(() => defaults({mode: 'fast'}), /mode must be/);
   assert.throws(() => defaults({contextPruningPolicy: 'future'}), /contextPruningPolicy/);

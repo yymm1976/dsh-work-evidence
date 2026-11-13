@@ -10,7 +10,8 @@ const DEFINITIONS=[
   ['enabled','总开关','允许当前工作区使用插件'],
   ['aggressiveMode','激进模式','非 Ultra 档位的任务处理'],
   ['selfIndex','源码索引','记录并核对已观察的源码入口'],
-  ['fastEditEnabled','Java 编辑','按语法实体读取和修改 Java'],
+  ['opsAdapters','OPS 适配','启用 dsh-ops 读取与精确编辑适配（默认关闭）'],
+  ['fastEditEnabled','Java 编辑','按语法实体读取和修改 Java（需要 opsAdapters）'],
   ['stateLedger','状态记录','记录读取、修改和执行依据'],
   ['stateInform','状态提醒','提醒已记录结果的适用状态'],
   ['completionNotice','完成提醒','继续尚有明确可执行事项的阶段摘要'],
@@ -100,7 +101,7 @@ export function createFeatureControl(ctx,runtime,{available,canRecall,workingSet
       try{nativeVerifiedReady=await verifiedExec?.nativeAvailable(agent)===true;}catch{}
     }
     let fastEditFiles=null;
-    if(config.fastEditEnabled&&(!only||only==='fastEditEnabled')){
+    if(config.fastEditEnabled&&config.opsAdapters&&(!only||only==='fastEditEnabled')){
       try{await Promise.all([fs.access(config.fastEditPython),fs.access(path.join(import.meta.dirname,'fastedit-bridge.py'))]);fastEditFiles=true;}
       catch{fastEditFiles=false;}
     }
@@ -142,9 +143,12 @@ export function createFeatureControl(ctx,runtime,{available,canRecall,workingSet
         if(['archiveReadRouting','memberParsing','mavenSourceBinding'].includes(key)&&!service('fs'))reasons.push('native-filesystem-unavailable');
         if(['archiveReadRouting','mavenSourceBinding'].includes(key)&&!archiveDecoder.available)reasons.push('archive-decoder-unavailable:fflate');
         if(key==='fastEditEnabled'){
-          if(!fastEditFiles)reasons.push('fastedit-runtime-files-unavailable');
-          if(!available(agent,'ops_stat'))reasons.push('tool-unavailable:ops_stat');
-          if(!['pwsh','ops_bash','bash'].some(tool=>available(agent,tool)))reasons.push('authorized-shell-unavailable');
+          if(!config.opsAdapters)reasons.push('ops-adapters-disabled');
+          else{
+            if(!fastEditFiles)reasons.push('fastedit-runtime-files-unavailable');
+            if(!available(agent,'ops_stat'))reasons.push('tool-unavailable:ops_stat');
+            if(!['pwsh','ops_bash','bash'].some(tool=>available(agent,tool)))reasons.push('authorized-shell-unavailable');
+          }
         }
         if(['requestProjection','projectionRestore'].includes(key)&&workingSet.metrics(agent).adapter==='unavailable')reasons.push('projection-adapter-unavailable');
         // Projection is off, work_state is hidden and executionTriage already records

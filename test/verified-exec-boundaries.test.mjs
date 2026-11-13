@@ -7,10 +7,10 @@ import {createHash} from 'node:crypto';
 import {createVerifiedExec} from '../verified-exec.mjs';
 
 const hash=text=>createHash('sha256').update(text).digest('hex');
-async function fixture(body,validation={status:'completed',exitCode:0,stdout:{text:'PASS: complete'}}){
+async function fixture(body,validation={status:'completed',exitCode:0,stdout:{text:'PASS: complete'}},config={opsAdapters:true}){
   const root=await fs.mkdtemp(path.join(os.tmpdir(),'verified-boundary-'));
   await fs.writeFile(path.join(root,'source.txt'),body);
-  const record={root,dir:path.join(root,'.dsh'),id:'boundary',config:{},metrics:{verifiedExecDeopts:0,verifiedExecPreviews:0,verifiedExecApplies:0,verifiedExecPartial:0,verifiedExecValidationFailures:0}};
+  const record={root,dir:path.join(root,'.dsh'),id:'boundary',config,metrics:{verifiedExecDeopts:0,verifiedExecPreviews:0,verifiedExecApplies:0,verifiedExecPartial:0,verifiedExecValidationFailures:0}};
   let writes=0,saved;
   const runtime={init:async()=>record,save:async(_agent,_file,value)=>{saved=structuredClone(value);},execFor:()=>({})};
   const service=createVerifiedExec({on(){},tools:{get:name=>['ops_stat','ops_edit_file','pwsh'].includes(name)?{name}:null}},runtime,async(name,args)=>{
@@ -214,7 +214,7 @@ test('duplicate missing create targets through a directory alias reject before a
   const root=await fs.mkdtemp(path.join(os.tmpdir(),'verified-create-alias-'));
   try{
     await fs.symlink(root,path.join(root,'alias'),process.platform==='win32'?'junction':'dir');
-    const record={root,dir:path.join(root,'.dsh'),id:'alias-boundary',config:{},metrics:{verifiedExecDeopts:0}};
+    const record={root,dir:path.join(root,'.dsh'),id:'alias-boundary',config:{opsAdapters:true},metrics:{verifiedExecDeopts:0}};
     let calls=0;
     const service=createVerifiedExec({on(){},tools:{get:()=>({})}},
       {init:async()=>record,save:async()=>{},execFor:()=>({})},async()=>{calls++;return {isError:false,value:{status:'completed',exists:false}};});
@@ -233,7 +233,7 @@ test('missing-target case aliases follow the actual directory and an unknown emp
   try{
     await fs.writeFile(path.join(root,'case-probe.txt'),'probe');
     const caseSensitive=await fs.lstat(path.join(root,'CASE-PROBE.txt')).then(()=>false,error=>{if(error.code!=='ENOENT')throw error;return true;});
-    const record={root,dir:path.join(root,'.dsh'),id:'volume-boundary',config:{},metrics:{verifiedExecDeopts:0,verifiedExecPreviews:0}};
+    const record={root,dir:path.join(root,'.dsh'),id:'volume-boundary',config:{opsAdapters:true},metrics:{verifiedExecDeopts:0,verifiedExecPreviews:0}};
     const service=createVerifiedExec({on(){},tools:{get:()=>({})}},
       {init:async()=>record,save:async()=>{},execFor:()=>({})},async()=>({isError:false,value:{status:'completed',exists:false}}));
     const plan={summary:'Resolve the directory case behavior',edits:[{file:'new.txt',mode:'create',content:'one'},{file:'NEW.txt',mode:'create',content:'two'}]};
@@ -261,7 +261,7 @@ test('missing-target normalization aliases follow the actual directory and an un
     const normalizationSensitive=await fs.lstat(path.join(root,decomposed)).then(()=>false,error=>{
       if(error.code!=='ENOENT')throw error;return true;
     });
-    const record={root,dir:path.join(root,'.dsh'),id:'normalization-boundary',config:{},metrics:{verifiedExecDeopts:0,verifiedExecPreviews:0}};
+    const record={root,dir:path.join(root,'.dsh'),id:'normalization-boundary',config:{opsAdapters:true},metrics:{verifiedExecDeopts:0,verifiedExecPreviews:0}};
     let calls=0;
     const service=createVerifiedExec({on(){},tools:{get:()=>({})}},
       {init:async()=>record,save:async()=>{},execFor:()=>({})},async()=>{calls++;return {isError:false,value:{status:'completed',exists:false}};});
@@ -305,7 +305,7 @@ test('mixed case and normalization candidates are compared with every earlier ta
       return nativeLstat(target,options);
     };
     try{
-      const record={root,dir:path.join(root,'.dsh'),id:'mixed-alias-boundary',config:{},metrics:{verifiedExecDeopts:0}};
+      const record={root,dir:path.join(root,'.dsh'),id:'mixed-alias-boundary',config:{opsAdapters:true},metrics:{verifiedExecDeopts:0}};
       let calls=0;
       const service=createVerifiedExec({on(){},tools:{get:()=>({})}},
         {init:async()=>record,save:async()=>{},execFor:()=>({})},async()=>{calls++;return {isError:false,value:{status:'completed',exists:false}};});
@@ -318,4 +318,17 @@ test('mixed case and normalization candidates are compared with every earlier ta
       assert(!(await fs.readdir(mixed)).some(name=>name.startsWith('spelling-')));
     }finally{fs.lstat=nativeLstat;}
   }finally{await fs.rm(root,{recursive:true,force:true});}
+});
+
+test('OPS CAS requires explicit opsAdapters opt-in',async()=>{
+  const f=await fixture('before',{status:'completed',exitCode:0},{opsAdapters:false});
+  try{
+    const result=await f.service.execute({}, {summary:'Do not call OPS by default',apply:true,
+      edits:[{file:'source.txt',mode:'replace_exact',old_text:'before',new_text:'after'}]},AbortSignal.timeout(10000));
+    assert.equal(result.status,'deopt');
+    assert.equal(result.reason,'ops-adapters-disabled');
+    assert.equal(result.effectState,'none');
+    assert.equal(f.writes(),0);
+    assert.equal(await fs.readFile(path.join(f.root,'source.txt'),'utf8'),'before');
+  }finally{await f.close();}
 });

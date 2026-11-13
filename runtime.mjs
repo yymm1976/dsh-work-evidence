@@ -33,7 +33,7 @@ function checkedSessionPolicy(value){
 }
 export function defaults(raw={}){
   const config={enabled:true,aggressiveMode:true,mode:'aggressive',selfIndex:true,modelTimeoutMs:20000,modelMaxTokens:1200,modelRoute:null,
-    fastEditEnabled:true,fastEditPython:path.join(import.meta.dirname,'.fastedit-venv','Scripts','python.exe'),
+    opsAdapters:false,fastEditEnabled:false,fastEditPython:path.join(import.meta.dirname,'.fastedit-venv','Scripts','python.exe'),
     stateLedger:true,stateInform:true,completionNotice:false,archiveReadRouting:true,readArgumentRecovery:true,requestAccounting:true,evidenceViews:true,memberParsing:true,mavenSourceBinding:true,
     contextProtocol:true,contextPruningPolicy:'forecast',historyHygiene:true,contextPruneMinChars:8000,contextPruneHeadChars:4096,contextPruneTailChars:1024,
     ledgerReceipt:true,ledgerUnresolved:true,nativeVerifiedEdits:false,fileProfiling:false,structuredJson:false,
@@ -47,7 +47,7 @@ export function defaults(raw={}){
   // Settings that chose default mode before aggressiveMode existed keep handing
   // that decision to the host instead of silently enabling aggressive.
   if(config.mode==='default'&&raw.aggressiveMode===undefined)config.aggressiveMode=false;
-  const known=new Set(['enabled','aggressiveMode','mode','selfIndex','modelTimeoutMs','modelMaxTokens','modelRoute','fastEditEnabled','fastEditPython','stateLedger','stateInform','archiveReadRouting','readArgumentRecovery','requestAccounting','evidenceViews','memberParsing','mavenSourceBinding',
+  const known=new Set(['enabled','aggressiveMode','mode','selfIndex','modelTimeoutMs','modelMaxTokens','modelRoute','opsAdapters','fastEditEnabled','fastEditPython','stateLedger','stateInform','archiveReadRouting','readArgumentRecovery','requestAccounting','evidenceViews','memberParsing','mavenSourceBinding',
     'contextProtocol','contextPruningPolicy','historyHygiene','programHistory','reasoningHistory','retainedCompute','contextPruneMinChars','contextPruneHeadChars','contextPruneTailChars','completionNotice',
     'ledgerReceipt','ledgerUnresolved','nativeVerifiedEdits','fileProfiling','structuredJson','ledgerFoldPlan','ledgerFoldWrite','defaultResponseView','swLedger','swEviction','swEvictionSteps','nativeProgramReuse','hostNodeFallback','nativeShellScriptReuse','probeReplay','structuredCalls','nativeReasoningReplay',
     'requestProjection','projectionRestore','compressionControl','compactionTiming','deferPressureCompaction','stubSummary','cacheOrderedStub','archiveEntries','executionTriage','executionAdvice','stageWorkingSet','finishAdvice','stepPacing','taskEffort','finalJsonGuard','finalJsonResultGuard','qualityReview','qualityReviewEffort','qualityReviewScope','nativeReadView','nativeExecutionEvidence','projectionMinChars','projectionRecentSteps','projectionStableSteps','projectionHorizonSteps','projectionPricing','toolSurface']);
@@ -62,7 +62,7 @@ export function defaults(raw={}){
   config.contextPruningPolicy='forecast';
   if(!['native','adaptive'].includes(config.compactionTiming))throw new Error('Invalid compactionTiming');
   config.compactionTiming='native';
-  for(const key of ['enabled','aggressiveMode','selfIndex','fastEditEnabled','stateLedger','stateInform','archiveReadRouting','readArgumentRecovery','requestAccounting','evidenceViews','memberParsing','mavenSourceBinding','contextProtocol','historyHygiene','programHistory','reasoningHistory',
+  for(const key of ['enabled','aggressiveMode','selfIndex','opsAdapters','fastEditEnabled','stateLedger','stateInform','archiveReadRouting','readArgumentRecovery','requestAccounting','evidenceViews','memberParsing','mavenSourceBinding','contextProtocol','historyHygiene','programHistory','reasoningHistory',
     'ledgerReceipt','ledgerUnresolved','nativeVerifiedEdits','fileProfiling','structuredJson','ledgerFoldPlan','ledgerFoldWrite','swLedger','swEviction','requestProjection','projectionRestore','compressionControl','deferPressureCompaction','stubSummary','cacheOrderedStub','archiveEntries','executionTriage','nativeProgramReuse','hostNodeFallback','nativeShellScriptReuse','probeReplay','structuredCalls','nativeReasoningReplay','executionAdvice','stageWorkingSet','finishAdvice','stepPacing','retainedCompute','taskEffort','finalJsonGuard','finalJsonResultGuard','qualityReview','nativeReadView','nativeExecutionEvidence','completionNotice'])if(typeof config[key]!=='boolean')throw new Error('Invalid '+key);
   if(!Number.isInteger(config.swEvictionSteps)||config.swEvictionSteps<3||config.swEvictionSteps>50)throw new Error('Invalid swEvictionSteps');
   for(const [key,min,max] of [['projectionMinChars',16000,2000000],['projectionRecentSteps',3,50],['projectionStableSteps',4,100],['projectionHorizonSteps',1,64]])
@@ -474,7 +474,8 @@ export function createRuntime(ctx,call,initial={}){
     const s=get(agent);if(String(exec.callId||'').startsWith('work-evidence:')||String(exec.rootCallId||'').startsWith('work-evidence-runtime:'))return;
     // Stored display text can be clipped mid-JSON. Do not let this lossy event
     // claim the call ID before the live structured result can be observed.
-    if(seq!==null&&exec.name.startsWith('ops_')&&result.value===undefined&&!result.isError){s.metrics.opaqueOpsResults++;return;}
+    const opsAdapters=s.config.opsAdapters===true;
+    if(opsAdapters&&seq!==null&&exec.name.startsWith('ops_')&&result.value===undefined&&!result.isError){s.metrics.opaqueOpsResults++;return;}
     if(s.seen.has(exec.callId))return;s.seen.add(exec.callId);if(s.seen.size>4096)s.seen.delete(s.seen.values().next().value);
     if(seq===null)s.metrics.liveResults++;
     const argumentRecovery=recoveryOf(result);
@@ -482,7 +483,7 @@ export function createRuntime(ctx,call,initial={}){
       exec={...exec,arguments:argumentRecovery.correctedArguments};
       if(argumentRecovery.stage!=='before-dispatch')s.metrics.failuresObserved++;
     }
-    const args=argsOf(exec.arguments),detail=textOf(result),parsed=outcome(result.value),opsError=exec.name.startsWith('ops_')&&(parsed.status==='error'||parsed.status==='unknown'||!!parsed.error||Number(parsed.data.failed)>0);
+    const args=argsOf(exec.arguments),detail=textOf(result),parsed=outcome(result.value),opsError=opsAdapters&&exec.name.startsWith('ops_')&&(parsed.status==='error'||parsed.status==='unknown'||!!parsed.error||Number(parsed.data.failed)>0);
     const error=parsed.error||result.error;
     const code=error?.info?.code||error?.code||((exec.name==='read'&&/: not found\s*$/.test(detail))?'FS_NOT_FOUND':'');
     const missingItem=Array.isArray(parsed.data.items)?parsed.data.items.find(item=>item?.status==='error'&&item.error?.code==='NOT_FOUND'&&typeof item.path==='string'):null;
@@ -528,10 +529,10 @@ export function createRuntime(ctx,call,initial={}){
       if(file){s.writes.push({tool:exec.name,path:file,callId:exec.callId});if(s.writes.length>12)s.writes.shift();recordMutation(agent,{tool:exec.name,file,revision:data.revision,callId:exec.callId,seq});}
       s.dirty=true;
     }
-    if(exec.name==='ops_batch'&&Array.isArray(data.items)){
+    if(opsAdapters&&exec.name==='ops_batch'&&Array.isArray(data.items)){
       for(const item of data.items)if(item?.status==='completed'&&typeof item.path==='string')recordMutation(agent,{tool:exec.name,file:item.path,revision:item.revision,callId:exec.callId,seq});
     }
-    if(exec.name==='ops_read_files'&&Array.isArray(args.files)&&Array.isArray(data.items)){
+    if(opsAdapters&&exec.name==='ops_read_files'&&Array.isArray(args.files)&&Array.isArray(data.items)){
       for(let index=0;index<Math.min(args.files.length,data.items.length);index++){
         const item=data.items[index],requested=args.files[index];
         if(item?.complete===true&&Array.isArray(item.items)&&!item.items.length){
@@ -554,7 +555,7 @@ export function createRuntime(ctx,call,initial={}){
         recordObservation(s,{...exec,arguments:{path:item.path||requested?.path,offset:requested?.offset}},result,seq,
           {file:item.path||requested?.path,revision:item.revision,lineStart:first||requested?.offset||1,lineEnd:last||null});
       }
-    }else if(exec.name==='ops_inspect_local_file'&&revisionPattern.test(String(data.revision||''))){
+    }else if(opsAdapters&&exec.name==='ops_inspect_local_file'&&revisionPattern.test(String(data.revision||''))){
       const lineStart=Number.isInteger(args.offset)&&args.offset>0?args.offset:1;
       const lineEnd=Number.isInteger(data.lineCount)&&Number.isInteger(args.limit)?Math.min(data.lineCount,lineStart+args.limit-1):null;
       recordObservation(s,exec,result,seq,{file:data.path||args.path,revision:data.revision,lineStart,lineEnd});
@@ -567,7 +568,7 @@ export function createRuntime(ctx,call,initial={}){
       s.searches.push({tool:exec.name,query:args.pattern||'',scope:args.path||'.',seq,step:s.step,empty:Array.isArray(items)&&!items.length});if(s.searches.length>12)s.searches.shift();
       recordSearch(s,exec,result,seq);
       if(Array.isArray(items)&&!items.length){const key=JSON.stringify([exec.name,args]),prior=s.emptyLookups.get(key),now=Date.now();if(prior&&now-prior.time<120000&&!prior.noted){prior.noted=true;s.pendingLookupFact={tool:exec.name,arguments:args,firstCallId:prior.callId,repeatedCallId:exec.callId};s.active=true;}else if(!prior||now-prior.time>=120000)s.emptyLookups.set(key,{time:now,callId:exec.callId,noted:false});if(s.emptyLookups.size>24)s.emptyLookups.delete(s.emptyLookups.keys().next().value);}
-    }else if(['ops_grep','ops_glob'].includes(exec.name)){
+    }else if(opsAdapters&&['ops_grep','ops_glob'].includes(exec.name)){
       recordSearch(s,exec,result,seq);
     }
   }
@@ -581,7 +582,7 @@ export function createRuntime(ctx,call,initial={}){
     enabled:effective,workspaceDefaultEnabled:s.config.enabled,session:{enabled:effective,override:s.sessionEnabledOverride,source:s.sessionEnabledOverride===null?'workspace-setting':'session-setting',defaultResponseView:s.sessionDefaultResponseView??s.config.defaultResponseView,
       policyPath:s.sessionPolicyPath,loaded:s.sessionPolicyLoaded,settingsRetainedInMemory:s.sessionFileMissing},
     telemetry:{directory:s.telemetryDir,scope:s.telemetryScope,workspaceConfiguration:s.dir},workspaceConfigValid:s.workspaceConfigValid,workspaceSettingsRetainedInMemory:s.workspaceFileMissing,
-      features:{aggressiveMode:s.config.aggressiveMode,selfIndex:s.config.selfIndex,completionNotice:s.config.completionNotice,ptcPatterns:true,ptcFastpath:true,verifiedExec:true,fastEdit:s.config.fastEditEnabled,contextProtocol:s.config.contextProtocol,historyHygiene:s.config.historyHygiene,
+      features:{aggressiveMode:s.config.aggressiveMode,selfIndex:s.config.selfIndex,opsAdapters:s.config.opsAdapters,completionNotice:s.config.completionNotice,ptcPatterns:true,ptcFastpath:true,verifiedExec:true,fastEdit:s.config.fastEditEnabled,contextProtocol:s.config.contextProtocol,historyHygiene:s.config.historyHygiene,
       stateLedger:s.config.stateLedger,stateInform:s.config.stateInform,archiveReadRouting:s.config.archiveReadRouting,readArgumentRecovery:s.config.readArgumentRecovery,requestAccounting:s.config.requestAccounting,evidenceViews:s.config.evidenceViews,memberParsing:s.config.memberParsing,mavenSourceBinding:s.config.mavenSourceBinding,
       ledgerReceipt:s.config.ledgerReceipt,ledgerUnresolved:s.config.ledgerUnresolved,nativeVerifiedEdits:s.config.nativeVerifiedEdits,fileProfiling:s.config.fileProfiling,structuredJson:s.config.structuredJson,
       swLedger:s.config.swLedger,swEviction:s.config.swEviction,swEvictionSteps:s.config.swEvictionSteps,defaultResponseView:s.sessionDefaultResponseView??s.config.defaultResponseView,

@@ -57,7 +57,7 @@ mode 只查询状态。旧的 mode <名称> 和 workspace-mode 命令不再设�
 例如质量复核须选 Ultra；结构化调用须用原生 TypeScript 函数体运行时；PTC 程序引用须同时开启执行恢复。
 归档读取和 Maven 归档来源还需 `fflate`。`dependencies.archiveDecoder` 显示加载状态，缺失时功能显示 `archive-decoder-unavailable:fflate`，实际读取返回 `ARCHIVE_DECODER_UNAVAILABLE`。读取成员时会核对目录与本地头的文件名、标志位、压缩方式，以及解压长度和 CRC；不一致时返回不可用，不将截断正文当作完整来源。支持存储、deflate、数据描述符和 ZIP64 目录。
 `fastEditPython` 指向带有所需包的现有 Python 环境，包版本见 `requirements-fastedit.txt`。状态确认运行文件可访问，桥接调用确认包能导入。
-`fastEditEnabled` 默认开启。关闭后 `fastedit_java` 返回 `deopt` 和 `fastedit-disabled`，不读取或修改 Java 文件；在同一会话重新开启后恢复调用。
+`fastEditEnabled` 默认关闭，且需要 `opsAdapters=true`。关闭后 `fastedit_java` 返回 `deopt` 和 `fastedit-disabled`（未启用 OPS 适配时为 `ops-adapters-disabled`），不读取或修改 Java 文件；在同一会话重新开启后恢复调用。
 这些状态说明本地可用条件。实际触发、任务质量和资源效果仍按各功能记录判断。
 
 ## 原生思考回传候选
@@ -348,7 +348,7 @@ JSON 格式修正先处理。阶段摘要还有可执行下一步、且完成提
 报告过度声明须同时给出答复原句和已提供事件中的反证原文，插件核对两段文字及来源。所给材料没有执行记录或缺少确认时保持未知，不单凭缺记录报告声明不实。引语不匹配、来源不存在或未被引用时，复核结果记为无效，不要求主模型据此返工。
 复核优先携带已修改文件在修改后读到的正文，并限制证据长度。
 同一文件的成功 write/edit、ops_write_file/ops_edit_file 片段按事件顺序补入，完整覆盖写入之前的旧片段退出选择；补充片段合计最多 18000 个字符，单份最多 14000 个字符。
-OPS 的预览和失败修改不作为成功片段。ops_read_files 与 ops_inspect_local_file 可提供已读源码；范围收缩时保留读取事件对应的文件。
+启用 `opsAdapters` 后，OPS 的预览和失败修改不作为成功片段。ops_read_files 与 ops_inspect_local_file 可提供已读源码；范围收缩时保留读取事件对应的文件。
 片段标为历史修改，后续观察优先，不拼造当前整份文件，也不额外读取项目文件。
 `qualityReviewEffort` 默认 `auto`，从当前通道声明的 low、medium、high、max 中选择最低可用档位；声明不可取得时继承主请求。
 `inherit` 始终继承主请求。显式档位未在通道声明中出现时，状态记为 `review-effort-not-declared`，不发请求。
@@ -421,7 +421,7 @@ compact 写入回执中的 `submittedContentMatchesAfter` 比较提交正文与�
 用户只写 `README` 时，在项目根目录确认 `README`、`README.md`、`README.rst`、`README.txt` 中唯一存在的文件。多个候选、查找受阻或用户禁止读取时不选。
 禁止修改或安装的动作不会阻止文件位置查找。读取禁令按当前禁止列表中的动作和文件判断；含义不明确的文件禁令继续跳过可选查找。
 该处理只取得文件信息，正文仍由原生读取工具返回；不会提前读取正文或扩大文件权限。
-原生 DSH 文件服务承担核心读取；OPS 只用于可选读取和精确编辑。
+原生 DSH 文件服务承担核心读取；dsh-ops 适配默认关闭，只有显式设置 `opsAdapters:true` 后才用于可选读取和精确编辑。
 `readArgumentRecovery` 开启时，原生 `read` 的单一 `path` 别名在宿主检查前转为 `file_path`。两个字段冲突时返回错误。
 该调用保留原生 `lines` 返回值和文件权限检查，不重读文件。
 PTC 已取得行记录，却在访问 `.content` 或 `.text` 后输出 `undefined` 或取值错误时，插件每条用户要求至多提示 1 次 `lines` 用法。
