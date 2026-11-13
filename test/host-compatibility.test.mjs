@@ -16,9 +16,9 @@ async function versionOf(app,packageName){
 }
 
 const declared=value=>String(value??'').split('||').map(item=>item.trim()).filter(Boolean);
-const supportedHosts=['0.2.1-rc.4','0.2.2-rc.1'];
+const supportedHosts=['0.2.1-rc.4','0.2.2-rc.1','0.2.2-rc.2'];
 
-test('the package declaration exactly matches the two verified host runtimes',async t=>{
+test('the package declaration exactly matches the supported host runtimes',async t=>{
   const manifest=JSON.parse(await fs.readFile(path.join(root,'package.json'),'utf8'));
   const dshVersions=declared(manifest.engines?.dsh);
   const peers=['@deepseek-ai/dsh-llm','@deepseek-ai/dsh-ptc-runtime-node','@deepseek-ai/dsh-session-reference'];

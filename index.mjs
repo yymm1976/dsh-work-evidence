@@ -13,6 +13,8 @@ import {createPtcPatterns} from './ptc-patterns.mjs';
 import {createPtcFastpath} from './ptc-fastpath.mjs';
 import {createVerifiedExec} from './verified-exec.mjs';
 import {createFastEditJava} from './fastedit-java.mjs';
+import {createFileProfiler} from './file-profile.mjs';
+import {createStructuredJson} from './structured-json.mjs';
 
 import {createReadRouting} from './read-routing.mjs';
 import {correctedReadArguments,recoveryFor,withRecovery,recoveredResult,normalizedReadResult,installExecutionDescriptionCompatibility,installNativeReadArgumentRecovery} from "./recovery.mjs";
@@ -52,7 +54,7 @@ export const name='work-evidence-local';
 export const inject=['tools','workingDirectory','agents','systemPrompt','llm','sessionPersistence','commands','sandboxPolicy'];
 const output={schema:{type:'object'},render:(_args,value)=>[{type:'text',text:JSON.stringify(value)}]};
 const bounds=['minimum','maximum','minItems','maxItems','minLength','maxLength'];
-const COMPACT_HIDDEN_TOOLS=['project_evidence','work_report','work_status','work_state','work_probe','evidence_index','candidate_select','ptc_patterns','ptc_fastpath','verified_exec','fastedit_java','work_compute'];
+const COMPACT_HIDDEN_TOOLS=['project_evidence','work_report','work_status','work_state','work_probe','evidence_index','candidate_select','ptc_patterns','ptc_fastpath','verified_exec','fastedit_java','work_compute','file_profile','structured_json'];
 const codePointLength=text=>Array.from(String(text??'')).length;
 const textChars=blocks=>(blocks??[]).reduce((sum,block)=>sum+(block?.type==='text'?codePointLength(block.text):0),0);
 const contextPrunableMessage=message=>message&&!message.isError&&Array.isArray(message.content)&&
@@ -198,7 +200,8 @@ export function apply(ctx,config={}){
   const routeRead=createReadRouting(ctx,runtime,call,nativeFiles);
   const index=createSelfIndex(ctx,runtime,call),candidates=createCandidates(ctx,runtime,call),
     ptcPatterns=createPtcPatterns(ctx,runtime),ptcFastpath=createPtcFastpath(ctx,runtime,call),
-    verifiedExec=createVerifiedExec(ctx,runtime,call),fastEditJava=createFastEditJava(ctx,runtime,call,verifiedExec);
+    verifiedExec=createVerifiedExec(ctx,runtime,call),fastEditJava=createFastEditJava(ctx,runtime,call,verifiedExec),
+    fileProfiler=createFileProfiler(ctx,runtime),structuredJson=createStructuredJson(ctx,runtime);
   // Keep general workflow guidance fixed; dynamic notices carry observed facts.
   ctx.systemPrompt.section({name:'work-evidence:task-flow',order:750,interpolate:false,text:''});
   const contextPruning=new Set(),pendingContextPrunes=new Map(),preserveContextResults=new Set(),contextReadCalls=new Map(),contextRetainedSources=new Map();
@@ -245,6 +248,7 @@ export function apply(ctx,config={}){
     referenceContext,
   });
   runtime.rewriteRequestHistory=(agent,messages,options)=>historyHygiene.project(agent,messages,options);
+  runtime.historyFullOutputRequested=agent=>historyHygiene.fullOutputRequested(agent);
   ctx.on('session/event',(session,event)=>{
     if(event.type==='agent/inbox/spliced'){
       const inserted=event.data?.inserted;
@@ -285,7 +289,7 @@ export function apply(ctx,config={}){
     queueMicrotask(()=>{
       let pruned=0,charsRemoved=0;
       try{
-        if(!runtime.isEnabled(agent)||compactionActive(session))return;
+        if(!runtime.isEnabled(agent)||compactionActive(session)||runtime.historyFullOutputRequested(agent))return;
         const tokenMeter=ctx.get?.('tokenMeter');
         const visible=new Set(session.surface.nodes);
         const references=surfaceReferences(session);
@@ -316,7 +320,7 @@ export function apply(ctx,config={}){
           effects.decide(agent,'contextPrune',economics.allowed?'approved':'deferred',economics.reason,{seq,economics});
           if(!economics.allowed)continue;
           const shadowedTokenCount=typeof tokenMeter?.estimateMessage==='function'?tokenMeter.estimateMessage(original):0;
-          if(compactionActive(session))break;
+          if(compactionActive(session)||runtime.historyFullOutputRequested(agent))break;
           session.append('compaction/prune',{
             shadowedRange:{start:seq,end:seq},shadowedSeqs:[seq],shadowedTokenCount,
           });
@@ -383,6 +387,9 @@ export function apply(ctx,config={}){
   }
   function applyToolSurface(agent){
     if(!agent?.ctx?.tools?.restrict)return;
+    // rc.2 freezes admission before prompt assembly. An unread configuration
+    // must not install a temporary disabled mask that this step cannot expand.
+    if(!state(agent).configured)return;
     retainedSources(agent);
     const current=toolSurfaceDisposers.get(agent.session.id),base=state(agent).config.toolSurface;
     if(!runtime.isEnabled(agent)){
@@ -397,14 +404,18 @@ export function apply(ctx,config={}){
       return;
     }
     const mode=taskSurfaceModes.get(agent.session.id),surface=base==='compact'?(mode==='read-only'||mode==='minimal'&&hasHistoricalReferences(agent)?'compact-read-only':mode==='minimal'?'compact-minimal':'compact'):base;
-    if(current?.surface===surface)return;
+    const exposedFeatures=[...(state(agent).config.fileProfiling?['file_profile']:[]),...(state(agent).config.structuredJson?['structured_json']:[]),
+      ...(state(agent).config.nativeVerifiedEdits&&!['read-only','minimal'].includes(mode)?['verified_exec']:[])];
+    const readKey=exposedFeatures.join(',');
+    if(current?.surface===surface&&current.readKey===readKey)return;
     try{current?.dispose?.();}catch{}
     toolSurfaceDisposers.delete(agent.session.id);
     try{
-      const deny=surface==='compact-read-only'?[...COMPACT_HIDDEN_TOOLS,'work_exec']:
-        surface==='compact-minimal'?[...COMPACT_HIDDEN_TOOLS,'work_exec','work_recall']:COMPACT_HIDDEN_TOOLS;
+      const hidden=COMPACT_HIDDEN_TOOLS.filter(name=>!exposedFeatures.includes(name));
+      const deny=surface==='compact-read-only'?[...hidden,'work_exec']:
+        surface==='compact-minimal'?[...hidden,'work_exec','work_recall']:hidden;
       const dispose=surface==='full'?null:agent.ctx.tools.restrict({deny});
-      toolSurfaceDisposers.set(agent.session.id,{surface,dispose});
+      toolSurfaceDisposers.set(agent.session.id,{surface,readKey,dispose});
       effects.decide(agent,'toolSurface','applied',surface+'-surface',{configured:base,dynamic:surface!==base});
     }catch(error){runtime.problem(state(agent),'tool-surface',error.message);}
   }
@@ -419,13 +430,13 @@ export function apply(ctx,config={}){
     }
     const section=_assembly.sections.find(section=>section.name==='work-evidence:task-flow');
     if(section)section.text=context?.agent&&runtime.isEnabled(context.agent)&&state(context.agent).config.stepPacing?
-      taskFlowGuidance(runtime.activeMode(context.agent),taskSurfaceModes.get(context.agent.session.id)):'';
+      taskFlowGuidance(runtime.activeMode(context.agent),taskSurfaceModes.get(context.agent.session.id),state(context.agent).config):'';
     if(context?.agent)effects.instructions(context.agent,section?.text??'');
     if(context?.agent&&runtime.isEnabled(context.agent)&&state(context.agent).config.toolSurface==='compact'&&['read-only','minimal'].includes(taskSurfaceModes.get(context.agent.session.id))&&Array.isArray(_assembly.tools))
       _assembly.tools=_assembly.tools.filter(tool=>tool?.name!=='work_exec');
     return next();
   },{prepend:true});
-  const featureControl=createFeatureControl(ctx,runtime,{available,canRecall,workingSet,qualityReview,compactionHandoff,retainedCompute,effects});
+  const featureControl=createFeatureControl(ctx,runtime,{available,canRecall,workingSet,qualityReview,compactionHandoff,retainedCompute,effects,verifiedExec});
   registerPluginCommand({ctx,runtime,state,effects,available,featureControl,capabilityDiagnostic,contextEconomics,taskFlow,taskHandoff,finalJson,qualityReview,executionEvidence,refreshExecutionEvidence,workingSet,compressionControl,compactionHandoff,contextWindow,observationLedger,historyCoordinator,clearPluginState,applyToolSurface});
   const nested=new Set();
   async function call(name,args,exec){
@@ -493,7 +504,7 @@ export function apply(ctx,config={}){
       note:'The plugin is disabled for this session. A user can enable it with /work-evidence on; tool results do not authorize changing that choice.'};
   }
   registerSourceTools({ctx,nativeFiles,runtime,state,effects,evidenceViews,index,candidates,call,read,search,snippets,sourceReferences,disabledResult,output,parameters});
-  registerManagementTools({ctx,runtime,state,effects,available,featureControl,capabilityDiagnostic,contextEconomics,taskFlow,taskHandoff,retainedCompute,finalJson,qualityReview,executionEvidence,executionDependencies,refreshExecutionEvidence,hostReferences,workingSet,compressionControl,compactionHandoff,contextWindow,observationLedger,historyCoordinator,clearPluginState,index,candidates,ptcPatterns,ptcFastpath,verifiedExec,fastEditJava,preserveContextResult,retainRecalledSources,hasHistoricalReferences,applyToolSurface,call,disabledResult,output,COMPACT_HIDDEN_TOOLS,assertParameterBounds,parameters});
+  registerManagementTools({ctx,runtime,state,effects,available,featureControl,capabilityDiagnostic,contextEconomics,taskFlow,taskHandoff,retainedCompute,finalJson,qualityReview,executionEvidence,executionDependencies,refreshExecutionEvidence,hostReferences,workingSet,compressionControl,compactionHandoff,contextWindow,observationLedger,historyCoordinator,clearPluginState,index,candidates,ptcPatterns,ptcFastpath,verifiedExec,fastEditJava,fileProfiler,structuredJson,preserveContextResult,retainRecalledSources,hasHistoricalReferences,applyToolSurface,call,disabledResult,output,COMPACT_HIDDEN_TOOLS,assertParameterBounds,parameters});
   ctx.on('tools/result',(exec,result)=>{
     taskFlow.observe(exec,result);
     historyHygiene.observe(exec,result);

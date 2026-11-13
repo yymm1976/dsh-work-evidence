@@ -4,7 +4,8 @@ import {randomUUID} from 'node:crypto';
 import {isDeepStrictEqual} from 'node:util';
 import {assertExistingFileWithin} from './evidence.mjs';
 import {resultText,parseResult} from './visible-results.mjs';
-import {createExecutionDependencies,declaredFileSources,dependencyView} from './execution-dependencies.mjs';
+import {createExecutionDependencies,declaredFileSources,dependencyView,executionResultLayers,executionFacts,dependencyExecutionComplete} from './execution-dependencies.mjs';
+import {argsOf,eventLog} from './runtime.mjs';
 
 const TOOLS=['pwsh','ops_bash','bash','job_output','read','grep','glob','ops_stat','ops_read_files','ops_inspect_local_file'];
 const SHELL=new Set(['pwsh','ops_bash','bash']);
@@ -15,6 +16,8 @@ const clip=(value,size)=>{const text=typeof value==='string'?value:JSON.stringif
 const stream=value=>typeof value==='string'?{text:value,truncated:false}:value&&typeof value==='object'?{text:typeof value.text==='string'?value.text:'',truncated:value.truncated===true||value.complete===false,spillPath:value.spillPath??null}:{text:'',truncated:false};
 const payloadOf=value=>value?.data&&typeof value.data==='object'?value.data:value;
 const statusOf=value=>value===undefined||value===null?'':String(value).toLowerCase();
+const pendingProducer=observation=>observation?.pending===true||observation?.background===true||observation?.status==='pending'||
+  typeof observation?.jobId==='string'&&observation.jobId.length>0&&observation.executionCompleted!==true;
 
 export function recordedProcessCompletion(events,execution,beforeSeq){
   const event=events.find(item=>item.seq===execution.seq),data=event?.data,message=data?.message??data;
@@ -52,8 +55,13 @@ function checked(input){
   const known=new Set(['mode','question','tool','arguments','sources','cases','maxChars','id','offset']);
   if(!input||typeof input!=='object'||Array.isArray(input)||Object.keys(input).some(key=>!known.has(key)))throw new Error('Unknown work_probe field');
   const mode=input.mode??'execute',maxChars=input.maxChars??6000;
-  if(!['execute','recall','inspect'].includes(mode))throw new Error('Invalid work_probe mode');
+  if(!['execute','recall','inspect','replay'].includes(mode))throw new Error('Invalid work_probe mode');
   if(!Number.isInteger(maxChars)||maxChars<1024||maxChars>12000)throw new Error('maxChars must be from 1024 to 12000');
+  if(mode==='replay'){
+    if(Object.keys(input).some(key=>!['mode','id','maxChars'].includes(key))||!/^probe-[0-9a-f-]{36}$/u.test(input.id??''))
+      throw new Error('Probe replay accepts only a same-session probe id and display maxChars; recorded inputs and expectations cannot be overridden');
+    return {...input,mode,maxChars};
+  }
   if(mode!=='execute')return {...input,mode,maxChars};
   if(typeof input.question!=='string'||!input.question.trim()||input.question.length>2000)throw new Error('question must describe one concrete unresolved question');
   if(!TOOLS.includes(input.tool))throw new Error('Choose an existing supported native tool');
@@ -86,11 +94,63 @@ export function createExecutionEvidence(ctx,runtime,call,{executionDependencies=
   const available=agent=>TOOLS.filter(name=>{try{return !!ctx.tools.get(name,agent);}catch{return false;}});
   const retrieveOriginal=id=>({tool:'work_probe',arguments:{mode:'recall',id,offset:0}});
 
+  function replayPlan(agent,id,maxChars,seen=new Set()){
+    if(seen.has(id)||seen.size>=32)throw new Error('Invalid or cyclic probe replay source');
+    seen.add(id);
+    const events=eventLog(agent.session),calls=new Map();
+    const callIdOf=event=>event.type==='tool/result'?event.data?.message?.source?.callId??event.data?.message?.toolCallId??event.data?.callId:
+      event.data?.subCallId??event.data?.callId;
+    for(const event of events)if(['tool/call','tool/ptc-dispatch-start','tool/code-dispatch-start','tool/ptc-dispatch','tool/code-dispatch'].includes(event.type)){
+      const key=callIdOf(event),prior=calls.get(key),data=event.data??{};
+      if(key)calls.set(key,{name:data.name??prior?.name,args:data.arguments===undefined?prior?.args:argsOf(data.arguments),seq:prior?.seq??event.seq});
+    }
+    for(const event of events.toReversed()){
+      if(!['tool/result','tool/ptc-dispatch','tool/code-dispatch'].includes(event.type))continue;
+      const source=calls.get(callIdOf(event));
+      if(source?.name!=='work_probe')continue;
+      const data=event.data??{},content=event.type==='tool/result'?data.message?.content:data.content;
+      const observation=parseResult(resultText(content));
+      if(observation?.id!==id||observation.historical===true)continue;
+      const original=checked(source.args);
+      if(!['execute','replay'].includes(original.mode))continue;
+      const recipe=original.mode==='replay'?replayPlan(agent,original.id,maxChars,seen):original;
+      return {...recipe,mode:'execute',maxChars,replayOf:{id,sourceCallId:callIdOf(event),sourceResultSeq:event.seq,
+        rootProbeId:recipe.replayOf?.rootProbeId??id,inputs:'original-session-call',expectations:'unchanged'}};
+    }
+    throw new Error('Probe replay requires an original recorded work_probe call and result from this session');
+  }
+
+  function assertReplayFamilySettled(agent,rootId){
+    const events=eventLog(agent.session),probeCalls=new Set(),pending=[];
+    const callIdOf=event=>event.type==='tool/result'?event.data?.message?.source?.callId??event.data?.message?.toolCallId??event.data?.callId:
+      event.data?.subCallId??event.data?.callId;
+    for(const event of events)if(['tool/call','tool/ptc-dispatch-start','tool/code-dispatch-start','tool/ptc-dispatch','tool/code-dispatch'].includes(event.type)&&event.data?.name==='work_probe')probeCalls.add(callIdOf(event));
+    for(const event of events){
+      if(!['tool/result','tool/ptc-dispatch','tool/code-dispatch'].includes(event.type)||!probeCalls.has(callIdOf(event)))continue;
+      const data=event.data??{},observation=parseResult(resultText(event.type==='tool/result'?data.message?.content:data.content));
+      if(!observation||observation.historical===true||(observation.replayOf?.rootProbeId??observation.id)!==rootId||
+        !pendingProducer(observation))continue;
+      pending.push({observation,seq:event.seq});
+    }
+    const retained=evidenceState(agent).replayLocks.get(rootId);
+    if(retained?.pending)pending.push({observation:retained.pending,seq:retained.seq});
+    for(const {observation,seq}of pending){
+      const registered=events.filter(item=>item.type==='job/registered'&&item.seq<=seq&&item.data?.jobId===observation.jobId);
+      const registration=registered.length===1?registered[0]:null,job=registration?.data;
+      const settled=registration?events.filter(item=>item.type==='job/settled'&&item.seq>registration.seq&&item.data?.jobId===job.jobId&&
+        item.data.owner===job.owner&&item.data.kind===job.kind&&item.data.toolCall?.callId===job.toolCall?.callId&&
+        item.data.toolCall?.rootCallId===job.toolCall?.rootCallId&&item.data.cause==='producer'&&item.data.producerReported===true&&
+        ['completed','failed','killed'].includes(item.data.status)):[];
+      if(!registration||!job?.toolCall?.callId||!job.toolCall.rootCallId||settled.length!==1)
+        throw new Error('This original probe already has a pending or background replay. Monitor its original job id until recorded producer settlement; do not start a duplicate.');
+    }
+  }
+
   function evidenceState(agent){
     const id=agent.session.id;
     let state=evidenceStates.get(id);
     if(!state){
-      state={records:[],observed:0,explicitObserved:0,saved:0,explicitSaved:0,saveFailures:0};
+      state={records:[],observed:0,explicitObserved:0,saved:0,explicitSaved:0,saveFailures:0,replayLocks:new Map()};
       evidenceStates.set(id,state);
     }
     return state;
@@ -118,26 +178,23 @@ export function createExecutionEvidence(ctx,runtime,call,{executionDependencies=
   function normalizeObservation({id,recordOrigin,question,questionSource,questionScope,tool,args,result,sources,requestedCases,maxChars,
     observedAt,elapsedMs,elapsedSource,scope,sourceScope,s}){
     const value=result.value??parseResult(resultText(result.content));
-    const payload=payloadOf(value);
-    const chunks=tool==='job_output'&&Array.isArray(payload?.chunks)?payload.chunks:null;
-    const stdout=stream(payload?.stdout??payload?.stdoutText??(chunks?chunks.filter(chunk=>chunk.channel!=='stderr').map(chunk=>chunk.text??'').join(''):tool==='job_output'?payload?.text:undefined)),
-      stderr=stream(payload?.stderr??payload?.stderrText??(chunks?chunks.filter(chunk=>chunk.channel==='stderr').map(chunk=>chunk.text??'').join(''):undefined));
+    const envelope={...result,value},layers=executionResultLayers(envelope),facts=executionFacts(envelope);
+    const payload=payloadOf(value),stdoutSource=layers.findLast(node=>node.stdout!==undefined||node.stdoutText!==undefined),
+      stderrSource=layers.findLast(node=>node.stderr!==undefined||node.stderrText!==undefined);
+    const chunks=tool==='job_output'?layers.findLast(node=>Array.isArray(node.chunks))?.chunks:null;
+    const stdout=stream(stdoutSource?.stdout??stdoutSource?.stdoutText??(chunks?chunks.filter(chunk=>chunk.channel!=='stderr').map(chunk=>chunk.text??'').join(''):tool==='job_output'?payload?.text:undefined)),
+      stderr=stream(stderrSource?.stderr??stderrSource?.stderrText??(chunks?chunks.filter(chunk=>chunk.channel==='stderr').map(chunk=>chunk.text??'').join(''):undefined));
     // The native job_output contract is a consuming delta, never the complete process stream.
     if(tool==='job_output')stdout.truncated=true;
-    const statusRaw=payload?.status??value?.status??payload?.job?.status??value?.job?.status??null;
+    const producer=layers.findLast(node=>node.status!=null||node.state!=null||node.job?.status!=null);
+    const statusRaw=producer?.status??producer?.state??producer?.job?.status??null;
     const nativeStatus=statusOf(statusRaw);
-    const background=['background','promoted'].includes(payload?.kind)||['background','promoted'].includes(value?.kind)||payload?.job?.kind==='background'||nativeStatus==='background';
-    const pending=background||['running','pending','queued','stopping'].includes(nativeStatus);
-    const jobId=payload?.jobId??payload?.job_id??payload?.job?.id??value?.jobId??value?.job_id??value?.job?.id??null;
-    const exitRaw=payload?.exitCode??payload?.exit_code??value?.exitCode??value?.exit_code;
-    const exitCode=Number.isInteger(exitRaw)?exitRaw:null;
-    const failed=!!result.isError||!!(payload?.error||value?.error)||['error','failed','killed','cancelled','rejected'].includes(nativeStatus)||
-      payload?.timedOut===true||payload?.aborted===true||payload?.cancelled===true||payload?.signal!=null||payload?.stopped!==undefined||
-      exitCode!==null&&exitCode!==0;
-    const nativePartial=nativeStatus==='partial'||payload?.complete===false||value?.complete===false||payload?.completed===false||value?.completed===false||
-      payload?.outputPartial===true||payload?.partial===true||payload?.truncated===true||payload?.lossy===true;
-    const uncertain=['unknown','unavailable','deopt'].includes(nativeStatus);
-    const conclusive=!pending&&!failed&&!nativePartial&&!uncertain&&
+    const {background,pending,exitCode}=facts;
+    const job=layers.findLast(node=>typeof(node.jobId??node.job_id??node.job?.id)==='string');
+    const jobId=job?.jobId??job?.job_id??job?.job?.id??null;
+    const failed=facts.failed||facts.unavailable||facts.interrupted,nativePartial=facts.partial,uncertain=facts.unknown;
+    const conclusive=!failed&&!facts.incomplete&&
+      (!SHELL.has(tool)&&tool!=='job_output'||dependencyExecutionComplete(envelope))&&
       (exitCode===0||nativeStatus==='completed'||!SHELL.has(tool)&&value!==null&&value!==undefined&&tool!=='job_output');
     let stdoutJson,stdoutJsonAvailable=false;
     if(!stdout.truncated)try{stdoutJson=JSON.parse(stdout.text);stdoutJsonAvailable=true;}catch{}
@@ -151,15 +208,16 @@ export function createExecutionEvidence(ctx,runtime,call,{executionDependencies=
         ...(selected.found?{actualJson:clip(JSON.stringify(selected.value),perCase),actualComplete:JSON.stringify(selected.value).length<=perCase}:{reason:selected.reason}),
         ...(hasExpected?{expectedJson:clip(item.expectedJson,perCase),expectedComplete:item.expectedJson.length<=perCase}:{})};
     });
-    const finalStatus=pending?'pending':failed?'failed':nativePartial?'partial':!conclusive?'unknown':
+    const finalStatus=failed?'failed':pending?'pending':nativePartial?'partial':!conclusive?'unknown':
       cases.some(item=>item.status==='different')?'different':cases.some(item=>item.status==='unresolved')||stdout.truncated||stderr.truncated?'partial':'observed';
-    const executionState=pending?background?'background':'pending':failed?'failed':nativePartial?'partial':
+    const executionState=failed?'failed':pending?background?'background':'pending':nativePartial?'partial':
       !conclusive?'unknown':stdout.truncated||stderr.truncated?'partial':'success';
     const cwdRequested=args?.workdir??args?.cwd??null;
     const hasNativeCwd=payload&&typeof payload==='object'&&Object.hasOwn(payload,'cwd')&&payload.cwd!=null;
-    const rawError=payload?.error??value?.error??result.error??(result.isError?resultText(result.content):null);
+    const failure=layers.findLast(node=>node.error||node.err);
+    const rawError=failure?.error??failure?.err??(result.isError?resultText(result.content):null);
     const observation={id,question:clip(question,400),questionComplete:question.length<=400,questionSource,questionScope,tool,observedAt,elapsedMs,elapsedSource,
-      status:finalStatus,executionState,nativeStatus,background,partial:nativePartial||stdout.truncated||stderr.truncated,
+      status:finalStatus,executionState,nativeStatus,background,pending,partial:nativePartial||stdout.truncated||stderr.truncated,
       executionCompleted:conclusive,exitCode,jobId,cwd:hasNativeCwd?payload.cwd:(SHELL.has(tool)?cwdRequested??s.root:null),
       cwdSource:hasNativeCwd?'native-tool':SHELL.has(tool)?cwdRequested?'requested-workdir':'workspace-default':'not-observed',
       sources:sources.slice(0,8).map(source=>clip(source,240)),sourcesComplete:sources.length<=8&&sources.every(source=>source.length<=240),cases,
@@ -206,7 +264,7 @@ export function createExecutionEvidence(ctx,runtime,call,{executionDependencies=
     state.records.push({id:record.id,origin:record.recordOrigin,callId:record.callId,rootCallId:record.rootCallId,
       question:observation.question,questionScope:observation.questionScope,tool:record.tool,observedAt:record.observedAt,
       elapsedMs:observation.elapsedMs,elapsedSource:observation.elapsedSource,status:observation.status,executionState:observation.executionState,
-      nativeStatus:observation.nativeStatus,background:observation.background,partial:observation.partial,exitCode:observation.exitCode,jobId:observation.jobId,
+      nativeStatus:observation.nativeStatus,background:observation.background,pending:observation.pending,partial:observation.partial,exitCode:observation.exitCode,jobId:observation.jobId,
       executionCompleted:observation.executionCompleted,fileDependencies:observation.fileDependencies,...dependencyView(observation),
       cwd:observation.cwd,cwdSource:observation.cwdSource,error:observation.error,evidenceSaved:observation.evidenceSaved,
       ...(observation.evidenceSaved?{retrieveOriginal:observation.retrieveOriginal}:{evidenceError:observation.evidenceError})});
@@ -214,13 +272,25 @@ export function createExecutionEvidence(ctx,runtime,call,{executionDependencies=
   }
 
   async function execute(agent,input,signal){
-    const plan=checked(input),s=await runtime.init(agent,signal);
+    let plan=checked(input),replayState=null,replayRoot=null,replayLock=null;const s=await runtime.init(agent,signal);
     if(plan.mode==='recall')return s.config.executionTriage?recall(agent,plan,signal):
       {status:'disabled',feature:'executionTriage'};
     if(!s.config.executionTriage)return {status:'disabled',feature:'executionTriage'};
+    if(plan.mode==='replay'){
+      if(!s.config.probeReplay)return {status:'disabled',feature:'probeReplay',executionOccurred:false};
+      plan=replayPlan(agent,plan.id,plan.maxChars);
+      replayState=evidenceState(agent);replayRoot=plan.replayOf.rootProbeId;
+      if(replayState.replayLocks.get(replayRoot)?.inFlight)return {status:'unavailable',reason:'probe-replay-in-flight',executionOccurred:false,replayOf:plan.replayOf};
+      try{assertReplayFamilySettled(agent,plan.replayOf.rootProbeId);}catch(error){return {status:'unavailable',reason:'probe-replay-pending',executionOccurred:false,replayOf:plan.replayOf,error:String(error.message)};}
+      replayLock={inFlight:true};replayState.replayLocks.set(replayRoot,replayLock);
+    }
+    try{
     if(plan.mode==='inspect')return {status:'available',tools:available(agent),
       note:'Use a concrete question and an already formed native call within the current task. No command or case is generated automatically.'};
     if(!available(agent).includes(plan.tool))return {status:'deopt',reason:'requested-native-tool-unavailable',tool:plan.tool,executionOccurred:false};
+    if(SHELL.has(plan.tool)&&ctx.get('sandboxPolicy')?.resolve({session:agent.session})?.mode==='read-only')
+      return {status:'unavailable',reason:'native-read-only-session',executionOccurred:false,
+        error:'A read-only session cannot start an unrestricted Shell probe. Use native read tools or retained read-only calculations.'};
     const dependencies=await executionDependencies.capture(s.root,plan.sources,signal);
     const id='probe-'+randomUUID(),started=performance.now(),observedAt=new Date().toISOString();
     const args={...plan.arguments};
@@ -235,6 +305,9 @@ export function createExecutionEvidence(ctx,runtime,call,{executionDependencies=
       observedAt,elapsedMs,elapsedSource:'work_probe-wall-clock',s,
       sourceScope:'Caller-declared sources only. File applicability is assessed separately from execution and task correctness.',
       scope:'Only the supplied call, inputs and observed environment; no general correctness or task completion claim.'});
+    if(plan.replayOf)observation.replayOf=plan.replayOf;
+    if(replayState&&pendingProducer(observation))
+      replayState.replayLocks.set(replayRoot,{pending:observation,seq:agent.session.seq});
     Object.assign(observation,await executionDependencies.finish(dependencies,observation.executionCompleted&&!observation.partial,signal));
     const record=makeRecord({s,id,recordOrigin:'work_probe',callId:explicitExecution?.callId??null,rootCallId:explicitExecution?.rootCallId??explicitExecution?.callId??null,
       observedAt,question:plan.question,tool:plan.tool,args,sources:plan.sources,requestedCases:plan.cases,observation,result});
@@ -243,6 +316,7 @@ export function createExecutionEvidence(ctx,runtime,call,{executionDependencies=
     finishRecord(state,record,outcome);
     s.dirty=true;
     return observation;
+    }finally{if(replayLock&&replayState.replayLocks.get(replayRoot)===replayLock)replayState.replayLocks.delete(replayRoot);}
   }
 
   function summary(agent){

@@ -61,6 +61,41 @@ test('external, unknown and conflicting child identities never advertise local c
   assert.equal(local.childLookup,null);assert.equal(local.source.recoverable,false);
 });
 
+test('rc.2 named catalog reports preserve local discovery and external boundaries',()=>{
+  for(const mode of ['continuable','external']){
+    const entry=catalog(0,'child',mode);Object.assign(entry.data,{version:3,name:'investigator'});
+    const result=subagentResultIndex([entry,notice(1)],'parent',{searchAvailable:true}).items[0];
+    assert.equal(result.locality,mode==='external'?'external':'local');
+    assert.equal(!!result.childLookup,mode==='continuable');
+    for(const name of [undefined,'lead','Upper','a/b','x'.repeat(33)]){
+      const invalid=structuredClone(entry);invalid.data.name=name;
+      const unknown=subagentResultIndex([invalid,notice(1)],'parent',{searchAvailable:true}).items[0];
+      assert.equal(unknown.locality,'unknown');assert.equal(unknown.childLookup,null);
+    }
+  }
+  const a=catalog(0),b=catalog(2);
+  Object.assign(a.data,{version:3,name:'first'});Object.assign(b.data,{version:3,name:'second'});
+  assert.equal(subagentResultIndex([a,notice(1),b],'parent',{searchAvailable:true}).items[0].locality,'unknown');
+});
+
+test('a malformed later catalog invalidates prior local discovery without poisoning another child',()=>{
+  for(const invalid of [
+    {version:3,mode:'external'},
+    {version:3,mode:'continuable',name:'lead'},
+    {version:3,mode:'continuable',name:'valid',childCreatedAt:-1}
+  ]){
+    const first=catalog(0),other=catalog(1,'other'),broken=catalog(2);
+    Object.assign(broken.data,invalid);
+    const recovered=catalog(3);
+    const rows=subagentResultIndex([first,other,broken,recovered,notice(4),notice(5,'other')],'parent',{searchAvailable:true}).items;
+    assert.equal(rows[0].membership,'unknown');assert.equal(rows[0].locality,'unknown');assert.equal(rows[0].childLookup,null);
+    assert.equal(rows[1].locality,'local');assert.ok(rows[1].childLookup);
+    const invalidSequence=structuredClone(broken);invalidSequence.seq=-1;
+    const unchanged=subagentResultIndex([first,invalidSequence,notice(4)],'parent',{searchAvailable:true}).items[0];
+    assert.equal(unchanged.locality,'local');assert.ok(unchanged.childLookup);
+  }
+});
+
 test('clipped and omitted reports retain counts and full parent source recovery',()=>{
   const log=[catalog(0),...Array.from({length:12},(_,index)=>notice(index+1,'child','result-'+index+' '+('Source details. '.repeat(300))))];
   const f=fixture(log),full=f.build(),reports=full.observedWork.subagentResults;

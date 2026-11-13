@@ -65,9 +65,11 @@ async function* emit(turn,usage){
  * Start a host with the plugin mounted.
  * script(options, calls) returns an array of text()/tool() items for each main request;
  * auxiliary(options) answers non-loop calls (quality review, compaction).
+ * mountShell:false only omits the default pwsh mounts; platform fixtures can
+ * mount their native bash executor without replacing the existing pwsh service.
  */
 export async function startHost({script,auxiliary=()=>[text('{}')],pluginConfig={},workspace=null,efforts=['low','high','max'],toolMode='native',mountPlugin=true,
-  extraMounts=[],usage=null,contextWindow=200000,pluginDirectory=PLUGIN,sessionQueryMount=['dsh-session-query']}={}){
+  extraMounts=[],usage=null,contextWindow=200000,pluginDirectory=PLUGIN,sessionQueryMount=['dsh-session-query'],filesystem='dsh-fs-local',fileTools={},mountShell=true}={}){
   const [{Context},llm]=await Promise.all([load('cordis'),load('dsh-llm')]);
   const cwd=await fs.mkdtemp(path.join(os.tmpdir(),'we-host-'));
   if(workspace){await fs.mkdir(path.join(cwd,'.dsh','work-evidence'),{recursive:true});await fs.writeFile(path.join(cwd,'.dsh','work-evidence','config.json'),JSON.stringify(workspace));}
@@ -97,8 +99,9 @@ export async function startHost({script,auxiliary=()=>[text('{}')],pluginConfig=
     ['dsh-session'],['dsh-agent'],['dsh-session-projection'],sessionQueryMount,['dsh-token-meter'],['dsh-system-prompt'],
     ['dsh-tools',splitToolExecutor?{}:{mode:toolMode}],
     ...(splitToolExecutor?[[toolMode==='ptc'?'dsh-tool-executor-ptc':'dsh-tool-executor-native',{}]]:[]),
-    ['dsh-fs-local',{cwd}],['dsh-working-directory',{defaultDirectory:cwd}],['dsh-subprocess-local'],['dsh-sandbox-local'],['dsh-sandbox-policy',{mode:'danger-full-access',workspaceRoot:cwd}],
-    ['dsh-shell-env'],['dsh-jobs-local'],['dsh-pwsh-local',{cwd}],['dsh-tool-pwsh',{}],['dsh-tool-fs',{read:true,write:true,edit:true}],['dsh-tool-fs-search',{sampleOverCapGlobResults:false}],
+    [filesystem,{cwd}],['dsh-working-directory',{defaultDirectory:cwd}],['dsh-subprocess-local'],['dsh-sandbox-local'],['dsh-sandbox-policy',{mode:'danger-full-access',workspaceRoot:cwd}],
+    ['dsh-shell-env'],['dsh-jobs-local'],...(mountShell?[['dsh-pwsh-local',{cwd}],['dsh-tool-pwsh',{}]]:[]),
+    ['dsh-tool-fs',{read:true,write:true,edit:true,...fileTools}],['dsh-tool-fs-search',{sampleOverCapGlobResults:false}],
     ['dsh-llm'],['dsh-agent-loop'],['dsh-commands'],['dsh-session-persistence-jsonl',{root:path.join(cwd,'.sessions')}],...extraMounts,
   ])await mount(name,config);
   patchToolExecution(ctx);
@@ -118,6 +121,16 @@ export async function startHost({script,auxiliary=()=>[text('{}')],pluginConfig=
     agent.followup(llm.createUserMessage({content:[{type:'text',text:message}],source:{kind:'user'}}));
     await agent.whenIdle();
   }
+  function startSubagent(spec){
+    const version=JSON.parse(readFileSync(require.resolve('@deepseek-ai/dsh-subagent/package.json'),'utf8')).version;
+    if(version==='0.2.2-rc.2')return ctx.subagents.startActivation(spec);
+    const {provider,label,delivery,signal,...request}=spec;
+    return ctx.subagents.startActivation({provider,label,delivery,signal,request});
+  }
+  async function waitForSubagents(parent){
+    if(typeof ctx.subagents.waitForTreeWork==='function')await ctx.subagents.waitForTreeWork(parent);
+    else await ctx.subagents.waitForChildren(parent);
+  }
   async function command(agent,input){
     const result=await ctx.commands.execute(agent,'/work-evidence '+input,[],AbortSignal.timeout(30000));
     if(result?.result?.kind!=='success')throw new Error(result?.result?.text??'command failed');
@@ -127,7 +140,7 @@ export async function startHost({script,auxiliary=()=>[text('{}')],pluginConfig=
     try{await ctx.fiber?.dispose?.();}catch{}
     await fs.rm(cwd,{recursive:true,force:true,maxRetries:3});
   }
-  return {ctx,cwd,requests,auxiliaryRequests,events,createAgent,send,command,close,llm};
+  return {ctx,cwd,requests,auxiliaryRequests,events,createAgent,send,startSubagent,waitForSubagents,command,close,llm};
 }
 
 export const systemOf=options=>{

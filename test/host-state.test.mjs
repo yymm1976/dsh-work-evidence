@@ -62,3 +62,22 @@ test('ledgerUnresolved describes repeated empty searches and suppresses the lega
     }finally{await host.close();}
   }
 });
+
+test('a later external revision refreshes the unresolved notice when more windows of the same file become historical',async()=>{
+  let cwd;
+  const host=await startHost({workspace:{historyHygiene:false,contextProtocol:false},script:async(_options,n)=>{
+    if(n===1)return [tool('read',{file_path:'a.txt',offset:1,limit:3})];
+    if(n===2||n===4){await fs.writeFile(path.join(cwd,'a.txt'),`revision ${n}\nline ${n}\nlast ${n}\n`);return [tool('read',{file_path:'a.txt',offset:1,limit:1})];}
+    if(n===3)return [tool('read',{file_path:'a.txt',offset:2,limit:1})];
+    return [text('Observed the current first line; other recorded windows are historical.')];
+  }});
+  cwd=host.cwd;
+  try{
+    await fs.writeFile(path.join(cwd,'a.txt'),'original\nsecond\nthird\n');
+    const agent=await host.createAgent('max');await host.send(agent,'Read the requested file windows and report their validity.');
+    const detail=await host.command(agent,'detail');
+    const notice=host.requests.at(-1).messages.findLast(message=>message.source?.kind==='work-evidence-ledger');
+    assert.ok(notice,JSON.stringify(detail.detail));
+    assert.match(notice.content.map(block=>block.text??'').join('\n'),/2 earlier observations are historical/u);
+  }finally{await host.close();}
+});

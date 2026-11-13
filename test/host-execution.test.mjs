@@ -386,6 +386,8 @@ test('native job list can return a running process without adding a query error'
     }});
   try{
     const agent=await host.createAgent('max');await host.send(agent,'读取后台任务的实际状态。');
+    const settled=await host.ctx.jobs.wait(jobId,10000,agent.session.id,AbortSignal.timeout(12000));
+    assert.equal(settled.status,'killed');
     const status=await host.command(agent,'detail');
     assert.ok(!status.taskFlow.unresolvedErrors.some(error=>error.tool==='job_list'));
     assert.ok(host.events.some(event=>event.type==='job/settled'&&event.data.jobId===jobId&&event.data.status==='killed'));

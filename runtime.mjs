@@ -5,7 +5,7 @@ import {randomUUID} from 'node:crypto';
 import {within,references,assertExistingFileWithin,readUtf8File} from './evidence.mjs';
 import {recoveryFor,recoveryOf} from './recovery.mjs';
 
-export const VERSION='1.1.0';
+export const VERSION='1.1.2';
 export const RETIRED_SETTINGS=Object.freeze(['taskEffort','nativeReadView','nativeExecutionEvidence','reasoningHistory','cacheOrderedStub','archiveEntries','ledgerFoldPlan','ledgerFoldWrite','programHistory','executionAdvice','finishAdvice']);
 export const MODES=Object.freeze(['default','aggressive','quality']);
 export const MODE_POLICY_VERSION='pb001-v39';
@@ -36,11 +36,11 @@ export function defaults(raw={}){
     fastEditEnabled:true,fastEditPython:path.join(import.meta.dirname,'.fastedit-venv','Scripts','python.exe'),
     stateLedger:true,stateInform:true,completionNotice:false,archiveReadRouting:true,readArgumentRecovery:true,requestAccounting:true,evidenceViews:true,memberParsing:true,mavenSourceBinding:true,
     contextProtocol:true,contextPruningPolicy:'forecast',historyHygiene:true,contextPruneMinChars:8000,contextPruneHeadChars:4096,contextPruneTailChars:1024,
-    ledgerReceipt:true,ledgerUnresolved:true,
+    ledgerReceipt:true,ledgerUnresolved:true,nativeVerifiedEdits:false,fileProfiling:false,structuredJson:false,
     swLedger:false,swEviction:false,swEvictionSteps:3,
     requestProjection:false,projectionRestore:false,compressionControl:true,compactionTiming:'native',
     deferPressureCompaction:false,stubSummary:false,
-    executionTriage:true,nativeProgramReuse:false,structuredCalls:false,nativeReasoningReplay:false,stageWorkingSet:true,stepPacing:true,retainedCompute:true,finalJsonGuard:true,finalJsonResultGuard:false,qualityReview:false,qualityReviewEffort:'auto',qualityReviewScope:'auto',
+    executionTriage:true,nativeProgramReuse:false,hostNodeFallback:false,nativeShellScriptReuse:false,probeReplay:false,structuredCalls:false,nativeReasoningReplay:false,stageWorkingSet:true,stepPacing:true,retainedCompute:true,finalJsonGuard:true,finalJsonResultGuard:false,qualityReview:false,qualityReviewEffort:'auto',qualityReviewScope:'auto',
     projectionMinChars:64000,projectionRecentSteps:6,projectionStableSteps:8,projectionHorizonSteps:16,projectionPricing:[],
     toolSurface:'compact',
     defaultResponseView:'reference-if-visible',...raw};
@@ -49,7 +49,7 @@ export function defaults(raw={}){
   if(config.mode==='default'&&raw.aggressiveMode===undefined)config.aggressiveMode=false;
   const known=new Set(['enabled','aggressiveMode','mode','selfIndex','modelTimeoutMs','modelMaxTokens','modelRoute','fastEditEnabled','fastEditPython','stateLedger','stateInform','archiveReadRouting','readArgumentRecovery','requestAccounting','evidenceViews','memberParsing','mavenSourceBinding',
     'contextProtocol','contextPruningPolicy','historyHygiene','programHistory','reasoningHistory','retainedCompute','contextPruneMinChars','contextPruneHeadChars','contextPruneTailChars','completionNotice',
-    'ledgerReceipt','ledgerUnresolved','ledgerFoldPlan','ledgerFoldWrite','defaultResponseView','swLedger','swEviction','swEvictionSteps','nativeProgramReuse','structuredCalls','nativeReasoningReplay',
+    'ledgerReceipt','ledgerUnresolved','nativeVerifiedEdits','fileProfiling','structuredJson','ledgerFoldPlan','ledgerFoldWrite','defaultResponseView','swLedger','swEviction','swEvictionSteps','nativeProgramReuse','hostNodeFallback','nativeShellScriptReuse','probeReplay','structuredCalls','nativeReasoningReplay',
     'requestProjection','projectionRestore','compressionControl','compactionTiming','deferPressureCompaction','stubSummary','cacheOrderedStub','archiveEntries','executionTriage','executionAdvice','stageWorkingSet','finishAdvice','stepPacing','taskEffort','finalJsonGuard','finalJsonResultGuard','qualityReview','qualityReviewEffort','qualityReviewScope','nativeReadView','nativeExecutionEvidence','projectionMinChars','projectionRecentSteps','projectionStableSteps','projectionHorizonSteps','projectionPricing','toolSurface']);
   if(!raw||typeof raw!=='object'||Array.isArray(raw)||Object.keys(raw).some(k=>!known.has(k)))throw new Error('Unknown work-evidence setting');
   // Accept old workspaces without loading removed modules or re-enabling their hooks.
@@ -63,7 +63,7 @@ export function defaults(raw={}){
   if(!['native','adaptive'].includes(config.compactionTiming))throw new Error('Invalid compactionTiming');
   config.compactionTiming='native';
   for(const key of ['enabled','aggressiveMode','selfIndex','fastEditEnabled','stateLedger','stateInform','archiveReadRouting','readArgumentRecovery','requestAccounting','evidenceViews','memberParsing','mavenSourceBinding','contextProtocol','historyHygiene','programHistory','reasoningHistory',
-    'ledgerReceipt','ledgerUnresolved','ledgerFoldPlan','ledgerFoldWrite','swLedger','swEviction','requestProjection','projectionRestore','compressionControl','deferPressureCompaction','stubSummary','cacheOrderedStub','archiveEntries','executionTriage','nativeProgramReuse','structuredCalls','nativeReasoningReplay','executionAdvice','stageWorkingSet','finishAdvice','stepPacing','retainedCompute','taskEffort','finalJsonGuard','finalJsonResultGuard','qualityReview','nativeReadView','nativeExecutionEvidence','completionNotice'])if(typeof config[key]!=='boolean')throw new Error('Invalid '+key);
+    'ledgerReceipt','ledgerUnresolved','nativeVerifiedEdits','fileProfiling','structuredJson','ledgerFoldPlan','ledgerFoldWrite','swLedger','swEviction','requestProjection','projectionRestore','compressionControl','deferPressureCompaction','stubSummary','cacheOrderedStub','archiveEntries','executionTriage','nativeProgramReuse','hostNodeFallback','nativeShellScriptReuse','probeReplay','structuredCalls','nativeReasoningReplay','executionAdvice','stageWorkingSet','finishAdvice','stepPacing','retainedCompute','taskEffort','finalJsonGuard','finalJsonResultGuard','qualityReview','nativeReadView','nativeExecutionEvidence','completionNotice'])if(typeof config[key]!=='boolean')throw new Error('Invalid '+key);
   if(!Number.isInteger(config.swEvictionSteps)||config.swEvictionSteps<3||config.swEvictionSteps>50)throw new Error('Invalid swEvictionSteps');
   for(const [key,min,max] of [['projectionMinChars',16000,2000000],['projectionRecentSteps',3,50],['projectionStableSteps',4,100],['projectionHorizonSteps',1,64]])
     if(!Number.isInteger(config[key])||config[key]<min||config[key]>max)throw new Error('Invalid '+key);
@@ -420,8 +420,21 @@ export function createRuntime(ctx,call,initial={}){
     }
     throw new Error('Stored record exceeds the local page budget');
   }
-  async function save(agent,file,value,signal){
+  async function save(agent,file,value,signal,{background=false}={}){
     const text=typeof value==='string'?value:JSON.stringify(value,null,2)+'\n',exec=execFor(agent,signal);
+    if(background){
+      const s=get(agent),targetPath=within(s.root,file),relative=path.relative(s.dir,targetPath);
+      if(relative==='..'||relative.startsWith('..'+path.sep)||path.isAbsolute(relative))throw new Error('Background Work Evidence writes must remain inside its storage directory');
+      const backend=ctx.get('fs'),policy=ctx.get('sandboxPolicy')?.resolve({session:agent.session});
+      if(!backend?.writeText||!policy||!['workspace-write','danger-full-access'].includes(policy.mode))
+        throw new Error('Background report storage requires an authorized native file provider');
+      const workspace=await backend.resolve(s.root,{cwd:s.root,signal}),storage=await backend.resolve(s.dir,{cwd:s.root,signal}),target=await backend.resolve(targetPath,{cwd:s.root,signal});
+      if(!backend.contains(workspace,storage)||!backend.contains(storage,target))throw new Error('Background report storage resolves outside its workspace storage directory');
+      const info=await backend.stat(target,signal);
+      if(info&&info.type!=='file')throw new Error('Background report target is not a regular file');
+      await backend.writeText(target,text,info?{kind:'replaceIfVersion',version:info.version}:{kind:'createIfAbsent'},signal,policy);
+      return file;
+    }
     if(!exec.token){
       const s=await init(agent,signal),target=within(s.root,file),relative=path.relative(s.dir,target);
       if(relative==='..'||relative.startsWith('..'+path.sep)||path.isAbsolute(relative))throw new Error('Background Work Evidence writes must remain inside its storage directory');
@@ -570,10 +583,10 @@ export function createRuntime(ctx,call,initial={}){
     telemetry:{directory:s.telemetryDir,scope:s.telemetryScope,workspaceConfiguration:s.dir},workspaceConfigValid:s.workspaceConfigValid,workspaceSettingsRetainedInMemory:s.workspaceFileMissing,
       features:{aggressiveMode:s.config.aggressiveMode,selfIndex:s.config.selfIndex,completionNotice:s.config.completionNotice,ptcPatterns:true,ptcFastpath:true,verifiedExec:true,fastEdit:s.config.fastEditEnabled,contextProtocol:s.config.contextProtocol,historyHygiene:s.config.historyHygiene,
       stateLedger:s.config.stateLedger,stateInform:s.config.stateInform,archiveReadRouting:s.config.archiveReadRouting,readArgumentRecovery:s.config.readArgumentRecovery,requestAccounting:s.config.requestAccounting,evidenceViews:s.config.evidenceViews,memberParsing:s.config.memberParsing,mavenSourceBinding:s.config.mavenSourceBinding,
-      ledgerReceipt:s.config.ledgerReceipt,ledgerUnresolved:s.config.ledgerUnresolved,
+      ledgerReceipt:s.config.ledgerReceipt,ledgerUnresolved:s.config.ledgerUnresolved,nativeVerifiedEdits:s.config.nativeVerifiedEdits,fileProfiling:s.config.fileProfiling,structuredJson:s.config.structuredJson,
       swLedger:s.config.swLedger,swEviction:s.config.swEviction,swEvictionSteps:s.config.swEvictionSteps,defaultResponseView:s.sessionDefaultResponseView??s.config.defaultResponseView,
       requestProjection:s.config.requestProjection,projectionRestore:s.config.projectionRestore,compressionControl:s.config.compressionControl,compactionTiming:s.config.compactionTiming,deferPressureCompaction:s.config.deferPressureCompaction,stubSummary:s.config.stubSummary,
-      executionTriage:s.config.executionTriage,nativeProgramReuse:s.config.nativeProgramReuse,structuredCalls:s.config.structuredCalls,nativeReasoningReplay:s.config.nativeReasoningReplay,stageWorkingSet:s.config.stageWorkingSet,stepPacing:s.config.stepPacing,retainedCompute:s.config.retainedCompute,
+      executionTriage:s.config.executionTriage,nativeProgramReuse:s.config.nativeProgramReuse,hostNodeFallback:s.config.hostNodeFallback,nativeShellScriptReuse:s.config.nativeShellScriptReuse,probeReplay:s.config.probeReplay,structuredCalls:s.config.structuredCalls,nativeReasoningReplay:s.config.nativeReasoningReplay,stageWorkingSet:s.config.stageWorkingSet,stepPacing:s.config.stepPacing,retainedCompute:s.config.retainedCompute,
       qualityReview:s.config.qualityReview,qualityReviewEffort:s.config.qualityReviewEffort,qualityReviewScope:s.config.qualityReviewScope},
     contextSettings:{requestProjection:s.config.requestProjection,projectionRestore:s.config.projectionRestore,compressionControl:s.config.compressionControl,compactionTiming:s.config.compactionTiming,deferPressureCompaction:s.config.deferPressureCompaction,stubSummary:s.config.stubSummary,
       projectionMinChars:s.config.projectionMinChars,projectionRecentSteps:s.config.projectionRecentSteps,projectionStableSteps:s.config.projectionStableSteps,

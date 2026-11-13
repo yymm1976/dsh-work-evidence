@@ -1,16 +1,17 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {createTaskFlow} from '../task-flow.mjs';
+import path from 'node:path';
+import {createTaskFlow,taskFlowGuidance} from '../task-flow.mjs';
 import {defaults} from '../runtime.mjs';
 import {reportedCheckFailure,reportedExecutionChecks} from '../recovery.mjs';
 
-function reviewResult(value,{body=typeof value==='string'?value:JSON.stringify(value),live=false,isError=false}={}){
+function reviewResult(value,{body=typeof value==='string'?value:JSON.stringify(value),live=false,isError=false,commandName='pwsh'}={}){
   const log=[{seq:0,type:'turn/start',data:{turn:1}},
     {seq:1,type:'user/message',data:{message:{id:'request',role:'user',source:{kind:'user'},content:[{type:'text',text:'运行检查并说明结果'}]}}},
-    {seq:2,type:'tool/call',data:{turn:1,step:1,callId:'shell',name:'pwsh',arguments:{command:'run-checks',description:'checks'}}}];
+    {seq:2,type:'tool/call',data:{turn:1,step:1,callId:'shell',name:commandName,arguments:{command:'run-checks',description:'checks'}}}];
   const agent={session:{id:'execution-facts',log,seq:4}},state={config:{...defaults(),qualityReview:true},root:process.cwd()};
   const flow=createTaskFlow({}, {get:()=>state,isEnabled:()=>true,activeMode:()=> 'quality'});
-  if(live)flow.observe({agent,name:'pwsh',callId:'shell'},{value,content:[{type:'text',text:body}],isError});
+  if(live)flow.observe({agent,name:commandName,callId:'shell'},{value,content:[{type:'text',text:body}],isError});
   log.push({seq:3,type:'tool/result',data:{turn:1,step:1,message:{role:'tool',source:{callId:'shell'},content:[{type:'text',text:body}],isError}}});
   return flow.reviewState(agent);
 }
@@ -24,6 +25,16 @@ test('zero failed count is not confused with the total count before FAILED',()=>
       assert.equal(result.executions[0].executionCompleted,true);
       assert.equal(result.unresolvedErrors.length,0);
     }
+  }
+});
+
+test('an unavailable native command remains unresolved without claiming execution completed',()=>{
+  for(const commandName of ['work_exec','bash','pwsh'])for(const live of [false,true]){
+    const result=reviewResult({status:'unavailable',reason:'native-shell-env-unavailable',executionOccurred:false},{live,commandName});
+    assert.equal(result.executions[0].tool,commandName);
+    assert.equal(result.executions[0].executionCompleted,false);
+    assert.equal(result.executions[0].exitCode,null);
+    assert.equal(result.unresolvedErrors.length,1);
   }
 });
 
@@ -149,10 +160,11 @@ test('cold completion cannot resolve another command, working directory, user re
 });
 
 test('unrelated, ambiguous or later completion and explicitly partial results preserve a native failure',()=>{
-  for(const variation of ['wrong-owner','duplicate','later','partial','truncated','reported-failure']){
+  for(const variation of ['wrong-owner','duplicate','later','partial','truncated','execution-incomplete','reported-failure']){
     const h=nativeRecovery(),first=h.command('run-checks',1);
     const body=variation==='partial'?JSON.stringify({nativeStructured:false,partial:true}):
       variation==='truncated'?JSON.stringify({nativeStructured:false,stdout:{text:'ok',truncated:true}}):
+      variation==='execution-incomplete'?JSON.stringify({executionCompleted:false}):
       variation==='reported-failure'?'TOTAL 2 FAILED 1':'command output';
     h.command('run-checks',0,{variation,body});
     const result=h.review();
@@ -219,6 +231,32 @@ test('job registry queries keep the call outcome separate from states in the ret
   }
 });
 
+test('producer job identities take precedence over wrapper aliases and settle after live or cold replay',()=>{
+  for(const live of [true,false])for(const nested of [true,false])for(const producer of [
+    {jobId:'producer-job'},{job_id:'producer-job'},{job:{id:'producer-job'}}]){
+    const t=timeline({stepPacing:false}),value={jobId:'wrapper-job',data:{kind:'background',...producer}};
+    t.command('work_exec',{runtime:'node',code:'start_server()'},value,{live,nested,output:'child operation dispatched'});
+    const before=t.flow.summary(t.agent);
+    assert.deepEqual(before.pendingJobs,['producer-job'],JSON.stringify({live,nested,producer}));
+    assert.equal(before.nativeExecutions[0].jobId,'producer-job');
+    t.add('job/settled',{jobId:'producer-job',status:'completed'});
+    assert.deepEqual(t.flow.summary(t.agent).pendingJobs,[],'producer settlement clears its own pending job');
+  }
+});
+
+test('a same-command retry with completed false cannot resolve a recorded process failure',()=>{
+  for(const live of [true,false])for(const nested of [true,false]){
+    const t=timeline({stepPacing:false,qualityReview:true},[],'quality'),args={command:'run-checks'};
+    t.command('pwsh',args,{exitCode:1,stdout:'failed',stderr:''},{live,nested});
+    t.command('pwsh',args,{exitCode:0,completed:false,stdout:'still incomplete',stderr:''},{live,nested});
+    const result=t.flow.reviewState(t.agent);
+    assert.equal(result.unresolvedErrors.length,1,JSON.stringify({live,nested}));
+    assert.equal(result.executions.at(-1).executionCompleted,false);
+    t.command('pwsh',args,{exitCode:0,completed:true,stdout:'finished',stderr:''},{live,nested});
+    assert.equal(t.flow.reviewState(t.agent).unresolvedErrors.length,0,'an actual complete retry can resolve the failure');
+  }
+});
+
 test('implicit PTC file writes separate execution comparisons without claiming an observed mutation',()=>{
   for(const live of [true,false]){
     const t=timeline({stepPacing:false}),args={command:'node checks.mjs'},result={exitCode:0,stdout:'passed',stderr:''};
@@ -231,6 +269,64 @@ test('implicit PTC file writes separate execution comparisons without claiming a
     assert.equal(summary.nativeExecutions[1].programEpoch,3,'assistant and tool/call events count one program');
     t.command('pwsh',args,result,{live});
     assert.equal(t.notices().some(m=>m.source.taskFlow.kind==='reuse'),live,'only live complete short outputs support an equality comparison');
+  }
+});
+
+test('tool-owned conditional-edit errors retain committed effects and invalidate prior evidence',()=>{
+  for(const reason of ['interrupted','permission denied'])for(const hostPrefix of ['', 'Error: ']){
+    const t=timeline({stepPacing:false,qualityReview:true},[],'quality'),source=path.resolve(process.cwd(),'source.txt');
+    const observation={path:source,exists:true,type:'file',version:'before'};
+    t.command('work_exec',{runtime:'node',code:'Check the declared source',sources:['source.txt']},{exitCode:0,
+      fileDependencies:{schema:'work-evidence.declared-files.v1',scope:'caller-declared-files-only',workspace:process.cwd(),declaredCount:1,executionCompleted:true,
+        files:[{source:'source.txt',before:observation,after:observation}]},
+      evidenceAssessment:{validity:'current-for-declared-files',files:[{source:'source.txt',path:source,status:'unchanged'}]}},{live:false});
+    t.command('work_report',{status:'complete',summary:'Earlier state',remaining:[]},{saved:true,path:'report.json'},{live:false});
+    assert.ok(t.flow.handoff(t.agent).report);
+    const outcome={status:'partial',effectState:'applied',files:[{file:'source.txt',effectState:'applied'}]};
+    t.command('verified_exec',{apply:true,edits:[{file:'source.txt',mode:'replace_exact',old_text:'before',new_text:'after'}]},
+      hostPrefix+'verified_exec '+reason+': '+JSON.stringify(outcome),{live:false,isError:true});
+    const summary=t.flow.summary(t.agent),handoff=t.flow.handoff(t.agent);
+    assert.equal(summary.mutationVersion,1);assert.ok(summary.lastMutationSeq>0);
+    assert.equal(handoff.report,null);assert.equal(handoff.artifacts[0].effectState,'applied');
+    assert.equal(summary.nativeExecutions[0].evidenceValidity,'affected');
+    assert.equal(summary.nativeExecutions[0].evidenceAssessment.files[0].status,'changed-by-file-tool');
+    assert.ok(summary.unresolvedErrors.some(error=>error.tool==='verified_exec'),'An observed write does not make its interrupted tool successful');
+  }
+  for(const [toolName,isError,prefix]of [['pwsh',true,'Error: verified_exec interrupted: '],['verified_exec',false,'verified_exec interrupted: '],
+    ['verified_exec',true,'Error: unrelated failure: ']]){
+    const t=timeline({stepPacing:false}),outcome={files:[{file:'source.txt',effectState:'applied'}]};
+    t.command(toolName,{edits:[{file:'source.txt',mode:'create',content:'after'}]},prefix+JSON.stringify(outcome),{live:false,isError});
+    assert.equal(t.flow.summary(t.agent).mutationVersion,0,'Only the identified conditional-edit failure channel carries this effect');
+  }
+});
+
+test('an incomplete scriptRef retry preserves the referenced failed execution',()=>{
+  for(const live of [true,false])for(const nested of [true,false]){
+    const t=timeline({stepPacing:false,qualityReview:true},[],'quality');
+    t.command('work_exec',{runtime:'node',code:'throw new Error("failed")'}, {exitCode:1,stderr:'Error: failed',stdout:''},{live,nested});
+    const first=t.flow.reviewState(t.agent).unresolvedErrors[0];assert.ok(first);
+    t.command('work_exec',{scriptRef:'failed-version'}, {exitCode:0,completed:false,stdout:'pending',stderr:'',scriptSourceRefs:[first.callId]},{live,nested});
+    assert.equal(t.flow.reviewState(t.agent).unresolvedErrors.length,1,JSON.stringify({live,nested}));
+    t.command('work_exec',{scriptRef:'failed-version'}, {exitCode:0,completed:true,stdout:'complete',stderr:'',scriptSourceRefs:[first.callId]},{live,nested});
+    assert.equal(t.flow.reviewState(t.agent).unresolvedErrors.length,0);
+  }
+});
+
+test('structured JSON failures preserve per-file effects without clearing the tool error',()=>{
+  for(const live of [true,false])for(const nested of [true,false]){
+    const t=timeline({stepPacing:false});
+    t.command('work_report',{status:'complete',summary:'Earlier state',remaining:[]},{saved:true,path:'report.json'},{live,nested});
+    const outcome={status:'partial',effectState:'applied',files:[
+      {file:'changed.txt',effectState:'applied'},{file:'untouched.txt',effectState:'none'}]};
+    t.command('verified_exec',{apply:true,edits:[
+      {file:'changed.txt',mode:'create',content:'after'},{file:'untouched.txt',mode:'create',content:'other'}]},outcome,{live,nested,isError:true,innerIsError:true});
+    const summary=t.flow.summary(t.agent),handoff=t.flow.handoff(t.agent);
+    assert.equal(summary.mutationVersion,1);
+    assert.equal(handoff.report,null);
+    assert.equal(handoff.artifacts.length,1);
+    assert.equal(handoff.artifacts[0].path,'changed.txt');
+    assert.equal(handoff.artifacts[0].effectState,'applied');
+    assert.ok(summary.unresolvedErrors.some(error=>error.tool==='verified_exec'));
   }
 });
 
@@ -514,4 +610,25 @@ test('the next user request and successful program clear a prior clipped-read is
     if(action==='plugin-off')t.runtimeState.config.enabled=false;
     assert.ok(!t.notices().some(m=>m.source.taskFlow.key.includes('native-read-clipped-json')),action);
   }
+});
+
+test('aggressive guidance does not ban network access unconditionally',()=>{
+  const body=taskFlowGuidance('aggressive');
+  assert.doesNotMatch(body,/禁止访问网络/u,'experiment isolation must not be the default product rule');
+  assert.match(body,/需要联网的操作沿用用户已有授权；超出授权范围时再确认/u);
+  assert.match(body,/用户明确要求移植上游修复或恢复发布版实现时，按该要求使用指定来源/u);
+  assert.match(body,/不得使用用户禁止的外部实现/u);
+});
+
+test('correct failing reproductions must be fixed, not deleted',()=>{
+  const body=taskFlowGuidance('aggressive');
+  assert.match(body,/若复现有效但仍失败，必须继续修复实现并重跑该复现/u);
+  assert.match(body,/不得删除有效复现/u);
+  assert.match(body,/仅在确认测试无法修正时才删除它/u);
+  assert.match(body,/后续出现新的测试自身错误时，仍按实际证据修正，不限制修正次数/u);
+  assert.doesNotMatch(body,/最多修正测试(?:预期)?一次/u);
+  assert.match(body,/复现通过后，用文件工具删除临时测试/u);
+  assert.match(body,/既有测试断言仅在用户明确要求或指定行为确需调整时修改/u);
+  assert.match(body,/不得改动无关断言/u);
+  assert.doesNotMatch(body,/第二次仍失败则删除临时测试/u);
 });

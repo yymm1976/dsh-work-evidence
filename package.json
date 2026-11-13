@@ -1,8 +1,8 @@
 {
   "name": "@local/dsh-work-evidence",
-  "version": "1.1.0",
+  "version": "1.1.2",
   "private": true,
-  "description": "DSH-native evidence, stable request working sets, history recovery and optional OPS CAS/Java adapters",
+  "description": "DSH-native evidence, bounded data observations, conditional edits and history recovery",
   "type": "module",
   "exports": {
     ".": "./index.mjs",
@@ -16,7 +16,7 @@
   },
   "engines": {
     "node": ">=22.19",
-    "dsh": "0.2.1-rc.4 || 0.2.2-rc.1"
+    "dsh": "0.2.1-rc.4 || 0.2.2-rc.1 || 0.2.2-rc.2"
   },
   "files": [
     "scripts/check-syntax.mjs",
@@ -25,6 +25,12 @@
     "ultra-effort.mjs",
     "native-reasoning-replay.mjs",
     "native-files.mjs",
+    "native-cas.mjs",
+    "file-profile-core.mjs",
+    "file-profile.mjs",
+    "json-pointer.mjs",
+    "structured-json-core.mjs",
+    "structured-json.mjs",
     "evidence.mjs",
     "runtime.mjs",
     "observation-ledger.mjs",
@@ -32,6 +38,7 @@
     "context-pruning.mjs",
     "history-hygiene.mjs",
     "inline-exec.mjs",
+    "native-shell-script.mjs",
     "program-reference.mjs",
     "structured-calls.mjs",
     "retained-compute.mjs",
@@ -82,13 +89,16 @@
     "experiment-cli.mjs",
     "trajectory-audit.mjs",
     "README.md",
-    "RELEASE-NOTES-1.1.0.md",
-    "MIGRATION-1.1.0.md",
-    "ROLLBACK-1.1.0.md",
-    "RELEASE-GATES-1.1.0.md",
-    "FEATURE-CONTROL-MATRIX-1.1.0.md",
-    "OPTIMIZATION-REGISTER-1.1.0.md",
-    "DEFECT-LEDGER-1.1.0.md",
+    "RELEASE-NOTES-1.1.2.md",
+    "MIGRATION-1.1.2.md",
+    "ROLLBACK-1.1.2.md",
+    "RELEASE-NOTES-1.1.1.md",
+    "MIGRATION-1.1.1.md",
+    "ROLLBACK-1.1.1.md",
+    "RELEASE-GATES-1.1.1.md",
+    "FEATURE-CONTROL-MATRIX-1.1.1.md",
+    "OPTIMIZATION-REGISTER-1.1.1.md",
+    "DEFECT-LEDGER-1.1.1.md",
     "coderabbit-review-ledger.md",
     "cordis.patch.yml",
     "locale/*.json",
@@ -104,9 +114,9 @@
     "fflate": "^0.8.3"
   },
   "peerDependencies": {
-    "@deepseek-ai/dsh-llm": "0.2.1-rc.4 || 0.2.2-rc.1",
-    "@deepseek-ai/dsh-ptc-runtime-node": "0.2.1-rc.4 || 0.2.2-rc.1",
-    "@deepseek-ai/dsh-session-reference": "0.2.1-rc.4 || 0.2.2-rc.1"
+    "@deepseek-ai/dsh-llm": "0.2.1-rc.4 || 0.2.2-rc.1 || 0.2.2-rc.2",
+    "@deepseek-ai/dsh-ptc-runtime-node": "0.2.1-rc.4 || 0.2.2-rc.1 || 0.2.2-rc.2",
+    "@deepseek-ai/dsh-session-reference": "0.2.1-rc.4 || 0.2.2-rc.1 || 0.2.2-rc.2"
   },
   "peerDependenciesMeta": {
     "@deepseek-ai/dsh-llm": {

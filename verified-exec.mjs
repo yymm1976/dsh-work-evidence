@@ -1,6 +1,11 @@
 import path from 'node:path';
+import fs from 'node:fs/promises';
 import {createHash,randomUUID} from 'node:crypto';
 import {within,assertExistingFileWithin,readUtf8File} from './evidence.mjs';
+import {createNativeCas} from './native-cas.mjs';
+import {reportedExecutionChecks} from './recovery.mjs';
+import {dependencyExecutionComplete,executionResultLayers,executionExitCode} from './execution-dependencies.mjs';
+import {createNativeFiles} from './native-files.mjs';
 
 export const VERSION='0.8.3';
 
@@ -63,21 +68,131 @@ function validatePlan(input){
 
 function countExact(text,needle){
   const positions=[];let offset=0;
-  while((offset=text.indexOf(needle,offset))>=0){positions.push(offset);offset+=Math.max(1,needle.length);if(positions.length>1)break;}
+  while((offset=text.indexOf(needle,offset))>=0){positions.push(offset);offset++;if(positions.length>1)break;}
   return positions;
 }
 
-function groupEdits(edits,root){
-  const groups=new Map();
+function canonicalTargetName(name){
+  return name.normalize('NFC').toLowerCase().normalize('NFC');
+}
+
+function caseAlternateName(name){
+  return name.replace(/[a-zA-Z]/u,char=>char===char.toLowerCase()?char.toUpperCase():char.toLowerCase());
+}
+
+function normalizationAlternateName(name){
+  const nfc=name.normalize('NFC'),nfd=name.normalize('NFD');
+  return nfc!==name?nfc:nfd!==name?nfd:name;
+}
+
+async function directorySensitivity(directory){
+  try{
+    const entries=await fs.opendir(directory,{bufferSize:16}),names=[];
+    let complete=true;
+    for await(const entry of entries){
+      if(names.length===32){complete=false;break;}
+      names.push(entry.name);
+    }
+    async function probe(alternateName){
+      for(const name of names){
+        const alternate=alternateName(name);
+        if(alternate===name)continue;
+        // Two exact directory entries prove distinct names even if they are hard links.
+        if(names.includes(alternate))return true;
+        const source=path.join(directory,name),other=path.join(directory,alternate);
+        let before;
+        try{before=await fs.lstat(source,{bigint:true});}catch(error){if(error.code==='ENOENT')continue;throw error;}
+        try{
+          const aliased=await fs.lstat(other,{bigint:true});
+          const current=await fs.lstat(source,{bigint:true});
+          if(before.dev!==current.dev||before.ino!==current.ino)continue;
+          if(before.ino!==0n&&aliased.ino!==0n&&(before.dev!==aliased.dev||before.ino!==aliased.ino))return true;
+          if(complete)return false;
+        }catch(error){
+          if(error.code!=='ENOENT')throw error;
+          const current=await fs.lstat(source,{bigint:true});
+          if(before.dev===current.dev&&before.ino===current.ino)return true;
+        }
+      }
+      return null;
+    }
+    return {caseSensitive:await probe(caseAlternateName),normalizationSensitive:await probe(normalizationAlternateName)};
+  }catch{}
+  return {caseSensitive:null,normalizationSensitive:null};
+}
+
+function sameMissingTarget(left,right,caseSensitive,normalizationSensitive){
+  if(left.length!==right.length)return false;
+  for(let index=0;index<left.length;index++){
+    let leftName=left[index],rightName=right[index];
+    if(!normalizationSensitive){
+      leftName=leftName.normalize('NFC');rightName=rightName.normalize('NFC');
+    }
+    if(!caseSensitive){
+      leftName=leftName.toLowerCase();rightName=rightName.toLowerCase();
+    }
+    if(!normalizationSensitive){
+      leftName=leftName.normalize('NFC');rightName=rightName.normalize('NFC');
+    }
+    if(leftName!==rightName)return false;
+  }
+  return true;
+}
+
+function missingTargetRelation(left,right,sensitivity){
+  if(left.length!==right.length)return false;
+  if(left.every((name,index)=>name===right[index]))return true;
+  const caseModes=sensitivity.caseSensitive==null?[false,true]:[sensitivity.caseSensitive];
+  const normalizationModes=sensitivity.normalizationSensitive==null?[false,true]:[sensitivity.normalizationSensitive];
+  const aliases=[];
+  for(const caseSensitive of caseModes)for(const normalizationSensitive of normalizationModes)
+    aliases.push(sameMissingTarget(left,right,caseSensitive,normalizationSensitive));
+  return aliases.every(Boolean)?true:aliases.every(value=>!value)?false:null;
+}
+
+async function groupEdits(edits,root){
+  const groups=new Map(),candidateTargets=new Map(),sensitivity=new Map(),realRoot=await fs.realpath(root);
   for(const edit of edits){
     const full=within(root,edit.file),file=path.relative(root,full).replaceAll('\\','/');
-    const group=groups.get(file)||{file,full,mode:edit.mode,edits:[],content:null};
+    let parent=full,identity,groupKey;
+    const missing=[];
+    for(;;){
+      try{parent=await fs.realpath(parent);identity=path.join(parent,...missing);break;}
+      catch(error){
+        if(error.code!=='ENOENT'||path.dirname(parent)===parent)throw error;
+        missing.unshift(path.basename(parent));parent=path.dirname(parent);
+      }
+    }
+    within(realRoot,identity);
+    if(missing.length){
+      const info=await fs.stat(parent,{bigint:true});
+      const directoryKey=info.ino!==0n?`${info.dev}:${info.ino}`:parent;
+      identity=directoryKey+':'+JSON.stringify(missing);
+      groupKey=identity;
+      const candidateKey=directoryKey+':'+JSON.stringify(missing.map(canonicalTargetName));
+      const candidates=candidateTargets.get(candidateKey)??[];
+      for(const candidate of candidates){
+        let relation;
+        if(candidate.missing.length===missing.length&&candidate.missing.every((name,index)=>name===missing[index]))relation=true;
+        else{
+          if(!sensitivity.has(directoryKey))sensitivity.set(directoryKey,await directorySensitivity(parent));
+          relation=missingTargetRelation(candidate.missing,missing,sensitivity.get(directoryKey));
+          if(relation===null)throw new Error('Cannot establish whether case- or normalization-different missing targets are distinct in '+parent);
+        }
+        if(relation){
+          if(groupKey===identity)groupKey=candidate.groupKey;
+          else if(groupKey!==candidate.groupKey)throw new Error('Missing targets resolve to conflicting directory aliases');
+        }
+      }
+      candidates.push({missing,groupKey});candidateTargets.set(candidateKey,candidates);
+    }else groupKey=identity;
+    const group=groups.get(groupKey)||{file,full,mode:edit.mode,edits:[],content:null};
     if(group.mode!==edit.mode)throw new Error(`Conflicting create/replace modes for ${file}`);
     if(edit.mode==='create'){
       if(group.content!==null)throw new Error(`More than one create operation for ${file}`);
       group.content=edit.content;
     }else group.edits.push({oldText:edit.old_text,newText:edit.new_text});
-    groups.set(file,group);
+    groups.set(groupKey,group);
   }
   return [...groups.values()];
 }
@@ -130,33 +245,39 @@ function failedEffect(error){
 
 function shellTool(ctx,agent){return (process.platform==='win32'?['pwsh','ops_bash','bash']:['ops_bash','bash','pwsh']).find(name=>{try{return Boolean(ctx.tools.get(name,agent));}catch{return false;}})||null;}
 
-function shellPayload(value){
-  const data=wrapped(value);
-  return data&&typeof data==='object'?data:{};
-}
-
 async function runValidation(ctx,call,runtime,agent,validation,signal){
   const requested=validation.tool;
   if(requested&&(()=>{try{return !ctx.tools.get(requested,agent);}catch{return true;}})())return {passed:false,deopt:'requested-shell-unavailable',tool:requested,description:validation.description};
   const tool=requested||shellTool(ctx,agent);
   if(!tool)return {passed:false,deopt:'no-authorized-shell',tool:null,description:validation.description};
   const result=await call(tool,{command:validation.command,description:validation.description,timeoutMs:validation.timeoutMs},runtime.execFor(agent,signal));
-  const payload=shellPayload(result.value),exitCode=Number.isInteger(payload.exitCode)?payload.exitCode:null;
-  const status=outcomeStatus(result.value);
-  const statusOk=status===null||status==='completed';
-  const conclusive=exitCode!==null||status!==null||result.isError;
-  const passed=!result.isError&&statusOk&&payload.timedOut!==true&&payload.cancelled!==true&&!payload.error
-    &&(exitCode===0||(exitCode===null&&status==='completed'));
-  const stdout=typeof payload.stdout==='string'?payload.stdout:payload.stdout?.text;
-  const stderr=typeof payload.stderr==='string'?payload.stderr:payload.stderr?.text;
+  const layers=executionResultLayers(result),producerLayers=[...layers].reverse(),exitCode=executionExitCode(result);
+  const status=layers.map(node=>node.status??node.state??node.job?.status).find(value=>value!=null)??(result.isError?'error':'completed');
+  const executionComplete=dependencyExecutionComplete(result);
+  const conclusive=exitCode!==null||result.isError;
+  const reportedChecks=reportedExecutionChecks(result);
+  const passed=exitCode===0&&executionComplete&&!reportedChecks;
+  const stream=name=>producerLayers.map(node=>typeof node[name]==='string'?node[name]:node[name]?.text??node[name+'Text']).find(value=>value!==undefined);
+  const stdout=stream('stdout'),stderr=stream('stderr');
   return {passed,tool,description:validation.description,status:status||(result.isError?'error':'completed'),exitCode,
+    ...(reportedChecks?{reportedChecks}:{}),
     ...(!passed&&!conclusive?{deopt:'ambiguous-shell-result'}:{}),
-    timedOut:payload.timedOut===true,stdout:boundedOutput(stdout??payload.stdoutText??textOf(result)),
-    stderr:boundedOutput(stderr??payload.stderrText??''),
-    error:passed?null:payload.error||result.error||null};
+    timedOut:layers.some(node=>node.timedOut===true),stdout:boundedOutput(stdout??textOf(result)),
+    stderr:boundedOutput(stderr??''),
+    error:passed?null:producerLayers.find(node=>node.error)?.error??null};
 }
 
 export function createVerifiedExec(ctx,runtime,call){
+  let native;
+  let registeredNativeWrite=ctx.tools.get('write')??null;
+  let registeredNativeExecute=registeredNativeWrite?.execute;
+  // Headless compositions can activate this plugin before the file tools.
+  // Capture the first registered write, then keep rejecting later replacements.
+  ctx.on('tools/change',()=>{
+    if(registeredNativeWrite)return;
+    const write=ctx.tools.get('write');
+    if(write){registeredNativeWrite=write;registeredNativeExecute=write.execute;}
+  });
   async function execute(agent,input,signal){
     const s=await runtime.init(agent,signal),id='verified-'+randomUUID();
     const reportPath=path.join(s.dir,s.id+'.'+id+'.json');
@@ -173,10 +294,17 @@ export function createVerifiedExec(ctx,runtime,call){
     }
     const record={version:1,id,sessionId:s.id,createdAt:new Date().toISOString(),summary:plan.summary,applyRequested:plan.apply,
       status:'preflight',effectState:'none',files:[],validations:[],validationResults:[],atomicity:'per-file; cross-file writes are not transactional'};
+    const useNative=s.config.nativeVerifiedEdits===true;
+    if(useNative&&registeredNativeWrite)native??=createNativeCas(ctx,runtime,registeredNativeWrite,registeredNativeExecute);
+    record.backend=useNative?'dsh-native-cas':'ops-cas';
+    record.versionKind=useNative?'native-opaque':'sha256';
+    const observe=file=>useNative?native.stat(agent,file,signal):statFile(call,runtime,agent,file,signal);
     async function save(){await runtime.save(agent,reportPath,record,signal);}
     function fileEffects(){return record.files.map(file=>({file:file.file,mode:file.mode,
       status:file.effect?.status||'not-attempted',effectState:file.effect?.effectState||'none',
       beforeRevision:file.beforeRevision,afterRevision:file.afterRevision||file.effect?.revision||null,
+      versionKind:record.versionKind,contentHash:file.effect?.contentHash??(record.versionKind==='sha256'?file.effect?.revision??null:null),
+      expectedAfterHash:file.expectedAfterHash,
       changed:file.effect?.changed??null,...(file.effect?.error?{error:file.effect.error}:{})}));}
     function effectState(){
       const effects=record.files.filter(file=>file.effect).map(file=>file.effect);
@@ -184,18 +312,40 @@ export function createVerifiedExec(ctx,runtime,call){
       return effects.some(effect=>effect.ok||['applied','partial'].includes(effect.effectState))?'applied':'none';
     }
     async function saveOutcome(){
-      try{await save();return {reportSaved:true};}
-      catch(error){return {reportSaved:false,reportError:String(error?.message||error).slice(0,1200)};}
+      try{
+        // File effects must remain inspectable after the caller cancels. This
+        // detached write is restricted by runtime.save to plugin-owned storage.
+        if(signal.aborted)await runtime.save(agent,reportPath,record,AbortSignal.timeout(5000),{background:true});
+        else await save();
+        return {reportSaved:true};
+      }
+      catch(error){
+        if(signal.aborted)try{
+          await runtime.save(agent,reportPath,record,AbortSignal.timeout(5000),{background:true});return {reportSaved:true};
+        }catch(retry){error=retry;}
+        // The native write can commit before cancellation or a policy change
+        // rejects its response. Observe exact bytes without issuing another write.
+        try{
+          const expected=Buffer.from(JSON.stringify(record,null,2)+'\n');
+          if(expected.length<=2_000_000){
+            const observed=await createNativeFiles(ctx).readBytes(s.root,reportPath,AbortSignal.timeout(5000),expected.length,{requireKnownSize:true});
+            if(observed.versioned&&typeof observed.version==='string'&&observed.version&&observed.bytes.equals(expected))
+              return {reportSaved:true,reportObservedAfterWriteError:true,reportWriteError:String(error?.message||error).slice(0,1200)};
+          }
+        }catch{}
+        return {reportSaved:false,reportError:String(error?.message||error).slice(0,1200)};
+      }
     }
     let groups;
-    try{groups=groupEdits(plan.edits,s.root);}catch(error){
+    try{groups=await groupEdits(plan.edits,s.root);}catch(error){
       record.status='deopt';record.reason='invalid-plan';record.error=error.message;s.metrics.verifiedExecDeopts++;await save();
       return {status:'deopt',reason:record.reason,error:error.message,reportPath,effectState:'none'};
     }
-    const required=['ops_stat'];
-    if(plan.apply&&groups.some(group=>group.mode==='create'))required.push('ops_write_file');
-    if(plan.apply&&groups.some(group=>group.mode==='replace_exact'))required.push('ops_edit_file');
+    const required=useNative?[]:['ops_stat'];
+    if(!useNative&&plan.apply&&groups.some(group=>group.mode==='create'))required.push('ops_write_file');
+    if(!useNative&&plan.apply&&groups.some(group=>group.mode==='replace_exact'))required.push('ops_edit_file');
     const missing=required.filter(name=>{try{return !ctx.tools.get(name,agent);}catch{return true;}});
+    if(useNative&&(!native||!await native.available(agent)))missing.push('rc2-native-conditional-write');
     if(missing.length){
       record.status='deopt';record.reason='cas-file-tools-unavailable';record.missing=missing;s.metrics.verifiedExecDeopts++;await save();
       return {status:'deopt',reason:record.reason,missing,reportPath,effectState:'none'};
@@ -217,7 +367,7 @@ export function createVerifiedExec(ctx,runtime,call){
     }
     for(const group of groups){
       signal.throwIfAborted();
-      const observation=await statFile(call,runtime,agent,group.file,signal);
+      const observation=await observe(group.file);
       if(!observation.ok){
         record.status='deopt';record.reason='file-observation-unavailable';record.error=observation.error;
         s.metrics.verifiedExecDeopts++;await save();return {status:'deopt',reason:record.reason,file:group.file,error:observation.error,reportPath,effectState:'none'};
@@ -229,25 +379,29 @@ export function createVerifiedExec(ctx,runtime,call){
         }
         record.files.push({file:group.file,mode:'create',beforeRevision:'absent',bytesBefore:0,bytesAfter:Buffer.byteLength(group.content),
           expectedAfterHash:hash(group.content),hunks:0});
+        group.expectedText=group.content;
         continue;
       }
-      if(!observation.exists||!HEX_REVISION.test(String(observation.revision||''))){
+      if(!observation.exists||(useNative?observation.type!=='file'||typeof observation.revision!=='string'||!observation.revision:!HEX_REVISION.test(String(observation.revision||'')))){
         record.status='deopt';record.reason='existing-file-revision-unavailable';record.file=group.file;
         s.metrics.verifiedExecDeopts++;await save();return {status:'deopt',reason:record.reason,file:group.file,reportPath,effectState:'none'};
       }
-      const source=await readFullText(s.root,group.full,observation.revision);
+      const source=useNative?await native.read(agent,group.file,observation.revision,signal):await readFullText(s.root,group.full,observation.revision);
       if(!source.ok){
         record.status='deopt';record.reason='source-read-unavailable';record.error=source.error;record.file=group.file;
         s.metrics.verifiedExecDeopts++;await save();return {status:'deopt',reason:record.reason,file:group.file,error:source.error,reportPath,effectState:'none'};
       }
       const ranges=[];
       for(const edit of group.edits){
-        const found=countExact(source.text,edit.oldText);
+        const preserveCrlf=useNative&&source.text.includes('\r\n')&&!/(?<!\r)\n/u.test(source.text);
+        const oldText=preserveCrlf?edit.oldText.replaceAll('\r\n','\n').replaceAll('\n','\r\n'):edit.oldText;
+        const newText=preserveCrlf?edit.newText.replaceAll('\r\n','\n').replaceAll('\n','\r\n'):edit.newText;
+        const found=countExact(source.text,oldText);
         if(found.length!==1){
           record.status='deopt';record.reason=found.length?'edit-target-not-unique':'edit-target-not-found';record.file=group.file;
           s.metrics.verifiedExecDeopts++;await save();return {status:'deopt',reason:record.reason,file:group.file,reportPath,effectState:'none'};
         }
-        ranges.push({start:found[0],end:found[0]+edit.oldText.length,newText:edit.newText});
+        ranges.push({start:found[0],end:found[0]+oldText.length,newText});
       }
       ranges.sort((a,b)=>a.start-b.start);
       for(let i=1;i<ranges.length;i++)if(ranges[i].start<ranges[i-1].end){
@@ -256,13 +410,19 @@ export function createVerifiedExec(ctx,runtime,call){
       }
       let expectedText=source.text;
       for(const edit of ranges.toReversed())expectedText=expectedText.slice(0,edit.start)+edit.newText+expectedText.slice(edit.end);
+      if(useNative&&(expectedText.length>500000||Buffer.byteLength(expectedText)>2_000_000)){
+        record.status='deopt';record.reason='native-readback-budget-exceeded';record.file=group.file;
+        s.metrics.verifiedExecDeopts++;await save();return {status:'deopt',reason:record.reason,file:group.file,reportPath,effectState:'none'};
+      }
+      group.expectedText=expectedText;
+      group.beforeHash=source.sha256;
       record.files.push({file:group.file,mode:'replace_exact',beforeRevision:observation.revision,bytesBefore:observation.bytes,
         expectedAfterHash:hash(expectedText),
         hunks:group.edits.length});
     }
     if(!plan.apply){
       for(const group of groups){
-        const fresh=await statFile(call,runtime,agent,group.file,signal),original=record.files.find(file=>file.file===group.file);
+        const fresh=await observe(group.file),original=record.files.find(file=>file.file===group.file);
         const actual=fresh.ok&&fresh.exists?fresh.revision:'absent',expected=group.mode==='create'?'absent':original.beforeRevision;
         if(!fresh.ok||actual!==expected){
           record.status='deopt';record.reason='revision-changed-before-preview';record.file=group.file;
@@ -271,12 +431,12 @@ export function createVerifiedExec(ctx,runtime,call){
         }
       }
       record.status='previewed';record.reason='apply-not-requested';s.metrics.verifiedExecPreviews++;await save();
-      return {status:'previewed',reason:record.reason,reportPath,effectState:'none',files:record.files.map(file=>({file:file.file,mode:file.mode,hunks:file.hunks,beforeRevision:file.beforeRevision,expectedAfterHash:file.expectedAfterHash})),validations:plan.validations.map(item=>item.description)};
+      return {status:'previewed',reason:record.reason,reportPath,effectState:'none',files:record.files.map(file=>({file:file.file,mode:file.mode,hunks:file.hunks,beforeRevision:file.beforeRevision,versionKind:record.versionKind,expectedAfterHash:file.expectedAfterHash})),validations:plan.validations.map(item=>item.description)};
     }
     await save();
     const beforeApply=[];
     for(const group of groups){
-      const fresh=await statFile(call,runtime,agent,group.file,signal);
+      const fresh=await observe(group.file);
       const original=record.files.find(file=>file.file===group.file);
       const expected=group.mode==='create'?'absent':original.beforeRevision;
       const actual=fresh.ok&&fresh.exists?fresh.revision:'absent';
@@ -284,32 +444,35 @@ export function createVerifiedExec(ctx,runtime,call){
         record.status='deopt';record.reason='revision-changed-before-apply';record.file=group.file;
         s.metrics.verifiedExecDeopts++;await save();return {status:'deopt',reason:record.reason,file:group.file,reportPath,effectState:'none'};
       }
-      beforeApply.push({group,revision:fresh.revision});
+      beforeApply.push({group,revision:fresh.revision,observation:fresh});
     }
     record.status='applying';
     for(const item of beforeApply){
       let effect;
-      try{effect=await applyEditGroup(call,runtime,agent,item.group,item.revision,signal);}
+      try{effect=useNative?await native.available(agent)?await native.apply(agent,item.group,item.observation,signal):
+        {ok:false,status:'deopt',effectState:'none',error:{message:'The native conditional-write composition changed before application.'}}:
+        await applyEditGroup(call,runtime,agent,item.group,item.revision,signal);}
       catch(error){effect=failedEffect(error);}
       const file=record.files.find(entry=>entry.file===item.group.file);
       file.effect=effect;
       record.effectState=effectState();
       if(effect.ok||['applied','partial','unknown'].includes(effect.effectState)){
-        runtime.recordMutation?.(agent,{tool:item.group.mode==='create'?'ops_write_file':'ops_edit_file',
-          file:item.group.file,revision:effect.ok||effect.effectState==='applied'?effect.revision:null,callId:`verified:${record.id}`,seq:null});
+        runtime.recordMutation?.(agent,{tool:useNative?'write':item.group.mode==='create'?'ops_write_file':'ops_edit_file',
+          file:item.group.file,revision:effect.ok||effect.effectState==='applied'?(useNative?effect.contentHash:effect.revision):null,callId:`verified:${record.id}`,seq:null});
       }
       if(!effect.ok){
         record.status='partial';record.reason='file-apply-failed';
         s.metrics.verifiedExecPartial++;const saved=await saveOutcome();
-        return {status:'partial',reason:record.reason,file:item.group.file,effectState:record.effectState,error:effect.error,reportPath,...saved,
+        return {status:'partial',reason:record.reason,file:item.group.file,effectState:record.effectState,error:effect.error,
+          ...(effect.permissionDenied?{permissionDenied:true}:{}),reportPath,...saved,
           files:fileEffects(),note:'Per-file effects are listed. Inspect applied and unknown files before deciding the next edit.'};
       }
-      if(!HEX_REVISION.test(String(effect.revision||''))||effect.revision!==file.expectedAfterHash){
+      if(!HEX_REVISION.test(String(useNative?effect.contentHash:effect.revision||''))||(useNative?effect.contentHash:effect.revision)!==file.expectedAfterHash){
         record.status='partial';record.reason='post-write-revision-mismatch';record.effectState='applied';
         s.metrics.verifiedExecPartial++;const saved=await saveOutcome();
         return {status:'partial',reason:record.reason,file:item.group.file,effectState:'applied',reportPath,...saved,files:fileEffects(),
           expectedAfterHash:file.expectedAfterHash,actualRevision:effect.revision||null,
-          note:'OPS applied a change, but its returned revision did not match the precomputed content. Declared validations were not run.'};
+          note:'The file changed, but the returned content identity did not match the precomputed content. Declared validations were not run.'};
       }
       file.afterRevision=effect.revision;file.bytesAfter=effect.bytes;file.lineCount=effect.lineCount;file.resultStatus=effect.status;
     }
@@ -349,5 +512,6 @@ export function createVerifiedExec(ctx,runtime,call){
     }
     return {ok:true,full,text:source.text,sha256:source.sha256,revision:observation.revision,bytes:observation.bytes,lineCount:observation.lineCount};
   }
-  return {execute,readCurrentText};
+  return {execute,readCurrentText,
+    nativeAvailable(agent){if(!registeredNativeWrite)return false;native??=createNativeCas(ctx,runtime,registeredNativeWrite,registeredNativeExecute);return native.available(agent);}};
 }

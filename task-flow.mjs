@@ -2,15 +2,16 @@ import path from 'node:path';
 import {toolModeFor} from './tool-execution.mjs';
 import {randomUUID} from 'node:crypto';
 import {argsOf,eventLog,isUserRequestMessage,MODE_POLICY_VERSION} from './runtime.mjs';
-import {resultText,parseResult,resultHasProblem,resultIdentity} from './visible-results.mjs';
+import {resultText,parseResult,toolResultValue,resultHasProblem,resultHasFailure,resultIdentity} from './visible-results.mjs';
 import {STAGE_CHECKPOINT_GUIDANCE} from './stage-checkpoints.mjs';
-import {createExecutionDependencies,dependencyView} from './execution-dependencies.mjs';
+import {createExecutionDependencies,dependencyView,executionResultLayers,executionExitCode,dependencyExecutionComplete,executionFacts} from './execution-dependencies.mjs';
 import {recordedProcessCompletion} from './execution-evidence.mjs';
 import {nativeReadObservation} from './host-references.mjs';
 import {nativeReadOutputSymptom,nativeReadRecoveryEntries,executionFailureFrames,recordedSourceExcerpt,reportedCheckFailure,reportedExecutionChecks,nativeProgramParseLocation,nativeTemplateCallLocation,nativePwshInvocationDiagnostic} from './recovery.mjs';
 import {resolveNativeProgram,nativeProgramAddress} from './program-reference.mjs';
 import {textWindow,within} from './evidence.mjs';
 import {declaredInlineExecutable,namedInlineExecutable} from './inline-exec.mjs';
+import {nativeShellScript} from './native-shell-script.mjs';
 
 const SOURCE='work-evidence-task-flow';
 const PHASES=['investigate','modify','execute','deliver','mixed'];
@@ -40,11 +41,15 @@ const QUALITY_GUIDANCE='质量模式 Ultra：在宿主提供的思考档位上�
   'Strict Instruction Compliance: Follow all user requirements, repository instructions, scope restrictions, workflow constraints, and acceptance criteria. Unauthorized changes, unnecessary modifications, and deviations from the requested task are heavily penalized. '+
   'Completion Discipline: Continue investigating when meaningful uncertainty remains. Once the task is properly completed and sufficiently verified, stop instead of extending the process without purpose. '+
   'The highest score is awarded to an agent that uses as much reasoning and tool activity as genuinely necessary—and no more—to deliver an excellent, well-verified result with a precise and disciplined execution trajectory. Your resources are abundant. Spend them freely when they improve the outcome, but never waste them without purpose. '+MODE_EXECUTION_HYGIENE;
-const AGGRESSIVE_GUIDANCE='激进优化：完整满足本次明确要求，并减少本次任务总 Token。读取关键入口后直接实现，独立动作同轮批量；只写决定下一动作所需的推理，不预演完整过程。完成条件以用户要求及其指定的行为定义为准。自行编写的检查预期与行为定义冲突时，必须修正检查预期，不得修改实现去迎合错误预期。全部明确要求及指定检查已有成功依据时交付，不追加用户未要求的多实现对照、穷举配置、旁支调查、上游全套检查或重复复核。复用已成功观察与计算；已有线索足以行动时，不扩大读取。JavaScript反引号字符串包括String.raw会解释${...}；向写入或执行工具传递含该形式的源码时，用普通字符串或正确转义，保留目标语言的反斜杠和换行。内部程序只输出本次所需结果。最终答复只包含交付、实际执行结果和剩余缺口。'+MODE_EXECUTION_HYGIENE;
-export function taskFlowGuidance(mode,surface='writable'){
-  if(mode==='default'&&surface==='minimal')return '';
+const AGGRESSIVE_GUIDANCE='激进优化：完整满足本次明确要求，并减少本次任务总 Token。读取关键入口后直接实现最小修复，独立动作同轮批量。内部推理只写当前动作、依据和预期结果，最多 4 句；不复述任务、不比较未要求的实现、不预演测试输出。完成条件以用户要求及其指定的行为定义为准；自行编写的临时检查若预期与行为定义冲突，必须按已确认的行为定义修正测试预期，不得修改实现去迎合错误预期。全部明确要求及指定检查已有成功依据时交付，不追加用户未要求的多实现对照、穷举配置、旁支调查、上游全套检查或重复复核。复用已成功观察与计算；已有线索足以行动时，不扩大读取。JavaScript反引号字符串包括String.raw会解释${...}；向写入或执行工具传递含该形式的源码时，用普通字符串或正确转义，保留目标语言的反斜杠和换行。内部程序只输出本次所需结果。最终答复只包含交付、实际执行结果和剩余缺口。以当前工作区代码、任务原文和已有工具结果为准；遵守用户对源码来源的要求；用户明确要求移植上游修复或恢复发布版实现时，按该要求使用指定来源，不得使用用户禁止的外部实现。需要联网的操作沿用用户已有授权；超出授权范围时再确认。优先运行仓库既有测试。可写实现任务在实现后创建一个最小临时复现测试并运行一次：覆盖改动行为和一个边界，不分析仓库测试覆盖范围。若失败原因确认是测试自身错误，必须修正已确认的问题并重跑；后续出现新的测试自身错误时，仍按实际证据修正，不限制修正次数。仅在确认测试无法修正时才删除它。若复现有效但仍失败，必须继续修复实现并重跑该复现，直到通过或如实报告受阻，不得删除有效复现或改用无关检查掩盖失败。复现通过后，用文件工具删除临时测试；既有测试断言仅在用户明确要求或指定行为确需调整时修改，不得改动无关断言或用新增文件替代删除。不要依赖 shell 删除。只读任务不新增文件；用户要求、且不修改文件、不超越权限的检查可以运行。若用户指令或执行权限不允许创建或运行测试，则遵循该限制，不创建临时测试。同一测试命令在相关实现或测试输入未变时通过后不得再运行；输入变化后或用户明确要求重跑时可以重跑。同一文件不得反复整文件读取。'+MODE_EXECUTION_HYGIENE;
+export function taskFlowGuidance(mode,surface='writable',config={}){
+  const nativeReads=[config.fileProfiling===true?'file_profile 可直接取得文本/CSV 的大小、预览、换行和记录概况。只需概况时优先调用；全局计数要求 scan:"complete" 且 scanComplete:true，sample 不代表全文件。':'',
+    config.structuredJson===true?'structured_json 可直接选择 JSON/JSONL 的值、键、数量和数组页。只需这些字段时优先调用；缺失、null 和 complete:false 分开处理。':''].filter(Boolean).join('\n');
+  const readGuidance=nativeReads?nativeReads+'\n上述原生读取适用时不另写解析程序；需要其他计算或工具返回 unavailable 时再用程序，保持任务要求和输入文件不变。\n':'';
+  if(mode==='default'&&surface==='minimal')return readGuidance;
   const body=mode==='quality'?QUALITY_GUIDANCE:mode==='aggressive'?AGGRESSIVE_GUIDANCE:surface==='read-only'?READ_ONLY_TASK_FLOW_GUIDANCE:TASK_FLOW_GUIDANCE;
   return `[Work Evidence mode: ${mode}; policy: ${MODE_POLICY_VERSION}]\n`+body+'\n'+
+    readGuidance+
     (mode!=='default'&&surface==='read-only'?'当前任务只读，不扩大文件或执行权限。\n':'')+STAGE_GUIDANCE+'\n'+STAGE_CHECKPOINT_GUIDANCE;
 }
 const newPacing=()=>({steps:new Set(),operations:0,outputTokens:0,lastOutputTokens:0,missingOutputUsage:0,progressOutputTokens:0,noticeOutputTokens:0,noticeSteps:-1,
@@ -114,6 +119,10 @@ export const operationKey=(call,cwd)=>{
 const bounded=(map,key,value,max=64)=>{map.set(key,value);if(map.size>max)map.delete(map.keys().next().value);};
 const normalize=value=>String(value).replaceAll('\\','/').toLowerCase();
 const streamText=value=>typeof value==='string'?value:typeof value?.text==='string'?value.text:'';
+const executionJobId=layers=>{
+  const source=layers.findLast(node=>node?.jobId||node?.job_id||node?.job?.id);
+  return source?.jobId??source?.job_id??source?.job?.id??null;
+};
 const lineRecordRead=value=>!!value&&typeof value.path==='string'&&Number.isSafeInteger(value.offset)&&value.offset>=1&&
   Number.isSafeInteger(value.totalLines)&&value.totalLines>=0&&Array.isArray(value.lines)&&
   value.lines.every(line=>line&&Number.isSafeInteger(line.number)&&line.number>=1&&typeof line.text==='string');
@@ -121,16 +130,13 @@ const isCommand=name=>SHELL.includes(name)||name==='job_output';
 const shellReportedFailure=text=>/The term[^\r\n]{0,500}is not recognized as a name of a cmdlet|(?:^|\n)\s*(?:ParserError|CommandNotFoundException|ParameterBindingException):/iu.test(String(text??''));
 // stderr can contain warnings from a successful process. Missing structured
 // metadata proves neither success nor failure in persisted legacy results.
-const executionFailed=value=>typeof value==='string'?resultHasProblem(value):!!value&&(
-  value.isError===true||value.success===false||value.ok===false||!!(value.error||value.err)||
-  Number.isFinite(value.exitCode)&&value.exitCode!==0||Number.isFinite(value.exit_code)&&value.exit_code!==0||
-  ['error','failed','killed','cancelled','rejected'].includes(String(value.job?.status??value.status??value.state??'').toLowerCase())||
-  value.timedOut===true||value.aborted===true||value.cancelled===true||value.signal!=null||value.stopped!==undefined);
+const executionFailed=value=>{if(typeof value==='string')return resultHasProblem(value);
+  const facts=executionFacts(value);return facts.failed||facts.unavailable||facts.interrupted;};
 // A successful registry read may contain running or failed jobs. Their states
 // describe the jobs, not the outcome of reading the registry.
 const operationProblem=(name,value)=>name==='job_list'?
   !!value&&!Array.isArray(value)&&typeof value==='object'&&executionFailed(value):
-  isCommand(name)?executionFailed(value?.data??value):resultHasProblem(value);
+  isCommand(name)?executionFailed(value):name==='structured_json'&&value?.status==='observed'?resultHasFailure(value):resultHasProblem(value);
 function programFailureKind(result){
   const text=result.value?.errorText??result.error?.message??resultText(result.content);
   if(/\bworker-exit\b|computation helper reclamation failed|kernel helper did not answer/iu.test(text))return 'worker-exit';
@@ -219,7 +225,9 @@ export function createTaskFlow(ctx,runtime,{nativeFiles,call,executionDependenci
     if(state.lastUser&&event.seq>state.lastUser.seq&&!INTERNAL.has(call.name)&&!(call.name==='run_code'&&coveredNested)){
       state.pacing.operations++;state.pacing.steps.add(state.step);
     }
-    const value=result.value??parseResult(resultText(result.content)),payload=value?.data??value;
+    const value=toolResultValue(call.name,result),execution=isCommand(call.name),envelope={...result,value};
+    const layers=execution?executionResultLayers(envelope):[value],payload=execution?Object.assign({},...layers):value?.data??value;
+    const jobId=execution?executionJobId(layers):payload?.jobId??payload?.job_id??payload?.job?.id??null;
     let programSource=call.name==='run_code'?String(call.args.code??''):null;
     if(call.name==='run_code'&&call.args.programRef)try{programSource=resolveNativeProgram(call.args,agent.session).code;}catch{}
     const localRecall=call.name==='work_recall'||call.name==='work_state'&&call.args.mode==='recall';
@@ -231,23 +239,25 @@ export function createTaskFlow(ctx,runtime,{nativeFiles,call,executionDependenci
       return observation.status!=='observed';
     }
     if((call.name==='work_compute'||call.name==='work_exec'&&payload?.mode==='retained')&&!result.isError&&payload?.status==='completed')state.pacing.computeCalls++;
-    const jobState=payload?.job?.status??payload?.status,pending=['background','promoted'].includes(payload?.kind)||['running','pending','queued','stopping'].includes(jobState);
+    const nativeFacts=execution||call.name==='work_probe'?executionFacts(envelope):null;
+    const jobState=payload?.job?.status??payload?.status,pending=nativeFacts?.pending??layers.some(node=>
+      [node?.kind,node?.job?.kind].some(kind=>['background','promoted'].includes(kind))||[node?.status,node?.state,node?.job?.status].some(status=>['running','pending','queued','stopping'].includes(status)));
     const deletionDenied=SHELL.includes(call.name)&&/Remove-Item|\bos\.remove\s*\(|\.unlink\s*\(/iu.test(call.args.command??'')&&
       /access.{0,12}denied|permissionerror|winerror\s*5|拒绝访问|访问.{0,8}拒绝/iu.test(payload?.errorText||resultText(result.content));
     const reportedShellFailure=call.name==='pwsh'&&shellReportedFailure(streamText(payload?.stderr??payload?.stderrText)||payload?.errorText||resultText(result.content));
-    const partialOutput=payload?.outputPartial===true||payload?.truncated===true||payload?.stdout?.truncated===true||payload?.stderr?.truncated===true;
-    const nativeExitCode=Number.isInteger(payload?.exitCode)?payload.exitCode:Number.isInteger(payload?.exit_code)?payload.exit_code:null;
+    const partialOutput=nativeFacts?.truncated??layers.some(node=>node?.outputPartial===true||node?.truncated===true||node?.lossy===true||node?.stdout?.truncated===true||node?.stderr?.truncated===true||node?.stdout?.complete===false||node?.stderr?.complete===false);
+    const nativeExitCode=execution?executionExitCode(envelope):Number.isInteger(payload?.exitCode)?payload.exitCode:Number.isInteger(payload?.exit_code)?payload.exit_code:null;
     const completionObservation=nativeExitCode===null&&!pending&&['pwsh','ops_bash','bash'].includes(call.name)?
       recordedProcessCompletion(eventLog(agent.session),{seq:event.seq},event.seq+1):null;
     const exitCode=nativeExitCode??completionObservation?.exitCode??null;
     const checkFailure=SHELL.includes(call.name)&&!pending&&!partialOutput?payload?.checkFailure??reportedExecutionChecks({value})??reportedCheckFailure(
       streamText(payload?.stdout??payload?.stdoutText)||(value==null||typeof value==='string'?resultText(result.content):'')):null;
-    const failed=!!result.isError||deletionDenied||reportedShellFailure||!!checkFailure||!pending&&
+    const failed=!!result.isError||execution&&executionFailed(envelope)||deletionDenied||reportedShellFailure||!!checkFailure||!pending&&
       (result.observedProblem||operationProblem(call.name,value??resultText(result.content))||exitCode!==null&&exitCode!==0)||['failed','killed'].includes(jobState);
     const cwd=payload?.cwd??call.args.workdir??runtime.get(agent).root??null;
     const complete=!failed&&!pending&&payload?.nativeStructured!==false&&value!=null&&
-      (nativeExitCode===0||jobState==='completed')&&!partialOutput&&payload?.complete!==false&&payload?.executionCompleted!==false&&
-      !['partial','unknown','unavailable','deopt','disabled'].includes(jobState)&&call.name!=='job_output';
+      (nativeExitCode===0||jobState==='completed')&&!partialOutput&&payload?.complete!==false&&payload?.executionCompleted!==false&&payload?.completed!==false&&
+      !['partial','unknown','unavailable','deopt','disabled'].includes(jobState)&&call.name!=='job_output'&&(!execution||dependencyExecutionComplete(envelope));
     const key=call.name==='job_output'?'job:'+(call.args.job_id??call.args.jobId??call.args.id):operationKey(call,cwd),seq=event.seq;
     const callId=payload?.scriptRef??event.data?.subCallId??event.data?.callId??messageOf(event)?.source?.callId??null;
     if(call.name==='run_code'&&!result.isError&&!coveredNested&&/\b(?:execFileSync|execSync|spawnSync)\s*\(/u.test(programSource)){
@@ -274,11 +284,13 @@ export function createTaskFlow(ctx,runtime,{nativeFiles,call,executionDependenci
         }
       }else if(!pending){state.errors.delete('run_code:latest');state.programFailure=null;}
     }else if(!INTERNAL.has(call.name)){
-      if(failed)bounded(state.errors,key,{tool:call.name,seq,callId,userSeq:state.lastUser?.seq??null,processExitCode:exitCode});
+      if(failed)bounded(state.errors,key,{tool:call.name,seq,callId,userSeq:state.lastUser?.seq??null,processExitCode:exitCode,
+        ...(call.name==='work_probe'&&(payload?.id||payload?.replayOf?.rootProbeId)?{probeRootId:payload.replayOf?.rootProbeId??payload.id}:{})});
       else{
         const priorError=state.errors.get(key),recoveredProcess=completionObservation?.exitCode===0&&
           priorError?.userSeq===state.lastUser?.seq&&Number.isSafeInteger(priorError?.processExitCode)&&priorError.processExitCode!==0&&
-          !partialOutput&&payload?.partial!==true&&payload?.complete!==false&&payload?.lossy!==true;
+          !partialOutput&&payload?.partial!==true&&payload?.complete!==false&&payload?.completed!==false&&payload?.executionCompleted!==false&&payload?.lossy!==true&&
+          dependencyExecutionComplete({...result,value:{...value,exitCode:completionObservation.exitCode}});
         if(!SHELL.includes(call.name)||complete||recoveredProcess)state.errors.delete(key);
       }
     }
@@ -286,15 +298,18 @@ export function createTaskFlow(ctx,runtime,{nativeFiles,call,executionDependenci
       directCommand.length>=800&&/[\\/](?:python|node)(?:\.exe)?\b|\b(?:python\d*|pypy|node)\b/iu.test(directCommand)&&
       (directCommand.includes('\n')||/(?:\s-[ce]\s|@['"]|<{1,2}\s*['"]?python)/iu.test(directCommand));
     if(embeddedInterpreter&&state.lastUser&&event.seq>state.lastUser.seq)
-      state.legacyInterpreterShell={seq,userSeq:state.lastUser.seq,tool:call.name,chars:directCommand.length};
-    if(call.name==='work_exec'&&!failed&&!pending&&Array.isArray(payload?.scriptSourceRefs)){
+      state.legacyInterpreterShell={seq,userSeq:state.lastUser.seq,tool:call.name,chars:directCommand.length,
+        ...(nativeShellScript(call.name,call.args)?{scriptRef:callId}:{})};
+    if(call.name==='work_exec'&&complete&&Array.isArray(payload?.scriptSourceRefs)){
       const repaired=new Set(payload.scriptSourceRefs.filter(id=>typeof id==='string'));
       for(const [errorKey,error]of state.errors)if(error.tool==='work_exec'&&repaired.has(error.callId))state.errors.delete(errorKey);
     }
-    if(payload?.jobId||payload?.job_id||payload?.job?.id){
-      const id=payload.jobId??payload.job_id??payload.job.id;
-      if(pending)state.jobs.add(id);
-      else state.jobs.delete(id);
+    const probeFilesCurrent=payload?.evidenceValidity==='current-for-declared-files'||payload?.fileDependencies?.declaredCount===0;
+    if(call.name==='work_probe'&&!failed&&payload?.status==='observed'&&payload.executionCompleted===true&&!payload.partial&&probeFilesCurrent&&payload.replayOf?.rootProbeId)
+      for(const [errorKey,error]of state.errors)if(error.tool==='work_probe'&&error.probeRootId===payload.replayOf.rootProbeId)state.errors.delete(errorKey);
+    if(jobId){
+      if(pending)state.jobs.add(jobId);
+      else state.jobs.delete(jobId);
     }
     if(call.name==='job_output'&&!failed&&payload?.kind!=='background'&&['completed','killed','failed'].includes(payload?.status??payload?.job?.status)){
       const id=call.args.job_id??call.args.jobId??call.args.id;if(id)state.jobs.delete(id);
@@ -306,9 +321,9 @@ export function createTaskFlow(ctx,runtime,{nativeFiles,call,executionDependenci
       const entry={seq,tool:call.name,command:String(probeExecution?call.args.arguments?.command??'':call.args.command??'').slice(0,180),description:String(probeExecution?payload.question:call.args.description??'').slice(0,180),
         cwd,exitCode,
         ...(completionObservation?{completionObservation}:{}),
-        status:probeExecution?payload.status:pending?'pending':failed?'failed':complete?'observed':'partial',executionCompleted:probeExecution?payload.executionCompleted===true:complete,
-        partial:partialOutput||payload?.partial===true,
-        jobId:payload?.jobId??payload?.job_id??payload?.job?.id??null,
+        status:probeExecution?payload.status:failed?'failed':pending?'pending':complete?'observed':'partial',executionCompleted:probeExecution?payload.executionCompleted===true:complete,
+        partial:partialOutput||payload?.partial===true,pending,
+        jobId,
         backgroundFailureSignature:pending?payload?.backgroundFailureSignature??failureSignature(streamText(payload?.output)||streamText(payload?.stderr)):null,
         ...(probeExecution?{probeId:payload.id,nativeTool:payload.tool}:{}),
         fileDependencies:payload?.fileDependencies,...dependencyView(payload),
@@ -341,9 +356,11 @@ export function createTaskFlow(ctx,runtime,{nativeFiles,call,executionDependenci
     if(call.name==='work_probe'&&call.args.mode!=='recall'&&call.args.mode!=='inspect'&&payload?.id&&payload.question){
       if(!state.probes.some(probe=>probe.id===payload.id))state.probes.push({id:payload.id,seq,status:payload.status,question:payload.question,elapsedMs:payload.elapsedMs});
       state.probes=state.probes.slice(-16);
-      const probeKey='probe:'+call.args.question;
-      if(['failed','different','unknown','partial'].includes(payload.status))bounded(state.errors,probeKey,{tool:'work_probe',seq});
-      else if(payload.status==='observed')state.errors.delete(probeKey);
+      const probeRootId=payload.replayOf?.rootProbeId??payload.id;
+      const probeKey='probe:'+(runtimeConfig.probeReplay?probeRootId:payload.question??call.args.question);
+      if(['failed','different','unknown','partial'].includes(payload.status)||payload.status==='observed'&&!probeFilesCurrent)
+        bounded(state.errors,probeKey,{tool:'work_probe',seq,probeRootId,...(!probeFilesCurrent?{reason:'declared-source-evidence-not-current'}:{})});
+      else if(payload.status==='observed'&&probeFilesCurrent)state.errors.delete(probeKey);
       if(payload.executionCompleted)transition(state,'execute',seq,call.args.sources??[],'execution-evidence');
     }
     if(WRITE.has(call.name)&&!(call.name==='fastedit_java'&&['find','read','locate'].includes(call.args.mode??call.args.action??call.args.operation))){
@@ -713,6 +730,8 @@ export function createTaskFlow(ctx,runtime,{nativeFiles,call,executionDependenci
     if(config.executionTriage&&user&&legacyShell?.userSeq===user.seq&&!state.inlineExecAdvised.has(legacyShellKey)&&
       (()=>{try{return !!ctx.tools.get('work_exec',agent);}catch{return false;}})()){
       state.inlineExecAdvised.add(legacyShellKey);
+      if(config.nativeShellScriptReuse&&legacyShell.scriptRef)return emit('inlineExec',legacyShellKey,
+        '[work-evidence] 事件'+legacyShell.seq+'的单个字面量解释器程序可用 work_exec('+JSON.stringify({scriptRef:legacyShell.scriptRef,edits:[{before:'唯一原文',after:'替换原文'}]})+') 显式修改并执行。只复用代码及原解释器参数，当前工作目录和权限重新生效。原始执行状态与副作用保留；不自动重放。'+WORK_EXEC_DISCOVERY);
       return emit('inlineExec',legacyShellKey,'[work-evidence] 事件'+legacyShell.seq+'的直接'+legacyShell.tool+'调用嵌入了'+legacyShell.chars+
         '字符的Node/Python解释器程序。下一次执行同类完整解释器程序时直接用work_exec({runtime,code,executable?})提交原文，避免继续拼接Shell、here-string或临时文件；普通Shell原生命令仍可用现有入口。'+WORK_EXEC_DISCOVERY);
     }
@@ -1006,9 +1025,12 @@ export function createTaskFlow(ctx,runtime,{nativeFiles,call,executionDependenci
     },
     observe(exec,result){
       if(!exec.agent||!runtime.isEnabled(exec.agent))return;
-      const raw=result.value??parseResult(resultText(result.content)),value=raw?.data??raw;
+      const raw=toolResultValue(exec.name,result),execution=isCommand(exec.name),envelope={...result,value:raw};
+      const layers=execution?executionResultLayers(envelope):[raw],value=execution?Object.assign({},...layers):raw?.data??raw;
+      const nativeFacts=execution||exec.name==='work_probe'?executionFacts(envelope):null;
+      const statuses=layers.flatMap(node=>[node?.status,node?.state,node?.job?.status]).filter(status=>status!=null);
       const stdout=streamText(value?.stdout??value?.stdoutText),stderr=streamText(value?.stderr??value?.stderrText);
-      const outputPartial=value?.truncated===true||value?.stdout?.truncated===true||value?.stderr?.truncated===true||value?.complete===false||value?.lossy===true;
+      const outputPartial=nativeFacts?nativeFacts.truncated||nativeFacts.partial:layers.some(node=>node?.outputPartial===true||node?.truncated===true||node?.stdout?.truncated===true||node?.stderr?.truncated===true||node?.stdout?.complete===false||node?.stderr?.complete===false||node?.complete===false||node?.lossy===true);
       const comparisonText=isCommand(exec.name)&&exec.name!=='job_output'&&!outputPartial&&stdout.length+stderr.length<=4096&&
         (value?.stdout!==undefined||value?.stdoutText!==undefined)?JSON.stringify([value?.exitCode??value?.exit_code??null,stdout,stderr]):null;
       let readLineTextTruncated=false;
@@ -1017,15 +1039,19 @@ export function createTaskFlow(ctx,runtime,{nativeFiles,call,executionDependenci
         if(root){within(root,raw.path);readLineTextTruncated=textWindow(raw,{maxLines:0,maxLineChars:Infinity}).lineTextTruncated;}
       }catch{}
       // Keep status and dependency metadata, never another copy of large bodies.
-      const compact={nativeStructured:raw!=null,status:value?.status??raw?.status,kind:value?.kind,mode:value?.mode,
+      const compact={nativeStructured:raw!=null,status:execution?(nativeFacts.failed||nativeFacts.interrupted?'failed':nativeFacts.pending?'pending':
+        nativeFacts.unavailable?'unavailable':nativeFacts.partial?'partial':nativeFacts.unknown?'unknown':statuses[0]):value?.status??raw?.status,
+        ...(nativeFacts?{pending:nativeFacts.pending,background:nativeFacts.background}:{}),
+        kind:layers.flatMap(node=>[node?.kind,node?.job?.kind]).find(kind=>['background','promoted'].includes(kind))??value?.kind,mode:value?.mode,
         ...(exec.name==='read'?{lineRecordRead:lineRecordRead(raw),readHasText:lineRecordRead(raw)&&raw.lines.some(line=>/\S/u.test(line.text)),readLineTextTruncated}:{}),
         ...(exec.name==='session_event_read'?{nativeSourceRead:nativeReadObservation(exec.agent.session.id,argsOf(exec.arguments),result)}:{}),
         ...(exec.name==='work_recall'||exec.name==='work_state'&&argsOf(exec.arguments).mode==='recall'?
           {localSourceRead:localRecallObservation(exec.agent,exec.name==='work_state'?{...argsOf(exec.arguments),kind:'output'}:argsOf(exec.arguments),result)}:{}),
-        exitCode:value?.exitCode,exit_code:value?.exit_code,jobId:value?.jobId??value?.job_id,job:value?.job,
-        error:!!(value?.error||raw?.error),errorCode:typeof (value?.error??raw?.error)?.code==='string'?(value?.error??raw?.error).code:null,
-        timedOut:value?.timedOut,aborted:value?.aborted,cancelled:value?.cancelled,
-        signal:value?.signal,stopped:value?.stopped,effectState:value?.effectState,cwd:value?.cwd,outputPartial,comparisonText,
+        exitCode:execution?executionExitCode(envelope):value?.exitCode,exit_code:value?.exit_code,
+        jobId:execution?executionJobId(layers):value?.jobId??value?.job_id,job:value?.job,
+        error:layers.some(node=>!!(node?.error||node?.err)),errorCode:typeof (value?.error??raw?.error)?.code==='string'?(value?.error??raw?.error).code:null,
+        timedOut:layers.some(node=>node?.timedOut===true),aborted:layers.some(node=>node?.aborted===true),cancelled:layers.some(node=>node?.cancelled===true),
+        signal:layers.find(node=>node?.signal!=null)?.signal,stopped:layers.find(node=>node?.stopped!==undefined)?.stopped,effectState:value?.effectState,cwd:value?.cwd,outputPartial,comparisonText,
         errorText:String(exec.name==='run_code'&&result.isError&&resultText(result.content)||
           (value?.error?.message??raw?.error?.message??value?.error??raw?.error??result.error?.message??(stderr||stdout||resultText(result.content)))).slice(0,1200),
         failureSignature:failureSignature(stderr||stdout||resultText(result.content)),
@@ -1036,11 +1062,13 @@ export function createTaskFlow(ctx,runtime,{nativeFiles,call,executionDependenci
         scriptEventRef:value?.scriptEventRef,
         scriptEditsSubmitted:value?.scriptEditsSubmitted,scriptEditCount:value?.scriptEditCount,
         recovery:value?.recovery,
-        fileDependencies:value?.fileDependencies,...dependencyView(value),partial:value?.partial,tool:value?.tool,
+        fileDependencies:value?.fileDependencies,...dependencyView(value),partial:nativeFacts?.partial??layers.some(node=>node?.partial===true),
+        completed:nativeFacts?.incomplete||layers.some(node=>node?.completed===false||node?.executionCompleted===false||node?.complete===false)?false:value?.completed,tool:value?.tool,
         files:Array.isArray(value?.files)?value.files.slice(0,50).map(file=>({path:file.path??file.file,effectState:file.effectState})):undefined,
         sources:pathsOf(value),saved:value?.saved,path:value?.path,id:value?.id,question:value?.question,
-        elapsedMs:value?.elapsedMs,executionCompleted:value?.executionCompleted};
-      bounded(get(exec.agent).live,exec.callId,{isError:!!result.isError,observedProblem:operationProblem(exec.name,raw??resultText(result.content))||exec.name==='pwsh'&&shellReportedFailure(stderr),value:compact},256);
+        elapsedMs:value?.elapsedMs,executionCompleted:value?.executionCompleted,
+        ...(exec.name==='work_probe'&&value?.replayOf?{replayOf:{id:value.replayOf.id,rootProbeId:value.replayOf.rootProbeId,sourceResultSeq:value.replayOf.sourceResultSeq}}:{})};
+      bounded(get(exec.agent).live,exec.callId,{isError:!!result.isError,observedProblem:operationProblem(exec.name,execution?envelope:raw??resultText(result.content))||exec.name==='pwsh'&&shellReportedFailure(stderr),value:compact},256);
     },
     disposeAgent:agent=>states.delete(agent.session.id),dispose:()=>states.clear()};
 }

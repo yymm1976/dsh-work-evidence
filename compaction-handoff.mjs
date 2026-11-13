@@ -3,6 +3,7 @@ import {hasPruneProblem} from './context-pruning.mjs';
 import {stageCheckpoints,stageReuseCandidate} from './stage-checkpoints.mjs';
 import {messageTokens} from './context-economics.mjs';
 import {subagentResultIndex} from './host-references.mjs';
+import {reportedCheckFailure,reportedExecutionChecks} from './recovery.mjs';
 
 const POLICY='kimi-codex-handoff-v10-stub';
 const INSTRUCTION='Produce one consolidated continuation checkpoint with these sections: Goal and user decisions; Work and artifacts; Evidence and failed approaches; Open work and next action. Preserve current requirements and corrections, separating user decisions from assistant assumptions. Keep exact paths, symbols, configuration values, input conditions, error strings, job IDs and source event seqs needed to continue. Describe what actually changed in each relevant artifact and what remains unfinished. Preserve unresolved failures, excluded approaches and their reasons; distinguish process success from correctness.\n'+
@@ -82,33 +83,49 @@ function targetFromArguments(value){
 // Problem rows get checked markers only
 // when a later successful result has the same tool and path/command target.
 export function stubCheckpoint(agent){
-  const log=eventLog(agent.session),events=[],problems=[],humans=[],problemSeqs=new Set(),targetBySeq=new Map(),callTargets=new Map();
+  const log=eventLog(agent.session),events=[],problems=[],humans=[],problemSeqs=new Set(),resultSeqs=new Set(),targetBySeq=new Map(),callTargets=new Map(),callNames=new Map();
   const reports=subagentResultIndex(log,agent.session.id,{inherited:agent.session.inheritedEventCount??(agent.session.header?.isSeeded?null:0),recallAvailable:true});
   for(const event of log){
     const message=messageOf(event),data=event.data??{};
     const isTool=['tool/call','tool/result','tool/ptc-dispatch','tool/code-dispatch'].includes(event.type);
     const human=isUserRequestMessage(message);
     if(!isTool&&!human&&!['assistant/message','todo/write','compaction/summary'].includes(event.type))continue;
-    const name=data.name??null,callId=message?.source?.callId??message?.toolCallId??data.subCallId??data.callId??null;
+    const name=typeof data.name==='string'&&data.name.trim()?data.name:null,
+      callId=message?.source?.callId??message?.toolCallId??data.subCallId??data.callId??null;
     const text=message?textOf(message):event.type==='todo/write'?JSON.stringify(data.todos??[]):
       event.type==='tool/call'?(typeof data.arguments==='string'?data.arguments:JSON.stringify(data.arguments??{})):
       isTool?textOf({content:message?.content??(Array.isArray(data.content)?data.content:[{type:'text',text:String(data.content??'')}])}):
       textOf({content:data.content??data.summary});
-    if(!text.trim())continue;
     if(human){
+      if(!text.trim())continue;
       const row={seq:event.seq,kind:'user',chars:text.length};
       humans.push(row);events.push(row);
       continue;
     }
-    const row={seq:event.seq,kind:event.type==='tool/call'||event.type==='tool/ptc-dispatch'||event.type==='tool/code-dispatch'?'call':
-      event.type==='tool/result'?'result':event.type==='assistant/message'?'assistant':event.type==='todo/write'?'todos':'prior-compaction',
-      ...(isTool||event.type==='assistant/message'?{tool:name}:{}),...(callId?{callId}:{}),head:text.slice(0,STUB_ROW_MAX_CHARS).replace(/\s+/g,' ').trim()};
+    const kind=event.type==='tool/call'||event.type==='tool/ptc-dispatch'||event.type==='tool/code-dispatch'?'call':
+      event.type==='tool/result'?'result':event.type==='assistant/message'?'assistant':event.type==='todo/write'?'todos':'prior-compaction';
+    if(callId&&name&&kind==='call')callNames.set(callId,name);
+    const resolvedName=name??(kind==='result'&&callId?callNames.get(callId)??null:null);
+    const resultEvent=['tool/result','tool/ptc-dispatch','tool/code-dispatch'].includes(event.type);
+    const commandTool=['bash','pwsh','ops_bash','work_exec'].includes(resolvedName);
+    let reportedFailure=null;
+    if(resultEvent&&commandTool){
+      let parsed;try{parsed=JSON.parse(text);}catch{}
+      reportedFailure=reportedExecutionChecks(data.value??parsed)??reportedCheckFailure(text);
+    }
+    const isProblem=resultEvent&&(message?.isError===true||data.isError===true||hasPruneProblem([{type:'text',text}],data.value??null)||!!reportedFailure);
+    if(!text.trim()&&!isProblem)continue;
+    const failureHead='[tool failure without text] '+JSON.stringify({isError:message?.isError===true||data.isError===true,
+      ...(typeof data.value?.status==='string'?{status:data.value.status.slice(0,40)}:{}),
+      ...(Number.isFinite(data.value?.exitCode)?{exitCode:data.value.exitCode}:{})});
+    const row={seq:event.seq,kind,
+      ...(isTool||event.type==='assistant/message'?{tool:resolvedName}:{}),...(callId?{callId}:{}),head:(text.trim()?text:failureHead).slice(0,STUB_ROW_MAX_CHARS).replace(/\s+/g,' ').trim()};
     events.push(row);
     const target=targetFromArguments(data.arguments);
     if(callId&&target&&row.kind==='call')callTargets.set(callId,target);
     const resolvedTarget=target??(row.kind==='result'&&callId?callTargets.get(callId):null);
     if(resolvedTarget)targetBySeq.set(event.seq,resolvedTarget);
-    const isProblem=event.type==='tool/result'&&(message?.isError===true||hasPruneProblem([{type:'text',text}]));
+    if(resultEvent&&data.meta?.truncated!==true)resultSeqs.add(event.seq);
     if(isProblem){problems.push(row);problemSeqs.add(event.seq);}
   }
   const line=row=>'- '+JSON.stringify(row)+'\n  recall: work_recall({kind:"event",seq:'+row.seq+',offset:0})';
@@ -124,12 +141,12 @@ export function stubCheckpoint(agent){
       authority:item.authority,childOriginalEvents:item.childOriginalEvents,consumption:item.consumption}));
     // Problem rows carry a verification marker; checked ones were later answered by a
     // successful result and only need re-reading after explicit recall.
-    const successSeqs=new Set(events.filter(r=>r.kind==='result'&&!problemSeqs.has(r.seq)&&!/error|failed|exception|cannot|undefined|null pointer|traceback/i.test(r.head)).map(r=>r.seq));
+    const successSeqs=new Set(events.filter(r=>resultSeqs.has(r.seq)&&!problemSeqs.has(r.seq)&&!/error|failed|exception|cannot|undefined|null pointer|traceback/i.test(r.head)).map(r=>r.seq));
     const marked=problems.slice(-STUB_PROBLEM_MAX_ROWS).map(row=>{
       // A retry counts only when tool and target both match.
       const sameTool=r=>r.tool&&row.tool&&r.tool===row.tool;
       const target=targetBySeq.get(row.seq);
-      const checked=!!target&&events.some(r=>r.kind==='result'&&successSeqs.has(r.seq)&&r.seq>row.seq&&r.seq<=row.seq+6&&
+      const checked=!!target&&events.some(r=>successSeqs.has(r.seq)&&r.seq>row.seq&&r.seq<=row.seq+6&&
         sameTool(r)&&targetBySeq.get(r.seq)===target);
       return {...row,checked};
     });
@@ -138,7 +155,7 @@ export function stubCheckpoint(agent){
         '\n  recall: work_recall({kind:"event",seq:'+row.seq+',offset:0})').join('\n')+
       '\nrecent events (oldest first; bounded rows may shift as the conversation grows):\n';
   const head='[work-evidence stub checkpoint policy='+POLICY+' deterministic=true]\n'+
-    'Event rows are bounded pointers to original events. Continuation sources retain human requests where budget permits. Recover original text with work_recall before relying on a head; never rerun an operation only to recreate its text. Problem results are listed regardless of recency. A checked row has a later successful observation of the same tool and target. Continue from the next unmet dependency. Assistant heads are not user decisions.\n\n';
+    'Event rows are bounded pointers to original events. Continuation sources retain human requests where budget permits. Recover original text with work_recall before relying on a head; never rerun an operation only to recreate its text. The problem section lists up to '+STUB_PROBLEM_MAX_ROWS+' latest problem results; older results remain in the original history. A checked row has a later successful observation of the same tool and target. Continue from the next unmet dependency. Assistant heads are not user decisions.\n\n';
   const rowLines=events.filter(row=>row.kind!=='user').map(line);
   const noRowsNotice='[all events exceed the stub budget; recover from the continuation sources]\n';
   const reportBudget=STUB_MAX_CHARS-head.length-body.length-(rowLines.length?noRowsNotice.length:0);

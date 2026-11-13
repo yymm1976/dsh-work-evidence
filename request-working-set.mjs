@@ -3,7 +3,7 @@ import {randomUUID} from 'node:crypto';
 import {argsOf,eventLog,isUserRequestMessage} from './runtime.mjs';
 import {collectReadWindows} from './observation-ledger.mjs';
 import {operationKey} from './task-flow.mjs';
-import {resultText,parseResult,resultHasProblem,resultIdentity,resultReference,contentReferences,surfaceReferences,compactionActive,rewriteSpacingReady} from './visible-results.mjs';
+import {resultText,parseResult,toolResultValue,resultHasProblem,resultIdentity,resultReference,contentReferences,surfaceReferences,compactionActive,rewriteSpacingReady} from './visible-results.mjs';
 
 const SOURCE='work-evidence-working-set',VERSION=1,MAX_ENTRIES=128,MAX_BATCH=24;
 const MAX_REVIEWED=32,MAX_REVIEWED_DEPS=6,MAX_RESTORE_REASONS=32;
@@ -134,7 +134,7 @@ export function createRequestWorkingSet(ctx,runtime,economics,taskFlow){
         state.lastUser={seq:event.seq,step:state.step,text:messageText(message??{})};
       }
       if(['tool/ptc-dispatch','tool/code-dispatch'].includes(event.type)){
-        const args=argsOf(data.arguments),list=state.nested.get(data.rootCallId)??[],value=parseResult(resultText(data.content)),
+        const args=argsOf(data.arguments),list=state.nested.get(data.rootCallId)??[],value=toolResultValue(data.name,data),
           problem=!!data.isError||resultHasProblem(value??resultText(data.content)),mutation=appliedMutation(data.name,args,value,!!data.isError);
         list.push({name:data.name,args,isError:!!data.isError,problem,mutation,problemText:problem?resultIdentity(data.content):null});state.nested.set(data.rootCallId,list.slice(-64));
         state.inputs.push({seq:event.seq,step:state.step,text:JSON.stringify(args)});
@@ -147,7 +147,7 @@ export function createRequestWorkingSet(ctx,runtime,economics,taskFlow){
         state.nested.delete(callId);
         if(call&&!liveNodes.has(event.seq)&&!WRITE.test(call.name)){state.calls.delete(callId);continue;}
         if(call){
-          const text=resultText(message.content),parsed=parseResult(text),deps=new Map(),depStats={sourceOmitted:0,scanIncomplete:false};
+          const text=resultText(message.content),parsed=toolResultValue(call.name,{...message,value:data.value}),deps=new Map(),depStats={sourceOmitted:0,scanIncomplete:false};
           for(const dep of [...dependencies(root,call.args,depStats),...dependencies(root,parsed,depStats),...nested.flatMap(item=>dependencies(root,item.args,depStats))])deps.set(dep.kind+':'+dep.key,dep);
           // Nested arguments describe dependencies of the whole outer observation,
           // never proof that the mixed output is the body of any one input file.
@@ -266,7 +266,7 @@ export function createRequestWorkingSet(ctx,runtime,economics,taskFlow){
     sync(agent);runtime.get(agent).dirty=true;return true;
   }
   function beforeBuild(agent,context,originalDerive,{pressureOnly=false,nativePressure=false}={}){
-    if(!active(agent))return;
+    if(!active(agent)||runtime.historyFullOutputRequested?.(agent))return;
     const state=sync(agent),config=runtime.get(agent).config;
     state.recentSteps=config.projectionRecentSteps;
     const messages=originalDerive.call(agent.session);
@@ -402,6 +402,7 @@ export function createRequestWorkingSet(ctx,runtime,economics,taskFlow){
     function projectedDerive(...args){
       const original=derive.apply(this,args);
       if(!attachment.enabled||!attachment.scope||attachment.publication)return original;
+      if(runtime.historyFullOutputRequested?.(agent))return original;
       const projected=active(agent)?render(agent,original):original;
       return runtime.rewriteRequestHistory?.(agent,projected)??projected;
     }
@@ -482,6 +483,10 @@ export function createRequestWorkingSet(ctx,runtime,economics,taskFlow){
     budgetMessages(agent){
       const attachment=attachments.get(agent.session.id);if(!attachment?.enabled)return null;
       const original=attachment.derive.call(agent.session);
+      // A real user request for full output disables history receipts. The pressure
+      // estimate must use canonical bodies too, otherwise a receipt left in the
+      // working-set projection understates the next request's size.
+      if(runtime.historyFullOutputRequested?.(agent))return original;
       const projected=active(agent)&&sync(agent).hidden.size?render(agent,original,get(agent).hidden,{record:false}):original;
       return runtime.rewriteRequestHistory?.(agent,projected,{record:false})??projected;
     },
@@ -530,7 +535,7 @@ export function createRequestWorkingSet(ctx,runtime,economics,taskFlow){
       }catch{return unknown('projection-observation-error');}
     },
     disposeAgent(agent){detach(agent);states.delete(agent.session.id);},
-    bodyVisible(agent,seq){if(!active(agent))return true;const state=sync(agent),pins=surfaceReferences(agent.session);return pins.opaque||pins.targets.has(seq)||!state.hidden.has(seq)||state.restored.has(seq);},
+    bodyVisible(agent,seq){if(!active(agent)||runtime.historyFullOutputRequested?.(agent))return true;const state=sync(agent),pins=surfaceReferences(agent.session);return pins.opaque||pins.targets.has(seq)||!state.hidden.has(seq)||state.restored.has(seq);},
     manages(agent,seq){return active(agent)&&sync(agent).hidden.has(seq);},
     dispose(){disposed=true;for(const item of [...attachments.values()])detach(item.agent);states.clear();}};
 }

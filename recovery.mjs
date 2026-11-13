@@ -1,7 +1,8 @@
 import path from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {stripTypeScriptTypes} from 'node:module';
-const NATIVE_TEMPLATE_FRAME=/^    at eval \(eval at (?:runProgram|evaluate) \(file:\/\/\/[^\r\n]*\/@deepseek-ai\/dsh-ptc-runtime-node\/lib\/process\.js:\d+:\d+\), <anonymous>:(\d+):(\d+)\)/mu;
+import {executionResultLayers,executionExitCode} from './execution-dependencies.mjs';
+const NATIVE_TEMPLATE_FRAME=/^    at eval \(eval at (?:runProgram|evaluate) \(file:\/\/\/[^\r\n]*\/(?:@deepseek-ai\/dsh-ptc-runtime-node|packages\/ptc-runtime\/ptc-runtime-node)\/(?:lib\/process\.js|src\/evaluators\/async-function\.ts):\d+:\d+\), <anonymous>:(\d+):(\d+)\)/mu;
 
 export function nativePwshInvocationDiagnostic(argumentsValue,result){
   const command=argumentsValue?.command;
@@ -290,16 +291,19 @@ export function reportedCheckFailure(text){
 
 /** Process exit and the program's own report are independent observations. */
 export function reportedExecutionChecks(result){
-  const raw=result?.value??result,value=raw?.data??raw;
-  if(!value||['background','promoted'].includes(value.kind)||['running','pending','queued','stopping'].includes(value.status??value.job?.status)||
+  const layers=executionResultLayers(result);
+  if(!layers.length||layers.some(value=>['background','promoted'].includes(value.kind)||['running','pending','queued','stopping'].includes(value.status??value.job?.status)||
     value.timedOut||value.aborted||value.cancelled||value.signal!=null||value.stopped!==undefined||value.partial||value.outputPartial||value.lossy||value.complete===false||
-    value.truncated||value.stdout?.truncated||value.stderr?.truncated||value.stdout?.complete===false||value.stderr?.complete===false)return null;
-  const exitCode=Number.isInteger(value.exitCode)?value.exitCode:Number.isInteger(value.exit_code)?value.exit_code:null;
+    value.truncated||value.stdout?.truncated||value.stderr?.truncated||value.stdout?.complete===false||value.stderr?.complete===false))return null;
+  const exitCode=executionExitCode(result);
   if(exitCode===null)return null;
-  const stdout=typeof value.stdout==='string'?value.stdout:typeof value.stdout?.text==='string'?value.stdout.text:value.stdoutText;
-  const stderr=typeof value.stderr==='string'?value.stderr:typeof value.stderr?.text==='string'?value.stderr.text:value.stderrText;
-  const outputFailure=reportedCheckFailure(stdout??''),failure=outputFailure??unittestCheckFailure(stderr);
-  return failure?{status:'reported-failed',processExitCode:exitCode,...failure,sourceStream:outputFailure?'stdout':'stderr',countsScope:'exact-program-report; not inferred assertion counts'}:null;
+  for(const value of layers.reverse()){
+    const stdout=typeof value.stdout==='string'?value.stdout:typeof value.stdout?.text==='string'?value.stdout.text:value.stdoutText;
+    const stderr=typeof value.stderr==='string'?value.stderr:typeof value.stderr?.text==='string'?value.stderr.text:value.stderrText;
+    const outputFailure=reportedCheckFailure(stdout??''),failure=outputFailure??unittestCheckFailure(stderr);
+    if(failure)return {status:'reported-failed',processExitCode:exitCode,...failure,sourceStream:outputFailure?'stdout':'stderr',countsScope:'exact-program-report; not inferred assertion counts'};
+  }
+  return null;
 }
 // The desktop compatibility handlers derive missing UI descriptions by mutating
 // parsed arguments, which the tool service freezes. Add the same display value

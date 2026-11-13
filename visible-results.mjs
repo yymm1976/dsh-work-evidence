@@ -4,6 +4,19 @@ export function parseResult(text){
   try{return JSON.parse(text);}catch{return null;}
 }
 
+/** Read existing structured results, then recover tool-owned non-JSON error envelopes. */
+export function toolResultValue(name,result){
+  // Event replay has always accepted rendered JSON, including partial effects on
+  // failed calls. The fixed prefixes below only recover otherwise non-JSON text.
+  const value=result?.value??parseResult(resultText(result?.content));
+  if(value!=null)return value;
+  if(name!=='verified_exec'||result?.isError!==true)return null;
+  const text=resultText(result?.content).trim(),prefix=/^(?:Error: )?verified_exec (?:interrupted|permission denied):\s*/u.exec(text);
+  if(!prefix)return null;
+  const outcome=parseResult(text.slice(prefix[0].length));
+  return outcome&&typeof outcome==='object'&&!Array.isArray(outcome)&&Array.isArray(outcome.files)?outcome:null;
+}
+
 export function historyReferences(message){
   const found=[];
   for(const match of resultText(message?.content).matchAll(/^\[work-evidence history (\{[^\n]*\})\]$/gm)){
@@ -20,19 +33,28 @@ export function resultIdentity(content){
   return JSON.stringify(parseResult(text)??text);
 }
 
-export function resultHasProblem(value){
+export const resultHasProblem=value=>inspectResult(value,true);
+export const resultHasFailure=value=>inspectResult(value,false);
+
+function inspectResult(value,includeIncomplete){
   if(typeof value==='string')return /\b(?:NOT_FOUND|PERMISSION_DENIED|CANCELLED|PTC-X\d+)\b|(?:^|\n)\s*(?:TypeError|Error|Traceback)\b/.test(value);
   let remaining=2048;
-  const visit=(node,depth=0)=>{
+  const visit=(node,depth=0,execution=true,selection=false)=>{
     if(--remaining<0||depth>16)return true;
     if(!node||typeof node!=='object')return false;
     if(node.isError===true||node.success===false||node.ok===false||node.error||node.err||typeof node.stderr==='string'&&node.stderr.trim()||
       Number.isFinite(node.exitCode)&&node.exitCode!==0||Number.isFinite(node.exit_code)&&node.exit_code!==0||
-      ['error','failed','cancelled','unavailable','disabled','deopt','unknown','partial','not_found','running','pending','queued','blocked','not-attempted'].includes(String(node.status??node.state??'').toLowerCase())||
-      node.complete===false||node.rangeComplete===false||node.textComplete===false||node.scanComplete===false||node.truncated===true||node.budgetTruncated===true)return true;
-    if(Array.isArray(node))return node.some(item=>visit(item,depth+1));
+      execution&&(
+      [node.status,node.state,node.job?.status].some(status=>['error','failed','killed','cancelled','rejected','aborted','unavailable','disabled','deopt','not_found','blocked','not-attempted'].includes(String(status??'').toLowerCase())||includeIncomplete&&['unknown','partial','running','pending','queued','stopping','stopped','background','promoted'].includes(String(status??'').toLowerCase()))||
+      node.timedOut===true||node.aborted===true||node.cancelled===true||node.stopped!==undefined||node.signal!=null||includeIncomplete&&(
+      ['background','promoted'].includes(node.kind)||node.executionCompleted===false||node.completed===false||
+      node.partial===true||node.outputPartial===true||node.lossy===true))||includeIncomplete&&(
+      node.complete===false||node.rangeComplete===false||node.textComplete===false||node.scanComplete===false||node.truncated===true||node.budgetTruncated===true))return true;
+    if(Array.isArray(node))return node.some(item=>visit(item,depth+1,false,selection));
+    const query=node.sourceComplete===true&&['json','jsonl'].includes(node.format)&&Array.isArray(node.results);
+    const selected=selection&&node.status==='selected'&&typeof node.pointer==='string'&&['value','page','keys'].includes(node.op);
     // Applicability and optional host capabilities do not change the recorded call's outcome.
-    return Object.entries(node).some(([key,item])=>!['text','lines','content','fileDependencies','evidenceAssessment','evidenceValidity','hostTransfer','referencedSessions','sourceReads'].includes(key)&&visit(item,depth+1));
+    return Object.entries(node).some(([key,item])=>!(selected&&key==='value')&&!['text','lines','content','fileDependencies','evidenceAssessment','evidenceValidity','hostTransfer','referencedSessions','sourceReads'].includes(key)&&visit(item,depth+1,execution&&['value','data'].includes(key),query&&key==='results'));
   };
   return visit(value);
 }

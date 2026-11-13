@@ -1,14 +1,35 @@
-import {VERSION} from "./runtime.mjs";
+import {VERSION,argsOf} from "./runtime.mjs";
 import {toolModeFor} from './tool-execution.mjs';
 import path from 'node:path';
+import {randomUUID} from 'node:crypto';
 import {stat} from 'node:fs/promises';
 import {recallHistory} from "./compaction-handoff.mjs";
 import {recallCall} from "./history-hygiene.mjs";
-import {inlineCommand,resolveInlineScript,declaredInlineExecutable,namedInlineExecutable,inlineFailureLocation,inlineFormatRecovery,inlineScriptEventRef} from './inline-exec.mjs';
-import {declaredFileSources,dependencyExecutionComplete} from './execution-dependencies.mjs';
+import {inlineCommand,inlineEnvironment,INLINE_ENV_KEYS,resolveInlineScript,declaredInlineExecutable,namedInlineExecutable,inlineFailureLocation,inlineFormatRecovery,inlineScriptEventRef,nodeAvailabilityCommand,hasInterpreterConstraint,sameDeclaredInlineExecutable} from './inline-exec.mjs';
+import {declaredFileSources,dependencyExecutionComplete,executionResultLayers} from './execution-dependencies.mjs';
 import {reportedExecutionChecks} from './recovery.mjs';
 
-export function registerManagementTools({ctx,runtime,state,effects,available,featureControl,capabilityDiagnostic,contextEconomics,taskFlow,taskHandoff,retainedCompute,finalJson,qualityReview,executionEvidence,executionDependencies,refreshExecutionEvidence,hostReferences,workingSet,compressionControl,compactionHandoff,contextWindow,observationLedger,historyCoordinator,clearPluginState,index,candidates,ptcPatterns,ptcFastpath,verifiedExec,fastEditJava,preserveContextResult,retainRecalledSources,hasHistoricalReferences,applyToolSurface,call,disabledResult,output,COMPACT_HIDDEN_TOOLS,assertParameterBounds,parameters}){
+export function registerManagementTools({ctx,runtime,state,effects,available,featureControl,capabilityDiagnostic,contextEconomics,taskFlow,taskHandoff,retainedCompute,finalJson,qualityReview,executionEvidence,executionDependencies,refreshExecutionEvidence,hostReferences,workingSet,compressionControl,compactionHandoff,contextWindow,observationLedger,historyCoordinator,clearPluginState,index,candidates,ptcPatterns,ptcFastpath,verifiedExec,fastEditJava,fileProfiler,structuredJson,preserveContextResult,retainRecalledSources,hasHistoricalReferences,applyToolSurface,call,disabledResult,output,COMPACT_HIDDEN_TOOLS,assertParameterBounds,parameters}){
+  const pendingStdin=new Map();let registeredShellEnv=null,disposeShellEnv=null;
+  function clearShellEnvironment(){
+    pendingStdin.clear();disposeShellEnv?.();registeredShellEnv=null;disposeShellEnv=null;
+  }
+  function prepareShellEnvironment(){
+    const registry=ctx.get('shellEnv');
+    if(typeof registry?.register!=='function')return false;
+    if(registry===registeredShellEnv)return true;
+    disposeShellEnv?.();registeredShellEnv=null;disposeShellEnv=null;
+    disposeShellEnv=registry.register({name:'work-evidence-stdin',
+      variables:Object.fromEntries(INLINE_ENV_KEYS.map(key=>[key,{description:'Private work_exec stdin transport for its matching native Bash execution.'}])),
+      resolve(execution){
+        if(execution.name!=='bash')return {};
+        const pending=pendingStdin.get(argsOf(execution.arguments)?.command);
+        return pending?.agent===execution.agent?pending.values:{};
+      }});
+    registeredShellEnv=registry;return true;
+  }
+  ctx.on('internal/service',name=>{if(name==='shellEnv')clearShellEnvironment();});
+  ctx.effect(()=>clearShellEnvironment);
   const register=(name,description,properties,required,execute,{gate=true,resultSchema=output.schema}={})=>ctx.tools.register({name,description,
     parameters:{...parameters(properties),required},output:{...output,schema:resultSchema},isConcurrencySafe:()=>false,execute:async(args,exec)=>runtime.withExecution(exec,async()=>{
       if(!exec.agent)throw new Error('Agent required');await runtime.init(exec.agent,exec.signal);await effects.load(exec.agent);runtime.sync(exec.agent);
@@ -16,10 +37,11 @@ export function registerManagementTools({ctx,runtime,state,effects,available,fea
         if(gate&&!runtime.isEnabled(exec.agent))return disabledResult(exec.agent,name);
         assertParameterBounds({type:'object',properties},args);
         const result=await execute(args,exec);
-        const feature=name==='work_exec'&&args?.mode==='retained'?'retainedCompute':{work_exec:'inlineExec',work_compute:'retainedCompute',work_probe:'probe',evidence_index:'index',candidate_select:'candidate',ptc_patterns:'patterns',ptc_fastpath:'fastpath',verified_exec:'verifiedEdit',fastedit_java:'fastEdit'}[name];
+        const feature=name==='work_exec'&&args?.mode==='retained'?'retainedCompute':name==='work_probe'&&args?.mode==='replay'?'probeReplay':name==='verified_exec'&&runtime.get(exec.agent).config.nativeVerifiedEdits?'nativeVerifiedEdit':{work_exec:'inlineExec',work_compute:'retainedCompute',work_probe:'probe',evidence_index:'index',candidate_select:'candidate',ptc_patterns:'patterns',ptc_fastpath:'fastpath',verified_exec:'verifiedEdit',fastedit_java:'fastEdit',file_profile:'fileProfile',structured_json:'structuredJson'}[name];
         if(feature){
           const status=result?.status;
-          if(name==='work_exec'&&args?.mode!=='retained'){
+          if(name==='verified_exec'&&status==='previewed'&&result.effectState==='none')effects.decide(exec.agent,feature,'deferred','preview-only');
+          else if(name==='work_exec'&&args?.mode!=='retained'){
             const pending=['promoted','background'].includes(result?.kind)||['running','pending','queued','stopping'].includes(result?.status??result?.job?.status);
             const unavailable=['deopt','unavailable','disabled'].includes(status);
             const reportedFailure=reportedExecutionChecks(result);
@@ -31,9 +53,23 @@ export function registerManagementTools({ctx,runtime,state,effects,available,fea
               result?.reason??(unavailable?status:pending?'native-execution-pending':failed?reportedFailure?'reported-checks-failed':'native-execution-failed':complete?'native-execution-completed':'native-execution-incomplete'));
           }else effects.decide(exec.agent,feature,['deopt','unavailable','disabled'].includes(status)?'unavailable':['failed','partial','unknown','different'].includes(status)?'failed':'applied',result?.reason??status??'explicit-tool-executed');
         }
+        // The host replaces successful returns after cancellation. Preserve the
+        // already-observed per-file effects as a tool-owned error instead.
+        if(name==='verified_exec'&&exec.signal.aborted&&result?.reportPath&&result.files?.length)
+          throw new Error('verified_exec interrupted: '+JSON.stringify({...result,interrupted:true}));
+        if(name==='verified_exec'&&result?.permissionDenied)
+          throw new Error('verified_exec permission denied: '+JSON.stringify(result));
         return result;
       }finally{await runtime.receipt(exec.agent,exec.signal,true);}
     })});
+  register('file_profile','Read UTF-8 text/CSV statistics without a script. Complete scans return file bytes, raw-byte SHA-256 (decodedTextSha256), physical line counts, CRLF/LF/CR counts, ASCII counts and CSV record/field-count distributions. CSV records include the header and allow quoted newlines; check csv.valid and fieldCountDistributionComplete. scan:"sample" returns bounded head/tail previews, reads at most 16,390 bytes per file including up to six UTF-8 boundary bytes and makes no global claim for larger files. scan:"complete" streams within a shared byte budget and certifies counts only for an unchanged native version.',
+    {files:{type:'array',minItems:1,maxItems:8,items:{type:'object',additionalProperties:false,properties:{path:{type:'string'},format:{type:'string',enum:['text','csv']},delimiter:{type:'string'}},required:['path']}},
+      scan:{type:'string',enum:['sample','complete']},maxBytes:{type:'integer',minimum:4096,maximum:512000000}},['files'],
+    (args,exec)=>fileProfiler.observe(exec.agent,args,exec.signal));
+  register('structured_json','Select values from a bounded native UTF-8 JSON/JSONL file using RFC6901 pointers without a script. Returns source bytes, SHA-256 and native version. Selectors use op:value, object keys, container count or array page. Empty pointer selects root; /a~1b selects key a/b. offset/limit page keys or arrays. Missing differs from null. Values over the character budget or 128 nesting levels return a serialized preview with complete:false. Unsafe integers are rejected. JSONL indices address nonempty records and results include recordPhysicalLine. Source limit 2 MiB; JSON.parse duplicate-key and decimal semantics apply.',
+    {path:{type:'string'},format:{type:'string',enum:['json','jsonl']},maxValueChars:{type:'integer',minimum:256,maximum:16000},
+      selectors:{type:'array',minItems:1,maxItems:32,items:{type:'object',additionalProperties:false,properties:{pointer:{type:'string'},op:{type:'string',enum:['value','keys','count','page']},offset:{type:'integer',minimum:0},limit:{type:'integer',minimum:1,maximum:100}},required:['pointer','op']}}},['path','selectors'],
+    (args,exec)=>structuredJson.query(exec.agent,args,exec.signal));
   register('work_compute','Retained read-only Node REPL. Data, functions and imports persist between calls. Do not redeclare an existing const/let name in a later cell; reuse the binding, choose a new name, or pass reset:true only for a self-contained cell. Top-level await is allowed, return is not; print values or end with JSON. tools has only read/glob/grep/work_recall and OPS reads. State resets after DSH write/edit tools, tool-surface/session changes or interruption; shell/work_exec writes are not detected, so pass reset:true after them. Use normal tools for project edits and work_exec scriptRef for whole-program revisions.',
     {code:{type:'string',description:'REPL statements up to 64000 characters. Reuse retained data/functions and submit only new input or local changes.'},
       reset:{type:'boolean',description:'Explicitly clear this agent\'s retained environment before running code.'},
@@ -52,6 +88,9 @@ export function registerManagementTools({ctx,runtime,state,effects,available,fea
       sources:{type:'array',maxItems:16,items:{type:'string'},description:'Explicit file dependencies for this call, relative to the project directory. Applicability covers only declared files; URLs remain unknown. Not inherited through scriptRef; unavailable in retained mode.'},
       timeoutMs:{type:'integer',minimum:1,maximum:600000,description:'Native foreground wait before background promotion, milliseconds; default 10000.'}},[],async(args,exec)=>{
       args=args??{};
+      if(args.mode!=='retained'&&ctx.get('sandboxPolicy')?.resolve({session:exec.agent.session})?.mode==='read-only')
+        return {status:'unavailable',isError:true,executionOccurred:false,reason:'native-read-only-session',
+          error:{message:'A read-only session cannot run an unrestricted interpreter process. Use the retained read-only mode for calculations.'}};
       if(args.mode==='retained'){
         if(args.runtime!=='node')throw new Error('retained mode requires runtime: node');
         if(args.scriptRef!==undefined||args.edits!==undefined||args.executable!==undefined||args.format!==undefined||args.sources!==undefined)
@@ -62,9 +101,11 @@ export function registerManagementTools({ctx,runtime,state,effects,available,fea
       }
       if(args.reset!==undefined)throw new Error('reset requires mode: retained');
       const sources=declaredFileSources(args.sources);
-      if(process.platform!=='win32'||!available(exec.agent,'pwsh'))return {status:'unavailable',reason:'native-pwsh-unavailable',executionOccurred:false};
+      const shell=process.platform==='win32'?'pwsh':'bash';
+      if(!available(exec.agent,shell))return {status:'unavailable',reason:`native-${shell}-unavailable`,executionOccurred:false};
+      if(shell==='bash'&&!prepareShellEnvironment())return {status:'unavailable',reason:'native-shell-env-unavailable',executionOccurred:false};
       let script;
-      try{script=resolveInlineScript(args,exec.agent.session,exec.signal);}catch(error){
+      try{script=resolveInlineScript(args,exec.agent.session,exec.signal,{nativeShellScriptReuse:runtime.get(exec.agent).config.nativeShellScriptReuse});}catch(error){
         if(error.message==='runtime must be python or node'&&args.runtime===undefined&&args.language===undefined&&typeof args.code==='string'&&args.code.trim()&&args.code.length<=64000&&exec.callId)
           return {status:'failed',isError:true,executionOccurred:false,error:{message:error.message},scriptRef:exec.callId,scriptChars:args.code.length,
             retry:'The complete original code is retained. Call work_exec with runtime: python or node and this scriptRef; supply the task\'s existing executable path when needed. No program was executed.'};
@@ -76,6 +117,47 @@ export function registerManagementTools({ctx,runtime,state,effects,available,fea
       const namedExecutable=namedInlineExecutable(exec.agent.session,script.runtime);
       const declaredExecutable=script.executable===undefined?requiredExecutable:null;
       if(declaredExecutable)script={...script,executable:declaredExecutable.executable};
+      if(script.shellSource&&requiredExecutable&&!await sameDeclaredInlineExecutable(requiredExecutable.executable,script.executable))
+        return {status:'failed',isError:true,executionOccurred:false,reason:'shell-runtime-conflicts-with-declared-interpreter',
+          error:{code:'WORK_EXEC_INTERPRETER_CONSTRAINT',message:'The recorded Shell program used a different interpreter. Select the existing interpreter required by the current task explicitly.'},
+          scriptRef:exec.callId??null,scriptRuntime:script.runtime,scriptExecutable:script.executable,scriptShellSource:script.shellSource};
+      let hostRuntimeSelection=script.inheritedHostRuntime?{...script.inheritedHostRuntime,inherited:true}:null;
+      const scriptExecutableAuthorization=requiredExecutable?.source?.kind==='user'&&
+        await sameDeclaredInlineExecutable(requiredExecutable.executable,script.executable)?
+        {...requiredExecutable.source,declaredExecutable:requiredExecutable.executable,matching:'filesystem-file-identity'}:null;
+      const userRuntimeOverride=hostRuntimeSelection&&scriptExecutableAuthorization;
+      if(hostRuntimeSelection&&hasInterpreterConstraint(exec.agent.session)&&!userRuntimeOverride){
+        effects.decide(exec.agent,'hostNodeFallback','blocked','inherited-host-runtime-conflicts-with-task');
+        return {status:'failed',isError:true,executionOccurred:false,reason:'inherited-host-runtime-conflicts-with-task',
+          error:{code:'WORK_EXEC_INTERPRETER_CONSTRAINT',message:'The recorded program used the host runtime, and human session history mentions Node or an interpreter. A tool argument alone cannot clear that origin. Use an existing interpreter path named by the current user request or a different permitted interpreter.'},
+          scriptRef:exec.callId??null,scriptChars:script.code.length,scriptRuntime:script.runtime,
+          scriptExecutable:script.executable,scriptExecutableSource:'host-node-runtime',hostRuntimeSelection};
+      }
+      if(userRuntimeOverride)hostRuntimeSelection={...hostRuntimeSelection,authorizedBy:requiredExecutable.source};
+      if(runtime.get(exec.agent).config.hostNodeFallback&&script.runtime==='node'&&
+        script.executable===undefined&&!requiredExecutable&&!namedExecutable&&!hasInterpreterConstraint(exec.agent.session)&&
+        ['workspace-write','danger-full-access'].includes(ctx.get('sandboxPolicy')?.resolve({session:exec.agent.session})?.mode)){
+        const sea=process.getBuiltinModule?.('node:sea');
+        if(sea?.isSea?.()===false){
+          const marker='work-node-'+randomUUID();
+          const availability=await call(shell,{description:'Locate the existing Node interpreter',
+            command:nodeAvailabilityCommand(shell,marker),timeoutMs:10000},exec);
+          if(!dependencyExecutionComplete(availability))return {status:'failed',isError:true,executionOccurred:false,
+            reason:'native-node-availability-incomplete',scriptRef:exec.callId??null,scriptChars:script.code.length,
+            scriptRuntime:script.runtime,availability};
+          const producer=executionResultLayers(availability).findLast(value=>value.stdout!==undefined);
+          const stdout=typeof producer?.stdout==='string'?producer.stdout:producer?.stdout?.text;
+          const observed=typeof stdout==='string'?stdout.trim():null;
+          if(![marker+':available',marker+':missing'].includes(observed))return {status:'failed',isError:true,
+            executionOccurred:false,reason:'native-node-availability-unknown',availability,
+            scriptRef:exec.callId??null,scriptChars:script.code.length,scriptRuntime:script.runtime};
+          if(observed===marker+':missing'){
+            script={...script,executable:process.execPath};
+            hostRuntimeSelection={source:'host-node-runtime',executable:process.execPath,
+              version:process.versions.node,pathNodeAvailable:false};
+          }
+        }
+      }
       const root=await ctx.workingDirectory.ensure(exec.agent,exec.signal);
       if(script.executable!==undefined&&path.isAbsolute(script.executable)){
         let missing=false;
@@ -90,25 +172,37 @@ export function registerManagementTools({ctx,runtime,state,effects,available,fea
             namedExecutable?'No program was executed. The task names a specific interpreter path. Supply that interpreter at an existing absolute path or report the unmet requirement; do not substitute PATH. Reuse the returned scriptRef to retain the complete program.':
             'No program was executed. Supply an existing absolute interpreter path. If the task permits changing environments, explicitly set executable to python or node (matching the runtime) to use PATH. Omitting executable retains the recorded or declared path. Reuse the returned scriptRef to retain the complete program.'};
       }
-      const command=inlineCommand(script,root);
       // Inline scripts may print source files. Their output has no native read
       // windows, so it must not be treated as disposable generic shell output.
       preserveContextResult(exec.agent.session.id,exec.rootCallId??exec.callId);
       const dependencies=await executionDependencies.capture(root,sources,exec.signal);
-      const result=await call('pwsh',{command,description:'Run '+script.runtime+' script via stdin',timeoutMs:script.timeoutMs??10000},exec);
-      const fileEvidence=await executionDependencies.finish(dependencies,dependencyExecutionComplete(result),exec.signal);
-      const scriptEditsSubmitted=args.edits?.length??0,scriptEditCount=(args.edits??[]).filter(edit=>edit.before!==edit.after).length;
-      if(args.scriptRef)effects.decide(exec.agent,'inlineScriptReuse','applied','explicit-same-session-script-reference',{scriptChars:script.code.length,sourceCallId:args.scriptRef,scriptEditsSubmitted,scriptEditCount});
-      const aliases=['language','interpreter','cwd','workdir'].filter(key=>Object.hasOwn(args,key));
-      if(aliases.length)effects.decide(exec.agent,'inlineArgumentRecovery','applied','unambiguous-explicit-script-arguments',{aliases});
-      const scriptEventRef=inlineScriptEventRef(exec.agent.session,exec.callId);
-      const failureLocation=inlineFailureLocation(script,result.value??result),recovery=inlineFormatRecovery(script,result.value??result,scriptEventRef??exec.callId,failureLocation);
-      const metadata={...fileEvidence,scriptRef:exec.callId??null,scriptEventRef,scriptChars:script.code.length,scriptRuntime:script.runtime,scriptExecutable:script.executable??script.runtime,scriptEditsSubmitted,scriptEditCount,
-        scriptExecutableSource:declaredExecutable?.source??null,scriptSourceRefs:script.sourceCallIds??[],scriptReused:!!args.scriptRef,
-        failureLocation,...(recovery?{recovery}:{})};
-      const reportedChecks=reportedExecutionChecks(result);
-      if(reportedChecks)metadata.reportedChecks=reportedChecks;
-      return result.value!==undefined?{...result.value,...metadata,isError:!!result.isError}:{...metadata,isError:!!result.isError,error:result.error,content:result.content};
+      const description='Run '+script.runtime+' script via stdin';
+      const transferId=shell==='bash'?randomUUID():null,command=inlineCommand(script,root,shell,transferId);
+      if(shell==='bash')pendingStdin.set(command,{agent:exec.agent,values:inlineEnvironment(script,transferId)});
+      try{
+        const result=shell==='bash'
+          ?await call('bash',{description,command,timeoutMs:script.timeoutMs??10000},exec)
+          :await call('pwsh',{command,description,timeoutMs:script.timeoutMs??10000},exec);
+        const fileEvidence=await executionDependencies.finish(dependencies,dependencyExecutionComplete(result),exec.signal);
+        if(hostRuntimeSelection)effects.decide(exec.agent,'hostNodeFallback',dependencyExecutionComplete(result)?'applied':'failed',
+          hostRuntimeSelection.inherited?'recorded-host-runtime-reused':'native-node-missing-host-runtime-selected',hostRuntimeSelection);
+        const scriptEditsSubmitted=args.edits?.length??0,scriptEditCount=(args.edits??[]).filter(edit=>edit.before!==edit.after).length;
+        if(args.scriptRef)effects.decide(exec.agent,'inlineScriptReuse','applied','explicit-same-session-script-reference',{scriptChars:script.code.length,sourceCallId:args.scriptRef,scriptEditsSubmitted,scriptEditCount});
+        if(script.shellSource)effects.decide(exec.agent,'nativeShellScriptReuse','applied','explicit-literal-shell-program-reference',script.shellSource);
+        const aliases=['language','interpreter','cwd','workdir'].filter(key=>Object.hasOwn(args,key));
+        if(aliases.length)effects.decide(exec.agent,'inlineArgumentRecovery','applied','unambiguous-explicit-script-arguments',{aliases});
+        const scriptEventRef=inlineScriptEventRef(exec.agent.session,exec.callId);
+        const failureLocation=inlineFailureLocation(script,result.value??result),recovery=inlineFormatRecovery(script,result.value??result,scriptEventRef??exec.callId,failureLocation);
+        const metadata={...fileEvidence,scriptRef:exec.callId??null,scriptEventRef,scriptChars:script.code.length,scriptRuntime:script.runtime,scriptExecutable:script.executable??script.runtime,scriptEditsSubmitted,scriptEditCount,
+          scriptExecutableSource:declaredExecutable?.source??hostRuntimeSelection?.source??(scriptExecutableAuthorization?requiredExecutable.source:null),
+          ...(scriptExecutableAuthorization?{scriptExecutableAuthorization}:{}),
+          ...(hostRuntimeSelection?{hostRuntimeSelection}:{}),scriptSourceRefs:script.sourceCallIds??[],scriptReused:!!args.scriptRef,
+          ...(script.shellSource?{scriptShellSource:script.shellSource}:{}),
+          failureLocation,...(recovery?{recovery}:{})};
+        const reportedChecks=reportedExecutionChecks(result);
+        if(reportedChecks)metadata.reportedChecks=reportedChecks;
+        return result.value!==undefined?{...result.value,...metadata,isError:!!result.isError}:{...metadata,isError:!!result.isError,error:result.error,content:result.content};
+      }finally{pendingStdin.delete(command);}
     },{resultSchema:{type:'object',additionalProperties:true,properties:{
       status:{type:'string'},mode:{type:'string'},logs:{type:'array',items:{type:'string'}},
       scriptRef:{oneOf:[{type:'string'},{type:'null'}]},scriptChars:{type:'number'},scriptRuntime:{type:'string'},scriptReused:{type:'boolean'},
@@ -209,8 +303,8 @@ export function registerManagementTools({ctx,runtime,state,effects,available,fea
       }
       return result;
     },{gate:false});
-  register('work_probe','用已有原生调用回答一个具体问题并返回紧凑的实际证据。只运行当前任务允许且已形成的调用，不生成命令、安装依赖或宣告业务完成。mode=execute 使用 question/tool/arguments；cases 最多8项，JSON pointer 从 stdout JSON 或完整原生 result 选值，可用 expectedJson 比较已明确预期。非零退出、截断及后台任务保持未解决；沿原任务ID继续，不重发命令。mode=recall 按id分页取回同一会话记录；inspect只列可用工具。',
-    {mode:{type:'string',enum:['execute','recall','inspect']},question:{type:'string'},tool:{type:'string',enum:['pwsh','ops_bash','bash','job_output','read','grep','glob','ops_stat','ops_read_files','ops_inspect_local_file']},arguments:{type:'object'},
+  register('work_probe','用已有原生调用回答一个具体问题并返回紧凑的实际证据。只运行当前任务允许且已形成的调用，不生成命令、安装依赖或宣告业务完成。mode=execute 使用 question/tool/arguments；cases 最多8项，JSON pointer 从 stdout JSON 或完整原生 result 选值，可用 expectedJson 比较已明确预期。非零退出、截断及后台任务保持未解决；沿原任务ID继续，不重发命令。mode=recall 按id分页取回同一会话记录；inspect只列可用工具。probeReplay 开启时，mode=replay 仅接受原id及显示预算，按原会话中的命令、显式来源列表和预期重新执行；当前文件、权限和环境重新生效，后台任务不得重执行。',
+    {mode:{type:'string',enum:['execute','recall','inspect','replay']},question:{type:'string'},tool:{type:'string',enum:['pwsh','ops_bash','bash','job_output','read','grep','glob','ops_stat','ops_read_files','ops_inspect_local_file']},arguments:{type:'object'},
       sources:{type:'array',maxItems:16,items:{type:'string'},description:'Explicit dependencies for this observation. File paths are relative to the project directory. Native file metadata is observed around execution; URLs and missing metadata remain unknown.'},cases:{type:'array',maxItems:8,items:{type:'object',additionalProperties:false,properties:{name:{type:'string'},target:{type:'string',enum:['stdout','result']},pointer:{type:'string'},expectedJson:{type:'string'}},required:['name','pointer']}},
       id:{type:'string'},offset:{type:'integer',minimum:0},maxChars:{type:'integer',minimum:1024,maximum:12000}},[],(args,exec)=>executionEvidence.execute(exec.agent,args,exec.signal));
   register('evidence_index','查询或维护有真实源码支持的附加检索入口；query读取当前源码核对，learn保留原入口，semantic=true时额外调用模型核对别名。',
@@ -233,7 +327,7 @@ export function registerManagementTools({ctx,runtime,state,effects,available,fea
       }
       return ptcFastpath.run(exec.agent,args,exec.signal);
     });
-  register('verified_exec','对已明确的文件修改做精确替换或创建，通过OPS当前revision应用；冲突时deopt，跨文件写入逐文件生效。apply=false只生成修改预览。validations可省略，只在当前任务要求外部命令时显式提供；没有命令时返回applied，有命令且成功才返回validated，均不代表全部需求完成。',
+  register('verified_exec','Apply several explicit exact replacements or new files in one call with version checks and native permission enforcement. Set apply:false for a preview. Conflicts preserve newer content and return deopt; cross-file writes take effect per file and report partial effects honestly. validations are optional and run only the explicitly supplied commands. applied means the files changed; validated means those commands also passed. Neither status declares the whole task complete.',
     {summary:{type:'string'},apply:{type:'boolean'},
       edits:{type:'array',minItems:1,maxItems:50,items:{type:'object',additionalProperties:false,properties:{
         file:{type:'string'},mode:{type:'string',enum:['replace_exact','create']},old_text:{type:'string'},new_text:{type:'string'},content:{type:'string'}

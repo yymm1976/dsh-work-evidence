@@ -38,6 +38,35 @@ test('nested internal calls keep their parent and bypass batch dispatch',async()
   assert.equal(completed.exec.id,'exec-1');
 });
 
+test('execution adaptation deduplicates Cordis proxies and does not retain a consumer context',async()=>{
+  let active=true;
+  const pipeline={prepare:async input=>({kind:'dispatch',exec:input}),dispatch:async()=>({value:{ok:true},isError:false}),
+    complete:async(_exec,result)=>result};
+  const target={selectExecutor:()=>({pipeline}),execute:async()=>({results:[]})};
+  const ctx={get tools(){
+    if(!active)throw Error('inactive consumer tools');
+    return new Proxy(target,{get:(object,key)=>key===Symbol.for('cordis.original')?object:object[key]});
+  }};
+  patchToolExecution(ctx);const first=target.execute;
+  patchToolExecution(ctx);assert.equal(target.execute,first);
+  active=false;
+  assert.deepEqual(await target.execute({name:'read',arguments:{file_path:'a'},parent:'parent-call',agent:{}}),{value:{ok:true},isError:false});
+});
+
+test('resolved prompt assembly skips an owner whose disposal has started before continuation',async()=>{
+  for(const mode of ['disposed','unloading']){
+    const owner={uid:1,state:2};
+    let resolve,cleanup;
+    const ctx={fiber:owner,effect:setup=>{cleanup=setup();},tools:{selectExecutor:()=>({})},
+      systemPrompt:{assemble:()=>new Promise(accept=>{resolve=accept;})}};
+    patchSystemPromptTools(ctx,result=>result.tools.push({name:'retired'}));
+    const pending=ctx.systemPrompt.assemble({});resolve({tools:[{name:'native'}]});
+    if(mode==='disposed')owner.uid=null;else owner.state=5;
+    const result=await pending;
+    assert.deepEqual(result.tools,[{name:'native'}],mode);cleanup();
+  }
+});
+
 test('an older single-call executor is left unchanged',async()=>{
   let calls=0;
   const tools={execute:async input=>{calls++;return {isError:false,value:{name:input.name}};}};
@@ -62,7 +91,7 @@ test('tool mode recognizes a selected PTC executor on newer hosts',()=>{
 
 test('new system prompt hosts receive tool transforms after assembly',async()=>{
   let assembles=0;
-  const ctx={tools:{selectExecutor:()=>({})},systemPrompt:{assemble:async()=>({tools:[{name:'run_code'}],sections:[]})}};
+  const ctx={effect:setup=>setup(),tools:{selectExecutor:()=>({})},systemPrompt:{assemble:async()=>({tools:[{name:'run_code'}],sections:[]})}};
   assert.equal(isBatchToolHost(ctx),true);
   patchSystemPromptTools(ctx,(result)=>{result.tools=[...result.tools,{name:'added'}];});
   const before=ctx.systemPrompt.assemble;

@@ -370,6 +370,98 @@ test('stubCheckpoint checked requires the same tool and target', () => {
   assert.equal(checked.get(6), false);
 });
 
+test('a background or incomplete retry cannot mark a problem checked in the stub',()=>{
+  for(const value of [{kind:'background',jobId:'j1'},{kind:'promoted',jobId:'j1'},
+    {exitCode:0,executionCompleted:false},{exitCode:0,completed:false},{exitCode:0,timedOut:true},{exitCode:0,aborted:true},
+    {exitCode:0,partial:true},{exitCode:0,outputPartial:true},{exitCode:0,lossy:true},{exitCode:0,stopped:true},{exitCode:0,signal:'SIGTERM'}]){
+    const log=[event(1,'tool/call',{name:'bash',callId:'first',arguments:{command:'build'}}),
+      toolResult(2,'bash','Build did not finish',{isError:true,source:{callId:'first'}}),
+      event(3,'tool/call',{name:'bash',callId:'retry',arguments:{command:'build'}}),
+      toolResult(4,'bash',JSON.stringify(value),{isError:false,source:{callId:'retry'}})];
+    const stub=stubCheckpoint(eventLogAgent(log));
+    const row=JSON.parse(stub.text.match(/^- (\{"seq":2,"kind":"result"[^\n]*,"checked":(?:true|false)\})$/mu)[1]);
+    assert.equal(row.checked,false,JSON.stringify(value));
+  }
+});
+test('a zero-exit retry that reports failed checks remains unresolved in the stub',()=>{
+  for(const body of [JSON.stringify({exitCode:0,stdout:{text:"FAILURES: ['case']"}}),"FAILURES: ['case']"]){
+    const log=[event(1,'tool/call',{name:'bash',callId:'first',arguments:{command:'check'}}),
+      toolResult(2,'bash','Initial check did not finish',{isError:true,source:{callId:'first'}}),
+      event(3,'tool/call',{name:'bash',callId:'retry',arguments:{command:'check'}}),
+      toolResult(4,'bash',body,{isError:false,source:{callId:'retry'}})];
+    const stub=stubCheckpoint(eventLogAgent(log));
+    const row=JSON.parse(stub.text.match(/^- (\{"seq":2,"kind":"result"[^\n]*,"checked":(?:true|false)\})$/mu)[1]);
+    assert.equal(row.checked,false);assert.equal(stub.problemRows,2);
+  }
+});
+
+test('a metadata-truncated retry cannot mark an earlier problem checked',()=>{
+  for(const type of ['tool/result','tool/ptc-dispatch','tool/code-dispatch']){
+    const retry=type==='tool/result'?toolResult(4,'bash','build complete',{source:{callId:'retry'}}):
+      event(4,type,{name:'bash',subCallId:'retry',arguments:{command:'build'},content:[{type:'text',text:'build complete'}]});
+    retry.data.meta={truncated:true};
+    const stub=stubCheckpoint(eventLogAgent([
+      event(1,'tool/call',{name:'bash',callId:'first',arguments:{command:'build'}}),
+      toolResult(2,'bash','Build did not finish',{isError:true,source:{callId:'first'}}),
+      event(3,'tool/call',{name:'bash',callId:'retry',arguments:{command:'build'}}),retry]));
+    const row=JSON.parse(stub.text.match(/^- (\{"seq":2,"kind":"result"[^\n]*,"checked":(?:true|false)\})$/mu)[1]);
+    assert.equal(row.checked,false,type);
+    assert.equal(stub.problemRows,1,'truncation preserves the original problem classification');
+  }
+});
+
+test('stubCheckpoint resolves a missing result tool name from its callId',()=>{
+  const result=JSON.stringify({exitCode:0,stdout:{text:"FAILURES: ['case']"}});
+  const stub=stubCheckpoint(eventLogAgent([
+    event(1,'tool/call',{name:'pwsh',callId:'pwsh-call-1',arguments:{command:'pwsh check'}}),
+    event(2,'tool/result',{message:{role:'tool',source:{kind:'tool',callId:'pwsh-call-1'},
+      content:[{type:'text',text:result}]}}),
+  ]));
+  const row=JSON.parse(stub.text.match(/^- (\{"seq":2,"kind":"result"[^\n]*,"checked":(?:true|false)\})$/mu)[1]);
+  assert.equal(stub.problemRows,1);
+  assert.equal(row.tool,'pwsh');
+  assert.match(row.head,/FAILURES/);
+});
+
+test('completed PTC command failures stay in the checkpoint until a matching successful dispatch',()=>{
+  for(const failedRetry of [false,true]){
+    const failed={status:'completed',exitCode:0,stdout:{text:"FAILURES: ['case']"}},passed={status:'completed',exitCode:0,stdout:{text:'PASS'}};
+    const dispatch=(seq,id,value)=>event(seq,'tool/ptc-dispatch',{name:'pwsh',subCallId:id,rootCallId:'outer',arguments:{command:'requested-check'},
+      isError:false,value,content:[{type:'text',text:JSON.stringify(value)}]});
+    const stub=stubCheckpoint(eventLogAgent([
+      event(1,'tool/call',{name:'run_code',callId:'outer',arguments:{code:'Run the declared check'}}),
+      dispatch(2,'first',failed),
+      event(3,'tool/result',{message:{role:'tool',source:{kind:'tool',callId:'outer'},content:[{type:'text',text:JSON.stringify(failed)}]}}),
+      dispatch(4,'retry',failedRetry?failed:passed),
+    ]));
+    assert.equal(stub.problemRows,failedRetry?2:1);
+    const row=JSON.parse(stub.text.match(/^- (\{"seq":2,"kind":"call"[^\n]*,"checked":(?:true|false)\})$/mu)[1]);
+    assert.equal(row.checked,!failedRetry);assert.equal(row.tool,'pwsh');
+  }
+});
+
+test('checkpoint retains explicit and structured failures without textual tool content',()=>{
+  for(const type of ['tool/result','tool/ptc-dispatch','tool/code-dispatch']){
+    for(const content of [[],[{type:'text',text:'  \n '}],[{type:'image',data:'fixture'}]]){
+      for(const explicit of [false,true]){
+        const value={status:'completed',exitCode:1};
+        const data=type==='tool/result'?{name:'pwsh',value,message:{role:'tool',source:{callId:'failed'},isError:explicit,content}}:
+          {name:'pwsh',subCallId:'failed',rootCallId:'outer',arguments:{command:'requested-check'},isError:explicit,value,content};
+        const stub=stubCheckpoint(eventLogAgent([
+          event(1,'tool/call',{name:'pwsh',callId:'failed',arguments:{command:'requested-check'}}),event(2,type,data),
+        ]));
+        assert.equal(stub.problemRows,1,type+' '+explicit+' '+JSON.stringify(content));
+        const row=JSON.parse(stub.text.match(/^- (\{"seq":2,"kind":"[^"]+"[^\n]*,"checked":(?:true|false)\})$/mu)[1]);
+        assert.equal(row.tool,'pwsh');assert.equal(row.checked,false);
+        assert.match(row.head,/tool failure without text/);assert.match(row.head,/exitCode/);
+        assert.ok(stub.text.includes('kind:"event",seq:2'));
+      }
+    }
+    const data=type==='tool/result'?{name:'pwsh',message:{role:'tool',isError:true,content:[]}}:{name:'pwsh',isError:true,content:[]};
+    assert.equal(stubCheckpoint(eventLogAgent([event(2,type,data)])).problemRows,1,'An explicit error needs no structured value');
+  }
+});
+
 test('recallHistory event pages use JavaScript string offsets and reassemble exactly', () => {
   const original = `BEGIN-\u{1F642}-${'x'.repeat(280)}-\u{1F642}-END`;
   const agent = eventLogAgent([userMessage(5, original)]);

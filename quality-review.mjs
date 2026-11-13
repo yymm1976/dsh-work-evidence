@@ -205,7 +205,15 @@ function payloadFor(current,review,root){
     if(call.name.startsWith('ops_')){
       if(call.args.dryRun===true)return null;
       const text=textOf({content});let value;try{value=JSON.parse(text);}catch{}
-      if(value){if(value.status!=='completed'||value.error||value.data?.error)return null;}
+      if(value){
+        const failed=node=>node?.error||node?.isError===true||node?.success===false||node?.ok===false||node?.failed||
+          ['failed','error','cancelled','aborted','unavailable','blocked','unknown'].includes(node?.status);
+        // A successful read page may be incomplete for the whole file. Preserve
+        // its original continuation and coverage flags; writes still need completion.
+        const page=FILE_READS.has(call.name)&&value.status==='partial'&&value.data?.failed===0&&
+          Array.isArray(value.data.items)&&value.data.items.length>0&&value.data.items.every(item=>item&&typeof item==='object'&&!failed(item));
+        if(failed(value)||failed(value.data)||value.status!=='completed'&&!page)return null;
+      }
       else if(FILE_WRITES.has(call.name)&&!text.startsWith(call.name.slice(4)+': completed;')&&!text.startsWith(call.name.slice(4)+': completed\n'))return null;
     }
     return call;

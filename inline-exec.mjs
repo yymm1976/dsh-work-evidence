@@ -1,11 +1,28 @@
 import {argsOf,eventLog,isUserRequestMessage,textOf} from './runtime.mjs';
 import {Script} from 'node:vm';
+import path from 'node:path';
+import {nativeShellScript} from './native-shell-script.mjs';
+import {stat} from 'node:fs/promises';
 
 const quote=value=>"'"+String(value).replaceAll("'","''")+"'";
+const bashQuote=value=>"'"+String(value).replaceAll("'","'\\''")+"'";
 const INPUT_KEYS=new Set(['runtime','language','code','scriptRef','edits','executable','interpreter','format','cwd','workdir','timeoutMs','mode','sources']);
 const CALL_EVENT_TYPES=new Set(['tool/call','tool/ptc-dispatch-start','tool/ptc-dispatch','tool/code-dispatch-start','tool/code-dispatch']);
 const RESULT_EVENT_TYPES=new Set(['tool/result','tool/ptc-dispatch','tool/code-dispatch']);
 const validExecutable=value=>typeof value==='string'&&value.trim()&&value.length<=4096&&!/[\0\r\n]/u.test(value);
+export function sameInlineExecutable(left,right){
+  if(typeof left!=='string'||typeof right!=='string')return false;
+  const normalize=value=>process.platform==='win32'?path.win32.normalize(value).toLowerCase():path.posix.normalize(value);
+  return normalize(left)===normalize(right);
+}
+/** User authorization must name the actual file, including on case-sensitive Windows directories. */
+export async function sameDeclaredInlineExecutable(left,right){
+  if(typeof left!=='string'||typeof right!=='string'||!path.isAbsolute(left)||!path.isAbsolute(right))return false;
+  try{
+    const [first,second]=await Promise.all([stat(left,{bigint:true}),stat(right,{bigint:true})]);
+    return first.isFile()&&second.isFile()&&first.ino!==0n&&first.dev!==0n&&second.dev!==0n&&first.ino===second.ino&&first.dev===second.dev;
+  }catch{return false;}
+}
 function normalizeInput(input){
   if(!input||typeof input!=='object'||Array.isArray(input))throw new Error('work_exec arguments must be an object');
   for(const key of Object.keys(input))if(!INPUT_KEYS.has(key))throw new Error('Unknown work_exec argument: '+key);
@@ -38,6 +55,14 @@ function scriptExecutableOf(event){
   const metadata=event.type==='tool/result'?metadataOf(data.message?.content):metadataOf(data.content);
   const declared=[metadata?.scriptRef,metadata?.scriptRuntime,metadata?.scriptChars].some(value=>value!==undefined);
   return declared&&validExecutable(metadata?.scriptExecutable)?metadata.scriptExecutable:null;
+}
+function scriptHostRuntimeOf(event){
+  const data=event.data??{};
+  const metadata=event.type==='tool/result'?metadataOf(data.message?.content):metadataOf(data.content);
+  const selection=metadata?.hostRuntimeSelection;
+  return metadata?.scriptExecutableSource==='host-node-runtime'&&selection?.source==='host-node-runtime'&&
+    validExecutable(selection.executable)&&sameInlineExecutable(selection.executable,metadata.scriptExecutable)?
+    {...selection}:null;
 }
 const messageOf=event=>event.data?.message??event.data??{};
 export function inlineScriptEventRef(session,callId){
@@ -199,8 +224,8 @@ export function declaredInlineExecutable(session,runtime){
 }
 
 /** Reconstruct explicitly referenced scripts from this session's original calls. */
-export function resolveInlineScript(input,session,signal){
-  const events=typeof input?.scriptRef==='string'?eventLog(session):[],calls=new Map(),resultExecutables=new Map();
+export function resolveInlineScript(input,session,signal,{nativeShellScriptReuse=false}={}){
+  const events=typeof input?.scriptRef==='string'?eventLog(session):[],calls=new Map(),resultExecutables=new Map(),resultHostRuntimes=new Map();
   for(const event of events){
     const data=event.data??{};
     if(!CALL_EVENT_TYPES.has(event.type))continue;
@@ -218,10 +243,13 @@ export function resolveInlineScript(input,session,signal){
     if(call?.name!=='work_exec')continue;
     const executable=scriptExecutableOf(event);
     if(executable)resultExecutables.set(id,executable);
+    const hostRuntime=scriptHostRuntimeOf(event);
+    if(hostRuntime)resultHostRuntimes.set(id,hostRuntime);
   }
-  const eventRefs=new Map(events.filter(event=>CALL_EVENT_TYPES.has(event.type)&&event.data?.name==='work_exec'&&Number.isSafeInteger(event.seq)&&event.seq>=0)
+  const eventRefs=new Map(events.filter(event=>CALL_EVENT_TYPES.has(event.type)&&
+    (event.data?.name==='work_exec'||nativeShellScriptReuse&&event.data?.name==='bash')&&Number.isSafeInteger(event.seq)&&event.seq>=0)
     .map(event=>['event:'+event.seq,eventCallId(event.type,event.data)]).filter(([,id])=>typeof id==='string'&&calls.has(id)));
-  try{return resolveIndexedScript(input,calls,resultExecutables,eventRefs,signal);}catch(error){
+  try{return resolveIndexedScript(input,calls,resultExecutables,resultHostRuntimes,eventRefs,signal,nativeShellScriptReuse);}catch(error){
     if(error.code!=='WORK_EXEC_SCRIPT_REF_NOT_FOUND')throw error;
     const request=events.findLast(event=>event.type==='user/message'&&isUserRequestMessage(messageOf(event)));
     const requestedRuntime=input.runtime??input.language,available=[];
@@ -229,9 +257,9 @@ export function resolveInlineScript(input,session,signal){
       signal?.throwIfAborted();
       if(scriptRef.length>256)continue;
       try{
-        const script=resolveIndexedScript({scriptRef,...(requestedRuntime===undefined?{}:{runtime:requestedRuntime})},calls,resultExecutables,eventRefs,signal);
+        const script=resolveIndexedScript({scriptRef,...(requestedRuntime===undefined?{}:{runtime:requestedRuntime})},calls,resultExecutables,resultHostRuntimes,eventRefs,signal);
         if(typeof script.code!=='string'||!script.code.trim()||script.code.length>64000)continue;
-        if(input.edits!==undefined)resolveIndexedScript({...input,scriptRef},calls,resultExecutables,eventRefs,signal);
+        if(input.edits!==undefined)resolveIndexedScript({...input,scriptRef},calls,resultExecutables,resultHostRuntimes,eventRefs,signal);
         available.push({scriptRef,scriptEventRef:'event:'+call.seq,seq:call.seq,runtime:script.runtime,scriptChars:script.code.length});
         if(available.length===3)break;
       }catch{signal?.throwIfAborted();}
@@ -263,8 +291,9 @@ function scriptEditMismatch(code,edit,editIndex,scriptRef){
     {code:'WORK_EXEC_SCRIPT_EDIT_MISMATCH',editMismatch:detail});
 }
 
-function resolveIndexedScript(input,calls,resultExecutables,eventRefs,signal){
+function resolveIndexedScript(input,calls,resultExecutables,resultHostRuntimes,eventRefs,signal,allowNativeShell=false){
   const chain=[],seen=new Set(),sourceCallIds=[];let candidate=input,callId=null,runtime;
+  let shellSource=null;
   while(true){
     signal?.throwIfAborted();
     candidate=normalizeInput(candidate);
@@ -272,7 +301,10 @@ function resolveIndexedScript(input,calls,resultExecutables,eventRefs,signal){
       if(runtime!==undefined&&candidate.runtime!==runtime)throw new Error('scriptRef runtime must match the original script');
       runtime=candidate.runtime;
     }
-    if(candidate.executable===undefined&&resultExecutables.has(callId))candidate.executable=resultExecutables.get(callId);
+    if(candidate.executable===undefined&&resultExecutables.has(callId)){
+      candidate.executable=resultExecutables.get(callId);
+      candidate.inheritedHostRuntime=resultHostRuntimes.get(callId)??null;
+    }
     const hasCode=typeof candidate.code==='string',hasRef=typeof candidate.scriptRef==='string'&&candidate.scriptRef.length>0;
     if(hasCode===hasRef)throw new Error('Provide exactly one of code or scriptRef');
     if(candidate.scriptRef!==undefined&&(!hasRef||candidate.scriptRef.length>256))throw new Error('Invalid same-session scriptRef');
@@ -284,13 +316,21 @@ function resolveIndexedScript(input,calls,resultExecutables,eventRefs,signal){
     seen.add(ref);
     sourceCallIds.push(ref);
     const previous=calls.get(ref);
-    if(!previous||previous.name!=='work_exec')throw Object.assign(new Error('scriptRef does not identify an original work_exec call in this session'),{code:'WORK_EXEC_SCRIPT_REF_NOT_FOUND'});
-    candidate=previous.args;
+    if(!previous||previous.name!=='work_exec'&&!(allowNativeShell&&previous.name==='bash'))
+      throw Object.assign(new Error('scriptRef does not identify a supported original program in this session'),{code:'WORK_EXEC_SCRIPT_REF_NOT_FOUND'});
+    if(previous.name==='bash'){
+      const program=nativeShellScript(previous.name,previous.args);
+      if(!program)throw Object.assign(new Error('The recorded Shell command is not one literal supported Python/Node stdin program.'),{code:'WORK_EXEC_SHELL_REF_UNSUPPORTED'});
+      const {nativeArguments,...script}=program;
+      shellSource={tool:'bash',callId:ref,seq:previous.seq,nativeArguments};
+      candidate=script;
+    }else candidate=previous.args;
     callId=ref;
   }
   const initial=chain.pop();
   if(!['python','node'].includes(runtime))throw new Error('runtime must be python or node');
   let resolved={runtime,code:initial.code,...(initial.executable!==undefined?{executable:initial.executable}:{}),...(initial.format!==undefined?{format:initial.format}:{}),...(initial.timeoutMs!==undefined?{timeoutMs:initial.timeoutMs}:{})};
+  let inheritedHostRuntime=initial.inheritedHostRuntime??null;
   for(const next of chain.reverse()){
     signal?.throwIfAborted();
     for(const [editIndex,edit]of (next.edits??[]).entries()){
@@ -301,21 +341,86 @@ function resolveIndexedScript(input,calls,resultExecutables,eventRefs,signal){
       resolved.code=resolved.code.slice(0,first)+edit.after+resolved.code.slice(first+edit.before.length);
       if(!resolved.code.trim()||resolved.code.length>64000)throw new Error('Edited script must contain 1–64000 characters');
     }
-    if(next.executable!==undefined)resolved.executable=next.executable;
-    if(next.format!==undefined)resolved.format=next.format;
+    if(next.executable!==undefined){
+      inheritedHostRuntime=next.inheritedHostRuntime??
+        (inheritedHostRuntime&&sameInlineExecutable(next.executable,inheritedHostRuntime.executable)?inheritedHostRuntime:null);
+      resolved.executable=next.executable;
+    }
+    if(next.format!==undefined){
+      resolved.format=next.format;
+      if(shellSource&&runtime==='node'){
+        const args=shellSource.nativeArguments.filter(arg=>!arg.startsWith('--input-type='));
+        const position=args.indexOf('-');args.splice(position<0?args.length:position,0,'--input-type='+next.format);
+        shellSource={...shellSource,argumentsOverridden:true,effectiveArguments:args};
+      }
+    }
     if(next.timeoutMs!==undefined)resolved.timeoutMs=next.timeoutMs;
   }
-  return {...resolved,sourceCallIds};
+  return {...resolved,sourceCallIds,...(inheritedHostRuntime?{inheritedHostRuntime}:{}),
+    ...(shellSource?{shellSource,nativeArguments:shellSource.effectiveArguments??shellSource.nativeArguments}:{})};
 }
 
-/** Transfer UTF-8 bytes through native PowerShell without shell re-escaping. */
-export function inlineCommand(input,root){
+export const INLINE_ENV_KEYS=Object.freeze(['DSH_WORK_EVIDENCE_STDIN_ID',...Array.from({length:3},(_,index)=>'DSH_WORK_EVIDENCE_STDIN_'+index)]);
+const validTransferId=value=>typeof value==='string'&&/^[A-Za-z0-9_-]{1,128}$/u.test(value);
+/** Ask the native shell about its own executor, including local functions on Bash. */
+export function nodeAvailabilityCommand(shell,marker){
+  if(!validTransferId(marker))throw new Error('Node availability needs an exact marker');
+  if(shell==='bash')return `if command -v node >/dev/null 2>&1; then builtin printf '%s\\n' '${marker}:available'; else builtin printf '%s\\n' '${marker}:missing'; fi`;
+  if(shell==='pwsh')return `if (Get-Command node -CommandType Application -ErrorAction SilentlyContinue) { [Console]::Out.WriteLine('${marker}:available') } else { [Console]::Out.WriteLine('${marker}:missing') }`;
+  throw new Error('shell must be pwsh or bash');
+}
+/** Conservatively suspend automatic fallback after any human interpreter mention in this session. */
+export function hasInterpreterConstraint(session){
+  return eventLog(session).some(event=>isUserRequestMessage(messageOf(event))&&
+    /\bnode(?:\.js|js)?\b|\b(?:interpreter|runtime)\b|解释器|运行时/iu.test(textOf(messageOf(event))));
+}
+function validateInlineInput(input){
   if(!input||!['python','node'].includes(input.runtime)||typeof input.code!=='string'||!input.code.trim()||input.code.length>64000)
     throw new Error('runtime must be python or node and code must contain 1–64000 characters');
   if(input.format!==undefined&&(input.runtime!=='node'||!['module','commonjs'].includes(input.format)))throw new Error('format applies only to Node');
   const executable=input.executable??input.runtime;
   if(!validExecutable(executable))throw new Error('Invalid existing executable');
-  const args=input.runtime==='python'?'-B -X utf8 -':'--input-type='+(input.format??'module')+' -';
+  return executable;
+}
+
+/** Keep each environment string below Linux's per-string exec limit, including UTF-8 and NUL bytes. */
+export function inlineEnvironment(input,transferId){
+  validateInlineInput(input);
+  if(!validTransferId(transferId))throw new Error('bash transport requires a valid transfer ID');
+  const bytes=Buffer.from(input.code.replaceAll('\\','\\\\').replaceAll('\0','\\x00'),'utf8');
+  const values={[INLINE_ENV_KEYS[0]]:transferId};let offset=0;
+  for(const key of INLINE_ENV_KEYS.slice(1)){
+    let end=Math.min(offset+96000,bytes.length);
+    while(end<bytes.length&&(bytes[end]&0xc0)===0x80)end--;
+    values[key]=bytes.subarray(offset,end).toString('utf8');offset=end;
+  }
+  if(offset!==bytes.length)throw new Error('work_exec source exceeds the native environment transport capacity');
+  return Object.freeze(values);
+}
+
+/** Transfer UTF-8 bytes through the selected native shell while treating the program as stdin data. */
+export function inlineCommand(input,root,shell='pwsh',transferId=null){
+  const executable=validateInlineInput(input);
+  if(shell==='bash'){
+    if(!validTransferId(transferId))throw new Error('bash transport requires a valid transfer ID');
+    const args=input.nativeArguments??(input.runtime==='python'?['-B','-X','utf8','-']:['--input-type='+(input.format??'module'),'-']);
+    const environment=input.runtime==='python'&&!input.nativeArguments?'PYTHONIOENCODING=utf-8 PYTHONDONTWRITEBYTECODE=1 ':'';
+    const invocation=environment+[executable,...args].map(bashQuote).join(' ');
+    const present=INLINE_ENV_KEYS.slice(1).map(key=>'"${'+key+'+present}" = present').join(' && ');
+    const content=INLINE_ENV_KEYS.slice(1).map(key=>'${'+key+'-}').join('');
+    return `set -o pipefail
+if ! [[ "\${${INLINE_ENV_KEYS[0]}-}" = ${bashQuote(transferId)} && ${present} ]]; then
+  printf '%s\\n' 'work_exec stdin environment is unavailable' >&2
+  exit 125
+fi
+cd -- ${bashQuote(root)} || exit $?
+builtin printf '%b' "${content}" | (
+  unset ${INLINE_ENV_KEYS.join(' ')}
+  ${invocation}
+)`;
+  }
+  if(shell!=='pwsh')throw new Error('shell must be pwsh or bash');
+  const args=input.nativeArguments?.join(' ')??(input.runtime==='python'?'-B -X utf8 -':'--input-type='+(input.format??'module')+' -');
   const encoded=Buffer.from(input.code,'utf8').toString('base64');
   return `$ErrorActionPreference = 'Stop'
 [Console]::OutputEncoding = [Text.UTF8Encoding]::new($false)
@@ -328,7 +433,7 @@ $workExecInfo.CreateNoWindow = $true
 $workExecInfo.RedirectStandardInput = $true
 $workExecInfo.RedirectStandardOutput = $true
 $workExecInfo.RedirectStandardError = $true
-${input.runtime==='python'?"$workExecInfo.EnvironmentVariables['PYTHONIOENCODING'] = 'utf-8'\n$workExecInfo.EnvironmentVariables['PYTHONDONTWRITEBYTECODE'] = '1'":''}
+${input.runtime==='python'&&!input.nativeArguments?"$workExecInfo.EnvironmentVariables['PYTHONIOENCODING'] = 'utf-8'\n$workExecInfo.EnvironmentVariables['PYTHONDONTWRITEBYTECODE'] = '1'":''}
 $workExecProcess = [Diagnostics.Process]::new()
 $workExecProcess.StartInfo = $workExecInfo
 $workExecStarted = $false

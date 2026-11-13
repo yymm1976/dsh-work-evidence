@@ -11,19 +11,62 @@ export function declaredFileSources(sources=[]){
   return sources.slice();
 }
 
+/** Supported value/data execution envelopes, from the tool wrapper to the producer. */
+export function executionResultLayers(result){
+  const layers=[];
+  for(let node=result;node&&typeof node==='object'&&!layers.includes(node);node=node.value??node.data)layers.push(node);
+  return layers;
+}
+
+/** Keep the deepest producer's actual exit separate from envelope failure markers. */
+export function executionExitCode(result){
+  for(const node of executionResultLayers(result).reverse()){
+    if(Number.isInteger(node.exitCode))return node.exitCode;
+    if(Number.isInteger(node.exit_code))return node.exit_code;
+  }
+  return null;
+}
+
+const FAILURE_STATUS=new Set(['error','failed','killed','cancelled','canceled','rejected','aborted']);
+const UNAVAILABLE_STATUS=new Set(['unavailable','disabled','deopt','not_found','blocked','not-attempted']);
+const PENDING_STATUS=new Set(['background','promoted','running','pending','queued','stopping']);
+const PARTIAL_STATUS=new Set(['partial','stopped','interrupted']);
+const SUCCESS_STATUS=new Set(['completed','observed','available','success','ok']);
+
+/** Execution metadata only: selected JSON records and stream text remain user data. */
+export function executionFacts(result){
+  const layers=executionResultLayers(result),statuses=layers.flatMap(node=>[node.status,node.state,node.job?.status]
+    .filter(status=>status!=null).map(status=>String(status).toLowerCase()));
+  const failed=statuses.some(status=>FAILURE_STATUS.has(status))||layers.some(node=>
+    node.isError===true||node.success===false||node.ok===false||!!(node.error||node.err)||
+    Number.isFinite(node.exitCode)&&node.exitCode!==0||Number.isFinite(node.exit_code)&&node.exit_code!==0);
+  const unavailable=statuses.some(status=>UNAVAILABLE_STATUS.has(status));
+  const background=layers.some(node=>node.background===true||[node.kind,node.job?.kind,node.status,node.state,node.job?.status]
+    .some(value=>['background','promoted'].includes(String(value??'').toLowerCase())));
+  const pending=background||layers.some(node=>node.pending===true)||statuses.some(status=>PENDING_STATUS.has(status));
+  const truncated=layers.some(node=>node.lossy===true||node.outputPartial===true||node.truncated===true||
+    node.rangeComplete===false||node.textComplete===false||node.scanComplete===false||node.budgetTruncated===true||
+    node.stdout?.truncated===true||node.stderr?.truncated===true||node.stdout?.complete===false||node.stderr?.complete===false);
+  const partial=truncated||statuses.some(status=>PARTIAL_STATUS.has(status))||layers.some(node=>
+    node.complete===false||node.completed===false||node.executionCompleted===false||node.partial===true||node.interrupted===true);
+  const unknown=statuses.some(status=>!FAILURE_STATUS.has(status)&&!UNAVAILABLE_STATUS.has(status)&&
+    !PENDING_STATUS.has(status)&&!PARTIAL_STATUS.has(status)&&!SUCCESS_STATUS.has(status));
+  const interrupted=layers.some(node=>
+    node.signal!=null||node.timedOut===true||node.aborted===true||node.cancelled===true||node.stopped!==undefined);
+  const incomplete=pending||partial||unknown||unavailable||statuses.includes('aborted')||interrupted;
+  return {failed,unavailable,background,pending,partial,unknown,interrupted,incomplete,truncated,exitCode:executionExitCode(result)};
+}
+
 /** File applicability has a narrower meaning than process success or task correctness. */
 export function dependencyExecutionComplete(result){
-  const raw=result?.value??result,value=raw?.data??raw;
-  const status=String(value?.status??value?.state??value?.job?.status??'').toLowerCase();
-  return !result?.isError&&!result?.error&&!raw?.isError&&!value?.isError&&!raw?.error&&!value?.error&&value?.success!==false&&value?.ok!==false&&
-    (value?.exitCode===0||value?.exit_code===0||status==='completed')&&
-    (value?.exitCode==null||value.exitCode===0)&&(value?.exit_code==null||value.exit_code===0)&&
-    !['background','promoted'].includes(value?.kind??value?.job?.kind)&&
-    !['background','promoted','running','pending','queued','stopping','partial','unknown','unavailable','deopt','disabled','failed','error','killed','cancelled','rejected'].includes(status)&&
-    value?.timedOut!==true&&value?.aborted!==true&&value?.cancelled!==true&&value?.signal==null&&value?.stopped===undefined&&
-    value?.complete!==false&&value?.completed!==false&&value?.executionCompleted!==false&&value?.partial!==true&&value?.outputPartial!==true&&
-    value?.truncated!==true&&value?.lossy!==true&&value?.stdout?.truncated!==true&&value?.stderr?.truncated!==true&&
-    value?.stdout?.complete!==false&&value?.stderr?.complete!==false;
+  const layers=executionResultLayers(result);
+  const facts=executionFacts(result);
+  if(facts.failed||facts.incomplete)return false;
+  const completed=layers.some(node=>node.exitCode===0||node.exit_code===0||
+    [node.status,node.state,node.job?.status].some(status=>String(status).toLowerCase()==='completed'));
+  return completed&&layers.every(node=>
+    (node.exitCode==null||node.exitCode===0)&&(node.exit_code==null||node.exit_code===0)&&
+    [node.status,node.state,node.job?.status].every(status=>status==null||String(status).toLowerCase()==='completed'));
 }
 
 function compare(before,after){
