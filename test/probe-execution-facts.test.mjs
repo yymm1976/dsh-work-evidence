@@ -80,16 +80,38 @@ test('successful stderr warnings and selected user records remain observations',
   assert.equal(value.status,'observed');assert.equal(value.cases[0].status,'matched');selected.evidence.dispose();
 });
 
-test('task-flow retains a pending producer even when its probe observation failed',()=>{
+test('live and cold task-flow retain pending producers in failed probe observations',()=>{
+  for(const live of [false,true])for(const marker of [{pending:true,background:false},{pending:false,background:true}]){
   const agent={session:{id:'pending-probe-flow',log:[]}},state={root:process.cwd(),config:defaults()};
   const flow=createTaskFlow({}, {get:()=>state,isEnabled:()=>true,activeMode:()=>'default',modeStatus:()=>({})});
   const arguments_={question:'Observe the producer.',tool:'bash',arguments:{command:'check'}};
-  const value={status:'failed',pending:true,background:false,jobId:'active-probe-job',id:'probe-id',
+  const value={status:'failed',...marker,jobId:'active-probe-job',id:'probe-id',
     executionCompleted:false,fileDependencies:{declaredCount:0}};
-  agent.session.log.push({seq:0,type:'tool/call',data:{callId:'probe',name:'work_probe',arguments:arguments_}},
-    {seq:1,type:'tool/result',data:{message:{source:{callId:'probe'},content:[{type:'text',text:JSON.stringify(value)}]}}});
+  agent.session.log.push({seq:0,type:'tool/call',data:{callId:'probe',name:'work_probe',arguments:arguments_}});
+  const result={value,content:[{type:'text',text:JSON.stringify(value)}],isError:false};
+  if(live)flow.observe({agent,name:'work_probe',callId:'probe',arguments:arguments_},result);
+  agent.session.log.push({seq:1,type:'tool/result',data:{message:{source:{callId:'probe'},content:result.content}}});
   const observed=flow.summary(agent);
   assert.ok(observed.pendingJobs.includes('active-probe-job'));
   assert.equal(observed.nativeExecutions.at(-1).status,'failed');
   assert.equal(observed.nativeExecutions.at(-1).pending,true);
+  }
+});
+
+test('live projection preserves bounded output and keeps an earlier same-command failure unresolved',()=>{
+  for(const live of [false,true])for(const marker of [{textComplete:false},{scanComplete:false},{rangeComplete:false},{budgetTruncated:true}]){
+    const agent={session:{id:'live-incomplete',log:[]}},state={root:process.cwd(),config:defaults()};
+    const flow=createTaskFlow({}, {get:()=>state,isEnabled:()=>true,activeMode:()=>'default',modeStatus:()=>({})});
+    for(const [index,value]of [{exitCode:2},{status:'completed',exitCode:0,...marker}].entries()){
+      const callId='bounded-'+index,args={command:'same actual check'};
+      agent.session.log.push({seq:agent.session.log.length,type:'tool/call',data:{callId,name:'bash',arguments:args}});
+      const result={value,content:[{type:'text',text:JSON.stringify(value)}],isError:false};
+      if(live)flow.observe({agent,name:'bash',callId,arguments:args},result);
+      agent.session.log.push({seq:agent.session.log.length,type:'tool/result',data:{message:{source:{callId},content:result.content}}});
+    }
+    const result=flow.summary(agent),last=result.nativeExecutions.at(-1);
+    assert.equal(last.executionCompleted,false,JSON.stringify({live,marker}));
+    assert.equal(last.partial,true,JSON.stringify({live,marker}));
+    assert.equal(result.unresolvedErrors.length,1,JSON.stringify({live,marker}));
+  }
 });

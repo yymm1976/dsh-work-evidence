@@ -1023,9 +1023,10 @@ export function createTaskFlow(ctx,runtime,{nativeFiles,call,executionDependenci
       if(!exec.agent||!runtime.isEnabled(exec.agent))return;
       const raw=toolResultValue(exec.name,result),execution=isCommand(exec.name),envelope={...result,value:raw};
       const layers=execution?executionResultLayers(envelope):[raw],value=execution?Object.assign({},...layers):raw?.data??raw;
+      const nativeFacts=execution||exec.name==='work_probe'?executionFacts(envelope):null;
       const statuses=layers.flatMap(node=>[node?.status,node?.state,node?.job?.status]).filter(status=>status!=null);
       const stdout=streamText(value?.stdout??value?.stdoutText),stderr=streamText(value?.stderr??value?.stderrText);
-      const outputPartial=layers.some(node=>node?.outputPartial===true||node?.truncated===true||node?.stdout?.truncated===true||node?.stderr?.truncated===true||node?.stdout?.complete===false||node?.stderr?.complete===false||node?.complete===false||node?.lossy===true);
+      const outputPartial=nativeFacts?nativeFacts.truncated||nativeFacts.partial:layers.some(node=>node?.outputPartial===true||node?.truncated===true||node?.stdout?.truncated===true||node?.stderr?.truncated===true||node?.stdout?.complete===false||node?.stderr?.complete===false||node?.complete===false||node?.lossy===true);
       const comparisonText=isCommand(exec.name)&&exec.name!=='job_output'&&!outputPartial&&stdout.length+stderr.length<=4096&&
         (value?.stdout!==undefined||value?.stdoutText!==undefined)?JSON.stringify([value?.exitCode??value?.exit_code??null,stdout,stderr]):null;
       let readLineTextTruncated=false;
@@ -1034,7 +1035,9 @@ export function createTaskFlow(ctx,runtime,{nativeFiles,call,executionDependenci
         if(root){within(root,raw.path);readLineTextTruncated=textWindow(raw,{maxLines:0,maxLineChars:Infinity}).lineTextTruncated;}
       }catch{}
       // Keep status and dependency metadata, never another copy of large bodies.
-      const compact={nativeStructured:raw!=null,status:execution?(statuses.find(status=>String(status).toLowerCase()!=='completed')??statuses[0]):value?.status??raw?.status,
+      const compact={nativeStructured:raw!=null,status:execution?(nativeFacts.failed||nativeFacts.interrupted?'failed':nativeFacts.pending?'pending':
+        nativeFacts.unavailable?'unavailable':nativeFacts.partial?'partial':nativeFacts.unknown?'unknown':statuses[0]):value?.status??raw?.status,
+        ...(nativeFacts?{pending:nativeFacts.pending,background:nativeFacts.background}:{}),
         kind:layers.flatMap(node=>[node?.kind,node?.job?.kind]).find(kind=>['background','promoted'].includes(kind))??value?.kind,mode:value?.mode,
         ...(exec.name==='read'?{lineRecordRead:lineRecordRead(raw),readHasText:lineRecordRead(raw)&&raw.lines.some(line=>/\S/u.test(line.text)),readLineTextTruncated}:{}),
         ...(exec.name==='session_event_read'?{nativeSourceRead:nativeReadObservation(exec.agent.session.id,argsOf(exec.arguments),result)}:{}),
@@ -1054,8 +1057,8 @@ export function createTaskFlow(ctx,runtime,{nativeFiles,call,executionDependenci
         scriptEventRef:value?.scriptEventRef,
         scriptEditsSubmitted:value?.scriptEditsSubmitted,scriptEditCount:value?.scriptEditCount,
         recovery:value?.recovery,
-        fileDependencies:value?.fileDependencies,...dependencyView(value),partial:layers.some(node=>node?.partial===true),
-        completed:layers.some(node=>node?.completed===false||node?.executionCompleted===false||node?.complete===false)?false:value?.completed,tool:value?.tool,
+        fileDependencies:value?.fileDependencies,...dependencyView(value),partial:nativeFacts?.partial??layers.some(node=>node?.partial===true),
+        completed:nativeFacts?.incomplete||layers.some(node=>node?.completed===false||node?.executionCompleted===false||node?.complete===false)?false:value?.completed,tool:value?.tool,
         files:Array.isArray(value?.files)?value.files.slice(0,50).map(file=>({path:file.path??file.file,effectState:file.effectState})):undefined,
         sources:pathsOf(value),saved:value?.saved,path:value?.path,id:value?.id,question:value?.question,
         elapsedMs:value?.elapsedMs,executionCompleted:value?.executionCompleted,
