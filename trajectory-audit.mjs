@@ -6,7 +6,7 @@ import {isUserRequestMessage} from './runtime.mjs';
 import {resultText,parseResult,toolResultValue} from './visible-results.mjs';
 import {recordedProcessCompletion} from './execution-evidence.mjs';
 import {resolveInlineScript} from './inline-exec.mjs';
-import {executionResultLayers,executionExitCode} from './execution-dependencies.mjs';
+import {executionResultLayers,executionExitCode,executionFacts} from './execution-dependencies.mjs';
 
 export const AUDIT_SCHEMA='work-evidence.trajectory-audit.v1';
 export const ASSESSMENT_SCHEMA='work-evidence.task-assessment.v1';
@@ -14,9 +14,6 @@ export const AUDIT_LABELS=Object.freeze(['W1','W2','W3','W4','W5','W6','W7','W8'
 const READ=new Set(['read','ops_read_files','ops_inspect_local_file','project_evidence','fastedit_java']);
 const STATIC_RESULTS=new Set([...READ,'glob','grep','ops_glob','ops_grep']);
 const WRITE=new Set(['write','edit','ops_write_file','ops_edit_file','verified_exec','str_replace_editor','fastedit_java']);
-const INCOMPLETE_STATUS=new Set(['background','promoted','running','pending','queued','stopping','stopped','partial','unknown',
-  'unavailable','deopt','disabled','blocked','not-attempted','aborted']);
-const FAILED_STATUS=new Set(['failed','killed','cancelled','error','aborted']);
 const messageOf=event=>event.data?.message??(event.data?.role?event.data:null);
 const integer=value=>Number.isSafeInteger(value)&&value>=0;
 const stable=value=>JSON.stringify(value,(_key,item)=>item&&typeof item==='object'&&!Array.isArray(item)?Object.fromEntries(Object.keys(item).sort().map(key=>[key,item[key]])):item);
@@ -26,28 +23,9 @@ const forecastRoute=value=>Object.fromEntries(['provider','model','reasoningEffo
 const completeRoute=value=>['provider','model','reasoningEffort'].every(key=>typeof value?.[key]==='string'&&value[key].trim());
 const fileOf=args=>args?.file_path??args?.path??args?.file??null;
 const isReadOnlyJava=call=>call.name==='fastedit_java'&&['find_entity','read_entity'].includes(call.arguments.operation);
-const failedPayload=value=>executionResultLayers(value).some(node=>{
-  const exit=node.exitCode??node.exit_code;
-  return node.isError===true||node.success===false||node.ok===false||!!node.error||!!node.err||
-    Number.isInteger(exit)&&exit!==0||[node.status,node.state,node.job?.status].some(status=>FAILED_STATUS.has(String(status??'').toLowerCase()));
-});
-const incompletePayload=value=>{
-  const inspect=node=>{
-    if(!node||typeof node!=='object')return false;
-    return [node.status,node.state,node.job?.status].some(status=>INCOMPLETE_STATUS.has(String(status??'').toLowerCase()))||
-      ['background','promoted'].includes(node.kind)||node.executionCompleted===false||
-      node.completed===false||node.complete===false||node.interrupted===true||node.lossy===true||node.stopped!==undefined||
-      node.signal!=null||node.timedOut===true||node.aborted===true||node.cancelled===true||node.partial===true||
-      node.outputPartial===true||node.truncated===true||node.rangeComplete===false||node.textComplete===false||
-      node.scanComplete===false||node.budgetTruncated===true||node.stdout?.truncated===true||node.stderr?.truncated===true||
-      node.stdout?.complete===false||node.stderr?.complete===false;
-  };
-  return executionResultLayers(value).some(inspect);
-};
-const truncatedPayload=value=>executionResultLayers(value).some(node=>
-  node.lossy===true||node.outputPartial===true||node.truncated===true||node.rangeComplete===false||
-    node.textComplete===false||node.scanComplete===false||node.budgetTruncated===true||
-    node.stdout?.truncated===true||node.stderr?.truncated===true||node.stdout?.complete===false||node.stderr?.complete===false);
+const failedPayload=value=>executionFacts(value).failed;
+const incompletePayload=value=>executionFacts(value).incomplete;
+const truncatedPayload=value=>executionFacts(value).truncated;
 const normalizeFile=value=>{
   if(typeof value!=='string'||!value.trim())return null;
   const windows=/^[A-Za-z]:[\\/]/u.test(value)||value.includes('\\');

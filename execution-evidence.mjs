@@ -4,7 +4,7 @@ import {randomUUID} from 'node:crypto';
 import {isDeepStrictEqual} from 'node:util';
 import {assertExistingFileWithin} from './evidence.mjs';
 import {resultText,parseResult} from './visible-results.mjs';
-import {createExecutionDependencies,declaredFileSources,dependencyView,executionResultLayers} from './execution-dependencies.mjs';
+import {createExecutionDependencies,declaredFileSources,dependencyView,executionResultLayers,executionFacts,dependencyExecutionComplete} from './execution-dependencies.mjs';
 import {argsOf,eventLog} from './runtime.mjs';
 
 const TOOLS=['pwsh','ops_bash','bash','job_output','read','grep','glob','ops_stat','ops_read_files','ops_inspect_local_file'];
@@ -16,6 +16,8 @@ const clip=(value,size)=>{const text=typeof value==='string'?value:JSON.stringif
 const stream=value=>typeof value==='string'?{text:value,truncated:false}:value&&typeof value==='object'?{text:typeof value.text==='string'?value.text:'',truncated:value.truncated===true||value.complete===false,spillPath:value.spillPath??null}:{text:'',truncated:false};
 const payloadOf=value=>value?.data&&typeof value.data==='object'?value.data:value;
 const statusOf=value=>value===undefined||value===null?'':String(value).toLowerCase();
+const pendingProducer=observation=>observation?.pending===true||observation?.background===true||observation?.status==='pending'||
+  typeof observation?.jobId==='string'&&observation.jobId.length>0&&observation.executionCompleted!==true;
 
 export function recordedProcessCompletion(events,execution,beforeSeq){
   const event=events.find(item=>item.seq===execution.seq),data=event?.data,message=data?.message??data;
@@ -127,7 +129,7 @@ export function createExecutionEvidence(ctx,runtime,call,{executionDependencies=
       if(!['tool/result','tool/ptc-dispatch','tool/code-dispatch'].includes(event.type)||!probeCalls.has(callIdOf(event)))continue;
       const data=event.data??{},observation=parseResult(resultText(event.type==='tool/result'?data.message?.content:data.content));
       if(!observation||observation.historical===true||(observation.replayOf?.rootProbeId??observation.id)!==rootId||
-        observation.background!==true&&observation.status!=='pending')continue;
+        !pendingProducer(observation))continue;
       pending.push({observation,seq:event.seq});
     }
     const retained=evidenceState(agent).replayLocks.get(rootId);
@@ -176,29 +178,23 @@ export function createExecutionEvidence(ctx,runtime,call,{executionDependencies=
   function normalizeObservation({id,recordOrigin,question,questionSource,questionScope,tool,args,result,sources,requestedCases,maxChars,
     observedAt,elapsedMs,elapsedSource,scope,sourceScope,s}){
     const value=result.value??parseResult(resultText(result.content));
-    const payload=payloadOf(value);
-    const layers=executionResultLayers({...result,value}),statuses=layers.flatMap(node=>[node.status,node.state,node.job?.status].map(statusOf));
-    const chunks=tool==='job_output'&&Array.isArray(payload?.chunks)?payload.chunks:null;
-    const stdout=stream(payload?.stdout??payload?.stdoutText??(chunks?chunks.filter(chunk=>chunk.channel!=='stderr').map(chunk=>chunk.text??'').join(''):tool==='job_output'?payload?.text:undefined)),
-      stderr=stream(payload?.stderr??payload?.stderrText??(chunks?chunks.filter(chunk=>chunk.channel==='stderr').map(chunk=>chunk.text??'').join(''):undefined));
+    const envelope={...result,value},layers=executionResultLayers(envelope),facts=executionFacts(envelope);
+    const payload=payloadOf(value),stdoutSource=layers.findLast(node=>node.stdout!==undefined||node.stdoutText!==undefined),
+      stderrSource=layers.findLast(node=>node.stderr!==undefined||node.stderrText!==undefined);
+    const chunks=tool==='job_output'?layers.findLast(node=>Array.isArray(node.chunks))?.chunks:null;
+    const stdout=stream(stdoutSource?.stdout??stdoutSource?.stdoutText??(chunks?chunks.filter(chunk=>chunk.channel!=='stderr').map(chunk=>chunk.text??'').join(''):tool==='job_output'?payload?.text:undefined)),
+      stderr=stream(stderrSource?.stderr??stderrSource?.stderrText??(chunks?chunks.filter(chunk=>chunk.channel==='stderr').map(chunk=>chunk.text??'').join(''):undefined));
     // The native job_output contract is a consuming delta, never the complete process stream.
     if(tool==='job_output')stdout.truncated=true;
-    const statusRaw=payload?.status??value?.status??payload?.job?.status??value?.job?.status??null;
+    const producer=layers.findLast(node=>node.status!=null||node.state!=null||node.job?.status!=null);
+    const statusRaw=producer?.status??producer?.state??producer?.job?.status??null;
     const nativeStatus=statusOf(statusRaw);
-    const background=layers.some(node=>[node.kind,node.job?.kind].some(kind=>['background','promoted'].includes(kind)))||nativeStatus==='background';
-    const pending=background||statuses.some(status=>['running','pending','queued','stopping'].includes(status));
-    const jobId=payload?.jobId??payload?.job_id??payload?.job?.id??value?.jobId??value?.job_id??value?.job?.id??null;
-    const exitRaw=payload?.exitCode??payload?.exit_code??value?.exitCode??value?.exit_code;
-    const exitCode=Number.isInteger(exitRaw)?exitRaw:null;
-    const failed=!!result.isError||statuses.some(status=>['error','failed','killed','cancelled','rejected'].includes(status))||
-      layers.some(node=>node.isError||node.error||node.success===false||node.ok===false||node.timedOut===true||node.aborted===true||
-        node.cancelled===true||node.signal!=null||node.stopped!==undefined||
-        Number.isInteger(node.exitCode)&&node.exitCode!==0||Number.isInteger(node.exit_code)&&node.exit_code!==0);
-    const nativePartial=statuses.includes('partial')||layers.some(node=>node.complete===false||node.completed===false||node.executionCompleted===false||
-      node.outputPartial===true||node.partial===true||node.truncated===true||node.lossy===true||
-      node.stdout?.truncated===true||node.stderr?.truncated===true||node.stdout?.complete===false||node.stderr?.complete===false);
-    const uncertain=statuses.some(status=>['unknown','unavailable','deopt'].includes(status));
-    const conclusive=!pending&&!failed&&!nativePartial&&!uncertain&&
+    const {background,pending,exitCode}=facts;
+    const job=layers.findLast(node=>typeof(node.jobId??node.job_id??node.job?.id)==='string');
+    const jobId=job?.jobId??job?.job_id??job?.job?.id??null;
+    const failed=facts.failed||facts.unavailable||facts.interrupted,nativePartial=facts.partial,uncertain=facts.unknown;
+    const conclusive=!failed&&!facts.incomplete&&
+      (!SHELL.has(tool)&&tool!=='job_output'||dependencyExecutionComplete(envelope))&&
       (exitCode===0||nativeStatus==='completed'||!SHELL.has(tool)&&value!==null&&value!==undefined&&tool!=='job_output');
     let stdoutJson,stdoutJsonAvailable=false;
     if(!stdout.truncated)try{stdoutJson=JSON.parse(stdout.text);stdoutJsonAvailable=true;}catch{}
@@ -218,9 +214,10 @@ export function createExecutionEvidence(ctx,runtime,call,{executionDependencies=
       !conclusive?'unknown':stdout.truncated||stderr.truncated?'partial':'success';
     const cwdRequested=args?.workdir??args?.cwd??null;
     const hasNativeCwd=payload&&typeof payload==='object'&&Object.hasOwn(payload,'cwd')&&payload.cwd!=null;
-    const rawError=payload?.error??value?.error??result.error??(result.isError?resultText(result.content):null);
+    const failure=layers.findLast(node=>node.error||node.err);
+    const rawError=failure?.error??failure?.err??(result.isError?resultText(result.content):null);
     const observation={id,question:clip(question,400),questionComplete:question.length<=400,questionSource,questionScope,tool,observedAt,elapsedMs,elapsedSource,
-      status:finalStatus,executionState,nativeStatus,background,partial:nativePartial||stdout.truncated||stderr.truncated,
+      status:finalStatus,executionState,nativeStatus,background,pending,partial:nativePartial||stdout.truncated||stderr.truncated,
       executionCompleted:conclusive,exitCode,jobId,cwd:hasNativeCwd?payload.cwd:(SHELL.has(tool)?cwdRequested??s.root:null),
       cwdSource:hasNativeCwd?'native-tool':SHELL.has(tool)?cwdRequested?'requested-workdir':'workspace-default':'not-observed',
       sources:sources.slice(0,8).map(source=>clip(source,240)),sourcesComplete:sources.length<=8&&sources.every(source=>source.length<=240),cases,
@@ -267,7 +264,7 @@ export function createExecutionEvidence(ctx,runtime,call,{executionDependencies=
     state.records.push({id:record.id,origin:record.recordOrigin,callId:record.callId,rootCallId:record.rootCallId,
       question:observation.question,questionScope:observation.questionScope,tool:record.tool,observedAt:record.observedAt,
       elapsedMs:observation.elapsedMs,elapsedSource:observation.elapsedSource,status:observation.status,executionState:observation.executionState,
-      nativeStatus:observation.nativeStatus,background:observation.background,partial:observation.partial,exitCode:observation.exitCode,jobId:observation.jobId,
+      nativeStatus:observation.nativeStatus,background:observation.background,pending:observation.pending,partial:observation.partial,exitCode:observation.exitCode,jobId:observation.jobId,
       executionCompleted:observation.executionCompleted,fileDependencies:observation.fileDependencies,...dependencyView(observation),
       cwd:observation.cwd,cwdSource:observation.cwdSource,error:observation.error,evidenceSaved:observation.evidenceSaved,
       ...(observation.evidenceSaved?{retrieveOriginal:observation.retrieveOriginal}:{evidenceError:observation.evidenceError})});
@@ -309,7 +306,7 @@ export function createExecutionEvidence(ctx,runtime,call,{executionDependencies=
       sourceScope:'Caller-declared sources only. File applicability is assessed separately from execution and task correctness.',
       scope:'Only the supplied call, inputs and observed environment; no general correctness or task completion claim.'});
     if(plan.replayOf)observation.replayOf=plan.replayOf;
-    if(replayState&&(observation.background||observation.status==='pending'))
+    if(replayState&&pendingProducer(observation))
       replayState.replayLocks.set(replayRoot,{pending:observation,seq:agent.session.seq});
     Object.assign(observation,await executionDependencies.finish(dependencies,observation.executionCompleted&&!observation.partial,signal));
     const record=makeRecord({s,id,recordOrigin:'work_probe',callId:explicitExecution?.callId??null,rootCallId:explicitExecution?.rootCallId??explicitExecution?.callId??null,

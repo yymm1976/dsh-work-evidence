@@ -27,20 +27,46 @@ export function executionExitCode(result){
   return null;
 }
 
+const FAILURE_STATUS=new Set(['error','failed','killed','cancelled','canceled','rejected','aborted']);
+const UNAVAILABLE_STATUS=new Set(['unavailable','disabled','deopt','not_found','blocked','not-attempted']);
+const PENDING_STATUS=new Set(['background','promoted','running','pending','queued','stopping']);
+const PARTIAL_STATUS=new Set(['partial','stopped','interrupted']);
+const SUCCESS_STATUS=new Set(['completed','observed','available','success','ok']);
+
+/** Execution metadata only: selected JSON records and stream text remain user data. */
+export function executionFacts(result){
+  const layers=executionResultLayers(result),statuses=layers.flatMap(node=>[node.status,node.state,node.job?.status]
+    .filter(status=>status!=null).map(status=>String(status).toLowerCase()));
+  const failed=statuses.some(status=>FAILURE_STATUS.has(status))||layers.some(node=>
+    node.isError===true||node.success===false||node.ok===false||!!(node.error||node.err)||
+    Number.isFinite(node.exitCode)&&node.exitCode!==0||Number.isFinite(node.exit_code)&&node.exit_code!==0);
+  const unavailable=statuses.some(status=>UNAVAILABLE_STATUS.has(status));
+  const background=layers.some(node=>[node.kind,node.job?.kind,node.status,node.state,node.job?.status]
+    .some(value=>['background','promoted'].includes(String(value??'').toLowerCase())));
+  const pending=background||statuses.some(status=>PENDING_STATUS.has(status));
+  const truncated=layers.some(node=>node.lossy===true||node.outputPartial===true||node.truncated===true||
+    node.rangeComplete===false||node.textComplete===false||node.scanComplete===false||node.budgetTruncated===true||
+    node.stdout?.truncated===true||node.stderr?.truncated===true||node.stdout?.complete===false||node.stderr?.complete===false);
+  const partial=truncated||statuses.some(status=>PARTIAL_STATUS.has(status))||layers.some(node=>
+    node.complete===false||node.completed===false||node.executionCompleted===false||node.partial===true||node.interrupted===true);
+  const unknown=statuses.some(status=>!FAILURE_STATUS.has(status)&&!UNAVAILABLE_STATUS.has(status)&&
+    !PENDING_STATUS.has(status)&&!PARTIAL_STATUS.has(status)&&!SUCCESS_STATUS.has(status));
+  const interrupted=layers.some(node=>
+    node.signal!=null||node.timedOut===true||node.aborted===true||node.cancelled===true||node.stopped!==undefined);
+  const incomplete=pending||partial||unknown||unavailable||statuses.includes('aborted')||interrupted;
+  return {failed,unavailable,background,pending,partial,unknown,interrupted,incomplete,truncated,exitCode:executionExitCode(result)};
+}
+
 /** File applicability has a narrower meaning than process success or task correctness. */
 export function dependencyExecutionComplete(result){
   const layers=executionResultLayers(result);
+  const facts=executionFacts(result);
+  if(facts.failed||facts.incomplete)return false;
   const completed=layers.some(node=>node.exitCode===0||node.exit_code===0||
     [node.status,node.state,node.job?.status].some(status=>String(status).toLowerCase()==='completed'));
   return completed&&layers.every(node=>
-    !node.isError&&!node.error&&node.success!==false&&node.ok!==false&&
     (node.exitCode==null||node.exitCode===0)&&(node.exit_code==null||node.exit_code===0)&&
-    ![node.kind,node.job?.kind].some(kind=>['background','promoted'].includes(kind))&&
-    [node.status,node.state,node.job?.status].every(status=>status==null||String(status).toLowerCase()==='completed')&&
-    node.timedOut!==true&&node.aborted!==true&&node.cancelled!==true&&node.signal==null&&node.stopped===undefined&&
-    node.complete!==false&&node.completed!==false&&node.executionCompleted!==false&&node.partial!==true&&node.outputPartial!==true&&
-    node.truncated!==true&&node.lossy!==true&&node.stdout?.truncated!==true&&node.stderr?.truncated!==true&&
-    node.stdout?.complete!==false&&node.stderr?.complete!==false);
+    [node.status,node.state,node.job?.status].every(status=>status==null||String(status).toLowerCase()==='completed'));
 }
 
 function compare(before,after){

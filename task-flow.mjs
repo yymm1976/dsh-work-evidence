@@ -4,7 +4,7 @@ import {randomUUID} from 'node:crypto';
 import {argsOf,eventLog,isUserRequestMessage,MODE_POLICY_VERSION} from './runtime.mjs';
 import {resultText,parseResult,toolResultValue,resultHasProblem,resultHasFailure,resultIdentity} from './visible-results.mjs';
 import {STAGE_CHECKPOINT_GUIDANCE} from './stage-checkpoints.mjs';
-import {createExecutionDependencies,dependencyView,executionResultLayers,executionExitCode,dependencyExecutionComplete} from './execution-dependencies.mjs';
+import {createExecutionDependencies,dependencyView,executionResultLayers,executionExitCode,dependencyExecutionComplete,executionFacts} from './execution-dependencies.mjs';
 import {recordedProcessCompletion} from './execution-evidence.mjs';
 import {nativeReadObservation} from './host-references.mjs';
 import {nativeReadOutputSymptom,nativeReadRecoveryEntries,executionFailureFrames,recordedSourceExcerpt,reportedCheckFailure,reportedExecutionChecks,nativeProgramParseLocation,nativeTemplateCallLocation,nativePwshInvocationDiagnostic} from './recovery.mjs';
@@ -126,11 +126,8 @@ const isCommand=name=>SHELL.includes(name)||name==='job_output';
 const shellReportedFailure=text=>/The term[^\r\n]{0,500}is not recognized as a name of a cmdlet|(?:^|\n)\s*(?:ParserError|CommandNotFoundException|ParameterBindingException):/iu.test(String(text??''));
 // stderr can contain warnings from a successful process. Missing structured
 // metadata proves neither success nor failure in persisted legacy results.
-const executionFailed=value=>typeof value==='string'?resultHasProblem(value):executionResultLayers(value).some(node=>
-  node.isError===true||node.success===false||node.ok===false||!!(node.error||node.err)||
-  Number.isFinite(node.exitCode)&&node.exitCode!==0||Number.isFinite(node.exit_code)&&node.exit_code!==0||
-  [node.status,node.state,node.job?.status].some(status=>['error','failed','killed','cancelled','rejected','aborted','unavailable'].includes(String(status??'').toLowerCase()))||
-  node.timedOut===true||node.aborted===true||node.cancelled===true||node.signal!=null||node.stopped!==undefined);
+const executionFailed=value=>{if(typeof value==='string')return resultHasProblem(value);
+  const facts=executionFacts(value);return facts.failed||facts.unavailable||facts.interrupted;};
 // A successful registry read may contain running or failed jobs. Their states
 // describe the jobs, not the outcome of reading the registry.
 const operationProblem=(name,value)=>name==='job_list'?
