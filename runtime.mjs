@@ -536,7 +536,7 @@ export function createRuntime(ctx,call,initial={}){
       if(file){s.writes.push({tool:exec.name,path:file,callId:exec.callId});if(s.writes.length>12)s.writes.shift();recordMutation(agent,{tool:exec.name,file,revision:data.revision,callId:exec.callId,seq});}
       s.dirty=true;
     }
-    if(opsAdapters&&exec.name==='ops_batch'&&Array.isArray(data.items)){
+    if(exec.name==='ops_batch'&&Array.isArray(data.items)){
       for(const item of data.items)if(item?.status==='completed'&&typeof item.path==='string')recordMutation(agent,{tool:exec.name,file:item.path,revision:item.revision,callId:exec.callId,seq});
     }
     if(opsAdapters&&exec.name==='ops_read_files'&&Array.isArray(args.files)&&Array.isArray(data.items)){

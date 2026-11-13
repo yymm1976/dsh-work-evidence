@@ -194,7 +194,14 @@ export function createFeatureControl(ctx,runtime,{available,canRecall,workingSet
       sessionEnabledOverride:state.sessionEnabledOverride,mode:runtime.modeStatus(agent),
       dependencies:{fastEditPython:config.fastEditPython,archiveDecoder,ptcToolMode:ptc,nativeCompactionAttached:nativeCompaction,ptcRuntime:native?{language:native.language,programFormat:native.programFormat}:null,
         model:selection?{provider:selection.provider,model:selection.model}:null,retainedCompute:retained},
-      features,tools:only?undefined:TOOLS.map(name=>({name,exposed:available(agent,name),entry:available(agent,name)?name:'/work-evidence feature toolSurface full'})),
+      features,tools:only?undefined:TOOLS.map(name=>{
+        const exposed=available(agent,name);
+        const entry=exposed?name:name==='verified_exec'
+          ?'/work-evidence feature nativeVerifiedEdits on (or opsAdapters on)'
+          :name==='fastedit_java'?'/work-evidence feature opsAdapters on; feature fastEditEnabled on; feature toolSurface full'
+          :'/work-evidence feature toolSurface full';
+        return {name,exposed,entry};
+      }),
       note:'状态只说明配置与当前可检查的条件，不等于功能已触发或任务结果正确。FastEdit 的 Python 包由实际调用确认；上游是否接受推理字段沿用通道实际依据。'};
   }
   return {snapshot,async summary(agent){
