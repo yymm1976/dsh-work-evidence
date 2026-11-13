@@ -11,6 +11,7 @@ import {nativeReadOutputSymptom,nativeReadRecoveryEntries,executionFailureFrames
 import {resolveNativeProgram,nativeProgramAddress} from './program-reference.mjs';
 import {textWindow,within} from './evidence.mjs';
 import {declaredInlineExecutable,namedInlineExecutable} from './inline-exec.mjs';
+import {nativeShellScript} from './native-shell-script.mjs';
 
 const SOURCE='work-evidence-task-flow';
 const PHASES=['investigate','modify','execute','deliver','mixed'];
@@ -293,7 +294,8 @@ export function createTaskFlow(ctx,runtime,{nativeFiles,call,executionDependenci
       directCommand.length>=800&&/[\\/](?:python|node)(?:\.exe)?\b|\b(?:python\d*|pypy|node)\b/iu.test(directCommand)&&
       (directCommand.includes('\n')||/(?:\s-[ce]\s|@['"]|<{1,2}\s*['"]?python)/iu.test(directCommand));
     if(embeddedInterpreter&&state.lastUser&&event.seq>state.lastUser.seq)
-      state.legacyInterpreterShell={seq,userSeq:state.lastUser.seq,tool:call.name,chars:directCommand.length};
+      state.legacyInterpreterShell={seq,userSeq:state.lastUser.seq,tool:call.name,chars:directCommand.length,
+        ...(nativeShellScript(call.name,call.args)?{scriptRef:callId}:{})};
     if(call.name==='work_exec'&&complete&&Array.isArray(payload?.scriptSourceRefs)){
       const repaired=new Set(payload.scriptSourceRefs.filter(id=>typeof id==='string'));
       for(const [errorKey,error]of state.errors)if(error.tool==='work_exec'&&repaired.has(error.callId))state.errors.delete(errorKey);
@@ -720,6 +722,8 @@ export function createTaskFlow(ctx,runtime,{nativeFiles,call,executionDependenci
     if(config.executionTriage&&user&&legacyShell?.userSeq===user.seq&&!state.inlineExecAdvised.has(legacyShellKey)&&
       (()=>{try{return !!ctx.tools.get('work_exec',agent);}catch{return false;}})()){
       state.inlineExecAdvised.add(legacyShellKey);
+      if(config.nativeShellScriptReuse&&legacyShell.scriptRef)return emit('inlineExec',legacyShellKey,
+        '[work-evidence] 事件'+legacyShell.seq+'的单个字面量解释器程序可用 work_exec('+JSON.stringify({scriptRef:legacyShell.scriptRef,edits:[{before:'唯一原文',after:'替换原文'}]})+') 显式修改并执行。只复用代码及原解释器参数，当前工作目录和权限重新生效。原始执行状态与副作用保留；不自动重放。'+WORK_EXEC_DISCOVERY);
       return emit('inlineExec',legacyShellKey,'[work-evidence] 事件'+legacyShell.seq+'的直接'+legacyShell.tool+'调用嵌入了'+legacyShell.chars+
         '字符的Node/Python解释器程序。下一次执行同类完整解释器程序时直接用work_exec({runtime,code,executable?})提交原文，避免继续拼接Shell、here-string或临时文件；普通Shell原生命令仍可用现有入口。'+WORK_EXEC_DISCOVERY);
     }

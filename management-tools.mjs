@@ -105,7 +105,7 @@ export function registerManagementTools({ctx,runtime,state,effects,available,fea
       if(!available(exec.agent,shell))return {status:'unavailable',reason:`native-${shell}-unavailable`,executionOccurred:false};
       if(shell==='bash'&&!prepareShellEnvironment())return {status:'unavailable',reason:'native-shell-env-unavailable',executionOccurred:false};
       let script;
-      try{script=resolveInlineScript(args,exec.agent.session,exec.signal);}catch(error){
+      try{script=resolveInlineScript(args,exec.agent.session,exec.signal,{nativeShellScriptReuse:runtime.get(exec.agent).config.nativeShellScriptReuse});}catch(error){
         if(error.message==='runtime must be python or node'&&args.runtime===undefined&&args.language===undefined&&typeof args.code==='string'&&args.code.trim()&&args.code.length<=64000&&exec.callId)
           return {status:'failed',isError:true,executionOccurred:false,error:{message:error.message},scriptRef:exec.callId,scriptChars:args.code.length,
             retry:'The complete original code is retained. Call work_exec with runtime: python or node and this scriptRef; supply the task\'s existing executable path when needed. No program was executed.'};
@@ -117,6 +117,10 @@ export function registerManagementTools({ctx,runtime,state,effects,available,fea
       const namedExecutable=namedInlineExecutable(exec.agent.session,script.runtime);
       const declaredExecutable=script.executable===undefined?requiredExecutable:null;
       if(declaredExecutable)script={...script,executable:declaredExecutable.executable};
+      if(script.shellSource&&requiredExecutable&&!sameInlineExecutable(requiredExecutable.executable,script.executable))
+        return {status:'failed',isError:true,executionOccurred:false,reason:'shell-runtime-conflicts-with-declared-interpreter',
+          error:{code:'WORK_EXEC_INTERPRETER_CONSTRAINT',message:'The recorded Shell program used a different interpreter. Select the existing interpreter required by the current task explicitly.'},
+          scriptRef:exec.callId??null,scriptRuntime:script.runtime,scriptExecutable:script.executable,scriptShellSource:script.shellSource};
       let hostRuntimeSelection=script.inheritedHostRuntime?{...script.inheritedHostRuntime,inherited:true}:null;
       const userRuntimeOverride=hostRuntimeSelection&&requiredExecutable?.source?.kind==='user'&&
         sameInlineExecutable(requiredExecutable.executable,script.executable);
@@ -182,6 +186,7 @@ export function registerManagementTools({ctx,runtime,state,effects,available,fea
           hostRuntimeSelection.inherited?'recorded-host-runtime-reused':'native-node-missing-host-runtime-selected',hostRuntimeSelection);
         const scriptEditsSubmitted=args.edits?.length??0,scriptEditCount=(args.edits??[]).filter(edit=>edit.before!==edit.after).length;
         if(args.scriptRef)effects.decide(exec.agent,'inlineScriptReuse','applied','explicit-same-session-script-reference',{scriptChars:script.code.length,sourceCallId:args.scriptRef,scriptEditsSubmitted,scriptEditCount});
+        if(script.shellSource)effects.decide(exec.agent,'nativeShellScriptReuse','applied','explicit-literal-shell-program-reference',script.shellSource);
         const aliases=['language','interpreter','cwd','workdir'].filter(key=>Object.hasOwn(args,key));
         if(aliases.length)effects.decide(exec.agent,'inlineArgumentRecovery','applied','unambiguous-explicit-script-arguments',{aliases});
         const scriptEventRef=inlineScriptEventRef(exec.agent.session,exec.callId);
@@ -189,6 +194,7 @@ export function registerManagementTools({ctx,runtime,state,effects,available,fea
         const metadata={...fileEvidence,scriptRef:exec.callId??null,scriptEventRef,scriptChars:script.code.length,scriptRuntime:script.runtime,scriptExecutable:script.executable??script.runtime,scriptEditsSubmitted,scriptEditCount,
           scriptExecutableSource:declaredExecutable?.source??hostRuntimeSelection?.source??null,
           ...(hostRuntimeSelection?{hostRuntimeSelection}:{}),scriptSourceRefs:script.sourceCallIds??[],scriptReused:!!args.scriptRef,
+          ...(script.shellSource?{scriptShellSource:script.shellSource}:{}),
           failureLocation,...(recovery?{recovery}:{})};
         const reportedChecks=reportedExecutionChecks(result);
         if(reportedChecks)metadata.reportedChecks=reportedChecks;

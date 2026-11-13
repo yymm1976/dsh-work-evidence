@@ -37,6 +37,7 @@ const DEFINITIONS=[
   ['executionTriage','执行恢复','提供实际失败位置和程序版本'],
   ['nativeProgramReuse','PTC 程序引用','显式复用同一会话的原程序文字'],
   ['hostNodeFallback','宿主 Node 回退','未指定解释器且原生命令找不到 Node 时复用宿主运行时'],
+  ['nativeShellScriptReuse','Shell 程序引用','显式复用单个字面量 Python/Node stdin 程序'],
   ['structuredCalls','结构化调用','用现有工具参数直接提交独立动作'],
   ['nativeReasoningReplay','原生推理传递','向兼容通道传递准确的已有推理'],
   ['stageWorkingSet','阶段状态','保留当前阶段及必要来源'],
@@ -123,15 +124,15 @@ export function createFeatureControl(ctx,runtime,{available,canRecall,workingSet
         if(key==='deferPressureCompaction'&&runtime.hasRequestBudgetView?.(agent)!==true)reasons.push('request-budget-view-unavailable');
         if(['nativeProgramReuse','structuredCalls'].includes(key)&&!ptc)reasons.push('requires-ptc-tool-mode');
         if(key==='structuredCalls'&&(native?.language!=='typescript'||native?.programFormat!=='function-body'))reasons.push('requires-typescript-function-body-runtime');
-        if(key==='hostNodeFallback'){
+        if(['hostNodeFallback','nativeShellScriptReuse'].includes(key)){
           if(!available(agent,'work_exec'))reasons.push('tool-unavailable:work_exec');
           const shell=process.platform==='win32'?'pwsh':'bash';
           if(!available(agent,shell))reasons.push('tool-unavailable:'+shell);
           if(shell==='bash'&&typeof service('shellEnv')?.register!=='function')reasons.push('native-shell-env-unavailable');
           let mode;try{mode=service('sandboxPolicy')?.resolve({session:agent.session})?.mode;}catch{}
           if(!['workspace-write','danger-full-access'].includes(mode))reasons.push('requires-writable-session');
-          if(process.getBuiltinModule?.('node:sea')?.isSea?.()!==false)reasons.push('ordinary-host-node-unavailable');
-          if(hasInterpreterConstraint(agent.session))reasons.push('session-interpreter-mention');
+          if(key==='hostNodeFallback'&&process.getBuiltinModule?.('node:sea')?.isSea?.()!==false)reasons.push('ordinary-host-node-unavailable');
+          if(key==='hostNodeFallback'&&hasInterpreterConstraint(agent.session))reasons.push('session-interpreter-mention');
         }
         if(['archiveReadRouting','memberParsing','mavenSourceBinding'].includes(key)&&!service('fs'))reasons.push('native-filesystem-unavailable');
         if(['archiveReadRouting','mavenSourceBinding'].includes(key)&&!archiveDecoder.available)reasons.push('archive-decoder-unavailable:fflate');

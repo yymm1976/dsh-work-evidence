@@ -38,6 +38,7 @@
     "context-pruning.mjs",
     "history-hygiene.mjs",
     "inline-exec.mjs",
+    "native-shell-script.mjs",
     "program-reference.mjs",
     "structured-calls.mjs",
     "retained-compute.mjs",
