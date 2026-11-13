@@ -28,6 +28,20 @@ test('script references retain the recorded interpreter until an explicit PATH r
   assert.equal(resolveInlineScript({scriptRef:'original',executable:'node'},session).executable,'node');
 });
 
+test('older intermediate results and explicit spelling preserve a known host runtime origin',()=>{
+  const executable=process.platform==='win32'?'C:\\installed\\node.exe':'/installed/node';
+  const first={runtime:'node',code:'console.log(42);'},second={scriptRef:'original'};
+  const selection={source:'host-node-runtime',executable,version:'24.22.1',pathNodeAvailable:false};
+  const result=(seq,id,args,extra)=>({seq,type:'tool/ptc-dispatch',data:{subCallId:id,name:'work_exec',arguments:args,
+    content:[{type:'text',text:JSON.stringify({scriptRef:id,scriptRuntime:'node',scriptChars:first.code.length,scriptExecutable:executable,...extra})}]}});
+  const session={log:[user(1),call(4,'original',first),result(5,'original',first,{scriptExecutableSource:'host-node-runtime',hostRuntimeSelection:selection}),
+    call(6,'old-intermediate',second),result(7,'old-intermediate',second,{scriptExecutableSource:null})]};
+  assert.deepEqual(resolveInlineScript({scriptRef:'old-intermediate'},session).inheritedHostRuntime,selection);
+  assert.deepEqual(resolveInlineScript({scriptRef:'old-intermediate',executable},session).inheritedHostRuntime,selection);
+  if(process.platform==='win32')assert.deepEqual(resolveInlineScript({scriptRef:'old-intermediate',executable:executable.toUpperCase().replaceAll('\\','/')},session).inheritedHostRuntime,selection);
+  assert.equal(resolveInlineScript({scriptRef:'old-intermediate',executable:'node'},session).inheritedHostRuntime,undefined);
+});
+
 test('the exact short-ref call-start event returns original arguments without inventing an execution outcome',()=>{
   const args={runtime:'python',code:'print("原文")'};
   for(const type of ['tool/ptc-dispatch-start','tool/code-dispatch-start']){

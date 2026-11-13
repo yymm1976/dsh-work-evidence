@@ -5,7 +5,7 @@ import {randomUUID} from 'node:crypto';
 import {stat} from 'node:fs/promises';
 import {recallHistory} from "./compaction-handoff.mjs";
 import {recallCall} from "./history-hygiene.mjs";
-import {inlineCommand,inlineEnvironment,INLINE_ENV_KEYS,resolveInlineScript,declaredInlineExecutable,namedInlineExecutable,inlineFailureLocation,inlineFormatRecovery,inlineScriptEventRef,nodeAvailabilityCommand,hasInterpreterConstraint} from './inline-exec.mjs';
+import {inlineCommand,inlineEnvironment,INLINE_ENV_KEYS,resolveInlineScript,declaredInlineExecutable,namedInlineExecutable,inlineFailureLocation,inlineFormatRecovery,inlineScriptEventRef,nodeAvailabilityCommand,hasInterpreterConstraint,sameInlineExecutable} from './inline-exec.mjs';
 import {declaredFileSources,dependencyExecutionComplete,executionResultLayers} from './execution-dependencies.mjs';
 import {reportedExecutionChecks} from './recovery.mjs';
 
@@ -118,13 +118,16 @@ export function registerManagementTools({ctx,runtime,state,effects,available,fea
       const declaredExecutable=script.executable===undefined?requiredExecutable:null;
       if(declaredExecutable)script={...script,executable:declaredExecutable.executable};
       let hostRuntimeSelection=script.inheritedHostRuntime?{...script.inheritedHostRuntime,inherited:true}:null;
-      if(hostRuntimeSelection&&hasInterpreterConstraint(exec.agent.session)){
+      const userRuntimeOverride=hostRuntimeSelection&&requiredExecutable?.source?.kind==='user'&&
+        sameInlineExecutable(requiredExecutable.executable,script.executable);
+      if(hostRuntimeSelection&&hasInterpreterConstraint(exec.agent.session)&&!userRuntimeOverride){
         effects.decide(exec.agent,'hostNodeFallback','blocked','inherited-host-runtime-conflicts-with-task');
         return {status:'failed',isError:true,executionOccurred:false,reason:'inherited-host-runtime-conflicts-with-task',
-          error:{code:'WORK_EXEC_INTERPRETER_CONSTRAINT',message:'The recorded program used the host runtime. The current task constrains the interpreter; supply the required executable explicitly.'},
+          error:{code:'WORK_EXEC_INTERPRETER_CONSTRAINT',message:'The recorded program used the host runtime, and human session history mentions Node or an interpreter. A tool argument alone cannot clear that origin. Use an existing interpreter path named by the current user request or a different permitted interpreter.'},
           scriptRef:exec.callId??null,scriptChars:script.code.length,scriptRuntime:script.runtime,
           scriptExecutable:script.executable,scriptExecutableSource:'host-node-runtime',hostRuntimeSelection};
       }
+      if(userRuntimeOverride)hostRuntimeSelection={...hostRuntimeSelection,authorizedBy:requiredExecutable.source};
       if(runtime.get(exec.agent).config.hostNodeFallback&&script.runtime==='node'&&
         script.executable===undefined&&!requiredExecutable&&!namedExecutable&&!hasInterpreterConstraint(exec.agent.session)&&
         ['workspace-write','danger-full-access'].includes(ctx.get('sandboxPolicy')?.resolve({session:exec.agent.session})?.mode)){

@@ -63,7 +63,7 @@ test('a later interpreter constraint blocks inherited host paths until explicitl
   let reference;
   const host=await startHost({pluginConfig:{hostNodeFallback:true,stepPacing:false},script:(options,n)=>{
     if(n===1)return [tool('work_exec',{runtime:'node',code:'console.log(42);'})];
-    if(n===3||n===5)return [tool('work_exec',{scriptRef:reference,...(n===5?{executable:process.execPath}:{})})];
+    if([3,4,6].includes(n))return [tool('work_exec',{scriptRef:reference,...(n===3?{}:{executable:process.execPath})})];
     return [text('done')];
   }});
   try{
@@ -71,18 +71,21 @@ test('a later interpreter constraint blocks inherited host paths until explicitl
     await withNoPathNode(()=>host.send(agent,'Run the JavaScript program.'));
     reference=outputs(host)[0].scriptRef;
     await withNoPathNode(()=>host.send(agent,'Use only the system Node interpreter; do not substitute a bundled runtime.'));
-    const blocked=outputs(host)[1];
-    assert.equal(blocked.executionOccurred,false);
-    assert.equal(blocked.error.code,'WORK_EXEC_INTERPRETER_CONSTRAINT');
-    assert.equal(blocked.scriptExecutableSource,'host-node-runtime');
-    assert.equal(blocked.hostRuntimeSelection.inherited,true);
-    await host.send(agent,'For this invocation use the explicitly supplied executable path.');
-    const overridden=outputs(host)[2];
+    const blocked=outputs(host).slice(1);
+    assert.equal(blocked.length,2);
+    for(const row of blocked){
+      assert.equal(row.executionOccurred,false);
+      assert.equal(row.error.code,'WORK_EXEC_INTERPRETER_CONSTRAINT');
+      assert.equal(row.scriptExecutableSource,'host-node-runtime');
+      assert.equal(row.hostRuntimeSelection.inherited,true);
+    }
+    await host.send(agent,'For this invocation use the existing interpreter at "'+process.execPath+'".');
+    const overridden=outputs(host)[3];
     assert.equal(overridden.exitCode,0);
     assert.equal(overridden.stdout.text.trim(),'42');
     assert.equal(overridden.scriptExecutable,process.execPath);
-    assert.equal(overridden.scriptExecutableSource,null);
-    assert.equal(overridden.hostRuntimeSelection,undefined);
+    assert.equal(overridden.scriptExecutableSource,'host-node-runtime');
+    assert.equal(overridden.hostRuntimeSelection.authorizedBy.kind,'user');
   }finally{await host.close();}
 });
 
@@ -100,7 +103,7 @@ test('host recovery readiness follows the native shell, sandbox and task constra
     await host.send(agent,'Use only the system Node interpreter.');
     entry=(await host.command(agent,'feature hostNodeFallback')).features[0];
     assert.equal(entry.status,'blocked');
-    assert.ok(entry.reasons.includes('task-interpreter-constraint'));
+    assert.ok(entry.reasons.includes('session-interpreter-mention'));
   }finally{await host.close();}
   const noShell=await baseStartHost({mountShell:false,pluginConfig:{hostNodeFallback:true,stepPacing:false},script:()=>[text('done')]});
   try{

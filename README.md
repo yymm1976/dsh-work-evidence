@@ -449,7 +449,9 @@ FastEdit Python 路径由 fastEditPython 设置。
 
 `work_exec` 的 Python 调用不传 `format`。Node 默认使用 ESM；未显式设置 Node 格式且因当前脚本的 `require` 在 ESM 下失败时，若原文可按 CommonJS 解析，结果提供 `recovery.arguments`，包含当前 `scriptRef` 与 `format:"commonjs"`。
 
-`hostNodeFallback` 是默认关闭的实验选项。开启后，未指定或继承解释器的 Node `work_exec` 先通过原生 Shell 查询现有 Node。查询完整且确实缺少 Node 时，调用宿主已有的普通 Node 运行时。用户文字提到 Node 或解释器约束时，自动回退关闭。现有解释器、显式路径、Python 和原生 Shell 命令保留原行为。
+`hostNodeFallback` 是默认关闭的实验选项。开启后，未指定或继承解释器的 Node `work_exec` 先通过原生 Shell 查询现有 Node。查询完整且确实缺少 Node 时，调用宿主已有的普通 Node 运行时。用户在会话中提到 Node、解释器或运行时后，该会话关闭自动回退。这是保守的文字检查；提到这些词也会阻止自动回退。现有解释器、Python 和原生 Shell 命令继续由原生工具执行。
+
+`scriptRef` 保留已知宿主运行时来源，包括旧版中间结果缺少来源的引用链。显式重复填写同一路径不能清除来源。会话已关闭自动回退时，只有当前用户请求明确指定已有解释器路径，才允许复用对应宿主路径；也可显式选择不同的、任务允许的解释器。工具参数本身不等于用户解除限制。功能状态会列出缺少的 Shell、只读会话及文字检查等阻断原因。
 自动回退仅用于允许写入的原生会话。回退继续使用原生执行与权限检查。结果的 `hostRuntimeSelection` 记录路径和版本，后续 `scriptRef` 继承该准确路径。查询被拒、超时或结果不明确时，程序不执行。该选项尚未证明正式任务的稳定费用收益。
 原生会话为 `read-only` 时，`work_exec` 明确拒绝新进程程序执行。只读计算可使用受限的 retained 模式；该模式继续按原权限约束处理文件访问。
 Windows 继续通过原生 `pwsh` 执行。POSIX 通过宿主原生 `bash` 向 Python/Node 的 stdin 传入完整程序，保留原生权限、stdout、stderr、退出码、超时、取消和作业状态。缺少 `bash` 或逐次环境注册服务时，分别返回 `native-bash-unavailable` 或 `native-shell-env-unavailable`。程序上限为 UTF-16 字符串的 1–64000 个字符。POSIX 将正文编码为最多 3 段环境变量，每段最多 96,000 个 UTF-8 字节，由宿主 `shellEnv` 仅注入匹配 Agent 和唯一命令的原生执行。Bash 内建 `printf` 还原反斜杠和 NUL 字节并送入解释器 stdin；正文不写项目文件，也不放入 `bash -c` 参数。传输标识或分段缺失时退出 125。解释器启动前清除传输变量，原生调用返回或转后台后清除插件中的暂存正文。

@@ -1,5 +1,6 @@
 import {argsOf,eventLog,isUserRequestMessage,textOf} from './runtime.mjs';
 import {Script} from 'node:vm';
+import path from 'node:path';
 
 const quote=value=>"'"+String(value).replaceAll("'","''")+"'";
 const bashQuote=value=>"'"+String(value).replaceAll("'","'\\''")+"'";
@@ -7,6 +8,11 @@ const INPUT_KEYS=new Set(['runtime','language','code','scriptRef','edits','execu
 const CALL_EVENT_TYPES=new Set(['tool/call','tool/ptc-dispatch-start','tool/ptc-dispatch','tool/code-dispatch-start','tool/code-dispatch']);
 const RESULT_EVENT_TYPES=new Set(['tool/result','tool/ptc-dispatch','tool/code-dispatch']);
 const validExecutable=value=>typeof value==='string'&&value.trim()&&value.length<=4096&&!/[\0\r\n]/u.test(value);
+export function sameInlineExecutable(left,right){
+  if(typeof left!=='string'||typeof right!=='string')return false;
+  const normalize=value=>process.platform==='win32'?path.win32.normalize(value).toLowerCase():path.posix.normalize(value);
+  return normalize(left)===normalize(right);
+}
 function normalizeInput(input){
   if(!input||typeof input!=='object'||Array.isArray(input))throw new Error('work_exec arguments must be an object');
   for(const key of Object.keys(input))if(!INPUT_KEYS.has(key))throw new Error('Unknown work_exec argument: '+key);
@@ -45,7 +51,7 @@ function scriptHostRuntimeOf(event){
   const metadata=event.type==='tool/result'?metadataOf(data.message?.content):metadataOf(data.content);
   const selection=metadata?.hostRuntimeSelection;
   return metadata?.scriptExecutableSource==='host-node-runtime'&&selection?.source==='host-node-runtime'&&
-    validExecutable(selection.executable)&&selection.executable===metadata.scriptExecutable?
+    validExecutable(selection.executable)&&sameInlineExecutable(selection.executable,metadata.scriptExecutable)?
     {...selection}:null;
 }
 const messageOf=event=>event.data?.message??event.data??{};
@@ -316,7 +322,11 @@ function resolveIndexedScript(input,calls,resultExecutables,resultHostRuntimes,e
       resolved.code=resolved.code.slice(0,first)+edit.after+resolved.code.slice(first+edit.before.length);
       if(!resolved.code.trim()||resolved.code.length>64000)throw new Error('Edited script must contain 1–64000 characters');
     }
-    if(next.executable!==undefined){resolved.executable=next.executable;inheritedHostRuntime=next.inheritedHostRuntime??null;}
+    if(next.executable!==undefined){
+      inheritedHostRuntime=next.inheritedHostRuntime??
+        (inheritedHostRuntime&&sameInlineExecutable(next.executable,inheritedHostRuntime.executable)?inheritedHostRuntime:null);
+      resolved.executable=next.executable;
+    }
     if(next.format!==undefined)resolved.format=next.format;
     if(next.timeoutMs!==undefined)resolved.timeoutMs=next.timeoutMs;
   }
@@ -332,7 +342,7 @@ export function nodeAvailabilityCommand(shell,marker){
   if(shell==='pwsh')return `if (Get-Command node -CommandType Application -ErrorAction SilentlyContinue) { [Console]::Out.WriteLine('${marker}:available') } else { [Console]::Out.WriteLine('${marker}:missing') }`;
   throw new Error('shell must be pwsh or bash');
 }
-/** Preserve textual interpreter constraints as well as explicit tool arguments. */
+/** Conservatively suspend automatic fallback after any human interpreter mention in this session. */
 export function hasInterpreterConstraint(session){
   return eventLog(session).some(event=>isUserRequestMessage(messageOf(event))&&
     /\bnode(?:\.js|js)?\b|\b(?:interpreter|runtime)\b|解释器|运行时/iu.test(textOf(messageOf(event))));

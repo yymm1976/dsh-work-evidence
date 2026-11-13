@@ -131,7 +131,7 @@ export function createFeatureControl(ctx,runtime,{available,canRecall,workingSet
           let mode;try{mode=service('sandboxPolicy')?.resolve({session:agent.session})?.mode;}catch{}
           if(!['workspace-write','danger-full-access'].includes(mode))reasons.push('requires-writable-session');
           if(process.getBuiltinModule?.('node:sea')?.isSea?.()!==false)reasons.push('ordinary-host-node-unavailable');
-          if(hasInterpreterConstraint(agent.session))reasons.push('task-interpreter-constraint');
+          if(hasInterpreterConstraint(agent.session))reasons.push('session-interpreter-mention');
         }
         if(['archiveReadRouting','memberParsing','mavenSourceBinding'].includes(key)&&!service('fs'))reasons.push('native-filesystem-unavailable');
         if(['archiveReadRouting','mavenSourceBinding'].includes(key)&&!archiveDecoder.available)reasons.push('archive-decoder-unavailable:fflate');
