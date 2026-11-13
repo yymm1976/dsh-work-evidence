@@ -282,7 +282,7 @@ export function createTaskFlow(ctx,runtime,{nativeFiles,call,executionDependenci
       }else if(!pending){state.errors.delete('run_code:latest');state.programFailure=null;}
     }else if(!INTERNAL.has(call.name)){
       if(failed)bounded(state.errors,key,{tool:call.name,seq,callId,userSeq:state.lastUser?.seq??null,processExitCode:exitCode,
-        ...(call.name==='work_probe'&&payload?.id?{probeRootId:payload.replayOf?.rootProbeId??payload.id}:{})});
+        ...(call.name==='work_probe'&&(payload?.id||payload?.replayOf?.rootProbeId)?{probeRootId:payload.replayOf?.rootProbeId??payload.id}:{})});
       else{
         const priorError=state.errors.get(key),recoveredProcess=completionObservation?.exitCode===0&&
           priorError?.userSeq===state.lastUser?.seq&&Number.isSafeInteger(priorError?.processExitCode)&&priorError.processExitCode!==0&&
@@ -301,7 +301,8 @@ export function createTaskFlow(ctx,runtime,{nativeFiles,call,executionDependenci
       const repaired=new Set(payload.scriptSourceRefs.filter(id=>typeof id==='string'));
       for(const [errorKey,error]of state.errors)if(error.tool==='work_exec'&&repaired.has(error.callId))state.errors.delete(errorKey);
     }
-    if(call.name==='work_probe'&&!failed&&payload?.status==='observed'&&payload.executionCompleted===true&&!payload.partial&&payload.replayOf?.rootProbeId)
+    const probeFilesCurrent=payload?.evidenceValidity==='current-for-declared-files'||payload?.fileDependencies?.declaredCount===0;
+    if(call.name==='work_probe'&&!failed&&payload?.status==='observed'&&payload.executionCompleted===true&&!payload.partial&&probeFilesCurrent&&payload.replayOf?.rootProbeId)
       for(const [errorKey,error]of state.errors)if(error.tool==='work_probe'&&error.probeRootId===payload.replayOf.rootProbeId)state.errors.delete(errorKey);
     if(payload?.jobId||payload?.job_id||payload?.job?.id){
       const id=payload.jobId??payload.job_id??payload.job.id;
@@ -355,8 +356,9 @@ export function createTaskFlow(ctx,runtime,{nativeFiles,call,executionDependenci
       state.probes=state.probes.slice(-16);
       const probeRootId=payload.replayOf?.rootProbeId??payload.id;
       const probeKey='probe:'+(runtimeConfig.probeReplay?probeRootId:payload.question??call.args.question);
-      if(['failed','different','unknown','partial'].includes(payload.status))bounded(state.errors,probeKey,{tool:'work_probe',seq,probeRootId});
-      else if(payload.status==='observed')state.errors.delete(probeKey);
+      if(['failed','different','unknown','partial'].includes(payload.status)||payload.status==='observed'&&!probeFilesCurrent)
+        bounded(state.errors,probeKey,{tool:'work_probe',seq,probeRootId,...(!probeFilesCurrent?{reason:'declared-source-evidence-not-current'}:{})});
+      else if(payload.status==='observed'&&probeFilesCurrent)state.errors.delete(probeKey);
       if(payload.executionCompleted)transition(state,'execute',seq,call.args.sources??[],'execution-evidence');
     }
     if(WRITE.has(call.name)&&!(call.name==='fastedit_java'&&['find','read','locate'].includes(call.args.mode??call.args.action??call.args.operation))){

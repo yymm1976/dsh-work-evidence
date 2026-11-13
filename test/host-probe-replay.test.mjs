@@ -130,3 +130,97 @@ test('a pending background probe cannot be duplicated through replay',async()=>{
     assert.match(last.content.map(block=>block.text??'').join(''),/original job id/u);
   }finally{await host.close();}
 });
+
+test('a matching replay cannot clear the original failure while a declared file changes during execution',async()=>{
+  let nativeCalls=0;
+  const host=await startHost({pluginConfig:{probeReplay:true,toolSurface:'full',stepPacing:false},script:async(options,n)=>{
+    if(n===1)return [tool('work_probe',plan)];
+    if(n===2){const first=JSON.parse(options.messages.findLast(message=>message.role==='tool').content[0].text);
+      await fs.writeFile(path.join(host.cwd,'value.json'),'{"answer":42}');
+      return [tool('work_probe',{mode:'replay',id:first.id})];}
+    return [text('done')];
+  }});
+  try{
+    await fs.writeFile(path.join(host.cwd,'value.json'),'{"answer":7}');
+    const agent=await host.createAgent('max'),original=host.ctx.tools.get(shell,agent);
+    agent.ctx.tools.register({...original,execute:async(args,exec)=>{
+      const result=await original.execute(args,exec);nativeCalls++;
+      if(nativeCalls===2)await fs.writeFile(path.join(host.cwd,'value.json'),'{"answer":99}');
+      return result;
+    }});
+    await host.send(agent,'Observe the check and repeat it after the implementation changes.');
+    const rows=results(host);assert.equal(rows.length,2);assert.equal(rows[1].status,'observed');
+    assert.equal(rows[1].cases[0].status,'matched');assert.equal(rows[1].evidenceValidity,'affected');
+    const detail=await host.command(agent,'detail');
+    assert.ok(detail.taskFlow.unresolvedErrors.some(item=>item.probeRootId===rows[0].id));
+  }finally{await host.close();}
+});
+
+test('a background descendant blocks another replay of its initially completed root',async()=>{
+  let nativeCalls=0,rootId;
+  const host=await startHost({pluginConfig:{probeReplay:true,toolSurface:'full',stepPacing:false},script:(options,n)=>{
+    if(n===1)return [tool('work_probe',plan)];
+    if(n===2){rootId=JSON.parse(options.messages.findLast(message=>message.role==='tool').content[0].text).id;return [tool('work_probe',{mode:'replay',id:rootId})];}
+    if(n===3)return [tool('work_probe',{mode:'replay',id:rootId})];
+    return [text('done')];
+  }});
+  try{
+    const agent=await host.createAgent('max'),original=host.ctx.tools.get(shell,agent);
+    agent.ctx.tools.register({...original,execute:async()=>{
+      nativeCalls++;
+      return nativeCalls===1?{kind:'foreground',cwd:host.cwd,exitCode:0,signal:null,timedOut:false,aborted:false,timeoutMs:10000,
+        stdout:{text:'{"answer":7}',truncated:false},stderr:{text:'',truncated:false}}:
+        {kind:'promoted',cwd:host.cwd,jobId:'fixture-descendant-job',timeoutMs:10000,output:''};
+    }});
+    await host.send(agent,'Run the check and explicitly request replay while retaining the original job state.');
+    assert.equal(nativeCalls,2);
+    const last=host.events.findLast(event=>event.type==='tool/result').data.message;
+    assert.match(last.content.map(block=>block.text??'').join(''),/background replay/u);
+  }finally{await host.close();}
+});
+
+for(const producerReported of [true,false])test('a background root resumes only after its producer settlement: '+producerReported,async()=>{
+  let nativeCalls=0,registration;
+  const host=await startHost({pluginConfig:{probeReplay:true,toolSurface:'full',stepPacing:false},script:(options,n)=>{
+    if(n===1)return [tool('work_probe',{...plan,sources:[]})];
+    if(n===2){const first=JSON.parse(options.messages.findLast(message=>message.role==='tool').content[0].text);
+      agent.session.append('job/settled',{...registration,status:'completed',detail:'exit code: 0',cause:'producer',producerReported});
+      return [tool('work_probe',{mode:'replay',id:first.id})];}
+    return [text('done')];
+  }});
+  let agent;
+  try{
+    agent=await host.createAgent('max');const original=host.ctx.tools.get(shell,agent);
+    agent.ctx.tools.register({...original,execute:async(_args,exec)=>{
+      nativeCalls++;
+      if(nativeCalls===1){
+        registration={jobId:'fixture-settled-job',owner:agent.session.id,kind:shell,toolCall:{callId:exec.callId,rootCallId:exec.rootCallId??exec.callId}};
+        agent.session.append('job/registered',registration);
+        return {kind:'promoted',cwd:host.cwd,jobId:registration.jobId,timeoutMs:10000,output:''};
+      }
+      return {kind:'foreground',cwd:host.cwd,exitCode:0,signal:null,timedOut:false,aborted:false,timeoutMs:10000,
+        stdout:{text:'{"answer":42}',truncated:false},stderr:{text:'',truncated:false}};
+    }});
+    await host.send(agent,'Observe the original background check and its recorded settlement before requesting the same check again.');
+    assert.equal(nativeCalls,producerReported?2:1);
+    const last=host.events.findLast(event=>event.type==='tool/result').data.message.content.map(block=>block.text??'').join('');
+    if(producerReported)assert.equal(JSON.parse(last).status,'observed');
+    else assert.match(last,/original job id/u);
+  }finally{await host.close();}
+});
+
+test('concurrent replay calls cannot dispatch the same original check twice',async()=>{
+  const host=await startHost({pluginConfig:{probeReplay:true,toolSurface:'full',stepPacing:false},script:(_options,n)=>n===1?[tool('work_probe',plan)]:[text('done')]});
+  try{
+    await fs.writeFile(path.join(host.cwd,'value.json'),'{"answer":7}');
+    const agent=await host.createAgent('max');await host.send(agent,'Run the original check.');
+    const id=results(host)[0].id,original=host.ctx.tools.get(shell,agent);let dispatches=0;
+    agent.ctx.tools.register({...original,execute:async(args,exec)=>{
+      dispatches++;await new Promise(resolve=>setTimeout(resolve,30));return original.execute(args,exec);
+    }});
+    const replay=callId=>host.ctx.tools.execute({name:'work_probe',arguments:{mode:'replay',id},agent,callId,rootCallId:callId,signal:AbortSignal.timeout(30000)});
+    const values=await Promise.all([replay('concurrent-one'),replay('concurrent-two')]);
+    assert.equal(dispatches,1);
+    assert.equal(values.filter(value=>value.value?.reason==='probe-replay-in-flight').length,1);
+  }finally{await host.close();}
+});

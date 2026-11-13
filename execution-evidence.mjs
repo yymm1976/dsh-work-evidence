@@ -111,7 +111,6 @@ export function createExecutionEvidence(ctx,runtime,call,{executionDependencies=
       if(observation?.id!==id||observation.historical===true)continue;
       const original=checked(source.args);
       if(!['execute','replay'].includes(original.mode))continue;
-      if(observation.background===true||observation.status==='pending')throw new Error('A pending or background probe must be monitored by its original job id, not replayed');
       const recipe=original.mode==='replay'?replayPlan(agent,original.id,maxChars,seen):original;
       return {...recipe,mode:'execute',maxChars,replayOf:{id,sourceCallId:callIdOf(event),sourceResultSeq:event.seq,
         rootProbeId:recipe.replayOf?.rootProbeId??id,inputs:'original-session-call',expectations:'unchanged'}};
@@ -119,11 +118,37 @@ export function createExecutionEvidence(ctx,runtime,call,{executionDependencies=
     throw new Error('Probe replay requires an original recorded work_probe call and result from this session');
   }
 
+  function assertReplayFamilySettled(agent,rootId){
+    const events=eventLog(agent.session),probeCalls=new Set(),pending=[];
+    const callIdOf=event=>event.type==='tool/result'?event.data?.message?.source?.callId??event.data?.message?.toolCallId??event.data?.callId:
+      event.data?.subCallId??event.data?.callId;
+    for(const event of events)if(['tool/call','tool/ptc-dispatch-start','tool/code-dispatch-start','tool/ptc-dispatch','tool/code-dispatch'].includes(event.type)&&event.data?.name==='work_probe')probeCalls.add(callIdOf(event));
+    for(const event of events){
+      if(!['tool/result','tool/ptc-dispatch','tool/code-dispatch'].includes(event.type)||!probeCalls.has(callIdOf(event)))continue;
+      const data=event.data??{},observation=parseResult(resultText(event.type==='tool/result'?data.message?.content:data.content));
+      if(!observation||observation.historical===true||(observation.replayOf?.rootProbeId??observation.id)!==rootId||
+        observation.background!==true&&observation.status!=='pending')continue;
+      pending.push({observation,seq:event.seq});
+    }
+    const retained=evidenceState(agent).replayLocks.get(rootId);
+    if(retained?.pending)pending.push({observation:retained.pending,seq:retained.seq});
+    for(const {observation,seq}of pending){
+      const registered=events.filter(item=>item.type==='job/registered'&&item.seq<=seq&&item.data?.jobId===observation.jobId);
+      const registration=registered.length===1?registered[0]:null,job=registration?.data;
+      const settled=registration?events.filter(item=>item.type==='job/settled'&&item.seq>registration.seq&&item.data?.jobId===job.jobId&&
+        item.data.owner===job.owner&&item.data.kind===job.kind&&item.data.toolCall?.callId===job.toolCall?.callId&&
+        item.data.toolCall?.rootCallId===job.toolCall?.rootCallId&&item.data.cause==='producer'&&item.data.producerReported===true&&
+        ['completed','failed','killed'].includes(item.data.status)):[];
+      if(!registration||!job?.toolCall?.callId||!job.toolCall.rootCallId||settled.length!==1)
+        throw new Error('This original probe already has a pending or background replay. Monitor its original job id until recorded producer settlement; do not start a duplicate.');
+    }
+  }
+
   function evidenceState(agent){
     const id=agent.session.id;
     let state=evidenceStates.get(id);
     if(!state){
-      state={records:[],observed:0,explicitObserved:0,saved:0,explicitSaved:0,saveFailures:0};
+      state={records:[],observed:0,explicitObserved:0,saved:0,explicitSaved:0,saveFailures:0,replayLocks:new Map()};
       evidenceStates.set(id,state);
     }
     return state;
@@ -247,14 +272,19 @@ export function createExecutionEvidence(ctx,runtime,call,{executionDependencies=
   }
 
   async function execute(agent,input,signal){
-    let plan=checked(input);const s=await runtime.init(agent,signal);
+    let plan=checked(input),replayState=null,replayRoot=null;const s=await runtime.init(agent,signal);
     if(plan.mode==='recall')return s.config.executionTriage?recall(agent,plan,signal):
       {status:'disabled',feature:'executionTriage'};
     if(!s.config.executionTriage)return {status:'disabled',feature:'executionTriage'};
     if(plan.mode==='replay'){
       if(!s.config.probeReplay)return {status:'disabled',feature:'probeReplay',executionOccurred:false};
       plan=replayPlan(agent,plan.id,plan.maxChars);
+      replayState=evidenceState(agent);replayRoot=plan.replayOf.rootProbeId;
+      if(replayState.replayLocks.get(replayRoot)?.inFlight)return {status:'unavailable',reason:'probe-replay-in-flight',executionOccurred:false,replayOf:plan.replayOf};
+      try{assertReplayFamilySettled(agent,plan.replayOf.rootProbeId);}catch(error){return {status:'unavailable',reason:'probe-replay-pending',executionOccurred:false,replayOf:plan.replayOf,error:String(error.message)};}
+      replayState.replayLocks.set(replayRoot,{inFlight:true});
     }
+    try{
     if(plan.mode==='inspect')return {status:'available',tools:available(agent),
       note:'Use a concrete question and an already formed native call within the current task. No command or case is generated automatically.'};
     if(!available(agent).includes(plan.tool))return {status:'deopt',reason:'requested-native-tool-unavailable',tool:plan.tool,executionOccurred:false};
@@ -276,6 +306,8 @@ export function createExecutionEvidence(ctx,runtime,call,{executionDependencies=
       sourceScope:'Caller-declared sources only. File applicability is assessed separately from execution and task correctness.',
       scope:'Only the supplied call, inputs and observed environment; no general correctness or task completion claim.'});
     if(plan.replayOf)observation.replayOf=plan.replayOf;
+    if(replayState&&(observation.background||observation.status==='pending'))
+      replayState.replayLocks.set(replayRoot,{pending:observation,seq:agent.session.seq});
     Object.assign(observation,await executionDependencies.finish(dependencies,observation.executionCompleted&&!observation.partial,signal));
     const record=makeRecord({s,id,recordOrigin:'work_probe',callId:explicitExecution?.callId??null,rootCallId:explicitExecution?.rootCallId??explicitExecution?.callId??null,
       observedAt,question:plan.question,tool:plan.tool,args,sources:plan.sources,requestedCases:plan.cases,observation,result});
@@ -284,6 +316,7 @@ export function createExecutionEvidence(ctx,runtime,call,{executionDependencies=
     finishRecord(state,record,outcome);
     s.dirty=true;
     return observation;
+    }finally{if(replayState?.replayLocks.get(replayRoot)?.inFlight)replayState.replayLocks.delete(replayRoot);}
   }
 
   function summary(agent){
