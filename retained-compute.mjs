@@ -75,7 +75,8 @@ export function createRetainedCompute(ctx,runtime,taskFlow,call){
       const cwd=await ctx.workingDirectory.ensure(exec.agent,exec.signal);
       const mutation=taskFlow.summary(exec.agent).mutationVersion??0;
       const functions=Object.create(null);
-      for(const schema of ctx.tools.schemas(exec.agent))if(READ_TOOLS.has(schema.name))functions[schema.name]=async input=>{
+      const opsEnabled=runtime.get(exec.agent).config.opsAdapters===true;
+      for(const schema of ctx.tools.schemas(exec.agent))if(READ_TOOLS.has(schema.name)&&(opsEnabled||!schema.name.startsWith('ops_')))functions[schema.name]=async input=>{
         const result=await call(schema.name,input,exec);
         if(result.isError){const error=new Error(result.error?.message??resultText(result.content));error.toolName=schema.name;throw error;}
         return result.value!==undefined?result.value:parseResult(resultText(result.content))??resultText(result.content);

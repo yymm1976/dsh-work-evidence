@@ -10,7 +10,7 @@
 | 0.2.2-rc.1 | 使用历史兼容接口。 | 不支持；开启后明确返回不可用。 |
 | 0.2.2-rc.2 | 支持命名子会话目录、PTC 及原生文件服务。 | 仅在已识别的原生工具、官方本地或沙箱文件服务中可用。 |
 
-归档功能需要 `fflate`，可安装在插件包内，也可由宿主提供。Java 语法编辑还需显式设置 `opsAdapters:true`，并保留原有 Python 环境和 OPS。`verified_exec` 默认使用原生条件编辑；只有在 `opsAdapters:true` 时才沿用 OPS CAS 路径。
+归档功能需要 `fflate`，可安装在插件包内，也可由宿主提供。Java 语法编辑还需显式设置 `opsAdapters:true`，并保留原有 Python 环境和 OPS。`verified_exec` 默认不启用任何后端：显式设置 `nativeVerifiedEdits:true` 使用原生条件编辑，或设置 `opsAdapters:true` 使用 OPS CAS；两者都未启用时工具面不发布，直接调用返回 `ops-adapters-disabled`。
 
 ## 加载与配置
 

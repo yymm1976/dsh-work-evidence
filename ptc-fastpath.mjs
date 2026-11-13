@@ -222,6 +222,12 @@ export function createPtcFastpath(ctx,runtime,call){
     const runId='fastpath-'+randomUUID(),runPath=path.join(s.dir,s.id+'.'+runId+'.json');
     const record={schema:RUN_SCHEMA,version:1,id:runId,name,sessionId:s.id,startedAt:new Date().toISOString(),
       status:'running',effectState:'none',inputs:input,steps:[],deopt:null};
+    const opsSteps=definition.steps.filter(step=>String(step.tool).startsWith('ops_')).map(step=>step.id);
+    if(opsSteps.length&&s.config.opsAdapters!==true){
+      record.status='deopt';record.deopt={reason:'ops-adapters-disabled',steps:opsSteps};
+      await runtime.save(agent,runPath,record,signal);s.metrics.ptcFastpathDeopts++;
+      return {status:'deopt',reason:record.deopt.reason,steps:opsSteps,runPath};
+    }
     if(missing.length){
       record.status='deopt';record.deopt={reason:'required-tools-unavailable',missing};
       await runtime.save(agent,runPath,record,signal);s.metrics.ptcFastpathDeopts++;return {status:'deopt',reason:record.deopt.reason,missing,runPath};

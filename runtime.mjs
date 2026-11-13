@@ -483,11 +483,13 @@ export function createRuntime(ctx,call,initial={}){
       exec={...exec,arguments:argumentRecovery.correctedArguments};
       if(argumentRecovery.stage!=='before-dispatch')s.metrics.failuresObserved++;
     }
-    const args=argsOf(exec.arguments),detail=textOf(result),parsed=outcome(result.value),opsError=opsAdapters&&exec.name.startsWith('ops_')&&(parsed.status==='error'||parsed.status==='unknown'||!!parsed.error||Number(parsed.data.failed)>0);
+    const args=argsOf(exec.arguments),detail=textOf(result),parsed=outcome(result.value),
+      opsStructuredFailure=exec.name.startsWith('ops_')&&(parsed.status==='error'||parsed.status==='unknown'||!!parsed.error||Number(parsed.data.failed)>0),
+      opsError=opsAdapters&&opsStructuredFailure;
     const error=parsed.error||result.error;
     const code=error?.info?.code||error?.code||((exec.name==='read'&&/: not found\s*$/.test(detail))?'FS_NOT_FOUND':'');
     const missingItem=Array.isArray(parsed.data.items)?parsed.data.items.find(item=>item?.status==='error'&&item.error?.code==='NOT_FOUND'&&typeof item.path==='string'):null;
-    const missingFile=code==='FS_NOT_FOUND'||(opsError&&(code==='NOT_FOUND'||!!missingItem));
+    const missingFile=code==='FS_NOT_FOUND'||(opsStructuredFailure&&(code==='NOT_FOUND'||!!missingItem));
     if(opsError){
       const advice={tool:exec.name,code:code||'OPS_ERROR',message:String(error?.message||detail).slice(0,400),nextAction:String(error?.nextAction||'Inspect this result before reading its data.').slice(0,240)};
       if(code==='INVALID_ARGUMENT'){
@@ -509,7 +511,7 @@ export function createRuntime(ctx,call,initial={}){
         boundedPush(s.pendingOpsAdvice,advice,3);
       }
     }
-    if(result.isError||opsError||(Number.isFinite(result.value?.exitCode)&&result.value.exitCode!==0)){
+    if(result.isError||opsError||opsStructuredFailure||(Number.isFinite(result.value?.exitCode)&&result.value.exitCode!==0)){
       if(exec.name==='run_code'&&s.failureRoots.has(exec.rootCallId||exec.callId))return;
       if(exec.name!=='run_code'&&exec.rootCallId){s.failureRoots.add(exec.rootCallId);if(s.failureRoots.size>256)s.failureRoots.delete(s.failureRoots.values().next().value);}
       const filePath=missingItem?.path||args.file_path||args.path;
@@ -524,7 +526,7 @@ export function createRuntime(ctx,call,initial={}){
     }
     if(exec.name==='work_report'&&result.value?.saved===true){s.reportedCurrentTurn=true;s.lastReport=result.value.path;s.active=true;s.dirty=true;}
     const observed=outcome(result.value),data=observed.data;
-    if(!opsError&&['edit','write','str_replace_editor','ops_edit_file','ops_write_file'].includes(exec.name)){
+    if(!opsError&&!opsStructuredFailure&&['edit','write','str_replace_editor','ops_edit_file','ops_write_file'].includes(exec.name)){
       s.active=true;s.reportedCurrentTurn=false;const file=args.file_path||args.path;
       if(file){s.writes.push({tool:exec.name,path:file,callId:exec.callId});if(s.writes.length>12)s.writes.shift();recordMutation(agent,{tool:exec.name,file,revision:data.revision,callId:exec.callId,seq});}
       s.dirty=true;
