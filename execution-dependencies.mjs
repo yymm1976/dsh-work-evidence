@@ -41,9 +41,9 @@ export function executionFacts(result){
     node.isError===true||node.success===false||node.ok===false||!!(node.error||node.err)||
     Number.isFinite(node.exitCode)&&node.exitCode!==0||Number.isFinite(node.exit_code)&&node.exit_code!==0);
   const unavailable=statuses.some(status=>UNAVAILABLE_STATUS.has(status));
-  const background=layers.some(node=>[node.kind,node.job?.kind,node.status,node.state,node.job?.status]
+  const background=layers.some(node=>node.background===true||[node.kind,node.job?.kind,node.status,node.state,node.job?.status]
     .some(value=>['background','promoted'].includes(String(value??'').toLowerCase())));
-  const pending=background||statuses.some(status=>PENDING_STATUS.has(status));
+  const pending=background||layers.some(node=>node.pending===true)||statuses.some(status=>PENDING_STATUS.has(status));
   const truncated=layers.some(node=>node.lossy===true||node.outputPartial===true||node.truncated===true||
     node.rangeComplete===false||node.textComplete===false||node.scanComplete===false||node.budgetTruncated===true||
     node.stdout?.truncated===true||node.stderr?.truncated===true||node.stdout?.complete===false||node.stderr?.complete===false);

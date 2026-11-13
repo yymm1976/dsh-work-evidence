@@ -1,6 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {createExecutionEvidence} from '../execution-evidence.mjs';
+import {createTaskFlow} from '../task-flow.mjs';
+import {defaults} from '../runtime.mjs';
 
 function fixture(native){
   const log=[],session={id:'probe-facts',log,get seq(){return log.length;},
@@ -76,4 +78,18 @@ test('successful stderr warnings and selected user records remain observations',
   const value=await selected.execute({question:'Read the selected record as data.',tool:'read',arguments:{file_path:'record.json'},sources:[],
     cases:[{name:'record status',target:'result',pointer:'/results/0/value/status',expectedJson:'"failed"'}]});
   assert.equal(value.status,'observed');assert.equal(value.cases[0].status,'matched');selected.evidence.dispose();
+});
+
+test('task-flow retains a pending producer even when its probe observation failed',()=>{
+  const agent={session:{id:'pending-probe-flow',log:[]}},state={root:process.cwd(),config:defaults()};
+  const flow=createTaskFlow({}, {get:()=>state,isEnabled:()=>true,activeMode:()=>'default',modeStatus:()=>({})});
+  const arguments_={question:'Observe the producer.',tool:'bash',arguments:{command:'check'}};
+  const value={status:'failed',pending:true,background:false,jobId:'active-probe-job',id:'probe-id',
+    executionCompleted:false,fileDependencies:{declaredCount:0}};
+  agent.session.log.push({seq:0,type:'tool/call',data:{callId:'probe',name:'work_probe',arguments:arguments_}},
+    {seq:1,type:'tool/result',data:{message:{source:{callId:'probe'},content:[{type:'text',text:JSON.stringify(value)}]}}});
+  const observed=flow.summary(agent);
+  assert.ok(observed.pendingJobs.includes('active-probe-job'));
+  assert.equal(observed.nativeExecutions.at(-1).status,'failed');
+  assert.equal(observed.nativeExecutions.at(-1).pending,true);
 });

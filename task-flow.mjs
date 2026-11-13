@@ -234,12 +234,13 @@ export function createTaskFlow(ctx,runtime,{nativeFiles,call,executionDependenci
       return observation.status!=='observed';
     }
     if((call.name==='work_compute'||call.name==='work_exec'&&payload?.mode==='retained')&&!result.isError&&payload?.status==='completed')state.pacing.computeCalls++;
-    const jobState=payload?.job?.status??payload?.status,pending=layers.some(node=>
+    const nativeFacts=execution||call.name==='work_probe'?executionFacts(envelope):null;
+    const jobState=payload?.job?.status??payload?.status,pending=nativeFacts?.pending??layers.some(node=>
       [node?.kind,node?.job?.kind].some(kind=>['background','promoted'].includes(kind))||[node?.status,node?.state,node?.job?.status].some(status=>['running','pending','queued','stopping'].includes(status)));
     const deletionDenied=SHELL.includes(call.name)&&/Remove-Item|\bos\.remove\s*\(|\.unlink\s*\(/iu.test(call.args.command??'')&&
       /access.{0,12}denied|permissionerror|winerror\s*5|拒绝访问|访问.{0,8}拒绝/iu.test(payload?.errorText||resultText(result.content));
     const reportedShellFailure=call.name==='pwsh'&&shellReportedFailure(streamText(payload?.stderr??payload?.stderrText)||payload?.errorText||resultText(result.content));
-    const partialOutput=layers.some(node=>node?.outputPartial===true||node?.truncated===true||node?.lossy===true||node?.stdout?.truncated===true||node?.stderr?.truncated===true||node?.stdout?.complete===false||node?.stderr?.complete===false);
+    const partialOutput=nativeFacts?.truncated??layers.some(node=>node?.outputPartial===true||node?.truncated===true||node?.lossy===true||node?.stdout?.truncated===true||node?.stderr?.truncated===true||node?.stdout?.complete===false||node?.stderr?.complete===false);
     const nativeExitCode=execution?executionExitCode(envelope):Number.isInteger(payload?.exitCode)?payload.exitCode:Number.isInteger(payload?.exit_code)?payload.exit_code:null;
     const completionObservation=nativeExitCode===null&&!pending&&['pwsh','ops_bash','bash'].includes(call.name)?
       recordedProcessCompletion(eventLog(agent.session),{seq:event.seq},event.seq+1):null;
@@ -317,7 +318,7 @@ export function createTaskFlow(ctx,runtime,{nativeFiles,call,executionDependenci
         cwd,exitCode,
         ...(completionObservation?{completionObservation}:{}),
         status:probeExecution?payload.status:failed?'failed':pending?'pending':complete?'observed':'partial',executionCompleted:probeExecution?payload.executionCompleted===true:complete,
-        partial:partialOutput||payload?.partial===true,
+        partial:partialOutput||payload?.partial===true,pending,
         jobId:payload?.jobId??payload?.job_id??payload?.job?.id??null,
         backgroundFailureSignature:pending?payload?.backgroundFailureSignature??failureSignature(streamText(payload?.output)||streamText(payload?.stderr)):null,
         ...(probeExecution?{probeId:payload.id,nativeTool:payload.tool}:{}),
