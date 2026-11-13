@@ -101,3 +101,34 @@ test('a textual interpreter constraint keeps native failure instead of substitut
     assert.equal(row.scriptExecutable,'node');
   }finally{await host.close();}
 });
+
+test('host fallback supplies no new interpreter in a native read-only session',async()=>{
+  const host=await startHost({pluginConfig:{hostNodeFallback:true,stepPacing:false},script:()=>[text('ready')]});
+  try{
+    const agent=await host.createAgent('max');
+    agent.session.append('sandbox/mode',{mode:'read-only',workspaceRoot:host.cwd});
+    const code='(await import("node:fs/promises")).writeFile("must-not-exist.txt","changed");';
+    const result=await withNoPathNode(()=>host.ctx.tools.execute({name:'work_exec',arguments:{runtime:'node',code},
+      callId:'read-only-host-node',rootCallId:'read-only-host-node',agent,signal:AbortSignal.timeout(20000)}));
+    assert.equal(result.value?.executionOccurred,false);
+    assert.equal(result.value?.reason,'native-read-only-session');
+    assert.equal(result.value?.isError,true);
+    assert.equal(result.value?.hostRuntimeSelection,undefined);
+    assert.notEqual(result.value?.exitCode,0);
+    assert.equal(await fs.stat(path.join(host.cwd,'must-not-exist.txt')).then(()=>true,()=>false),false);
+  }finally{await host.close();}
+});
+
+test('a read-only session also rejects an explicit interpreter with recovery disabled',async()=>{
+  const host=await startHost({pluginConfig:{hostNodeFallback:false,stepPacing:false},script:()=>[text('ready')]});
+  try{
+    const agent=await host.createAgent('max');
+    agent.session.append('sandbox/mode',{mode:'read-only',workspaceRoot:host.cwd});
+    const code='await (await import("node:fs/promises")).writeFile("must-not-exist.txt","changed");';
+    const result=await host.ctx.tools.execute({name:'work_exec',arguments:{runtime:'node',executable:process.execPath,code},
+      callId:'read-only-explicit-node',rootCallId:'read-only-explicit-node',agent,signal:AbortSignal.timeout(20000)});
+    assert.equal(result.value?.executionOccurred,false);
+    assert.equal(result.value?.reason,'native-read-only-session');
+    assert.equal(await fs.stat(path.join(host.cwd,'must-not-exist.txt')).then(()=>true,()=>false),false);
+  }finally{await host.close();}
+});

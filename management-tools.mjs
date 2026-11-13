@@ -88,6 +88,9 @@ export function registerManagementTools({ctx,runtime,state,effects,available,fea
       sources:{type:'array',maxItems:16,items:{type:'string'},description:'Explicit file dependencies for this call, relative to the project directory. Applicability covers only declared files; URLs remain unknown. Not inherited through scriptRef; unavailable in retained mode.'},
       timeoutMs:{type:'integer',minimum:1,maximum:600000,description:'Native foreground wait before background promotion, milliseconds; default 10000.'}},[],async(args,exec)=>{
       args=args??{};
+      if(args.mode!=='retained'&&ctx.get('sandboxPolicy')?.resolve({session:exec.agent.session})?.mode==='read-only')
+        return {status:'unavailable',isError:true,executionOccurred:false,reason:'native-read-only-session',
+          error:{message:'A read-only session cannot run an unrestricted interpreter process. Use the retained read-only mode for calculations.'}};
       if(args.mode==='retained'){
         if(args.runtime!=='node')throw new Error('retained mode requires runtime: node');
         if(args.scriptRef!==undefined||args.edits!==undefined||args.executable!==undefined||args.format!==undefined||args.sources!==undefined)
@@ -116,7 +119,8 @@ export function registerManagementTools({ctx,runtime,state,effects,available,fea
       if(declaredExecutable)script={...script,executable:declaredExecutable.executable};
       let hostRuntimeSelection=null;
       if(runtime.get(exec.agent).config.hostNodeFallback&&script.runtime==='node'&&
-        script.executable===undefined&&!requiredExecutable&&!namedExecutable&&!hasInterpreterConstraint(exec.agent.session)){
+        script.executable===undefined&&!requiredExecutable&&!namedExecutable&&!hasInterpreterConstraint(exec.agent.session)&&
+        ['workspace-write','danger-full-access'].includes(ctx.get('sandboxPolicy')?.resolve({session:exec.agent.session})?.mode)){
         const sea=process.getBuiltinModule?.('node:sea');
         if(sea?.isSea?.()===false){
           const marker='work-node-'+randomUUID();

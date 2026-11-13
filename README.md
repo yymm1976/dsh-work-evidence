@@ -450,7 +450,8 @@ FastEdit Python 路径由 fastEditPython 设置。
 `work_exec` 的 Python 调用不传 `format`。Node 默认使用 ESM；未显式设置 Node 格式且因当前脚本的 `require` 在 ESM 下失败时，若原文可按 CommonJS 解析，结果提供 `recovery.arguments`，包含当前 `scriptRef` 与 `format:"commonjs"`。
 
 `hostNodeFallback` 是默认关闭的实验选项。开启后，未指定或继承解释器的 Node `work_exec` 先通过原生 Shell 查询现有 Node。查询完整且确实缺少 Node 时，调用宿主已有的普通 Node 运行时。用户文字提到 Node 或解释器约束时，自动回退关闭。现有解释器、显式路径、Python 和原生 Shell 命令保留原行为。
-回退继续使用原生执行与权限检查。结果的 `hostRuntimeSelection` 记录路径和版本，后续 `scriptRef` 继承该准确路径。查询被拒、超时或结果不明确时，程序不执行。该选项尚未证明正式任务的稳定费用收益。
+自动回退仅用于允许写入的原生会话。回退继续使用原生执行与权限检查。结果的 `hostRuntimeSelection` 记录路径和版本，后续 `scriptRef` 继承该准确路径。查询被拒、超时或结果不明确时，程序不执行。该选项尚未证明正式任务的稳定费用收益。
+原生会话为 `read-only` 时，`work_exec` 明确拒绝新进程程序执行。只读计算可使用受限的 retained 模式；该模式继续按原权限约束处理文件访问。
 Windows 继续通过原生 `pwsh` 执行。POSIX 通过宿主原生 `bash` 向 Python/Node 的 stdin 传入完整程序，保留原生权限、stdout、stderr、退出码、超时、取消和作业状态。缺少 `bash` 或逐次环境注册服务时，分别返回 `native-bash-unavailable` 或 `native-shell-env-unavailable`。程序上限为 UTF-16 字符串的 1–64000 个字符。POSIX 将正文编码为最多 3 段环境变量，每段最多 96,000 个 UTF-8 字节，由宿主 `shellEnv` 仅注入匹配 Agent 和唯一命令的原生执行。Bash 内建 `printf` 还原反斜杠和 NUL 字节并送入解释器 stdin；正文不写项目文件，也不放入 `bash -c` 参数。传输标识或分段缺失时退出 125。解释器启动前清除传输变量，原生调用返回或转后台后清除插件中的暂存正文。
 显式绝对 `executable` 路径不存在或指向目录时，调用在启动所选原生 shell 前返回 `WORK_EXEC_EXECUTABLE_NOT_FOUND`、`executionOccurred:false`，保留 `scriptRef`。程序引用继承记录的解释器路径；省略 `executable` 不会改用 PATH。只有任务允许更换环境时，才建议将 `executable` 显式设为 `python` 或 `node`，改用 PATH 中的同名运行时；任务声明特定解释器时保留缺失路径为阻塞项。权限无法确认、PATH 名称及相对路径仍交给宿主执行；这里不检查执行权限或文件格式。
 `scriptEditsSubmitted` 记录提交的编辑数，`scriptEditCount` 只计替换前后文字不同的编辑。相同文字仍会按请求再次执行原程序，不发送脚本已改动的版本提示。
