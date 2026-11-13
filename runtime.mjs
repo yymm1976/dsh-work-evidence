@@ -516,6 +516,11 @@ export function createRuntime(ctx,call,initial={}){
         boundedPush(s.pendingOpsAdvice,advice,3);
       }
     }
+    // Completed batch items are real mutations even when another item failed or
+    // the OPS adapters are disabled; record them before the failure return.
+    if(exec.name==='ops_batch'&&Array.isArray(parsed.data.items)){
+      for(const item of parsed.data.items)if(item?.status==='completed'&&typeof item.path==='string')recordMutation(agent,{tool:exec.name,file:item.path,revision:item.revision,callId:exec.callId,seq});
+    }
     if(result.isError||opsError||opsStructuredFailure||(Number.isFinite(result.value?.exitCode)&&result.value.exitCode!==0)){
       if(exec.name==='run_code'&&s.failureRoots.has(exec.rootCallId||exec.callId))return;
       if(exec.name!=='run_code'&&exec.rootCallId){s.failureRoots.add(exec.rootCallId);if(s.failureRoots.size>256)s.failureRoots.delete(s.failureRoots.values().next().value);}
@@ -535,9 +540,6 @@ export function createRuntime(ctx,call,initial={}){
       s.active=true;s.reportedCurrentTurn=false;const file=args.file_path||args.path;
       if(file){s.writes.push({tool:exec.name,path:file,callId:exec.callId});if(s.writes.length>12)s.writes.shift();recordMutation(agent,{tool:exec.name,file,revision:data.revision,callId:exec.callId,seq});}
       s.dirty=true;
-    }
-    if(exec.name==='ops_batch'&&Array.isArray(data.items)){
-      for(const item of data.items)if(item?.status==='completed'&&typeof item.path==='string')recordMutation(agent,{tool:exec.name,file:item.path,revision:item.revision,callId:exec.callId,seq});
     }
     if(opsAdapters&&exec.name==='ops_read_files'&&Array.isArray(args.files)&&Array.isArray(data.items)){
       for(let index=0;index<Math.min(args.files.length,data.items.length);index++){
