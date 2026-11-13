@@ -353,8 +353,9 @@ export function createTaskFlow(ctx,runtime,{nativeFiles,call,executionDependenci
     if(call.name==='work_probe'&&call.args.mode!=='recall'&&call.args.mode!=='inspect'&&payload?.id&&payload.question){
       if(!state.probes.some(probe=>probe.id===payload.id))state.probes.push({id:payload.id,seq,status:payload.status,question:payload.question,elapsedMs:payload.elapsedMs});
       state.probes=state.probes.slice(-16);
-      const probeKey='probe:'+call.args.question;
-      if(['failed','different','unknown','partial'].includes(payload.status))bounded(state.errors,probeKey,{tool:'work_probe',seq});
+      const probeRootId=payload.replayOf?.rootProbeId??payload.id;
+      const probeKey='probe:'+(runtimeConfig.probeReplay?probeRootId:payload.question??call.args.question);
+      if(['failed','different','unknown','partial'].includes(payload.status))bounded(state.errors,probeKey,{tool:'work_probe',seq,probeRootId});
       else if(payload.status==='observed')state.errors.delete(probeKey);
       if(payload.executionCompleted)transition(state,'execute',seq,call.args.sources??[],'execution-evidence');
     }
@@ -1057,7 +1058,8 @@ export function createTaskFlow(ctx,runtime,{nativeFiles,call,executionDependenci
         completed:layers.some(node=>node?.completed===false||node?.executionCompleted===false||node?.complete===false)?false:value?.completed,tool:value?.tool,
         files:Array.isArray(value?.files)?value.files.slice(0,50).map(file=>({path:file.path??file.file,effectState:file.effectState})):undefined,
         sources:pathsOf(value),saved:value?.saved,path:value?.path,id:value?.id,question:value?.question,
-        elapsedMs:value?.elapsedMs,executionCompleted:value?.executionCompleted};
+        elapsedMs:value?.elapsedMs,executionCompleted:value?.executionCompleted,
+        ...(exec.name==='work_probe'&&value?.replayOf?{replayOf:{id:value.replayOf.id,rootProbeId:value.replayOf.rootProbeId,sourceResultSeq:value.replayOf.sourceResultSeq}}:{})};
       bounded(get(exec.agent).live,exec.callId,{isError:!!result.isError,observedProblem:operationProblem(exec.name,execution?envelope:raw??resultText(result.content))||exec.name==='pwsh'&&shellReportedFailure(stderr),value:compact},256);
     },
     disposeAgent:agent=>states.delete(agent.session.id),dispose:()=>states.clear()};

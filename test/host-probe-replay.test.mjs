@@ -39,7 +39,7 @@ test('probe replay restores the original command and expectation after the obser
     assert.equal(rows[1].replayOf.expectations,'unchanged');
     assert.notEqual(rows[1].id,first.id);
     const detail=await host.command(agent,'detail');
-    assert.equal(detail.taskFlow.unresolvedErrors.some(item=>item.tool==='work_probe'),false);
+    assert.equal(detail.taskFlow.unresolvedErrors.some(item=>item.tool==='work_probe'),false,JSON.stringify({errors:detail.taskFlow.unresolvedErrors,observations:rows}));
   }finally{await host.close();}
 });
 
@@ -62,6 +62,22 @@ test('editing a saved record cannot alter the executable replay recipe or expect
     const rows=results(host);assert.equal(rows.length,2);
     assert.equal(rows[1].status,'different');assert.equal(rows[1].cases[0].expectedJson,'42');
     assert.equal(rows[1].cases[0].actualJson,'7');
+  }finally{await host.close();}
+});
+
+test('a new passing expectation for the same question does not clear the original failed check',async()=>{
+  const host=await startHost({pluginConfig:{probeReplay:true,toolSurface:'full',stepPacing:false},script:(_options,n)=>{
+    if(n===1)return [tool('work_probe',plan)];
+    if(n===2)return [tool('work_probe',{...plan,cases:[{...plan.cases[0],expectedJson:'7'}]})];
+    return [text('done')];
+  }});
+  try{
+    await fs.writeFile(path.join(host.cwd,'value.json'),'{"answer":7}');
+    const agent=await host.createAgent('max');await host.send(agent,'Observe both explicitly supplied checks without treating their different expectations as equivalent.');
+    const rows=results(host);assert.equal(rows[0].status,'different');assert.equal(rows[1].status,'observed');
+    const detail=await host.command(agent,'detail');
+    assert.ok(detail.taskFlow.unresolvedErrors.some(item=>item.probeRootId===rows[0].id));
+    assert.equal(detail.taskFlow.unresolvedErrors.some(item=>item.probeRootId===rows[1].id),false);
   }finally{await host.close();}
 });
 

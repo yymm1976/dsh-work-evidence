@@ -460,6 +460,8 @@ FastEdit Python 路径由 fastEditPython 设置。
 `probeReplay` 默认关闭。开启后，`work_probe({mode:"replay",id})` 从本会话原调用恢复命令、显式来源列表和 `expectedJson`，再显式执行一次。重执行调用只能设置 `id` 和显示预算，不能覆盖检查或预期。原调用及结果必须仍能从会话恢复；修改保存到工作区的记录文件不能改变执行内容。后台或未结束的检查继续使用原任务 ID 查看，不启动副本。
 
 每次重执行都取得新的观察 ID，并记录原观察及结果事件地址。命令和预期保持原文；命令读取的项目文件、环境、PATH 及权限使用当前状态。引用文件的内容不被固定，文件适用性继续由显式来源观察说明。原失败仍保留，新结果只说明同一调用本次观察到的值。只读会话的 `work_probe` 拒绝不受限 Shell 执行，原生只读工具仍可用。
+
+开启 `probeReplay` 后，同一问题的新检查不会解除原检查的失败。只有原检查重执行取得完整相符结果，才解除该检查的未决状态。原始失败观察继续保留。
 Windows 继续通过原生 `pwsh` 执行。POSIX 通过宿主原生 `bash` 向 Python/Node 的 stdin 传入完整程序，保留原生权限、stdout、stderr、退出码、超时、取消和作业状态。缺少 `bash` 或逐次环境注册服务时，分别返回 `native-bash-unavailable` 或 `native-shell-env-unavailable`。程序上限为 UTF-16 字符串的 1–64000 个字符。POSIX 将正文编码为最多 3 段环境变量，每段最多 96,000 个 UTF-8 字节，由宿主 `shellEnv` 仅注入匹配 Agent 和唯一命令的原生执行。Bash 内建 `printf` 还原反斜杠和 NUL 字节并送入解释器 stdin；正文不写项目文件，也不放入 `bash -c` 参数。传输标识或分段缺失时退出 125。解释器启动前清除传输变量，原生调用返回或转后台后清除插件中的暂存正文。
 显式绝对 `executable` 路径不存在或指向目录时，调用在启动所选原生 shell 前返回 `WORK_EXEC_EXECUTABLE_NOT_FOUND`、`executionOccurred:false`，保留 `scriptRef`。程序引用继承记录的解释器路径；省略 `executable` 不会改用 PATH。只有任务允许更换环境时，才建议将 `executable` 显式设为 `python` 或 `node`，改用 PATH 中的同名运行时；任务声明特定解释器时保留缺失路径为阻塞项。权限无法确认、PATH 名称及相对路径仍交给宿主执行；这里不检查执行权限或文件格式。
 `scriptEditsSubmitted` 记录提交的编辑数，`scriptEditCount` 只计替换前后文字不同的编辑。相同文字仍会按请求再次执行原程序，不发送脚本已改动的版本提示。
