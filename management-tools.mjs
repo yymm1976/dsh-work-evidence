@@ -37,7 +37,7 @@ export function registerManagementTools({ctx,runtime,state,effects,available,fea
         if(gate&&!runtime.isEnabled(exec.agent))return disabledResult(exec.agent,name);
         assertParameterBounds({type:'object',properties},args);
         const result=await execute(args,exec);
-        const feature=name==='work_exec'&&args?.mode==='retained'?'retainedCompute':name==='verified_exec'&&runtime.get(exec.agent).config.nativeVerifiedEdits?'nativeVerifiedEdit':{work_exec:'inlineExec',work_compute:'retainedCompute',work_probe:'probe',evidence_index:'index',candidate_select:'candidate',ptc_patterns:'patterns',ptc_fastpath:'fastpath',verified_exec:'verifiedEdit',fastedit_java:'fastEdit',file_profile:'fileProfile',structured_json:'structuredJson'}[name];
+        const feature=name==='work_exec'&&args?.mode==='retained'?'retainedCompute':name==='work_probe'&&args?.mode==='replay'?'probeReplay':name==='verified_exec'&&runtime.get(exec.agent).config.nativeVerifiedEdits?'nativeVerifiedEdit':{work_exec:'inlineExec',work_compute:'retainedCompute',work_probe:'probe',evidence_index:'index',candidate_select:'candidate',ptc_patterns:'patterns',ptc_fastpath:'fastpath',verified_exec:'verifiedEdit',fastedit_java:'fastEdit',file_profile:'fileProfile',structured_json:'structuredJson'}[name];
         if(feature){
           const status=result?.status;
           if(name==='verified_exec'&&status==='previewed'&&result.effectState==='none')effects.decide(exec.agent,feature,'deferred','preview-only');
@@ -303,8 +303,8 @@ export function registerManagementTools({ctx,runtime,state,effects,available,fea
       }
       return result;
     },{gate:false});
-  register('work_probe','用已有原生调用回答一个具体问题并返回紧凑的实际证据。只运行当前任务允许且已形成的调用，不生成命令、安装依赖或宣告业务完成。mode=execute 使用 question/tool/arguments；cases 最多8项，JSON pointer 从 stdout JSON 或完整原生 result 选值，可用 expectedJson 比较已明确预期。非零退出、截断及后台任务保持未解决；沿原任务ID继续，不重发命令。mode=recall 按id分页取回同一会话记录；inspect只列可用工具。',
-    {mode:{type:'string',enum:['execute','recall','inspect']},question:{type:'string'},tool:{type:'string',enum:['pwsh','ops_bash','bash','job_output','read','grep','glob','ops_stat','ops_read_files','ops_inspect_local_file']},arguments:{type:'object'},
+  register('work_probe','用已有原生调用回答一个具体问题并返回紧凑的实际证据。只运行当前任务允许且已形成的调用，不生成命令、安装依赖或宣告业务完成。mode=execute 使用 question/tool/arguments；cases 最多8项，JSON pointer 从 stdout JSON 或完整原生 result 选值，可用 expectedJson 比较已明确预期。非零退出、截断及后台任务保持未解决；沿原任务ID继续，不重发命令。mode=recall 按id分页取回同一会话记录；inspect只列可用工具。probeReplay 开启时，mode=replay 仅接受原id及显示预算，按原会话中的命令、显式来源列表和预期重新执行；当前文件、权限和环境重新生效，后台任务不得重执行。',
+    {mode:{type:'string',enum:['execute','recall','inspect','replay']},question:{type:'string'},tool:{type:'string',enum:['pwsh','ops_bash','bash','job_output','read','grep','glob','ops_stat','ops_read_files','ops_inspect_local_file']},arguments:{type:'object'},
       sources:{type:'array',maxItems:16,items:{type:'string'},description:'Explicit dependencies for this observation. File paths are relative to the project directory. Native file metadata is observed around execution; URLs and missing metadata remain unknown.'},cases:{type:'array',maxItems:8,items:{type:'object',additionalProperties:false,properties:{name:{type:'string'},target:{type:'string',enum:['stdout','result']},pointer:{type:'string'},expectedJson:{type:'string'}},required:['name','pointer']}},
       id:{type:'string'},offset:{type:'integer',minimum:0},maxChars:{type:'integer',minimum:1024,maximum:12000}},[],(args,exec)=>executionEvidence.execute(exec.agent,args,exec.signal));
   register('evidence_index','查询或维护有真实源码支持的附加检索入口；query读取当前源码核对，learn保留原入口，semantic=true时额外调用模型核对别名。',

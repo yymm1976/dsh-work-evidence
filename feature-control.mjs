@@ -38,6 +38,7 @@ const DEFINITIONS=[
   ['nativeProgramReuse','PTC 程序引用','显式复用同一会话的原程序文字'],
   ['hostNodeFallback','宿主 Node 回退','未指定解释器且原生命令找不到 Node 时复用宿主运行时'],
   ['nativeShellScriptReuse','Shell 程序引用','显式复用单个字面量 Python/Node stdin 程序'],
+  ['probeReplay','原样检查重执行','从本会话原调用恢复命令、来源和预期后显式执行'],
   ['structuredCalls','结构化调用','用现有工具参数直接提交独立动作'],
   ['nativeReasoningReplay','原生推理传递','向兼容通道传递准确的已有推理'],
   ['stageWorkingSet','阶段状态','保留当前阶段及必要来源'],
@@ -133,6 +134,10 @@ export function createFeatureControl(ctx,runtime,{available,canRecall,workingSet
           if(!['workspace-write','danger-full-access'].includes(mode))reasons.push('requires-writable-session');
           if(key==='hostNodeFallback'&&process.getBuiltinModule?.('node:sea')?.isSea?.()!==false)reasons.push('ordinary-host-node-unavailable');
           if(key==='hostNodeFallback'&&hasInterpreterConstraint(agent.session))reasons.push('session-interpreter-mention');
+        }
+        if(key==='probeReplay'){
+          if(!config.executionTriage)reasons.push('requires-setting:executionTriage');
+          if(!available(agent,'work_probe'))reasons.push('tool-unavailable:work_probe');
         }
         if(['archiveReadRouting','memberParsing','mavenSourceBinding'].includes(key)&&!service('fs'))reasons.push('native-filesystem-unavailable');
         if(['archiveReadRouting','mavenSourceBinding'].includes(key)&&!archiveDecoder.available)reasons.push('archive-decoder-unavailable:fflate');

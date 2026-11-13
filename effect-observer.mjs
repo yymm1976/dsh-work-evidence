@@ -16,6 +16,7 @@ FEATURES.inlineScriptReuse=null;
 FEATURES.nativeProgramReuse='nativeProgramReuse';
 FEATURES.hostNodeFallback='hostNodeFallback';
 FEATURES.nativeShellScriptReuse='nativeShellScriptReuse';
+FEATURES.probeReplay='probeReplay';
 FEATURES.nativeProgramReference='nativeProgramReuse';
 FEATURES.structuredCalls='structuredCalls';
 FEATURES.nativeReasoningReplay='nativeReasoningReplay';

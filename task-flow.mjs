@@ -281,7 +281,8 @@ export function createTaskFlow(ctx,runtime,{nativeFiles,call,executionDependenci
         }
       }else if(!pending){state.errors.delete('run_code:latest');state.programFailure=null;}
     }else if(!INTERNAL.has(call.name)){
-      if(failed)bounded(state.errors,key,{tool:call.name,seq,callId,userSeq:state.lastUser?.seq??null,processExitCode:exitCode});
+      if(failed)bounded(state.errors,key,{tool:call.name,seq,callId,userSeq:state.lastUser?.seq??null,processExitCode:exitCode,
+        ...(call.name==='work_probe'&&payload?.id?{probeRootId:payload.replayOf?.rootProbeId??payload.id}:{})});
       else{
         const priorError=state.errors.get(key),recoveredProcess=completionObservation?.exitCode===0&&
           priorError?.userSeq===state.lastUser?.seq&&Number.isSafeInteger(priorError?.processExitCode)&&priorError.processExitCode!==0&&
@@ -300,6 +301,8 @@ export function createTaskFlow(ctx,runtime,{nativeFiles,call,executionDependenci
       const repaired=new Set(payload.scriptSourceRefs.filter(id=>typeof id==='string'));
       for(const [errorKey,error]of state.errors)if(error.tool==='work_exec'&&repaired.has(error.callId))state.errors.delete(errorKey);
     }
+    if(call.name==='work_probe'&&!failed&&payload?.status==='observed'&&payload.executionCompleted===true&&!payload.partial&&payload.replayOf?.rootProbeId)
+      for(const [errorKey,error]of state.errors)if(error.tool==='work_probe'&&error.probeRootId===payload.replayOf.rootProbeId)state.errors.delete(errorKey);
     if(payload?.jobId||payload?.job_id||payload?.job?.id){
       const id=payload.jobId??payload.job_id??payload.job.id;
       if(pending)state.jobs.add(id);

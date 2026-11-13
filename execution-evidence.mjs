@@ -5,6 +5,7 @@ import {isDeepStrictEqual} from 'node:util';
 import {assertExistingFileWithin} from './evidence.mjs';
 import {resultText,parseResult} from './visible-results.mjs';
 import {createExecutionDependencies,declaredFileSources,dependencyView} from './execution-dependencies.mjs';
+import {argsOf,eventLog} from './runtime.mjs';
 
 const TOOLS=['pwsh','ops_bash','bash','job_output','read','grep','glob','ops_stat','ops_read_files','ops_inspect_local_file'];
 const SHELL=new Set(['pwsh','ops_bash','bash']);
@@ -52,8 +53,13 @@ function checked(input){
   const known=new Set(['mode','question','tool','arguments','sources','cases','maxChars','id','offset']);
   if(!input||typeof input!=='object'||Array.isArray(input)||Object.keys(input).some(key=>!known.has(key)))throw new Error('Unknown work_probe field');
   const mode=input.mode??'execute',maxChars=input.maxChars??6000;
-  if(!['execute','recall','inspect'].includes(mode))throw new Error('Invalid work_probe mode');
+  if(!['execute','recall','inspect','replay'].includes(mode))throw new Error('Invalid work_probe mode');
   if(!Number.isInteger(maxChars)||maxChars<1024||maxChars>12000)throw new Error('maxChars must be from 1024 to 12000');
+  if(mode==='replay'){
+    if(Object.keys(input).some(key=>!['mode','id','maxChars'].includes(key))||!/^probe-[0-9a-f-]{36}$/u.test(input.id??''))
+      throw new Error('Probe replay accepts only a same-session probe id and display maxChars; recorded inputs and expectations cannot be overridden');
+    return {...input,mode,maxChars};
+  }
   if(mode!=='execute')return {...input,mode,maxChars};
   if(typeof input.question!=='string'||!input.question.trim()||input.question.length>2000)throw new Error('question must describe one concrete unresolved question');
   if(!TOOLS.includes(input.tool))throw new Error('Choose an existing supported native tool');
@@ -85,6 +91,33 @@ export function createExecutionEvidence(ctx,runtime,call,{executionDependencies=
   const evidenceStates=new Map();
   const available=agent=>TOOLS.filter(name=>{try{return !!ctx.tools.get(name,agent);}catch{return false;}});
   const retrieveOriginal=id=>({tool:'work_probe',arguments:{mode:'recall',id,offset:0}});
+
+  function replayPlan(agent,id,maxChars,seen=new Set()){
+    if(seen.has(id)||seen.size>=32)throw new Error('Invalid or cyclic probe replay source');
+    seen.add(id);
+    const events=eventLog(agent.session),calls=new Map();
+    const callIdOf=event=>event.type==='tool/result'?event.data?.message?.source?.callId??event.data?.message?.toolCallId??event.data?.callId:
+      event.data?.subCallId??event.data?.callId;
+    for(const event of events)if(['tool/call','tool/ptc-dispatch-start','tool/code-dispatch-start','tool/ptc-dispatch','tool/code-dispatch'].includes(event.type)){
+      const key=callIdOf(event),prior=calls.get(key),data=event.data??{};
+      if(key)calls.set(key,{name:data.name??prior?.name,args:data.arguments===undefined?prior?.args:argsOf(data.arguments),seq:prior?.seq??event.seq});
+    }
+    for(const event of events.toReversed()){
+      if(!['tool/result','tool/ptc-dispatch','tool/code-dispatch'].includes(event.type))continue;
+      const source=calls.get(callIdOf(event));
+      if(source?.name!=='work_probe')continue;
+      const data=event.data??{},content=event.type==='tool/result'?data.message?.content:data.content;
+      const observation=parseResult(resultText(content));
+      if(observation?.id!==id||observation.historical===true)continue;
+      const original=checked(source.args);
+      if(!['execute','replay'].includes(original.mode))continue;
+      if(observation.background===true||observation.status==='pending')throw new Error('A pending or background probe must be monitored by its original job id, not replayed');
+      const recipe=original.mode==='replay'?replayPlan(agent,original.id,maxChars,seen):original;
+      return {...recipe,mode:'execute',maxChars,replayOf:{id,sourceCallId:callIdOf(event),sourceResultSeq:event.seq,
+        rootProbeId:recipe.replayOf?.rootProbeId??id,inputs:'original-session-call',expectations:'unchanged'}};
+    }
+    throw new Error('Probe replay requires an original recorded work_probe call and result from this session');
+  }
 
   function evidenceState(agent){
     const id=agent.session.id;
@@ -214,13 +247,20 @@ export function createExecutionEvidence(ctx,runtime,call,{executionDependencies=
   }
 
   async function execute(agent,input,signal){
-    const plan=checked(input),s=await runtime.init(agent,signal);
+    let plan=checked(input);const s=await runtime.init(agent,signal);
     if(plan.mode==='recall')return s.config.executionTriage?recall(agent,plan,signal):
       {status:'disabled',feature:'executionTriage'};
     if(!s.config.executionTriage)return {status:'disabled',feature:'executionTriage'};
+    if(plan.mode==='replay'){
+      if(!s.config.probeReplay)return {status:'disabled',feature:'probeReplay',executionOccurred:false};
+      plan=replayPlan(agent,plan.id,plan.maxChars);
+    }
     if(plan.mode==='inspect')return {status:'available',tools:available(agent),
       note:'Use a concrete question and an already formed native call within the current task. No command or case is generated automatically.'};
     if(!available(agent).includes(plan.tool))return {status:'deopt',reason:'requested-native-tool-unavailable',tool:plan.tool,executionOccurred:false};
+    if(SHELL.has(plan.tool)&&ctx.get('sandboxPolicy')?.resolve({session:agent.session})?.mode==='read-only')
+      return {status:'unavailable',reason:'native-read-only-session',executionOccurred:false,
+        error:'A read-only session cannot start an unrestricted Shell probe. Use native read tools or retained read-only calculations.'};
     const dependencies=await executionDependencies.capture(s.root,plan.sources,signal);
     const id='probe-'+randomUUID(),started=performance.now(),observedAt=new Date().toISOString();
     const args={...plan.arguments};
@@ -235,6 +275,7 @@ export function createExecutionEvidence(ctx,runtime,call,{executionDependencies=
       observedAt,elapsedMs,elapsedSource:'work_probe-wall-clock',s,
       sourceScope:'Caller-declared sources only. File applicability is assessed separately from execution and task correctness.',
       scope:'Only the supplied call, inputs and observed environment; no general correctness or task completion claim.'});
+    if(plan.replayOf)observation.replayOf=plan.replayOf;
     Object.assign(observation,await executionDependencies.finish(dependencies,observation.executionCompleted&&!observation.partial,signal));
     const record=makeRecord({s,id,recordOrigin:'work_probe',callId:explicitExecution?.callId??null,rootCallId:explicitExecution?.rootCallId??explicitExecution?.callId??null,
       observedAt,question:plan.question,tool:plan.tool,args,sources:plan.sources,requestedCases:plan.cases,observation,result});
