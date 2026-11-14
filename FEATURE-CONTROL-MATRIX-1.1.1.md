@@ -1,6 +1,6 @@
 # 功能入口成熟度矩阵
 
-范围：当前 1.1.2 候选 `feature-control.mjs` 的 42 个实际入口。`opsAdapters` 与 `fastEditEnabled` 已随 OPS 适配删除，不再是入口（写有这两个键的旧工作区按退役设置强制为 `false`）。以下候选仍默认关闭：原生条件编辑、文件概况、JSON 选择。宿主 Node 回退、Shell 程序引用和原样检查重执行也默认关闭。真实任务与消融未完成的候选不记为成熟。
+范围：当前 1.1.2 候选 `feature-control.mjs` 的 43 个实际入口。`opsAdapters` 与 `fastEditEnabled` 已随 OPS 适配删除，不再是入口（写有这两个键的旧工作区按退役设置强制为 `false`）。以下候选仍默认关闭：原生条件编辑、文件概况、JSON 选择。宿主 Node 回退、Shell 程序引用和原样检查重执行也默认关闭。真实任务与消融未完成的候选不记为成熟。
 
 | 入口 | 状态 | 启停与依赖 | 运行、恢复和组合证据 | 文档与迁移 |
 |---|---|---|---|---|
@@ -51,7 +51,7 @@
 
 ## 终审结论
 
-- 42 个入口均有配置和源码接线（`opsAdapters` 与 `fastEditEnabled` 已删除）。`nativeVerifiedEdits`、`fileProfiling`、`structuredJson`、`hostNodeFallback`、`nativeShellScriptReuse` 和 `probeReplay` 仍为候选；前 3 项的真实任务与消融未完成，后 3 项只有已见合成研究且不能证明稳定净益。
+- 43 个入口均有配置和源码接线（`opsAdapters` 与 `fastEditEnabled` 已删除）。`nativeVerifiedEdits`、`fileProfiling`、`structuredJson`、`hostNodeFallback`、`nativeShellScriptReuse` 和 `probeReplay` 仍为候选；前 3 项的真实任务与消融未完成，后 3 项只有已见合成研究且不能证明稳定净益。
 - 23981e8、020e842 和 5029a09 的真实模型结果只属于对应源码。宿主 Node 回退的四臂结果不能证明稳定收益；Shell 程序引用的重复实验平均费用高 31.7756%；原样检查重执行高 8.0216%。这些结果不改 8da 正式成绩。
 - 默认关闭的能力通过显式配置启用。缺少依赖时返回 `blocked`、`waiting` 或明确原因。
 - 旧设置由 `runtime.mjs` 的 `RETIRED_SETTINGS` 固定关闭；迁移兼容和回退说明见 `MIGRATION-1.1.1.md`、`MIGRATION-1.1.2.md`、`ROLLBACK-1.1.1.md` 与 `ROLLBACK-1.1.2.md`。
