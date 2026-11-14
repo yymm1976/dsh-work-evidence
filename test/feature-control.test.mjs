@@ -49,7 +49,8 @@ test('every feature entry exposes a dedicated effect counter except the two glob
     const agent=await host.createAgent('max');
     const view=await host.command(agent,'features');
     const unmapped=view.features.filter(item=>item.effect.lastReason==='no-dedicated-effect-counter').map(item=>item.key).sort();
-    assert.deepEqual(unmapped,['aggressiveMode','enabled']);
+    // opsAdapters is an adapter gate, not a feature with its own effect counter.
+    assert.deepEqual(unmapped,['aggressiveMode','enabled','opsAdapters']);
     assert.ok(view.features.every(item=>item.effect.status&&item.entry&&item.scope==='workspace'));
   }finally{await host.close();}
 });
@@ -85,7 +86,7 @@ test('human commands expose compact-hidden tools and immediately restore the dis
 test('feature readiness distinguishes required settings, runtime dependencies and task conditions',async()=>{
   const host=await startHost({pluginConfig:{swEviction:true,requestProjection:true,finalJsonResultGuard:true,finalJsonGuard:false,
     nativeProgramReuse:true,structuredCalls:true,nativeReasoningReplay:true,qualityReview:true,stubSummary:true,deferPressureCompaction:true,
-    opsAdapters:true,fastEditPython:path.resolve('missing-python.exe')},script:()=>[text('done')]});
+    opsAdapters:true,fastEditEnabled:true,fastEditPython:path.resolve('missing-python.exe')},script:()=>[text('done')]});
   try{
     const agent=await host.createAgent('max');
     const view=await host.command(agent,'features'),entry=key=>view.features.find(item=>item.key===key);
@@ -97,8 +98,8 @@ test('feature readiness distinguishes required settings, runtime dependencies an
     assert.ok(entry('finalJsonResultGuard').reasons.includes('requires-setting:finalJsonGuard'));
     assert.ok(entry('nativeProgramReuse').reasons.includes('requires-ptc-tool-mode'));
     assert.ok(entry('structuredCalls').reasons.includes('requires-typescript-function-body-runtime'));
-    assert.ok(entry('fastEditEnabled').reasons.includes('fastedit-runtime-files-unavailable'));
-    assert.ok(entry('fastEditEnabled').reasons.includes('tool-unavailable:ops_stat'));
+    assert.ok(entry('fastEditEnabled').reasons.includes('fastedit-runtime-files-unavailable'),JSON.stringify(entry('fastEditEnabled')));
+    assert.ok(entry('fastEditEnabled').reasons.includes('tool-unavailable:ops_stat'),JSON.stringify(entry('fastEditEnabled')));
     assert.equal(entry('nativeReasoningReplay').status,'waiting');
     assert.equal(entry('qualityReview').status,'waiting');
     assert.ok(entry('qualityReview').reasons.includes('requires-ultra-quality-mode'));

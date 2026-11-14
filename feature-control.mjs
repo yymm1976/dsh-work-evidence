@@ -101,7 +101,10 @@ export function createFeatureControl(ctx,runtime,{available,canRecall,workingSet
       try{nativeVerifiedReady=await verifiedExec?.nativeAvailable(agent)===true;}catch{}
     }
     let fastEditFiles=null;
-    if(config.fastEditEnabled&&config.opsAdapters&&(!only||only==='fastEditEnabled')){
+    // The tree-sitter bridge is also the memberParsing parser, so probing it must
+    // not be gated on the OPS-only Java edit switch.
+    if((!only&&(config.fastEditEnabled&&config.opsAdapters||config.memberParsing))||
+      only==='fastEditEnabled'&&config.fastEditEnabled&&config.opsAdapters||only==='memberParsing'&&config.memberParsing){
       try{await Promise.all([fs.access(config.fastEditPython),fs.access(path.join(import.meta.dirname,'fastedit-bridge.py'))]);fastEditFiles=true;}
       catch{fastEditFiles=false;}
     }
@@ -122,6 +125,11 @@ export function createFeatureControl(ctx,runtime,{available,canRecall,workingSet
         if(key==='ledgerReceipt'&&!config.evidenceViews)reasons.push('requires-setting:evidenceViews');
         if(['qualityReviewEffort','qualityReviewScope'].includes(key)&&!config.qualityReview)reasons.push('requires-setting:qualityReview');
         if(['contextProtocol','swEviction','requestProjection','projectionRestore','ledgerReceipt','historyHygiene','stubSummary'].includes(key)&&canRecall(agent)!==true)reasons.push('historical-recall-not-exposed');
+        // These features have exactly one entry point. When the surface hides it,
+        // reporting "ready" overstates reachability: the switch is on but the
+        // capability cannot be exercised.
+        if(['evidenceViews','memberParsing','mavenSourceBinding'].includes(key)&&!available(agent,'project_evidence'))reasons.push('tool-unavailable:project_evidence');
+
         if(['stubSummary','deferPressureCompaction'].includes(key)&&!nativeCompaction)reasons.push('native-compaction-not-attached');
         if(key==='deferPressureCompaction'&&runtime.hasRequestBudgetView?.(agent)!==true)reasons.push('request-budget-view-unavailable');
         if(['nativeProgramReuse','structuredCalls'].includes(key)&&!ptc)reasons.push('requires-ptc-tool-mode');
@@ -141,6 +149,7 @@ export function createFeatureControl(ctx,runtime,{available,canRecall,workingSet
           if(!available(agent,'work_probe'))reasons.push('tool-unavailable:work_probe');
         }
         if(['archiveReadRouting','memberParsing','mavenSourceBinding'].includes(key)&&!service('fs'))reasons.push('native-filesystem-unavailable');
+        if(key==='memberParsing'&&!fastEditFiles&&config.memberParsing)reasons.push('tree-sitter-runtime-unavailable:fastEditPython');
         if(['archiveReadRouting','mavenSourceBinding'].includes(key)&&!archiveDecoder.available)reasons.push('archive-decoder-unavailable:fflate');
         if(key==='fastEditEnabled'){
           if(!config.opsAdapters)reasons.push('ops-adapters-disabled');

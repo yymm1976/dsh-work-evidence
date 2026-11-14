@@ -410,7 +410,13 @@ export function apply(ctx,config={}){
     // tools: fastedit_java always needs OPS CAS; verified_exec needs OPS CAS
     // unless the native conditional-write backend is enabled.
     const opsHidden=config.opsAdapters===true?[]:['fastedit_java',...(config.nativeVerifiedEdits?[]:['verified_exec'])];
+    // evidenceViews/memberParsing/mavenSourceBinding are default-on and have no
+    // entry point other than project_evidence. Hiding that tool at the default
+    // compact surface left those switches on but unreachable.
+    const evidenceEntry=!['read-only','minimal'].includes(mode)&&
+      (config.evidenceViews||config.memberParsing||config.mavenSourceBinding)?'project_evidence':null;
     const exposedFeatures=[...(config.fileProfiling?['file_profile']:[]),...(config.structuredJson?['structured_json']:[]),
+      ...(evidenceEntry?[evidenceEntry]:[]),
       ...(config.nativeVerifiedEdits&&!['read-only','minimal'].includes(mode)?['verified_exec']:[])];
     const readKey=exposedFeatures.join(',')+'|ops:'+opsHidden.join(',');
     if(current?.surface===surface&&current.readKey===readKey)return;
