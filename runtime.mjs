@@ -3,10 +3,13 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import {randomUUID} from 'node:crypto';
 import {within,references,assertExistingFileWithin,readUtf8File} from './evidence.mjs';
-import {recoveryFor,recoveryOf} from './recovery.mjs';
+import {recoveryOf} from './recovery.mjs';
 
 export const VERSION='1.1.2';
-export const RETIRED_SETTINGS=Object.freeze(['taskEffort','nativeReadView','nativeExecutionEvidence','reasoningHistory','cacheOrderedStub','archiveEntries','ledgerFoldPlan','ledgerFoldWrite','programHistory','executionAdvice','finishAdvice']);
+// opsAdapters and fastEditEnabled were removed with the dsh-ops adapters and
+// fastedit_java. They stay tombstoned so an older workspace file still loads
+// instead of disabling the plugin; neither value can enable any behavior.
+export const RETIRED_SETTINGS=Object.freeze(['taskEffort','nativeReadView','nativeExecutionEvidence','reasoningHistory','cacheOrderedStub','archiveEntries','ledgerFoldPlan','ledgerFoldWrite','programHistory','executionAdvice','finishAdvice','opsAdapters','fastEditEnabled']);
 export const MODES=Object.freeze(['default','aggressive','quality']);
 export const MODE_POLICY_VERSION='pb001-v39';
 export function checkedMode(mode){if(!MODES.includes(mode))throw new Error('mode must be default, aggressive or quality');return mode;}
@@ -33,7 +36,7 @@ function checkedSessionPolicy(value){
 }
 export function defaults(raw={}){
   const config={enabled:true,aggressiveMode:true,mode:'aggressive',selfIndex:true,modelTimeoutMs:20000,modelMaxTokens:1200,modelRoute:null,
-    opsAdapters:false,fastEditEnabled:false,fastEditPython:path.join(import.meta.dirname,'.fastedit-venv','Scripts','python.exe'),
+    fastEditPython:path.join(import.meta.dirname,'.fastedit-venv','Scripts','python.exe'),
     stateLedger:true,stateInform:true,completionNotice:false,archiveReadRouting:true,readArgumentRecovery:true,requestAccounting:true,evidenceViews:true,memberParsing:true,mavenSourceBinding:true,
     contextProtocol:true,contextPruningPolicy:'forecast',historyHygiene:true,contextPruneMinChars:8000,contextPruneHeadChars:4096,contextPruneTailChars:1024,
     ledgerReceipt:true,ledgerUnresolved:true,nativeVerifiedEdits:false,fileProfiling:false,structuredJson:false,
@@ -47,8 +50,10 @@ export function defaults(raw={}){
   // Settings that chose default mode before aggressiveMode existed keep handing
   // that decision to the host instead of silently enabling aggressive.
   if(config.mode==='default'&&raw.aggressiveMode===undefined)config.aggressiveMode=false;
-  const known=new Set(['enabled','aggressiveMode','mode','selfIndex','modelTimeoutMs','modelMaxTokens','modelRoute','opsAdapters','fastEditEnabled','fastEditPython','stateLedger','stateInform','archiveReadRouting','readArgumentRecovery','requestAccounting','evidenceViews','memberParsing','mavenSourceBinding',
-    'contextProtocol','contextPruningPolicy','historyHygiene','programHistory','reasoningHistory','retainedCompute','contextPruneMinChars','contextPruneHeadChars','contextPruneTailChars','completionNotice',
+  // Retired keys stay accepted so a workspace file written before their removal
+  // still loads; the tombstone loop below forces them to false.
+  const known=new Set(['enabled','aggressiveMode','mode','selfIndex','modelTimeoutMs','modelMaxTokens','modelRoute','fastEditPython','stateLedger','stateInform','archiveReadRouting','readArgumentRecovery','requestAccounting','evidenceViews','memberParsing','mavenSourceBinding',
+    'contextProtocol','contextPruningPolicy','historyHygiene','programHistory','reasoningHistory','retainedCompute','contextPruneMinChars','contextPruneHeadChars','contextPruneTailChars','completionNotice','opsAdapters','fastEditEnabled',
     'ledgerReceipt','ledgerUnresolved','nativeVerifiedEdits','fileProfiling','structuredJson','ledgerFoldPlan','ledgerFoldWrite','defaultResponseView','swLedger','swEviction','swEvictionSteps','nativeProgramReuse','hostNodeFallback','nativeShellScriptReuse','probeReplay','structuredCalls','nativeReasoningReplay',
     'requestProjection','projectionRestore','compressionControl','compactionTiming','deferPressureCompaction','stubSummary','cacheOrderedStub','archiveEntries','executionTriage','executionAdvice','stageWorkingSet','finishAdvice','stepPacing','taskEffort','finalJsonGuard','finalJsonResultGuard','qualityReview','qualityReviewEffort','qualityReviewScope','nativeReadView','nativeExecutionEvidence','projectionMinChars','projectionRecentSteps','projectionStableSteps','projectionHorizonSteps','projectionPricing','toolSurface']);
   if(!raw||typeof raw!=='object'||Array.isArray(raw)||Object.keys(raw).some(k=>!known.has(k)))throw new Error('Unknown work-evidence setting');
@@ -62,7 +67,7 @@ export function defaults(raw={}){
   config.contextPruningPolicy='forecast';
   if(!['native','adaptive'].includes(config.compactionTiming))throw new Error('Invalid compactionTiming');
   config.compactionTiming='native';
-  for(const key of ['enabled','aggressiveMode','selfIndex','opsAdapters','fastEditEnabled','stateLedger','stateInform','archiveReadRouting','readArgumentRecovery','requestAccounting','evidenceViews','memberParsing','mavenSourceBinding','contextProtocol','historyHygiene','programHistory','reasoningHistory',
+  for(const key of ['enabled','aggressiveMode','selfIndex','stateLedger','stateInform','archiveReadRouting','readArgumentRecovery','requestAccounting','evidenceViews','memberParsing','mavenSourceBinding','contextProtocol','historyHygiene','programHistory','reasoningHistory',
     'ledgerReceipt','ledgerUnresolved','nativeVerifiedEdits','fileProfiling','structuredJson','ledgerFoldPlan','ledgerFoldWrite','swLedger','swEviction','requestProjection','projectionRestore','compressionControl','deferPressureCompaction','stubSummary','cacheOrderedStub','archiveEntries','executionTriage','nativeProgramReuse','hostNodeFallback','nativeShellScriptReuse','probeReplay','structuredCalls','nativeReasoningReplay','executionAdvice','stageWorkingSet','finishAdvice','stepPacing','retainedCompute','taskEffort','finalJsonGuard','finalJsonResultGuard','qualityReview','nativeReadView','nativeExecutionEvidence','completionNotice'])if(typeof config[key]!=='boolean')throw new Error('Invalid '+key);
   if(!Number.isInteger(config.swEvictionSteps)||config.swEvictionSteps<3||config.swEvictionSteps>50)throw new Error('Invalid swEvictionSteps');
   for(const [key,min,max] of [['projectionMinChars',16000,2000000],['projectionRecentSteps',3,50],['projectionStableSteps',4,100],['projectionHorizonSteps',1,64]])
@@ -111,7 +116,7 @@ export function createRuntime(ctx,call,initial={}){
     const id=agent.session.id;
     let s=states.get(id);
     if(!s){s={id,cursor:0,step:0,turn:null,config:defaults(initial),workspaceConfigValid:false,workspaceFileSeen:false,workspaceFileMissing:false,sessionFileSeen:false,sessionFileMissing:false,root:null,telemetryDir:null,telemetryScope:null,configured:false,initPromise:null,seen:new Set(),calls:new Map(),
-      failures:[],writes:[],emptyLookups:new Map(),readPages:new Map(),automaticEvidence:new Set(),active:false,pendingFailure:null,pendingLookupFact:null,pendingStateNotice:null,pendingOpsAdvice:[],
+      failures:[],writes:[],emptyLookups:new Map(),readPages:new Map(),automaticEvidence:new Set(),active:false,pendingFailure:null,pendingLookupFact:null,pendingStateNotice:null,
       commandRoots:new Map(),failureRoots:new Set(),requestObservations:[],auxiliarySignals:new WeakSet(),selectedPreset:agent.session.header?.agentPreset||null,evidenceViewReasons:{},viewEpoch:0,
       reads:[],searches:[],index:[],indexLoaded:false,indexDirty:false,
       ledger:{observations:[],searches:[],mutations:[]},
@@ -120,9 +125,8 @@ export function createRuntime(ctx,call,initial={}){
         evidenceLocated:0,evidenceIncomplete:0,evidenceUnavailable:0,evidenceNoSource:0,indexLearned:0,indexRejected:0,indexHits:0,auxiliaryCalls:0,auxiliaryFailures:0,auxiliaryUnknownCalls:0,auxiliaryJsonRecoveries:0,
         auxiliaryUsage:{},auxiliaryMs:0,candidatePredictions:0,candidateRuns:0,verifiedExecPreviews:0,contextProtocolPrunedResults:0,contextProtocolPrunedChars:0,
         verifiedExecApplies:0,verifiedExecPartial:0,verifiedExecDeopts:0,verifiedExecValidationFailures:0,
-        ptcFastpathRuns:0,ptcFastpathSuccesses:0,ptcFastpathDeopts:0,fastEditPreviews:0,fastEditApplies:0,fastEditPartial:0,fastEditDeopts:0,
-        fastEditEntityFinds:0,fastEditEntityReads:0,stateObservations:0,stateSearches:0,stateStaleObservations:0,stateStaleSearches:0,
-        stateNotices:0,stateNoticeChars:0,opsErrorNotices:0,partialResultsObserved:0,opaqueOpsResults:0,longWaitRedirects:0,
+        ptcFastpathRuns:0,ptcFastpathSuccesses:0,ptcFastpathDeopts:0,stateObservations:0,stateSearches:0,stateStaleObservations:0,stateStaleSearches:0,
+        stateNotices:0,stateNoticeChars:0,longWaitRedirects:0,
         ledgerObservations:0,ledgerReceipts:0,ledgerReceiptCharsSaved:0,ledgerStale:0,ledgerUnresolvedInjected:0,
         archiveReadRoutes:0,readArgumentCorrections:0,readArgumentNormalizations:0,contextRequests:0,contextRequestChars:0,contextModelTextChars:0,
         evidenceVisibleViews:0,evidenceFullViews:0,evidenceReferenceViews:0,evidenceReferenceMisses:0,evidenceViewOutputChars:0},problems:[]};states.set(id,s);}
@@ -211,8 +215,7 @@ export function createRuntime(ctx,call,initial={}){
     const s=get(agent);
     s.viewEpoch++;s.requestObservations=[];
     s.ledger={observations:[],searches:[],mutations:[]};s.reads=[];s.searches=[];
-    s.active=false;s.pendingFailure=null;s.pendingLookupFact=null;s.pendingStateNotice=null;s.pendingOpsAdvice=[];s.readPages=new Map();s.queuedMessages=[];s.dirty=true;
-    s.opsAdviceSeen=new Set();
+    s.active=false;s.pendingFailure=null;s.pendingLookupFact=null;s.pendingStateNotice=null;s.queuedMessages=[];s.dirty=true;
   }
   function effortSelection(agent){
     let projection;
@@ -381,9 +384,9 @@ export function createRuntime(ctx,call,initial={}){
     markStateStale(s,[{...target,revision:mutation.revision}]);
     s.active=true;s.dirty=true;return mutation;
   }
-  function recordReadObservation(agent,value){
+  function recordStateObservation(agent,value){
     const s=get(agent);if(!s.config.stateLedger)return null;
-    return recordObservation(s,{name:value.tool||'fastedit_java',arguments:{path:value.file},callId:value.callId||'fastedit:'+randomUUID()},
+    return recordObservation(s,{name:value.tool,arguments:{path:value.file},callId:value.callId||'state:'+randomUUID()},
       {value:{status:'completed',data:{revision:value.revision}}},value.seq??null,value);
   }
   function stateSnapshot(s,detail=false){
@@ -453,10 +456,10 @@ export function createRuntime(ctx,call,initial={}){
     s.metrics.nativeEvents++;
     const ownRewrite=event.type==='compaction/summary'&&d.provider==='work-evidence-ledger'||event.type==='user/message'&&d.message?.source?.kind==='work-evidence-working-set'&&d.message.source.workingSet?.action==='project'||event.type==='tool/result'&&event.surfaceOp?.op==='replace'&&parseValue(d.message)?.kind==='work-evidence-reference';
     if(ownRewrite)s.lastHistoryRewriteSeq=Math.max(s.lastHistoryRewriteSeq??-1,event.seq);
-    if(event.type==='turn/start'){s.turn=d.turn;s.active=false;s.reportedCurrentTurn=false;s.writes=[];s.automaticEvidence.clear();s.autoAttemptsThisTurn=0;s.pendingFailure=null;s.pendingLookupFact=null;s.pendingStateNotice=null;s.pendingOpsAdvice=[];s.readPages=new Map();s.opsAdviceSeen=new Set();}
+    if(event.type==='turn/start'){s.turn=d.turn;s.active=false;s.reportedCurrentTurn=false;s.writes=[];s.automaticEvidence.clear();s.autoAttemptsThisTurn=0;s.pendingFailure=null;s.pendingLookupFact=null;s.pendingStateNotice=null;}
     if(event.type==='step/start')s.step++;
-    if(event.type==='tool/call'){s.calls.set(d.callId,{name:d.name,arguments:argsOf(d.arguments)});if(['pwsh','bash','ops_bash'].includes(d.name))s.commandRoots.set(d.callId,{tool:d.name,command:argsOf(d.arguments).command||''});}
-    if(['tool/ptc-dispatch-start','tool/code-dispatch-start'].includes(event.type)&&['pwsh','bash','ops_bash'].includes(d.name))s.commandRoots.set(d.rootCallId,{tool:d.name,command:argsOf(d.arguments).command||''});
+    if(event.type==='tool/call'){s.calls.set(d.callId,{name:d.name,arguments:argsOf(d.arguments)});if(['pwsh','bash'].includes(d.name))s.commandRoots.set(d.callId,{tool:d.name,command:argsOf(d.arguments).command||''});}
+    if(['tool/ptc-dispatch-start','tool/code-dispatch-start'].includes(event.type)&&['pwsh','bash'].includes(d.name))s.commandRoots.set(d.rootCallId,{tool:d.name,command:argsOf(d.arguments).command||''});
     if(s.commandRoots.size>256)s.commandRoots.delete(s.commandRoots.keys().next().value);
     if(event.type==='tool/ptc-dispatch'||event.type==='tool/code-dispatch'){
       s.metrics.ptcResults++;
@@ -472,15 +475,6 @@ export function createRuntime(ctx,call,initial={}){
   function observe(agent,exec,result,seq=null){
     if(!isEnabled(agent))return;
     const s=get(agent);if(String(exec.callId||'').startsWith('work-evidence:')||String(exec.rootCallId||'').startsWith('work-evidence-runtime:'))return;
-    // Stored display text can be clipped mid-JSON. Do not let this lossy event
-    // claim the call ID before the live structured result can be observed.
-    // This is event ordering, not an OPS adapter: keep it for every ops_* event
-    // even when the adapters are disabled, or the live result is dropped.
-    const opsAdapters=s.config.opsAdapters===true;
-    if(seq!==null&&exec.name.startsWith('ops_')&&result.value===undefined&&!result.isError){
-      if(opsAdapters)s.metrics.opaqueOpsResults++;
-      return;
-    }
     if(s.seen.has(exec.callId))return;s.seen.add(exec.callId);if(s.seen.size>4096)s.seen.delete(s.seen.values().next().value);
     if(seq===null)s.metrics.liveResults++;
     const argumentRecovery=recoveryOf(result);
@@ -488,87 +482,28 @@ export function createRuntime(ctx,call,initial={}){
       exec={...exec,arguments:argumentRecovery.correctedArguments};
       if(argumentRecovery.stage!=='before-dispatch')s.metrics.failuresObserved++;
     }
-    const args=argsOf(exec.arguments),detail=textOf(result),parsed=outcome(result.value),
-      opsStructuredFailure=exec.name.startsWith('ops_')&&(parsed.status==='error'||parsed.status==='unknown'||!!parsed.error||Number(parsed.data.failed)>0),
-      opsError=opsAdapters&&opsStructuredFailure;
+    const args=argsOf(exec.arguments),detail=textOf(result),parsed=outcome(result.value);
     const error=parsed.error||result.error;
     const code=error?.info?.code||error?.code||((exec.name==='read'&&/: not found\s*$/.test(detail))?'FS_NOT_FOUND':'');
-    const missingItem=Array.isArray(parsed.data.items)?parsed.data.items.find(item=>item?.status==='error'&&item.error?.code==='NOT_FOUND'&&typeof item.path==='string'):null;
-    const missingFile=code==='FS_NOT_FOUND'||(opsStructuredFailure&&(code==='NOT_FOUND'||!!missingItem));
-    if(opsError){
-      const advice={tool:exec.name,code:code||'OPS_ERROR',message:String(error?.message||detail).slice(0,400),nextAction:String(error?.nextAction||'Inspect this result before reading its data.').slice(0,240)};
-      if(code==='INVALID_ARGUMENT'){
-        const recovery=recoveryFor(exec.name,args,result);
-        if(recovery){advice.shape=recovery.shape;advice.retry=recovery.retry;if(recovery.correctedCall)advice.correctedArguments=recovery.correctedCall.arguments;}
-      }
-      if(code==='RESULT_PARTIAL'){
-        s.metrics.partialResultsObserved++;
-        advice.scope='已返回items只证明所列范围；未覆盖部分保持未知。nextIndex到达total但failed>0时，处理失败项，不原样翻页或断言不存在。';
-        if(missingItem)advice.failedPath=missingItem.path;
-      }
-      if(code==='RESULT_UNKNOWN')advice.scope='执行结果未知，不是零匹配或程序根因。只读查询可换更窄范围或现有读取工具取得事实；写操作先查实际状态，不能盲目重跑。';
-      // Repeat failures remain in metrics; identical advice need not bloat
-      // every subsequent request. Changed arguments/errors receive new advice.
-      const key=JSON.stringify([exec.name,code,args,advice.message]);
-      s.opsAdviceSeen??=new Set();
-      if(!argumentRecovery&&!s.opsAdviceSeen.has(key)){
-        s.opsAdviceSeen.add(key);if(s.opsAdviceSeen.size>64)s.opsAdviceSeen.delete(s.opsAdviceSeen.values().next().value);
-        boundedPush(s.pendingOpsAdvice,advice,3);
-      }
-    }
-    // Completed batch items are real mutations even when another item failed or
-    // the OPS adapters are disabled; record them before the failure return.
-    if(exec.name==='ops_batch'&&Array.isArray(parsed.data.items)){
-      for(const item of parsed.data.items)if(item?.status==='completed'&&typeof item.path==='string')recordMutation(agent,{tool:exec.name,file:item.path,revision:item.revision,callId:exec.callId,seq});
-    }
-    if(result.isError||opsError||opsStructuredFailure||(Number.isFinite(result.value?.exitCode)&&result.value.exitCode!==0)){
+    if(result.isError||(Number.isFinite(result.value?.exitCode)&&result.value.exitCode!==0)){
       if(exec.name==='run_code'&&s.failureRoots.has(exec.rootCallId||exec.callId))return;
       if(exec.name!=='run_code'&&exec.rootCallId){s.failureRoots.add(exec.rootCallId);if(s.failureRoots.size>256)s.failureRoots.delete(s.failureRoots.values().next().value);}
-      const filePath=missingItem?.path||args.file_path||args.path;
-      const lookupPattern=['ops_grep','grep'].includes(exec.name)&&typeof args.pattern==='string'&&args.pattern.length<=300?args.pattern:null;
-      const failure={tool:exec.name,callId:exec.callId||null,code:missingFile?'FS_NOT_FOUND':code,detail:detail.slice(0,2000),...(typeof filePath==='string'?{filePath}:{}),...(lookupPattern?{lookupPattern}:{}),
+      const filePath=args.file_path||args.path;
+      const lookupPattern=exec.name==='grep'&&typeof args.pattern==='string'&&args.pattern.length<=300?args.pattern:null;
+      const failure={tool:exec.name,callId:exec.callId||null,code,detail:detail.slice(0,2000),...(typeof filePath==='string'?{filePath}:{}),...(lookupPattern?{lookupPattern}:{}),
         sourceSeq:seq??null,observedAt:new Date().toISOString()};
       s.active=true;s.failures.push(failure);if(s.failures.length>6)s.failures.shift();s.metrics.failuresObserved++;
       s.dirty=true;
-      // Retain real, successful items in a partial result without promoting
-      // its missing items or incomplete search to a complete observation.
-      if(!opsError||code!=='RESULT_PARTIAL')return;
+      return;
     }
     if(exec.name==='work_report'&&result.value?.saved===true){s.reportedCurrentTurn=true;s.lastReport=result.value.path;s.active=true;s.dirty=true;}
     const observed=outcome(result.value),data=observed.data;
-    if(!opsError&&!opsStructuredFailure&&['edit','write','str_replace_editor','ops_edit_file','ops_write_file'].includes(exec.name)){
+    if(['edit','write','str_replace_editor'].includes(exec.name)){
       s.active=true;s.reportedCurrentTurn=false;const file=args.file_path||args.path;
       if(file){s.writes.push({tool:exec.name,path:file,callId:exec.callId});if(s.writes.length>12)s.writes.shift();recordMutation(agent,{tool:exec.name,file,revision:data.revision,callId:exec.callId,seq});}
       s.dirty=true;
     }
-    if(opsAdapters&&exec.name==='ops_read_files'&&Array.isArray(args.files)&&Array.isArray(data.items)){
-      for(let index=0;index<Math.min(args.files.length,data.items.length);index++){
-        const item=data.items[index],requested=args.files[index];
-        if(item?.complete===true&&Array.isArray(item.items)&&!item.items.length){
-          const key=JSON.stringify(['ops_read_files',requested]);
-          const prior=s.readPages.get(key),nextOffset=Number.isInteger(item.nextOffset)?item.nextOffset:null;
-          const code=prior?'READ_REPEAT_NO_PROGRESS':'READ_EMPTY_PAGE';
-          s.opsAdviceSeen??=new Set();
-          if(!prior?.noted&&!s.opsAdviceSeen?.has(JSON.stringify([exec.name,code,key,nextOffset]))){
-            s.opsAdviceSeen.add(JSON.stringify([exec.name,code,key,nextOffset]));
-            boundedPush(s.pendingOpsAdvice,{tool:exec.name,code,path:item.path||requested?.path||null,complete:true,nextOffset,
-              scope:'This page returned no source lines. A non-null nextOffset does not prove another useful page exists. Stop cursor-based pagination unless a changed, relevant range still needs evidence.',
-              nextAction:'Do not repeat the same page or loop on nextOffset; request a different relevant range only if it is needed.'},3);
-            s.dirty=true;
-          }
-          s.readPages.set(key,{time:Date.now(),noted:true,callId:exec.callId,nextOffset});
-          if(s.readPages.size>32)s.readPages.delete(s.readPages.keys().next().value);
-        }
-        if(!item||!['completed','partial'].includes(String(item.status))||!Array.isArray(item.items)||!item.items.length||!revisionPattern.test(String(item.revision||'')))continue;
-        const first=Array.isArray(item.items)?item.items[0]?.line:null,last=Array.isArray(item.items)?item.items.at(-1)?.line:null;
-        recordObservation(s,{...exec,arguments:{path:item.path||requested?.path,offset:requested?.offset}},result,seq,
-          {file:item.path||requested?.path,revision:item.revision,lineStart:first||requested?.offset||1,lineEnd:last||null});
-      }
-    }else if(opsAdapters&&exec.name==='ops_inspect_local_file'&&revisionPattern.test(String(data.revision||''))){
-      const lineStart=Number.isInteger(args.offset)&&args.offset>0?args.offset:1;
-      const lineEnd=Number.isInteger(data.lineCount)&&Number.isInteger(args.limit)?Math.min(data.lineCount,lineStart+args.limit-1):null;
-      recordObservation(s,exec,result,seq,{file:data.path||args.path,revision:data.revision,lineStart,lineEnd});
-    }else if(exec.name==='read'&&args.file_path){
+    if(exec.name==='read'&&args.file_path){
       s.reads.push({path:args.file_path,line:args.offset||1,seq,step:s.step});if(s.reads.length>12)s.reads.shift();
       recordObservation(s,exec,result,seq,{file:args.file_path,lineStart:args.offset||1,lineEnd:Number.isInteger(args.limit)?(args.offset||1)+args.limit-1:null});
     }
@@ -577,8 +512,6 @@ export function createRuntime(ctx,call,initial={}){
       s.searches.push({tool:exec.name,query:args.pattern||'',scope:args.path||'.',seq,step:s.step,empty:Array.isArray(items)&&!items.length});if(s.searches.length>12)s.searches.shift();
       recordSearch(s,exec,result,seq);
       if(Array.isArray(items)&&!items.length){const key=JSON.stringify([exec.name,args]),prior=s.emptyLookups.get(key),now=Date.now();if(prior&&now-prior.time<120000&&!prior.noted){prior.noted=true;s.pendingLookupFact={tool:exec.name,arguments:args,firstCallId:prior.callId,repeatedCallId:exec.callId};s.active=true;}else if(!prior||now-prior.time>=120000)s.emptyLookups.set(key,{time:now,callId:exec.callId,noted:false});if(s.emptyLookups.size>24)s.emptyLookups.delete(s.emptyLookups.keys().next().value);}
-    }else if(opsAdapters&&['ops_grep','ops_glob'].includes(exec.name)){
-      recordSearch(s,exec,result,seq);
     }
   }
   function sync(agent){const s=get(agent),log=eventLog(agent.session);while(s.cursor<log.length){const event=log[s.cursor++];record(agent,event);}return s;}
@@ -591,7 +524,7 @@ export function createRuntime(ctx,call,initial={}){
     enabled:effective,workspaceDefaultEnabled:s.config.enabled,session:{enabled:effective,override:s.sessionEnabledOverride,source:s.sessionEnabledOverride===null?'workspace-setting':'session-setting',defaultResponseView:s.sessionDefaultResponseView??s.config.defaultResponseView,
       policyPath:s.sessionPolicyPath,loaded:s.sessionPolicyLoaded,settingsRetainedInMemory:s.sessionFileMissing},
     telemetry:{directory:s.telemetryDir,scope:s.telemetryScope,workspaceConfiguration:s.dir},workspaceConfigValid:s.workspaceConfigValid,workspaceSettingsRetainedInMemory:s.workspaceFileMissing,
-      features:{enabled:s.config.enabled,aggressiveMode:s.config.aggressiveMode,selfIndex:s.config.selfIndex,opsAdapters:s.config.opsAdapters,completionNotice:s.config.completionNotice,ptcPatterns:true,ptcFastpath:true,verifiedExec:true,fastEditEnabled:s.config.fastEditEnabled,fastEdit:s.config.fastEditEnabled,contextProtocol:s.config.contextProtocol,historyHygiene:s.config.historyHygiene,
+      features:{enabled:s.config.enabled,aggressiveMode:s.config.aggressiveMode,selfIndex:s.config.selfIndex,completionNotice:s.config.completionNotice,ptcPatterns:true,ptcFastpath:true,verifiedExec:true,contextProtocol:s.config.contextProtocol,historyHygiene:s.config.historyHygiene,
       stateLedger:s.config.stateLedger,stateInform:s.config.stateInform,archiveReadRouting:s.config.archiveReadRouting,readArgumentRecovery:s.config.readArgumentRecovery,requestAccounting:s.config.requestAccounting,evidenceViews:s.config.evidenceViews,memberParsing:s.config.memberParsing,mavenSourceBinding:s.config.mavenSourceBinding,
       ledgerReceipt:s.config.ledgerReceipt,ledgerUnresolved:s.config.ledgerUnresolved,nativeVerifiedEdits:s.config.nativeVerifiedEdits,fileProfiling:s.config.fileProfiling,structuredJson:s.config.structuredJson,
       swLedger:s.config.swLedger,swEviction:s.config.swEviction,swEvictionSteps:s.config.swEvictionSteps,defaultResponseView:s.sessionDefaultResponseView??s.config.defaultResponseView,
@@ -628,7 +561,7 @@ export function createRuntime(ctx,call,initial={}){
       problem(s,'receipt-write',message);ctx.logger.warn('work-evidence: activity record unavailable: '+message);
     }}
   let runtimeContextSnapshot=null;
-  return {get,init,isEnabled,currentSelection:effortSelection,clearSessionState,setSessionEnabled,setSessionMode,setWorkspaceMode,setAggressiveMode,setWorkspaceConfig,modeStatus,activeMode,beginRequest,sync,observe,save,loadJson,problem,snapshot,stateSnapshot,consumeStateNotice,recordMutation,recordReadObservation,
+  return {get,init,isEnabled,currentSelection:effortSelection,clearSessionState,setSessionEnabled,setSessionMode,setWorkspaceMode,setAggressiveMode,setWorkspaceConfig,modeStatus,activeMode,beginRequest,sync,observe,save,loadJson,problem,snapshot,stateSnapshot,consumeStateNotice,recordMutation,recordStateObservation,
     setContextSnapshot:reader=>{runtimeContextSnapshot=reader;},
     receipt,execFor,withExecution,dispose:id=>states.delete(id)};
 }

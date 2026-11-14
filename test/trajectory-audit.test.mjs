@@ -497,9 +497,8 @@ test('a pending operation started before a check cannot validate an overlapping 
     ['run_code',{code:'modifyProject()'},false,'unknown'],
     ['verified_exec',{edits:[{file:'other.txt',mode:'create',content:'new'}]},true,'stale',
       ['opaque-execution-after-check','file-scope-unresolved']],
-    ['fastedit_java',{file:'a.java',operation:'read_entity',symbol:'A.value'},true,'supported'],
-    ['fastedit_java',{file:'a.java',operation:'find_entity',symbol:'A.value'},true,'supported'],
-    ['fastedit_java',{file:'a.java',operation:'read_entity',symbol:'A.value'},false,'supported']
+    ['read',{file_path:'a.java'},true,'supported'],
+    ['read',{file_path:'a.java'},false,'supported']
   ]){
     const f=fixture();
     f.add('tool/call',{callId:'pending',name,arguments:args});
@@ -517,7 +516,7 @@ test('a pending operation started before a check cannot validate an overlapping 
 test('malformed recorded tool arguments cannot crash an audit or support a requirement',()=>{
   for(const args of ['null','[]','1','"text"','{bad',null]){
     const {f,done,assessment,audit}=reviewedFixture();
-    f.add('tool/call',{callId:'pending',name:'fastedit_java',arguments:args});
+    f.add('tool/call',{callId:'pending',name:'verified_exec',arguments:args});
     assessment.throughSeq=f.events.at(-1).seq;
     assessment.checks=[recordedCheck(f,done,'source','addresses')];
     assessment.checks[0].coverage[0].scopePaths=['a.txt'];
@@ -934,7 +933,7 @@ test('change scope applicability accounts for overlapping operations and later r
     if(kind==='pending-write')f.add('tool/call',{callId:'pending',name:'write',arguments:{file_path:'a.txt',content:'later'}});
     if(kind==='pending-program')f.add('tool/call',{callId:'pending',name:'run_code',arguments:{code:'modifyProject()'}});
     if(kind==='pending-unrelated')f.add('tool/call',{callId:'pending',name:'write',arguments:{file_path:'other.txt',content:'later'}});
-    if(kind==='pending-read')f.add('tool/call',{callId:'pending',name:'fastedit_java',arguments:{file:'a.txt',operation:'read_entity',symbol:'A.value'}});
+    if(kind==='pending-read')f.add('tool/call',{callId:'pending',name:'read',arguments:{file_path:'a.txt'}});
     const done=f.operation('edit',{file_path:'a.txt',old_string:'old',new_string:'new'},'applied');
     if(['unknown-write','unknown-unrelated','no-effect'].includes(kind)){
       const later=f.operation('write',{file_path:kind==='unknown-unrelated'?'other.txt':'a.txt',content:'later'},

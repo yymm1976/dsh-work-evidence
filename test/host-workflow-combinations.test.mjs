@@ -2,11 +2,8 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import {pathToFileURL} from 'node:url';
 import {startHost,text,tool} from './helpers/host.mjs';
-import {OPS_ROOT} from './helpers/paths.mjs';
 
-const OPS=OPS_ROOT;
 const valueOf=options=>JSON.parse(options.messages.findLast(message=>message.role==='tool').content.map(block=>block.text??'').join(''));
 const executeProgram=`import fs from 'node:fs';
 const adjustment = 0;
@@ -32,16 +29,14 @@ console.log(JSON.stringify({activeCount:active.length,paidCount:active.filter(or
   totalCents,ids:active.map(order=>order.id).sort()}));`;
 
 test('structured calls, retained data, exact program references, editing and handoff preserve file applicability',async()=>{
-  const file=await import(pathToFileURL(OPS+'/file/index.js').href),discovery=await import(pathToFileURL(OPS+'/discovery/index.js').href),
-    ptc=await import(pathToFileURL(OPS+'/ptc/index.js').href);
-  let programRef,base,handoff,nativeSourceReads=0;const submitted=[];
+  let programRef,base,handoff,nativeSourceReads=0,editApplied=true;const submitted=[];
   const wrapper='console.log(JSON.stringify(await tools.work_exec('+JSON.stringify({runtime:'node',code:executeProgram,sources:['orders.json']})+')));';
   assert.ok(wrapper.length>=1000);
   const batch=(name,args)=>tool('run_code',{calls:[{name,arguments:args}]});
-  const host=await startHost({toolMode:'ptc',workspace:{toolSurface:'full',opsAdapters:true,nativeProgramReuse:true,structuredCalls:true},
-    extraMounts:[['dsh-ptc-runtime-node'],[file,{promptPolicy:false,required:true}],
-      [discovery,{enabled:true,alwaysLoaded:['stat','edit_file','write_file'],required:true}],
-      [ptc,{alwaysLoaded:['stat','edit_file','write_file'],required:true}]],script:(options,n)=>{
+  // Exact editing here is the retained native conditional-write backend; the
+  // dsh-ops adapter components are no longer mounted or supported.
+  const host=await startHost({toolMode:'ptc',workspace:{toolSurface:'full',nativeVerifiedEdits:true,nativeProgramReuse:true,structuredCalls:true},
+    extraMounts:[['dsh-ptc-runtime-node']],script:(options,n)=>{
       if(n===1)return [batch('work_compute',{code:'var ordersSnapshot=JSON.parse((await tools.read({file_path:"orders.json"})).lines.map(line=>line.text).join("\\n"));ordersSnapshot.filter(order=>!order.archived).reduce((sum,order)=>sum+order.amount,0)'})];
       if(n===2){assert.equal(valueOf(options).value,1500);return [batch('work_compute',{code:'ordersSnapshot.filter(order=>!order.archived).map(order=>order.id)'})];}
       if(n===3){assert.deepEqual(valueOf(options).value,['order-A','order-C']);return [tool('run_code',{code:wrapper})];}
@@ -54,8 +49,24 @@ test('structured calls, retained data, exact program references, editing and han
       if(n===5){assert.equal(JSON.parse(valueOf(options).stdout.text).totalCents,1505);return [batch('work_state',{mode:'handoff',incremental:true})];}
       if(n===6){base=valueOf(options);return [batch('verified_exec',{summary:'修正订单 A 金额',apply:true,
         edits:[{file:'orders.json',mode:'replace_exact',old_text:'"amount":1200',new_text:'"amount":1300'}]})];}
-      if(n===7){assert.equal(valueOf(options).status,'applied');return [batch('work_compute',{code:'typeof ordersSnapshot'})];}
-      if(n===8){assert.equal(valueOf(options).value,'undefined');assert.equal(valueOf(options).resetReason,'observed-workspace-change');
+      if(n===7){
+        editApplied=valueOf(options).status==='applied';
+        // On a host without the rc.2 conditional write the edit cannot run, so the
+        // retained computation must NOT be invalidated; assert the honest deopt.
+        if(!editApplied){
+          assert.equal(valueOf(options).reason,'cas-file-tools-unavailable',JSON.stringify(valueOf(options)));
+          assert.equal(valueOf(options).effectState,'none');
+          submitted.push(JSON.stringify({programRef}));return [tool('run_code',{programRef})];
+        }
+        return [batch('work_compute',{code:'typeof ordersSnapshot'})];}
+      if(n===8){
+        if(!editApplied){
+          // The referenced program recomputes from the unchanged source file, so its
+          // own adjustment-0 total is what a rerun legitimately reports.
+          assert.equal(JSON.parse(valueOf(options).stdout.text).totalCents,1500,'without the edit the source file is unchanged');
+          handoff=null;return [text('当前环境无法执行精确编辑，已说明实际结果。')];
+        }
+        assert.equal(valueOf(options).value,'undefined');assert.equal(valueOf(options).resetReason,'observed-workspace-change');
         submitted.push(JSON.stringify({programRef}));return [tool('run_code',{programRef})];}
       if(n===9){assert.equal(JSON.parse(valueOf(options).stdout.text).totalCents,1600);return [batch('work_state',{mode:'handoff',baseDeliveryId:base.delivery.id})];}
       handoff=valueOf(options);return [text('已完成指定的订单计算、金额修改和交接。')];
@@ -66,10 +77,22 @@ test('structured calls, retained data, exact program references, editing and han
       {id:'order-C',amount:300,status:'pending',archived:false}];
     await fs.writeFile(path.join(host.cwd,'orders.json'),JSON.stringify(orders));
     const agent=await host.createAgent('max');await host.send(agent,'读取订单，保留只读计算状态，执行并修改同一程序；修正订单 A 金额后重新计算，最后交接文件与执行记录。');
+    const latest=await host.command(agent,'handoff');
+    const edited=JSON.parse(await fs.readFile(path.join(host.cwd,'orders.json'),'utf8'))[0].amount;
+    if(edited!==1300){
+      // No supported conditional-write backend on this host: verified_exec deopts
+      // without touching the file. No authored mutation exists, so the handoff
+      // carries no file artifact; its executions and source read are still real.
+      assert.equal(handoff,null);
+      assert.equal((await host.command(agent,'status')).metrics.verifiedExecApplies,0);
+      assert.equal(latest.observedWork.artifacts.items.some(item=>item.path.endsWith('orders.json')),false);
+      assert.ok(latest.observedWork.executions.items.length>=1);
+      assert.equal(nativeSourceReads,1);
+      assert.equal(JSON.parse(await fs.readFile(path.join(host.cwd,'orders.json'),'utf8'))[0].amount,1200);
+      return;
+    }
     assert.ok(handoff,JSON.stringify({requests:host.requests.length,end:host.events.findLast(event=>event.type==='turn/end')?.data.reason,
       recent:host.events.filter(event=>event.type==='tool/result').slice(-3).map(event=>event.data.message.content.map(block=>block.text??'').join('').slice(0,700))}));
-    const latest=await host.command(agent,'handoff');
-    assert.equal(JSON.parse(await fs.readFile(path.join(host.cwd,'orders.json'),'utf8'))[0].amount,1300);
     const executions=latest.observedWork.executions.items;
     assert.equal(executions.length,3);
     assert.ok(executions.slice(0,2).every(item=>item.executionCompleted&&item.evidenceValidity==='affected'));
@@ -86,9 +109,9 @@ test('structured calls, retained data, exact program references, editing and han
   }finally{await host.close();}
 });
 
-test('PTC exact editing reports absent OPS capabilities without changing the file',async()=>{
+test('PTC exact editing reports the missing native conditional-write backend without changing the file',async()=>{
   let result;
-  const host=await startHost({toolMode:'ptc',workspace:{toolSurface:'full',opsAdapters:true},extraMounts:[['dsh-ptc-runtime-node']],script:(options,n)=>{
+  const host=await startHost({toolMode:'ptc',workspace:{toolSurface:'full',nativeVerifiedEdits:true},extraMounts:[['dsh-ptc-runtime-node']],script:(options,n)=>{
     if(n===1)return [tool('run_code',{code:'console.log(JSON.stringify(await tools.verified_exec('+JSON.stringify({summary:'Change the exact amount',apply:true,
       edits:[{file:'orders.json',mode:'replace_exact',old_text:'1200',new_text:'1300'}]})+')));'})];
     result=valueOf(options);return [text('当前环境缺少 OPS 文件入口。')];
@@ -97,7 +120,7 @@ test('PTC exact editing reports absent OPS capabilities without changing the fil
     await fs.writeFile(path.join(host.cwd,'orders.json'),'[1200]');
     const agent=await host.createAgent('max');await host.send(agent,'把订单金额 1200 改为 1300。');
     assert.equal(result.status,'deopt');assert.equal(result.reason,'cas-file-tools-unavailable');
-    assert.deepEqual(result.missing,['ops_stat','ops_edit_file']);assert.equal(result.effectState,'none');
+    assert.deepEqual(result.missing,['rc2-native-conditional-write']);assert.equal(result.effectState,'none');
     assert.equal(await fs.readFile(path.join(host.cwd,'orders.json'),'utf8'),'[1200]');
   }finally{await host.close();}
 });

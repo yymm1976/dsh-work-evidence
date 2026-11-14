@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {MODES, MODE_POLICY_VERSION, defaults} from '../runtime.mjs';
+import {MODES, MODE_POLICY_VERSION, RETIRED_SETTINGS, defaults} from '../runtime.mjs';
 
 function withEnv(overrides, callback) {
   const previous = new Map();
@@ -41,13 +41,18 @@ test('retired pruning and compaction values normalize to current values', () => 
   assert.equal(config.compactionTiming, 'native');
 });
 
-test('OPS adapters and Java fast edit are opt-in by default', () => {
+test('removed OPS adapter and Java fast edit settings stay tombstoned', () => {
   const config = defaults();
+  // Neither key exists as a usable setting any more; an older workspace file may
+  // still contain them, so they load and are forced to the retired false value.
   assert.equal(config.opsAdapters, false);
   assert.equal(config.fastEditEnabled, false);
-  assert.equal(defaults({opsAdapters: true}).opsAdapters, true);
-  assert.equal(defaults({fastEditEnabled: true}).fastEditEnabled, true);
+  assert.equal(defaults({opsAdapters: true}).opsAdapters, false);
+  assert.equal(defaults({fastEditEnabled: true}).fastEditEnabled, false);
+  assert.equal(defaults({opsAdapters: false, fastEditEnabled: false}).opsAdapters, false);
   assert.throws(() => defaults({opsAdapters: 'yes'}), /Invalid opsAdapters/);
+  assert.throws(() => defaults({fastEditEnabled: 'yes'}), /Invalid fastEditEnabled/);
+  assert.ok(!RETIRED_SETTINGS.includes('fastEditPython'), 'still a live memberParsing dependency');
 });
 
 test('invalid enum values are rejected', () => {

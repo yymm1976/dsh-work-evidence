@@ -2,9 +2,9 @@ import {createHash,randomUUID} from 'node:crypto';
 import path from 'node:path';
 import {parseResult,resultHasProblem,resultReference} from './visible-results.mjs';
 
-const READ_TOOLS=new Set(['read','ops_read_files','ops_inspect_local_file','project_evidence','fastedit_java']);
-const WRITE_TOOLS=new Set(['edit','write','str_replace_editor','ops_edit_file','ops_write_file']);
-const SEARCH_TOOLS=new Set(['grep','ops_grep','glob','ops_glob']);
+const READ_TOOLS=new Set(['read','project_evidence']);
+const WRITE_TOOLS=new Set(['edit','write','str_replace_editor']);
+const SEARCH_TOOLS=new Set(['grep','glob']);
 const MAX_OBSERVATIONS=256;
 const MAX_BODY_CHARS=131072;
 const MAX_PENDING=512;
@@ -191,11 +191,6 @@ function mutationPathsFromValue(name,args,value){
     if(value?.status==='partial'&&Array.isArray(value?.data?.items)){
       for(const item of value.data.items)if(item.status==='completed'&&typeof item.path==='string')out.push(item.path);
     }else if(!resultHasProblem(value))for(const item of pathsFromArguments(args))out.push(item);
-  }
-  if(name==='ops_batch'&&Array.isArray(value?.data?.items)){
-    for(const item of value.data.items){
-      if(item?.status==='completed'&&typeof item.path==='string')out.push(item.path);
-    }
   }
   return [...new Set(out)];
 }

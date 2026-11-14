@@ -4,7 +4,7 @@ import {argsOf} from './runtime.mjs';
 export {historyReferences} from './visible-results.mjs';
 
 const count=text=>Array.from(text).length;
-const READ=new Set(['read','ops_read_files','ops_inspect_local_file','project_evidence']);
+const READ=new Set(['read','project_evidence']);
 export const prunableMessage=message=>!!message&&!message.isError&&Array.isArray(message.content)&&
   message.content.length>0&&message.content.every(block=>block?.type==='text')&&!hasPruneProblem(message.content);
 

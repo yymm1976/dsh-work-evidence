@@ -8,13 +8,6 @@ export const RUN_SCHEMA='work-evidence.ptc-fastpath-run.v1';
 const SAFE_NAME=/^[a-z][a-z0-9-]{1,63}$/;
 const TOOL_ALIASES=Object.freeze({
   read:'read',grep:'grep',glob:'glob',
-  ops_glob:'glob',
-  ops_grep:'grep',
-  ops_read_files:'read',
-  ops_inspect_local_file:'inspect',
-  ops_stat:'stat',
-  ops_diff:'diff',
-  ops_result:'result',
 });
 const READ_ONLY=new Set(Object.keys(TOOL_ALIASES));
 const queues=new Map();
@@ -147,10 +140,6 @@ function summarizeStep(tool,value){
   if(tool==='read')return {path:data.path,offset:data.offset,totalLines:data.totalLines,truncatedByBytes:data.truncatedByBytes===true,
     preview:(data.lines??[]).slice(0,12).map(line=>({...line,text:String(line.text??'').slice(0,500)})),
     previewTruncated:(data.lines?.length??0)>12||(data.lines??[]).some(line=>String(line.text??'').length>500)};
-  if(tool==='ops_glob')return {paths:(data?.paths||[]).slice(0,40),complete:data?.complete,nextOffset:data?.nextOffset};
-  if(tool==='ops_grep')return {matches:(data?.matches||[]).slice(0,20),complete:data?.complete,nextOffset:data?.nextOffset,scanComplete:data?.scanComplete,pageComplete:data?.pageComplete};
-  if(tool==='ops_read_files')return {items:(data?.items||[]).slice(0,12).map(item=>({path:item.path,status:item.status,revision:item.revision,bytes:item.bytes,lineCount:item.lineCount,complete:item.complete,nextOffset:item.nextOffset}))};
-  if(tool==='ops_inspect_local_file')return {path:data?.path,revision:data?.revision,totalLines:data?.totalLines,complete:data?.complete,nextOffset:data?.nextOffset,preview:(data?.lines||[]).slice(0,12)};
   return data;
 }
 
@@ -160,7 +149,7 @@ async function candidateSequence(runtime,agent,candidateId,signal){
   if(!loaded.ok)throw new Error('Candidate report is unavailable; run ptc_patterns first');
   const candidate=loaded.value?.candidates?.find(item=>item.id===candidateId);
   if(!candidate)throw new Error('Candidate ID is not in the current ptc-patterns report');
-  return candidate.toolSequence.flat().map(name=>({glob:'glob',grep:'grep',read:'read',inspect:'inspect',stat:'stat',diff:'diff',result:'result'})[name]||name);
+  return candidate.toolSequence.flat().map(name=>({glob:'glob',grep:'grep',read:'read'})[name]||name);
 }
 
 export function createPtcFastpath(ctx,runtime,call){
@@ -222,12 +211,6 @@ export function createPtcFastpath(ctx,runtime,call){
     const runId='fastpath-'+randomUUID(),runPath=path.join(s.dir,s.id+'.'+runId+'.json');
     const record={schema:RUN_SCHEMA,version:1,id:runId,name,sessionId:s.id,startedAt:new Date().toISOString(),
       status:'running',effectState:'none',inputs:input,steps:[],deopt:null};
-    const opsSteps=definition.steps.filter(step=>String(step.tool).startsWith('ops_')).map(step=>step.id);
-    if(opsSteps.length&&s.config.opsAdapters!==true){
-      record.status='deopt';record.deopt={reason:'ops-adapters-disabled',steps:opsSteps};
-      await runtime.save(agent,runPath,record,signal);s.metrics.ptcFastpathDeopts++;
-      return {status:'deopt',reason:record.deopt.reason,steps:opsSteps,runPath};
-    }
     if(missing.length){
       record.status='deopt';record.deopt={reason:'required-tools-unavailable',missing};
       await runtime.save(agent,runPath,record,signal);s.metrics.ptcFastpathDeopts++;return {status:'deopt',reason:record.deopt.reason,missing,runPath};

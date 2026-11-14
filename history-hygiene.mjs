@@ -87,7 +87,7 @@ function extractedCauses(text){
 }
 const TEST_COMMAND=/^(?:python(?:\.exe)?\s+-m\s+(?:pytest|compileall)|node\s+--test|ruff\s+check|(?:.\\|.\/)?mvnw(?:\.cmd)?|(?:\.\\|\.\/)?gradlew(?:\.bat)?|gradle(?:\.bat)?|mvn(?:\.cmd)?)\b/iu;
 export function toolOutputDigest(name,text,{seq=null,command=null,truncated=false}={}){
-  if(typeof name!=='string'||!['pwsh','bash','ops_bash','work_exec','grep','glob'].includes(name))return null;
+  if(typeof name!=='string'||!['pwsh','bash','work_exec','grep','glob'].includes(name))return null;
   if(typeof text!=='string'||text.length<TOOL_MIN_CHARS||!Number.isSafeInteger(seq)||truncated)return null;
   // Check commands are owned by testOutputDigest: a rejected (failing/truncated)
   // check must keep its canonical body instead of being replaced by this generic receipt.
@@ -209,7 +209,7 @@ export function createHistoryHygiene(runtime,taskFlow,{isProtected=()=>false,ret
       if(['tool/call','tool/ptc-dispatch','tool/code-dispatch'].includes(event.type)){
         const args=argsOf(data.arguments);
         if(data.callId)state.toolCalls.set(data.callId,{name:data.name,arguments:data.arguments});
-        if(['pwsh','bash','ops_bash'].includes(data.name)&&typeof args?.command==='string'){
+        if(['pwsh','bash'].includes(data.name)&&typeof args?.command==='string'){
           if(state.commands.size>=64)state.commands.delete(state.commands.keys().next().value);
           state.commands.set(data.callId,{name:data.name,command:args.command});
         }

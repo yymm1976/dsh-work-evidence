@@ -16,9 +16,9 @@ export const REVIEW_ACCEPTANCE_RULES=`Each kind must be exactly one of requireme
 const messageOf=event=>event?.data?.message??event?.data;
 const pending=agent=>(agent.inbox?.nextStep?.length??0)>0||(agent.inbox?.nextTurn?.length??0)>0;
 const feedback=event=>event.type==='user/message'&&messageOf(event)?.source?.kind===SOURCE;
-const FILE_READS=new Set(['read','ops_inspect_local_file','ops_read_files']);
-const FILE_WRITES=new Set(['write','edit','ops_write_file','ops_edit_file']);
-const filePaths=call=>call.name==='ops_read_files'?(call.args.files??[]).map(item=>item.path):[call.args.file_path??call.args.path];
+const FILE_READS=new Set(['read']);
+const FILE_WRITES=new Set(['write','edit']);
+const filePaths=call=>[call.args.file_path??call.args.path];
 
 export function scopeReviewSources(payload,root,configured='auto'){
   const files=[...new Set(payload.observed.artifacts.map(item=>item.path))];
@@ -202,20 +202,6 @@ function payloadFor(current,review,root){
         item.data?.turn===data.turn&&item.data?.step===data.step);
       if(!original)return null;call={name:original.data.name,args:argsOf(original.data.arguments)};content=messageOf(event)?.content;
     }
-    if(call.name.startsWith('ops_')){
-      if(call.args.dryRun===true)return null;
-      const text=textOf({content});let value;try{value=JSON.parse(text);}catch{}
-      if(value){
-        const failed=node=>node?.error||node?.isError===true||node?.success===false||node?.ok===false||node?.failed||
-          ['failed','error','cancelled','aborted','unavailable','blocked','unknown'].includes(node?.status);
-        // A successful read page may be incomplete for the whole file. Preserve
-        // its original continuation and coverage flags; writes still need completion.
-        const page=FILE_READS.has(call.name)&&value.status==='partial'&&value.data?.failed===0&&
-          Array.isArray(value.data.items)&&value.data.items.length>0&&value.data.items.every(item=>item&&typeof item==='object'&&!failed(item));
-        if(failed(value)||failed(value.data)||value.status!=='completed'&&!page)return null;
-      }
-      else if(FILE_WRITES.has(call.name)&&!text.startsWith(call.name.slice(4)+': completed;')&&!text.startsWith(call.name.slice(4)+': completed\n'))return null;
-    }
     return call;
   };
   const requestSections=requestSourceSections(events,request,assistant,root,fileCall);
@@ -251,15 +237,11 @@ function payloadFor(current,review,root){
     const dataBudget=Math.min(...parts.map(part=>part.budget));
     if(dataBudget<200)return false;
     const callArgs=call.args??{};
-    const values=call.name==='ops_edit_file'?(callArgs.edits??[]).map(item=>({newText:item.newText,oldText:item.oldText})):
-      [{newText:['write','ops_write_file'].includes(call.name)?callArgs.content:callArgs.new_string,oldText:callArgs.old_string}];
+    const values=[{newText:call.name==='write'?callArgs.content:callArgs.new_string,oldText:callArgs.old_string}];
     if(values.some(value=>typeof value.newText!=='string'))return false;
     let changeArgs;
-    if(call.name==='ops_edit_file'){
-      if(!Array.isArray(callArgs.edits)||callArgs.edits.some(item=>typeof item.oldText!=='string'||typeof item.newText!=='string'))return false;
-      changeArgs={...callArgs,edits:callArgs.edits.map(({oldText,newText})=>({newText,...(oldText.length<=2000?{oldText}:{omittedOldTextChars:oldText.length})}))};
-    }else{
-      const {content,new_string,old_string,...location}=callArgs,write=['write','ops_write_file'].includes(call.name);
+    {
+      const {content,new_string,old_string,...location}=callArgs,write=call.name==='write';
       const after=write?content:new_string,before=typeof old_string==='string'&&old_string.length<=2000?old_string:undefined;
       if(after.length>dataBudget)return false;
       changeArgs={...location,...(write?{content:after}:{new_string:after,
@@ -278,9 +260,9 @@ function payloadFor(current,review,root){
     const key=fileKey(artifact.path);if(!key)continue;
     let changes=events.filter(event=>event.seq>request.seq&&event.seq<=artifact.seq).map(event=>({event,call:fileCall(event)}))
       .filter(({call})=>FILE_WRITES.has(call?.name)&&filePaths(call).some(file=>fileKey(file)===key));
-    const overwrite=changes.findLastIndex(({call})=>['write','ops_write_file'].includes(call.name));
+    const overwrite=changes.findLastIndex(({call})=>call.name==='write');
     if(overwrite>=0)changes=changes.slice(overwrite);
-    for(const {event,call}of changes.filter(({call})=>checkArtifacts.includes(artifact)||['write','ops_write_file'].includes(call.name))){
+    for(const {event,call}of changes.filter(({call})=>checkArtifacts.includes(artifact)||call.name==='write')){
       if(sourceChanges.has(event.seq))continue;
       reserveChange(event);
     }

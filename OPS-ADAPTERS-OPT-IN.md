@@ -1,31 +1,25 @@
-# dsh-ops 适配改为显式选择（2026-11-14）
+# OPS 适配删除（2026-11-14，替换原 opt-in 说明）
 
-## 问题
+本文件替换 `OPS-ADAPTERS-OPT-IN.md` 的旧内容。旧方案把 `dsh-ops` 的 `ops_*` 工具当作“默认关闭、显式启用”的可选适配器；那只是默认关闭，**不是删除**。本轮删除 OPS 专属代码路径。完整清单、证据和残余风险见 `OPS-REMOVAL.md`。
 
-插件此前把 `dsh-ops` 的 `ops_*` 工具当作默认可用的可选适配器：
+## 已删除
 
-- `fastedit_java` 默认开启，硬依赖 `ops_stat` + OPS CAS + 授权 shell；
-- `verified_exec` 在未开启 `nativeVerifiedEdits` 时默认使用 OPS CAS；
-- OPS 错误会注入一条 `work-evidence-ops` 用户消息；
-- 完整工具面会展示 `fastedit_java` / `verified_exec`，即使宿主没有 OPS，调用后才返回 deopt。
+- 设置 `opsAdapters` 及其就绪原因、能力诊断条目。
+- 设置 `fastEditEnabled`、`fastedit_java` 工具、`fastedit-bridge.py`、`requirements-fastedit.txt`，以及对应的 Python/CAS 依赖检查。
+- OPS 独占的工具名分类：`ops_read_files`、`ops_inspect_local_file`、`ops_stat`、`ops_glob`、`ops_grep`、`ops_edit_file`、`ops_write_file`、`ops_batch`、`ops_remove`、`ops_load_sdk`，以及 `ops_bash` 在 Shell 偏好表里的条目。
+- OPS 错误建议注入（`work-evidence-ops` 用户消息）、OPS 经济学计数器（`opsErrorNotices`、`opaqueOpsResults`、`partialResultsObserved`、`fastEdit*`）和 OPS 专用观察分支（分页空页提醒、批量 mutation 记录、OPS 搜索记录）。
+- `verified_exec` 的 OPS CAS 后端。`fastEditPython` 保留：它是 `memberParsing` 的 tree-sitter 解释器路径。
 
-这形成了“工具已发布、执行时才拒绝”的空调用面，也让默认配置与一个外部插件耦合。
+## 保留
 
-## 变更
+- 原生 `read`/`edit`/`write`/`grep`/`glob` 的观察、账本、证据、交接与压缩行为，以及权限语义。
+- `pwsh` 与 `bash` 支持；`work_exec`、`work_probe`、保留计算（`work_compute`）、`ptc_fastpath`、`project_evidence`、`source-members` 成员解析（`memberParsing`）。
+- `verified_exec` 的原生条件写入后端（需 `nativeVerifiedEdits:true`）。
 
-新增工作区设置 `opsAdapters`，默认 `false`。未显式启用时：
+## 旧工作区兼容
 
-- `fastedit_java` 不从工具面发布；`fastEditEnabled` 的就绪原因记为 `ops-adapters-disabled`；
-- `verified_exec` 只在 `nativeVerifiedEdits:true` 时发布；否则从工具面隐藏，直接调用返回 `ops-adapters-disabled`；
-- OPS 错误建议和 `work-evidence-ops` 消息注入不运行；
-- OPS 专用的读写/搜索观察分支不运行；原生 `read`/`edit`/`write` 的观察保持不变；
-- 能力诊断明确标注 `opsAdapters.configured`，不再把 OPS 描述为默认路径。
+写有 `opsAdapters` 或 `fastEditEnabled` 的旧工作区文件仍能加载：两个键按退役设置强制为 `false`，不会启用任何行为。删除这两个键或保留它们都不影响其余配置。
 
-启用 `opsAdapters:true` 后，原有 OPS 读取/CAS 行为恢复；`fastEditEnabled` 仍需单独开启，并继续检查 Python、`ops_stat` 和授权 shell。
+## 宿主条件
 
-## 兼容性与边界
-
-- 旧工作区若显式设置 `fastEditEnabled:true`，在未设置 `opsAdapters:true` 前会得到明确的 `ops-adapters-disabled`，不会静默执行 OPS 调用。
-- 本次不删除 OPS 代码路径，也不宣称 OPS 在所有宿主上无效；它把默认路径切回 DSH 原生工具，并保留有证据的 opt-in。
-- `nativeVerifiedEdits` 的 rc.2 版本门不变。0.2.1-rc.4 / 0.2.2-rc.1 上若未启用 OPS，精确编辑会明确 deopt，而不是回退到未验证的写入。
-- 未在本机运行宿主级 52 个测试文件（安装的桌面运行时缺少对应 0.2.x `cordis`）；本变更加了离线单元测试覆盖默认值、工具面和 deopt 原因，宿主级回归仍需在受支持运行时执行。
+`verified_exec` 的原生条件写入固定要求宿主 0.2.2-rc.2。在 0.2.1-rc.4 / 0.2.2-rc.1 上它会返回 `reason:"cas-file-tools-unavailable"`、`missing:["rc2-native-conditional-write"]`、`effectState:"none"`，工具面也不发布该工具。它不会退回未带版本条件的普通写入。这是有意牺牲：没有 OPS CAS 之后，这两个宿主版本上没有 `verified_exec` 后端。

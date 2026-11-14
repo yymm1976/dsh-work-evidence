@@ -15,9 +15,9 @@ import {nativeShellScript} from './native-shell-script.mjs';
 
 const SOURCE='work-evidence-task-flow';
 const PHASES=['investigate','modify','execute','deliver','mixed'];
-const SHELL=['pwsh','ops_bash','bash','work_exec'];
-const READ=new Set(['read','ops_read_files','ops_inspect_local_file','project_evidence','fastedit_java']);
-const WRITE=new Set(['write','edit','ops_write_file','ops_edit_file','str_replace_editor','verified_exec','fastedit_java']);
+const SHELL=['pwsh','bash','work_exec'];
+const READ=new Set(['read','project_evidence']);
+const WRITE=new Set(['write','edit','str_replace_editor','verified_exec']);
 const INTERNAL=new Set(['work_state','work_status','work_report','work_recall','work_probe','todo_write','compress','decompress','search_context','acp_status']);
 const WORK_EXEC_DISCOVERY='当前 SDK 未显示 work_exec 参数时，可用宿主已声明的 capabilities.search({query:"work_exec",budgetBytes:8192}) 取得真实接口。宿主没有该发现入口或没有提供此工具时，沿用当前原生工具。';
 export const TASK_FLOW_GUIDANCE='Work Evidence：遵守用户范围、文件保护和完整交付；处理尚未由实际结果回答的缺口，已知且独立的动作同轮合并，已确定就直接执行，不复述。\n'+
@@ -247,7 +247,7 @@ export function createTaskFlow(ctx,runtime,{nativeFiles,call,executionDependenci
     const reportedShellFailure=call.name==='pwsh'&&shellReportedFailure(streamText(payload?.stderr??payload?.stderrText)||payload?.errorText||resultText(result.content));
     const partialOutput=nativeFacts?.truncated??layers.some(node=>node?.outputPartial===true||node?.truncated===true||node?.lossy===true||node?.stdout?.truncated===true||node?.stderr?.truncated===true||node?.stdout?.complete===false||node?.stderr?.complete===false);
     const nativeExitCode=execution?executionExitCode(envelope):Number.isInteger(payload?.exitCode)?payload.exitCode:Number.isInteger(payload?.exit_code)?payload.exit_code:null;
-    const completionObservation=nativeExitCode===null&&!pending&&['pwsh','ops_bash','bash'].includes(call.name)?
+    const completionObservation=nativeExitCode===null&&!pending&&['pwsh','bash'].includes(call.name)?
       recordedProcessCompletion(eventLog(agent.session),{seq:event.seq},event.seq+1):null;
     const exitCode=nativeExitCode??completionObservation?.exitCode??null;
     const checkFailure=SHELL.includes(call.name)&&!pending&&!partialOutput?payload?.checkFailure??reportedExecutionChecks({value})??reportedCheckFailure(
@@ -363,9 +363,9 @@ export function createTaskFlow(ctx,runtime,{nativeFiles,call,executionDependenci
       else if(payload.status==='observed'&&probeFilesCurrent)state.errors.delete(probeKey);
       if(payload.executionCompleted)transition(state,'execute',seq,call.args.sources??[],'execution-evidence');
     }
-    if(WRITE.has(call.name)&&!(call.name==='fastedit_java'&&['find','read','locate'].includes(call.args.mode??call.args.action??call.args.operation))){
+    if(WRITE.has(call.name)){
       const files=pathsOf(call.args).filter(file=>!normalize(path.resolve(runtime.get(agent).root??'.',file)).includes('/.dsh/work-evidence/'));
-      const conditional=['verified_exec','fastedit_java'].includes(call.name),fileKey=file=>normalize(path.resolve(cwd??'.',file));
+      const conditional=call.name==='verified_exec',fileKey=file=>normalize(path.resolve(cwd??'.',file));
       const mutations=files.flatMap(file=>{
         const effect=conditional?(Array.isArray(payload?.files)?payload.files.find(item=>typeof (item.file??item.path)==='string'&&fileKey(item.file??item.path)===fileKey(file))?.effectState:payload?.effectState):!failed?'applied':null;
         return ['applied','partial','unknown'].includes(effect)?[{path:file,effectState:effect}]:[];
@@ -655,15 +655,8 @@ export function createTaskFlow(ctx,runtime,{nativeFiles,call,executionDependenci
       return emit('diagnostic',readIssueKey,'[work-evidence] 事件'+readIssue.readSeqs.join('、')+'的 read 返回 {path,offset,lines:[{number,text}],totalLines}。若事件'+readIssue.seq+'的空白正文、undefined 或取值异常来自 .content/.text，改用已有返回对象的 lines，例如 r.lines.map(l=>l.text).join("\\n")。原变量仍可用时直接复用，按 number 定位源码行。'+recordedReads);
     }
     if(config.executionTriage&&state.cleanup&&state.cleanup.userSeq===user?.seq&&state.errors.has(state.cleanup.callKey)&&!state.cleanupAdvised.has(state.cleanup.key)){
-      let remove=false,loadRemove=false;try{
-        remove=!!ctx.tools.get('ops_remove',agent);
-        const loader=ctx.tools.get('ops_load_sdk',agent);
-        loadRemove=typeof loader?.description==='string'&&/(?:^|[\s,])remove(?:[\s,.]|$)/u.test(loader.description);
-      }catch{}
       state.cleanupAdvised.add(state.cleanup.key);state.cleanupNotices++;
-      return emit('cleanup',state.cleanup.key,'[work-evidence] 已观察到删除操作被拒（事件'+state.cleanup.seq+'）。'+
-        (remove?'当前可用原生ops_remove。若确需清理当前任务中自己创建的文件，先查看该入口的真实参数并使用已有权限。':
-          loadRemove?'当前原生SDK目录包含remove，可先调用ops_load_sdk({tools:["remove"]})，下一模型步骤再按真实声明使用；当前run_code快照不能立即调用新API。加载SDK不执行文件操作，删除仍须在当前任务授权内。':'当前未确认可用的原生删除入口。')+
+      return emit('cleanup',state.cleanup.key,'[work-evidence] 已观察到删除操作被拒（事件'+state.cleanup.seq+'）。当前没有已知的原生删除入口；若确需清理当前任务中自己创建的文件，先确认当前工具面确实提供删除能力并使用已有权限。'+
         '不要为了删除重复改写Shell、修改权限或绕过限制；无法在已有权限内完成时，保留具体未完成项。此提示不执行或删除文件。');
     }
     const troubledJob=state.executions.findLast(item=>item.userSeq===user?.seq&&item.status==='pending'&&item.jobId&&state.jobs.has(item.jobId)&&item.backgroundFailureSignature);

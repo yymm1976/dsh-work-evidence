@@ -11,9 +11,9 @@ import {executionResultLayers,executionExitCode,executionFacts} from './executio
 export const AUDIT_SCHEMA='work-evidence.trajectory-audit.v1';
 export const ASSESSMENT_SCHEMA='work-evidence.task-assessment.v1';
 export const AUDIT_LABELS=Object.freeze(['W1','W2','W3','W4','W5','W6','W7','W8','Q1','Q2','Q3','Q4','Q5']);
-const READ=new Set(['read','ops_read_files','ops_inspect_local_file','project_evidence','fastedit_java']);
-const STATIC_RESULTS=new Set([...READ,'glob','grep','ops_glob','ops_grep']);
-const WRITE=new Set(['write','edit','ops_write_file','ops_edit_file','verified_exec','str_replace_editor','fastedit_java']);
+const READ=new Set(['read','project_evidence']);
+const STATIC_RESULTS=new Set([...READ,'glob','grep']);
+const WRITE=new Set(['write','edit','verified_exec','str_replace_editor']);
 const messageOf=event=>event.data?.message??(event.data?.role?event.data:null);
 const integer=value=>Number.isSafeInteger(value)&&value>=0;
 const stable=value=>JSON.stringify(value,(_key,item)=>item&&typeof item==='object'&&!Array.isArray(item)?Object.fromEntries(Object.keys(item).sort().map(key=>[key,item[key]])):item);
@@ -22,7 +22,6 @@ const forecastRoute=value=>Object.fromEntries(['provider','model','reasoningEffo
   [key,typeof value?.[key]==='string'&&value[key].trim()?value[key]:null]));
 const completeRoute=value=>['provider','model','reasoningEffort'].every(key=>typeof value?.[key]==='string'&&value[key].trim());
 const fileOf=args=>args?.file_path??args?.path??args?.file??null;
-const isReadOnlyJava=call=>call.name==='fastedit_java'&&['find_entity','read_entity'].includes(call.arguments.operation);
 const failedPayload=value=>executionFacts(value).failed;
 const incompletePayload=value=>executionFacts(value).incomplete;
 const truncatedPayload=value=>executionFacts(value).truncated;
@@ -33,7 +32,7 @@ const normalizeFile=value=>{
   const absolute=flavor.isAbsolute(value);value=flavor.normalize(value);
   return {value:(windows?value.toLowerCase():value).replaceAll('\\','/'),absolute};
 };
-const OPAQUE=new Set(['pwsh','ops_bash','bash','run_code','work_exec','work_probe','verified_exec']);
+const OPAQUE=new Set(['pwsh','bash','run_code','work_exec','work_probe','verified_exec']);
 
 /** Compare recorded forecasts with identified main usage without claiming cache causation. */
 export function auditCacheTransitions(events,requestAccounting=null){
@@ -273,13 +272,13 @@ export function normalizeDshEvents(input){
     const fileEffects=call.name==='verified_exec'&&Array.isArray(value?.files)?value.files.map(file=>({
       path:fileOf(file),status:file?.effectState})).filter(file=>['applied','partial','unknown'].includes(file.status)):null;
     if(fileEffects!==null)call.fileEffectEvidence=value.files.some(file=>['none','applied','partial','unknown'].includes(file?.effectState));
-    if(WRITE.has(call.name)&&!isReadOnlyJava(call)&&(fileEffects?fileEffects.length>0:effect!=='none'&&
+    if(WRITE.has(call.name)&&(fileEffects?fileEffects.length>0:effect!=='none'&&
       (call.outcome==='succeeded'||['applied','partial','unknown'].includes(effect)))){
       mutationEpoch++;
       if(fileEffects)changes.push(...fileEffects.map(file=>({seq:call.resultSeq,callSeq:call.callSeq,...file,tool:call.name,currentState:'not-inferred'})));
       else changes.push({seq:call.resultSeq,callSeq:call.callSeq,path:fileOf(call.arguments),tool:call.name,
         status:effect??'native-operation-succeeded',currentState:'not-inferred'});
-    }else if(WRITE.has(call.name)&&!isReadOnlyJava(call)&&!fileEffects&&effect!=='none'){
+    }else if(WRITE.has(call.name)&&!fileEffects&&effect!=='none'){
       possibleChanges.push({seq:call.resultSeq,callSeq:call.callSeq,path:fileOf(call.arguments),tool:call.name,status:'unknown'});
     }
     if(call.name==='run_code')opaqueEpoch++;
@@ -287,7 +286,7 @@ export function normalizeDshEvents(input){
   const nestedRoots=new Set(calls.filter(call=>call.nested&&call.rootCallId).map(call=>call.rootCallId));
   for(const call of calls){
     call.toolOutcome=call.outcome;call.processOutcome='unknown';
-    if(call.resultSeq===null||!['pwsh','ops_bash','bash','run_code','work_exec','work_probe','verified_exec','job_output'].includes(call.name))continue;
+    if(call.resultSeq===null||!['pwsh','bash','run_code','work_exec','work_probe','verified_exec','job_output'].includes(call.name))continue;
     if(Number.isInteger(call.exitCode))call.processOutcome=call.exitCode===0?'exited-zero':'exited-nonzero';
     const completion=recordedProcessCompletion(events,{seq:call.resultSeq},throughSeq+1);
     if(!completion)continue;
@@ -382,7 +381,7 @@ function checkedJudgmentReviews(input,normal,sourceId,throughSeq,sourceCurrent,s
         OPAQUE.has(call.name));
       if(opaque)reasons.push('opaque-execution-after-evidence');
       for(const call of normal.calls){
-        if(call.callSeq>throughSeq||call.resultSeq!==null||!WRITE.has(call.name)||isReadOnlyJava(call))continue;
+        if(call.callSeq>throughSeq||call.resultSeq!==null||!WRITE.has(call.name))continue;
         const changed=normalizeFile(fileOf(call.arguments));
         if(!changed){reasons.push('file-scope-unresolved');break;}
         if(scopes.some(scope=>scope.value===changed.value)){reasons.push('unsettled-mutation');break;}
@@ -558,7 +557,7 @@ function reviewedCheckCoverage(input,review,normal,sourceId,sourceProblems){
           (other.resultSeq===null||other.resultSeq>row.resultSeq));
         if(opaque)fileReasons.push('opaque-execution-after-check');
         for(const pending of normal.calls){
-          if(pending.resultSeq!==null||pending.callSeq>review.throughSeq||!WRITE.has(pending.name)||isReadOnlyJava(pending))continue;
+          if(pending.resultSeq!==null||pending.callSeq>review.throughSeq||!WRITE.has(pending.name))continue;
           const changed=normalizeFile(fileOf(pending.arguments));
           if(!changed){fileReasons.push('file-scope-unresolved');break;}
           if(scopes?.some(scope=>scope.value===changed.value)){fileReasons.push('unsettled-mutation');break;}
@@ -637,7 +636,7 @@ function constraintObservations(normal){
       const scriptTarget=runpy?.[1]??shell?.[1]??shell?.[2];
       if(scriptTarget){
         const target=scriptTarget.replaceAll('\\','/').split('/').at(-1),writes=normal.calls.filter(candidate=>candidate.callSeq<call.callSeq&&
-          WRITE.has(candidate.name)&&!isReadOnlyJava(candidate)&&
+          WRITE.has(candidate.name)&&
           String(fileOf(candidate.arguments)??'').replaceAll('\\','/').split('/').at(-1)===target);
         const changed=new Set(normal.changes.map(change=>change.callSeq));
         const latest=writes.findLast(candidate=>candidate.effectState!=='none');
@@ -738,7 +737,7 @@ function checkedChangeScopeReviews(input,normal,sourceId,sourceProblems){
         currentReasons.push('possible-file-change-after-review');
     }
     for(const later of normal.calls){
-      if(later.resultSeq===null&&WRITE.has(later.name)&&!isReadOnlyJava(later)){
+      if(later.resultSeq===null&&WRITE.has(later.name)){
         const laterPath=normalizeFile(fileOf(later.arguments));
         if(!laterPath||!requestedPath||laterPath.absolute!==requestedPath.absolute||samePath(laterPath,requestedPath))currentReasons.push('unsettled-mutation');
       }
@@ -919,10 +918,10 @@ export function requirementEvidenceView(normal,review,verification,sourceProblem
       [...normal.changes,...normal.possibleChanges].some(change=>change.seq>check.resultSeq&&change.seq<=review.throughSeq)||
       normal.calls.some(call=>call.callSeq<=review.throughSeq&&(
         OPAQUE.has(call.name)&&(call.resultSeq===null||call.resultSeq>check.resultSeq)||
-        WRITE.has(call.name)&&call.resultSeq===null&&!isReadOnlyJava(call)))));
+        WRITE.has(call.name)&&call.resultSeq===null))));
     const successful=({check,item})=>item.reach==='addresses'&&check.outputIncomplete!==true&&check.toolOutcome==='succeeded'&&
       (!check.nested||check.enclosingOutcome==='succeeded')&&
-      (!['pwsh','ops_bash','bash','run_code','work_exec','work_probe','verified_exec','job_output'].includes(check.tool)||
+      (!['pwsh','bash','run_code','work_exec','work_probe','verified_exec','job_output'].includes(check.tool)||
         check.processOutcome==='exited-zero');
     let status,reason;
     if(sourceProblems.length){status='unknown';reason='incomplete-source';}

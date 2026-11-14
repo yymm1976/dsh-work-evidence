@@ -56,8 +56,8 @@ mode 只查询状态。旧的 mode <名称> 和 workspace-mode 命令不再设�
 功能状态含义：`off` 表示有效开关关闭；`blocked` 表示缺少配套设置、依赖或插件未启用；`waiting` 表示等待适用档位或任务；`ready` 表示当前可检查的条件已满足。
 例如质量复核须选 Ultra；结构化调用须用原生 TypeScript 函数体运行时；PTC 程序引用须同时开启执行恢复。
 归档读取和 Maven 归档来源还需 `fflate`。`dependencies.archiveDecoder` 显示加载状态，缺失时功能显示 `archive-decoder-unavailable:fflate`，实际读取返回 `ARCHIVE_DECODER_UNAVAILABLE`。读取成员时会核对目录与本地头的文件名、标志位、压缩方式，以及解压长度和 CRC；不一致时返回不可用，不将截断正文当作完整来源。支持存储、deflate、数据描述符和 ZIP64 目录。
-`fastEditPython` 指向带有所需包的现有 Python 环境，包版本见 `requirements-fastedit.txt`。状态确认运行文件可访问，桥接调用确认包能导入。
-`fastEditEnabled` 默认关闭，且需要 `opsAdapters=true`。关闭后 `fastedit_java` 返回 `deopt` 和 `fastedit-disabled`（未启用 OPS 适配时为 `ops-adapters-disabled`），不读取或修改 Java 文件；在同一会话重新开启后恢复调用。
+`memberParsing` 的成员定位使用 `source-members-bridge.py`。`fastEditPython` 指向已安装这些包的现有 Python 环境，包版本见 `requirements-source-members.txt`。状态确认运行文件可访问，桥接调用确认包能导入；解释器缺失时 `memberParsing` 显示 `tree-sitter-runtime-unavailable:fastEditPython`，源码成员返回字面回退并标注实际解析结果。
+`fastedit_java` 与 `opsAdapters` 已随 OPS 适配一同删除，不再有 Java 实体级编辑入口；精确多文件修改使用 `verified_exec`，逐处修改使用原生 `edit`。
 这些状态说明本地可用条件。实际触发、任务质量和资源效果仍按各功能记录判断。
 
 ## 原生思考回传候选
@@ -347,8 +347,7 @@ JSON 格式修正先处理。阶段摘要还有可执行下一步、且完成提
 复核沿用要求中的限定词、例外和允许行为。“未修改记录保持原文”不自动要求修改行也保持原文。最终答复的声明不作为用户新要求；声明与事实矛盾时单列为报告过度声明。
 报告过度声明须同时给出答复原句和已提供事件中的反证原文，插件核对两段文字及来源。所给材料没有执行记录或缺少确认时保持未知，不单凭缺记录报告声明不实。引语不匹配、来源不存在或未被引用时，复核结果记为无效，不要求主模型据此返工。
 复核优先携带已修改文件在修改后读到的正文，并限制证据长度。
-同一文件的成功 write/edit、ops_write_file/ops_edit_file 片段按事件顺序补入，完整覆盖写入之前的旧片段退出选择；补充片段合计最多 18000 个字符，单份最多 14000 个字符。
-启用 `opsAdapters` 后，OPS 的预览和失败修改不作为成功片段。ops_read_files 与 ops_inspect_local_file 可提供已读源码；范围收缩时保留读取事件对应的文件。
+同一文件的成功 write/edit 片段按事件顺序补入，完整覆盖写入之前的旧片段退出选择；补充片段合计最多 18000 个字符，单份最多 14000 个字符。失败的写入和预览不作为成功片段；原生 `read` 的已读源码可提供片段，范围收缩时保留读取事件对应的文件。
 片段标为历史修改，后续观察优先，不拼造当前整份文件，也不额外读取项目文件。
 `qualityReviewEffort` 默认 `auto`，从当前通道声明的 low、medium、high、max 中选择最低可用档位；声明不可取得时继承主请求。
 `inherit` 始终继承主请求。显式档位未在通道声明中出现时，状态记为 `review-effort-not-declared`，不发请求。
@@ -421,13 +420,13 @@ compact 写入回执中的 `submittedContentMatchesAfter` 比较提交正文与�
 用户只写 `README` 时，在项目根目录确认 `README`、`README.md`、`README.rst`、`README.txt` 中唯一存在的文件。多个候选、查找受阻或用户禁止读取时不选。
 禁止修改或安装的动作不会阻止文件位置查找。读取禁令按当前禁止列表中的动作和文件判断；含义不明确的文件禁令继续跳过可选查找。
 该处理只取得文件信息，正文仍由原生读取工具返回；不会提前读取正文或扩大文件权限。
-原生 DSH 文件服务承担核心读取；dsh-ops 适配默认关闭，只有显式设置 `opsAdapters:true` 后才用于可选读取和精确编辑。
+原生 DSH 文件服务承担全部读取、搜索和精确编辑。`dsh-ops` 适配及其 `ops_*` 工具面已从本插件删除，`opsAdapters` 不再是可设置项。
 `readArgumentRecovery` 开启时，原生 `read` 的单一 `path` 别名在宿主检查前转为 `file_path`。两个字段冲突时返回错误。
 该调用保留原生 `lines` 返回值和文件权限检查，不重读文件。
 PTC 已取得行记录，却在访问 `.content` 或 `.text` 后输出 `undefined` 或取值错误时，插件每条用户要求至多提示 1 次 `lines` 用法。
 已读到非空正文，但错误字段的空字符串兜底只留下空白或标题时，也使用同一条提示。
 可直接取回的短记录会附在原工具结果中；记录超出范围时，提示给出事件位置，优先复用仍可用的返回对象。
-FastEdit Python 路径由 fastEditPython 设置。
+源码成员解析的 Python 路径由 fastEditPython 设置。
 省略 run_code 或原生 Shell 的界面说明时，插件在宿主执行前补充说明，避免宿主修改只读参数失败。
 执行状态分别记录明确失败、已完成和信息不完整。
 执行恢复还管理已登记关键判断的失效：`work_report` 的 `claims` 中仅 `observed` 和 `inferred` 判断参与，用户必须在后续消息中完整、唯一地引用 12–800 字符的判断原文并明确纠正，才派生 `challenged`。普通文件变更、语义相似的文本、多个判断同时命中、模型自报状态或一个失败结果都不会自动推翻判断。判断中明确的路径在纠正后有对应文件工具修改时，状态保留 `unknown`；后续 Shell/PTC 执行或未完成的文件工具写入也使有路径范围的判断保留 `unknown`，不据此推断实际发生了修改。外部和程序内部效果无法完整观察。
@@ -577,7 +576,7 @@ stubSummary 保留问题处理标记、事件指针和原文取回。
 桌面加载目录：由桌面 profile 决定。需要同步时使用 `node sync-desktop.mjs`，不要写死本机绝对路径。
 桌面 web profile 的包依赖和目录联接指向加载目录。
 加载目录保存独立源码与 Python 环境；宿主依赖来自已安装的桌面运行时。
-插件直接引用桌面宿主提供的 `@deepseek-ai/dsh-llm`、`@deepseek-ai/cordis`、DSH PTC 运行时和应用启动模块。`@deepseek-ai/dsh-llm` 在安装元数据中是可选 peer，只表示包管理器不会替宿主安装它；插件加载和宿主测试仍要求该包实际存在。`dsh-ops` 只用于可选来源和精确编辑适配器，不是核心历史与交接功能的必需依赖。
+插件直接引用桌面宿主提供的 `@deepseek-ai/dsh-llm`、`@deepseek-ai/cordis`、DSH PTC 运行时和应用启动模块。`@deepseek-ai/dsh-llm` 在安装元数据中是可选 peer，只表示包管理器不会替宿主安装它；插件加载和宿主测试仍要求该包实际存在。本插件不引用 `dsh-ops`：OPS 适配代码已删除，插件只使用 DSH 原生工具。
 修改开发目录不会自动更新桌面加载目录。
 同步使用 `node sync-desktop.mjs`。正在运行的会话是否采用新代码取决于宿主生命周期。
 `node sync-desktop.mjs --code-only` 同步包内代码与说明，并修正独立目录的加载联接及锁文件路径。
@@ -586,9 +585,9 @@ stubSummary 保留问题处理标记、事件指针和原文取回。
 index.mjs 负责组装和会话事件。
 plugin-command.mjs 负责命令；source-tools.mjs 负责源码和报告入口；management-tools.mjs 负责执行、状态与管理入口。
 
-当前开发版已在本机桌面宿主运行时独立加载声明的发布文件，并完成来源读取、结构化调用、保留计算、程序引用、精确编辑、交接及关闭后的原生读取。`node --test test/host-package-load.test.mjs test/host-workflow-combinations.test.mjs` 覆盖这些路径；`node --test test/trajectory-audit.test.mjs` 覆盖审计行为。宿主核对使用脚本化模型，需要本机 DSH Desktop 运行时、现有 OPS 组件和配套 Python 环境，不调用在线模型。`test/helpers/host.mjs` 可用 `DSH_APP` 指定桌面运行时目录。当前结果不表示桌面目录已加载开发版，也不证明每项模型质量和费用效果。
+当前开发版已在本机桌面宿主运行时独立加载声明的发布文件，并完成来源读取、结构化调用、保留计算、程序引用、精确编辑、交接及关闭后的原生读取。`node --test test/host-package-load.test.mjs test/host-workflow-combinations.test.mjs` 覆盖这些路径；`node --test test/trajectory-audit.test.mjs` 覆盖审计行为。宿主核对使用脚本化模型，需要本机 DSH Desktop 运行时和配套 Python 环境，不调用在线模型。`test/helpers/host.mjs` 可用 `DSH_APP` 指定桌面运行时目录。当前结果不表示桌面目录已加载开发版，也不证明每项模型质量和费用效果。
 
-运行完整测试时，Java 精确编辑检查需要能导入 `requirements-fastedit.txt` 所列依赖的 Python。将 `DSH_TEST_FASTEDIT_PYTHON` 设置为该解释器的绝对路径；未设置或设为空时，测试使用开发目录的 `.fastedit-venv/Scripts/python.exe`。
+运行完整测试时，源码成员解析和 `verified_exec` 宿主检查需要 `requirements-source-members.txt` 所列依赖的 Python。将 `DSH_TEST_FASTEDIT_PYTHON` 设置为该解释器的绝对路径；未设置或设为空时，测试使用开发目录的 `.fastedit-venv/Scripts/python.exe`。`verified_exec` 的原生条件写入固定要求宿主 0.2.2-rc.2；更早的受支持宿主按 `cas-file-tools-unavailable` 明确 deopt，不做无版本条件的替代写入。
 
 `dsh-tools@0.2.2` 已移除 `mode` 配置。1.1.2 保留 `tool-execution.mjs` 的批量执行兼容与 `toolModeFor`，测试宿主按版本挂载拆分执行器；旧运行时保持原行为。支持版本为 `0.2.1-rc.4`、`0.2.2-rc.1` 和 `0.2.2-rc.2`。原生条件编辑仅支持已识别的 rc.2 文件服务；不支持时明确返回不可用。历史版本的检查结果不能替代当前候选的完整验收。
 

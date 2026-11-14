@@ -366,7 +366,7 @@ function ambiguousRecord(name, matches) {
       rangeComplete: false,
     })),
     contentLimitation: 'member-name-ambiguous',
-    nextFactNeeded: 'Disambiguate the overload by passing offset within one candidate range, or inspect fastedit_java candidate metadata first; no overload was selected.',
+    nextFactNeeded: 'Disambiguate the overload by passing offset within one candidate range; no overload was selected.',
   };
 }
 

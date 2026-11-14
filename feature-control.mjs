@@ -10,8 +10,6 @@ const DEFINITIONS=[
   ['enabled','总开关','允许当前工作区使用插件'],
   ['aggressiveMode','激进模式','非 Ultra 档位的任务处理'],
   ['selfIndex','源码索引','记录并核对已观察的源码入口'],
-  ['opsAdapters','OPS 适配','启用 dsh-ops 读取与精确编辑适配（默认关闭）'],
-  ['fastEditEnabled','Java 编辑','按语法实体读取和修改 Java（需要 opsAdapters）'],
   ['stateLedger','状态记录','记录读取、修改和执行依据'],
   ['stateInform','状态提醒','提醒已记录结果的适用状态'],
   ['completionNotice','完成提醒','继续尚有明确可执行事项的阶段摘要'],
@@ -53,7 +51,7 @@ const DEFINITIONS=[
   ['toolSurface','工具入口','compact 保留常用入口，full 展示管理和工程工具',['compact','full']],
   ['defaultResponseView','默认来源返回','选择完整正文或已有正文的短引用',['full','reference-if-visible']],
 ];
-const TOOLS=['project_evidence','work_exec','work_recall','work_status','work_state','work_report','work_probe','evidence_index','candidate_select','ptc_patterns','ptc_fastpath','verified_exec','fastedit_java','work_compute','file_profile','structured_json'];
+const TOOLS=['project_evidence','work_exec','work_recall','work_status','work_state','work_report','work_probe','evidence_index','candidate_select','ptc_patterns','ptc_fastpath','verified_exec','work_compute','file_profile','structured_json'];
 const PACKAGE_DEFAULTS=defaults();
 const REQUIRES={stateInform:['stateLedger'],swEviction:['swLedger'],requestProjection:['projectionRestore'],projectionRestore:['requestProjection'],
   deferPressureCompaction:['compressionControl'],stubSummary:['compressionControl'],nativeProgramReuse:['executionTriage'],finalJsonResultGuard:['finalJsonGuard']};
@@ -101,11 +99,10 @@ export function createFeatureControl(ctx,runtime,{available,canRecall,workingSet
       try{nativeVerifiedReady=await verifiedExec?.nativeAvailable(agent)===true;}catch{}
     }
     let fastEditFiles=null;
-    // The tree-sitter bridge is also the memberParsing parser, so probing it must
-    // not be gated on the OPS-only Java edit switch.
-    if((!only&&(config.fastEditEnabled&&config.opsAdapters||config.memberParsing))||
-      only==='fastEditEnabled'&&config.fastEditEnabled&&config.opsAdapters||only==='memberParsing'&&config.memberParsing){
-      try{await Promise.all([fs.access(config.fastEditPython),fs.access(path.join(import.meta.dirname,'fastedit-bridge.py'))]);fastEditFiles=true;}
+    // The tree-sitter bridge parses source members (memberParsing). It is no
+    // longer shared with a Java edit tool, so probe it only for memberParsing.
+    if((!only&&config.memberParsing)||only==='memberParsing'&&config.memberParsing){
+      try{await Promise.all([fs.access(config.fastEditPython),fs.access(path.join(import.meta.dirname,'source-members-bridge.py'))]);fastEditFiles=true;}
       catch{fastEditFiles=false;}
     }
     const features=DEFINITIONS.filter(([key])=>!only||key===only).map(([key,label,purpose,choices])=>{
@@ -151,14 +148,6 @@ export function createFeatureControl(ctx,runtime,{available,canRecall,workingSet
         if(['archiveReadRouting','memberParsing','mavenSourceBinding'].includes(key)&&!service('fs'))reasons.push('native-filesystem-unavailable');
         if(key==='memberParsing'&&!fastEditFiles&&config.memberParsing)reasons.push('tree-sitter-runtime-unavailable:fastEditPython');
         if(['archiveReadRouting','mavenSourceBinding'].includes(key)&&!archiveDecoder.available)reasons.push('archive-decoder-unavailable:fflate');
-        if(key==='fastEditEnabled'){
-          if(!config.opsAdapters)reasons.push('ops-adapters-disabled');
-          else{
-            if(!fastEditFiles)reasons.push('fastedit-runtime-files-unavailable');
-            if(!available(agent,'ops_stat'))reasons.push('tool-unavailable:ops_stat');
-            if(!['pwsh','ops_bash','bash'].some(tool=>available(agent,tool)))reasons.push('authorized-shell-unavailable');
-          }
-        }
         if(['requestProjection','projectionRestore'].includes(key)&&workingSet.metrics(agent).adapter==='unavailable')reasons.push('projection-adapter-unavailable');
         // Projection is off, work_state is hidden and executionTriage already records
         // executions, so this setting has no consumer the current session can reach.
@@ -205,9 +194,7 @@ export function createFeatureControl(ctx,runtime,{available,canRecall,workingSet
         model:selection?{provider:selection.provider,model:selection.model}:null,retainedCompute:retained},
       features,tools:only?undefined:TOOLS.map(name=>{
         const exposed=available(agent,name);
-        const entry=exposed?name:name==='verified_exec'
-          ?'/work-evidence feature nativeVerifiedEdits on (or opsAdapters on and toolSurface full)'
-          :name==='fastedit_java'?'/work-evidence feature opsAdapters on; feature fastEditEnabled on; feature toolSurface full'
+        const entry=exposed?name:name==='verified_exec'?'/work-evidence feature nativeVerifiedEdits on; feature toolSurface full'
           :'/work-evidence feature toolSurface full';
         return {name,exposed,entry};
       }),

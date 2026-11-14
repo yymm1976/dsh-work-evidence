@@ -7,25 +7,56 @@ import {createHash} from 'node:crypto';
 import {createVerifiedExec} from '../verified-exec.mjs';
 
 const hash=text=>createHash('sha256').update(text).digest('hex');
-async function fixture(body,validation={status:'completed',exitCode:0,stdout:{text:'PASS: complete'}},config={opsAdapters:true}){
+
+/**
+ * These tests exercise the backend-independent planning and validation rules.
+ * verified_exec has one edit backend now (the native conditional-write CAS), so
+ * this fixture supplies that backend through the documented test seam instead of
+ * emulating an OPS CAS tool pair. The real native backend keeps its own host
+ * suite in native-cas.test.mjs.
+ */
+function stubBackend(root,state){
+  const revision=async()=>{const text=await fs.readFile(path.join(root,'source.txt'),'utf8');return hash(text);};
+  return ()=>Object.freeze({
+    async available(){return true;},
+    async stat(_agent,file){
+      const full=path.join(root,file);
+      try{const text=await fs.readFile(full,'utf8');
+        return {ok:true,exists:true,type:'file',revision:hash(text),bytes:Buffer.byteLength(text),target:full};
+      }catch{return {ok:true,exists:false};}
+    },
+    async read(_agent,_file,expected){
+      const text=await fs.readFile(path.join(root,'source.txt'),'utf8');
+      if(hash(text)!==expected)return {ok:false,error:{message:'File changed while reading the conditional-edit source.'}};
+      return {ok:true,text,sha256:hash(text),totalLines:text.split(/\r\n|\r|\n/u).length};
+    },
+    async apply(_agent,group,observation){
+      const text=await fs.readFile(path.join(root,group.file),'utf8');
+      const current=text===group.beforeHash?text:null;
+      const before=observation.exists?await revision():null;
+      if(group.mode==='create'&&observation.exists)return {ok:false,status:'error',effectState:'none',error:{message:'create target exists'}};
+      if(group.mode==='replace_exact'&&hash(text)!==before)return {ok:false,status:'error',effectState:'none',error:{message:'stale'}};
+      await fs.writeFile(path.join(root,group.file),group.expectedText);
+      state.writes++;
+      const after=hash(group.expectedText);
+      return {ok:true,status:'completed',effectState:'applied',revision:after,contentHash:after,
+        bytes:Buffer.byteLength(group.expectedText),lineCount:group.expectedText.split(/\r\n|\r|\n/u).length,
+        changed:group.mode==='create'||group.beforeHash!==after,versionKind:'native-opaque',guarded:true};
+    },
+  });
+}
+
+async function fixture(body,validation={status:'completed',exitCode:0,stdout:{text:'PASS: complete'}},config={nativeVerifiedEdits:true}){
   const root=await fs.mkdtemp(path.join(os.tmpdir(),'verified-boundary-'));
   await fs.writeFile(path.join(root,'source.txt'),body);
   const record={root,dir:path.join(root,'.dsh'),id:'boundary',config,metrics:{verifiedExecDeopts:0,verifiedExecPreviews:0,verifiedExecApplies:0,verifiedExecPartial:0,verifiedExecValidationFailures:0}};
-  let writes=0,saved;
+  const state={writes:0};let saved;
   const runtime={init:async()=>record,save:async(_agent,_file,value)=>{saved=structuredClone(value);},execFor:()=>({})};
-  const service=createVerifiedExec({on(){},tools:{get:name=>['ops_stat','ops_edit_file','pwsh'].includes(name)?{name}:null}},runtime,async(name,args)=>{
-    const text=await fs.readFile(path.join(root,'source.txt'),'utf8');
-    if(name==='ops_stat')return {value:{status:'completed',exists:true,revision:hash(text),bytes:Buffer.byteLength(text)},isError:false};
-    if(name==='ops_edit_file'){
-      assert.equal(args.expectedRevision,hash(text));let after=text;
-      for(const edit of args.edits)after=after.replace(edit.oldText,edit.newText);
-      await fs.writeFile(path.join(root,'source.txt'),after);writes++;
-      return {isError:false,value:{status:'completed',data:{revision:hash(after),bytes:Buffer.byteLength(after),changed:true}}};
-    }
+  const service=createVerifiedExec({on(){},tools:{get:name=>name==='pwsh'?{name}:null}},runtime,async(name,args)=>{
     if(name==='pwsh')return {isError:false,value:validation};
     throw new Error('Unexpected tool '+name);
-  });
-  return {root,service,writes:()=>writes,saved:()=>saved,close:()=>fs.rm(root,{recursive:true,force:true})};
+  },{backendFactory:stubBackend(root,state)});
+  return {root,service,writes:()=>state.writes,saved:()=>saved,close:()=>fs.rm(root,{recursive:true,force:true})};
 }
 
 test('verified edits reject overlapping occurrences in preview and apply before mutation',async()=>{
@@ -210,14 +241,26 @@ test('validation accepts a zero producer exit and output below the first data la
   }
 });
 
+/**
+ * Plan-level tests for missing-target alias resolution never write, so they only
+ * need a backend whose `available` is true and whose observation says the target
+ * is absent. The alias logic itself runs before any backend call.
+ */
+function aliasService(record,calls){
+  const backend=()=>({async available(){return true;},
+    async stat(){return {ok:true,exists:false};}});
+  return createVerifiedExec({on(){},tools:{get:()=>({})}},
+    {init:async()=>record,save:async()=>{},execFor:()=>({})},
+    async()=>({isError:false,value:{status:'completed',exists:false}}),{backendFactory:backend});
+}
+
 test('duplicate missing create targets through a directory alias reject before any tool dispatch',async()=>{
   const root=await fs.mkdtemp(path.join(os.tmpdir(),'verified-create-alias-'));
   try{
     await fs.symlink(root,path.join(root,'alias'),process.platform==='win32'?'junction':'dir');
-    const record={root,dir:path.join(root,'.dsh'),id:'alias-boundary',config:{opsAdapters:true},metrics:{verifiedExecDeopts:0}};
+    const record={root,dir:path.join(root,'.dsh'),id:'alias-boundary',config:{nativeVerifiedEdits:true},metrics:{verifiedExecDeopts:0}};
     let calls=0;
-    const service=createVerifiedExec({on(){},tools:{get:()=>({})}},
-      {init:async()=>record,save:async()=>{},execFor:()=>({})},async()=>{calls++;return {isError:false,value:{status:'completed',exists:false}};});
+    const service=aliasService(record,calls);
     for(const file of ['new.txt','missing/nested/new.txt'])for(const apply of [false,true]){
       const result=await service.execute({}, {summary:'Reject duplicate creates before writes',apply,edits:[
         {file,mode:'create',content:'first'},{file:'alias/'+file,mode:'create',content:'second'}]},AbortSignal.timeout(10000));
@@ -233,7 +276,7 @@ test('missing-target case aliases follow the actual directory and an unknown emp
   try{
     await fs.writeFile(path.join(root,'case-probe.txt'),'probe');
     const caseSensitive=await fs.lstat(path.join(root,'CASE-PROBE.txt')).then(()=>false,error=>{if(error.code!=='ENOENT')throw error;return true;});
-    const record={root,dir:path.join(root,'.dsh'),id:'volume-boundary',config:{opsAdapters:true},metrics:{verifiedExecDeopts:0,verifiedExecPreviews:0}};
+    const record={root,dir:path.join(root,'.dsh'),id:'volume-boundary',config:{nativeVerifiedEdits:true},metrics:{verifiedExecDeopts:0,verifiedExecPreviews:0}};
     const service=createVerifiedExec({on(){},tools:{get:()=>({})}},
       {init:async()=>record,save:async()=>{},execFor:()=>({})},async()=>({isError:false,value:{status:'completed',exists:false}}));
     const plan={summary:'Resolve the directory case behavior',edits:[{file:'new.txt',mode:'create',content:'one'},{file:'NEW.txt',mode:'create',content:'two'}]};
@@ -261,10 +304,9 @@ test('missing-target normalization aliases follow the actual directory and an un
     const normalizationSensitive=await fs.lstat(path.join(root,decomposed)).then(()=>false,error=>{
       if(error.code!=='ENOENT')throw error;return true;
     });
-    const record={root,dir:path.join(root,'.dsh'),id:'normalization-boundary',config:{opsAdapters:true},metrics:{verifiedExecDeopts:0,verifiedExecPreviews:0}};
+    const record={root,dir:path.join(root,'.dsh'),id:'normalization-boundary',config:{nativeVerifiedEdits:true},metrics:{verifiedExecDeopts:0,verifiedExecPreviews:0}};
     let calls=0;
-    const service=createVerifiedExec({on(){},tools:{get:()=>({})}},
-      {init:async()=>record,save:async()=>{},execFor:()=>({})},async()=>{calls++;return {isError:false,value:{status:'completed',exists:false}};});
+    const service=aliasService(record,calls);
     const plan={summary:'Resolve canonical normalization aliases',edits:[
       {file:'target-café.txt',mode:'create',content:'one'},
       {file:'target-cafe\u0301.txt',mode:'create',content:'two'}]};
@@ -305,10 +347,9 @@ test('mixed case and normalization candidates are compared with every earlier ta
       return nativeLstat(target,options);
     };
     try{
-      const record={root,dir:path.join(root,'.dsh'),id:'mixed-alias-boundary',config:{opsAdapters:true},metrics:{verifiedExecDeopts:0}};
+      const record={root,dir:path.join(root,'.dsh'),id:'mixed-alias-boundary',config:{nativeVerifiedEdits:true},metrics:{verifiedExecDeopts:0}};
       let calls=0;
-      const service=createVerifiedExec({on(){},tools:{get:()=>({})}},
-        {init:async()=>record,save:async()=>{},execFor:()=>({})},async()=>{calls++;return {isError:false,value:{status:'completed',exists:false}};});
+      const service=aliasService(record,calls);
       const result=await service.execute({}, {summary:'Compare every mixed spelling candidate',apply:true,edits:[
         {file:'mixed/spelling-Café.txt',mode:'create',content:'one'},
         {file:'mixed/spelling-CAFÉ.txt',mode:'create',content:'two'},
@@ -320,13 +361,13 @@ test('mixed case and normalization candidates are compared with every earlier ta
   }finally{await fs.rm(root,{recursive:true,force:true});}
 });
 
-test('OPS CAS requires explicit opsAdapters opt-in',async()=>{
-  const f=await fixture('before',{status:'completed',exitCode:0},{opsAdapters:false});
+test('verified_exec has no edit backend when nativeVerifiedEdits is off',async()=>{
+  const f=await fixture('before',{status:'completed',exitCode:0},{nativeVerifiedEdits:false});
   try{
-    const result=await f.service.execute({}, {summary:'Do not call OPS by default',apply:true,
+    const result=await f.service.execute({}, {summary:'Do not write without a conditional backend',apply:true,
       edits:[{file:'source.txt',mode:'replace_exact',old_text:'before',new_text:'after'}]},AbortSignal.timeout(10000));
     assert.equal(result.status,'deopt');
-    assert.equal(result.reason,'ops-adapters-disabled');
+    assert.equal(result.reason,'native-verified-edits-disabled');
     assert.equal(result.effectState,'none');
     assert.equal(f.writes(),0);
     assert.equal(await fs.readFile(path.join(f.root,'source.txt'),'utf8'),'before');

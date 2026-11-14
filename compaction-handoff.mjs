@@ -107,7 +107,7 @@ export function stubCheckpoint(agent){
     if(callId&&name&&kind==='call')callNames.set(callId,name);
     const resolvedName=name??(kind==='result'&&callId?callNames.get(callId)??null:null);
     const resultEvent=['tool/result','tool/ptc-dispatch','tool/code-dispatch'].includes(event.type);
-    const commandTool=['bash','pwsh','ops_bash','work_exec'].includes(resolvedName);
+    const commandTool=['bash','pwsh','work_exec'].includes(resolvedName);
     let reportedFailure=null;
     if(resultEvent&&commandTool){
       let parsed;try{parsed=JSON.parse(text);}catch{}
