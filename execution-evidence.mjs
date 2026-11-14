@@ -92,7 +92,7 @@ function checked(input){
 
 export function createExecutionEvidence(ctx,runtime,call,{executionDependencies=createExecutionDependencies()}={}){
   const evidenceStates=new Map();
-  const available=agent=>TOOLS.filter(name=>{try{return !!ctx.tools.get(name,agent);}catch{return false;}});
+  const available=agent=>TOOLS.filter(name=>{try{return (runtime.get(agent).config.opsAdapters===true||!OPS_READ_TOOLS.has(name))&&!!ctx.tools.get(name,agent);}catch{return false;}});
   const retrieveOriginal=id=>({tool:'work_probe',arguments:{mode:'recall',id,offset:0}});
 
   function replayPlan(agent,id,maxChars,seen=new Set()){
