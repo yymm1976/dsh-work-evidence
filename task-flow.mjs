@@ -826,7 +826,9 @@ export function createTaskFlow(ctx,runtime,{nativeFiles,call,executionDependenci
       }
     }
     if(mode!=='quality'&&config.stepPacing&&user&&surfaceMode!=='read-only'&&!state.jobs.size){
-      const lastResponseKey=JSON.stringify([user.seq,'large-response',steps]);
+      // The reminder text is identical for every step; a per-step key re-injects
+      // the same user message on each long response. Once per user request is enough.
+      const lastResponseKey=JSON.stringify([user.seq,'large-response']);
       if(steps>=2&&pacing.lastOutputTokens>=6000&&!pacing.notices.has(lastResponseKey)){
         rememberPacing(state,lastResponseKey);
         return emit('pacing',lastResponseKey,'[work-evidence] 上一响应较长。下一步只执行仍未决的实际动作，或直接整理已有结果；不要重述分析、重演计算或增加同义检查。用户明确要求或实际错误仍须处理。');

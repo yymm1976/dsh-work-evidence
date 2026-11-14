@@ -101,7 +101,12 @@ export function createContextEconomics(ctx,runtime){
     const savedTokens=Math.max(0,Math.floor(rawSaving*factor));
     const remainingSteps=Math.max(1,Math.min(64,horizon??config.projectionHorizonSteps));
     let cachedSuffixTokens=null,prefixMessages=0,oldSuffixTokens=null,exposureMethod='conservative previous-request prompt';
-    if(same&&old.usage&&promptTokens(old.usage)!==null){
+    // An aborted/errored attempt reports zero usage. Its zero cache read is an
+    // absence of evidence, not proof that no cached prefix exists; treating it
+    // as "no exposure" approves a rewrite that then pays a full cache refill.
+    const previousAttemptUsable=Boolean(old?.usage)&&promptTokens(old.usage)>0&&
+      !['error','aborted'].includes(String(old.finishReason??''))&&!old.failureCode&&old.usageComplete!==false;
+    if(same&&old?.usage&&promptTokens(old.usage)!==null&&previousAttemptUsable){
       // A preceding miss can populate the next request's cache. Treat the
       // previously dispatched prompt as potentially warm; low/missing hits
       // never establish that a new projection is free.
@@ -150,10 +155,14 @@ export function createContextEconomics(ctx,runtime){
     }
     let allowed=false,reason='usage-or-cache-exposure-unavailable',refillCost=null,futureSaving=null,breakEvenSteps=null;
     const auxiliaryCost=auxiliaryUsage?usageCost(auxiliaryUsage,price):0;
+    // cachedSuffixTokens===0 is only meaningful when a usable prior observation
+    // exists. Without one the value is unproven, so a free rewrite must not be
+    // assumed and the pricing path below decides.
+    const exposureProven=previousAttemptUsable&&cachedSuffixTokens!==null;
     if(savedTokens<=0)reason='no-request-reduction';
     else if(emergency&&!auxiliaryUsage){allowed=true;reason='context-capacity';}
     else if(auxiliaryUsage&&auxiliaryCost===null)reason='auxiliary-price-or-usage-unavailable';
-    else if (cachedSuffixTokens === 0 && auxiliaryUsage === null) {allowed=true;reason='no-additional-previous-request-prefix-exposure';refillCost=0;breakEvenSteps=0;
+    else if (exposureProven && cachedSuffixTokens === 0 && auxiliaryUsage === null) {allowed=true;reason='no-additional-previous-request-prefix-exposure';refillCost=0;breakEvenSteps=0;
       if(price)futureSaving=savedTokens*Math.min(price.input,price.cacheRead)*remainingSteps/1e6;}
     else if(cachedSuffixTokens!==null&&price){
       if(old?.usage?.cacheWriteTokens>0&&!finite(price.cacheWrite))reason='cache-write-price-unavailable';
@@ -167,7 +176,8 @@ export function createContextEconomics(ctx,runtime){
         allowed=perStep>0&&futureSaving>required;
         reason=allowed?'predicted-cache-cost-positive':'predicted-cache-cost-insufficient';
       }
-    }else if(cachedSuffixTokens!==null)reason='route-pricing-unavailable';
+    }else if(!previousAttemptUsable)reason='prior-observation-unusable';
+    else if(cachedSuffixTokens!==null)reason='route-pricing-unavailable';
     return {allowed,reason,savedTokensEstimate:savedTokens,cachedSuffixTokensEstimate:cachedSuffixTokens,
       oldSuffixTokensEstimate:oldSuffixTokens,
       cachedExposureMethod:exposureMethod+'; prior misses may populate cache; not a cache-position measurement',
@@ -271,12 +281,18 @@ export function createContextEconomics(ctx,runtime){
       }
     }
     const weights=options.messages.map(messageTokens),envelopeTokens=textTokens(JSON.stringify({tools:options.tools??[],system:options.system??null}));
-    state.last={provider:options.provider,model:options.model,reasoningEffort:options.reasoningEffort,usage,
+    // A failed or aborted attempt carries no observable prompt/cache usage, so it
+    // must not replace the last usable observation. Otherwise the next economics
+    // decision reads a zero prompt as "nothing was cached".
+    const usableForExposure=total>0&&!record.failureCode&&!record.aborted;
+    if(usableForExposure)state.last={provider:options.provider,model:options.model,reasoningEffort:options.reasoningEffort,usage,
       generation:record.generation,alignmentSafe:textProjection(options.messages),
       envelope,keys:options.messages.map(modelKey),ids:options.messages.map(message=>message.id),weights,
       envelopeTokens,
-      factor:total===null?1:Math.max(0.25,Math.min(8,total/Math.max(1,weights.reduce((sum,value)=>sum+value,0)+envelopeTokens))),
+      factor:Math.max(0.25,Math.min(8,total/Math.max(1,weights.reduce((sum,value)=>sum+value,0)+envelopeTokens))),
       finishReason:record.finishReason,at:record.at};
+    else state.lastUnusable={reason:record.failureCode?'failed-attempt':record.aborted?'aborted':'no-prompt-usage',
+      finishReason:record.finishReason??null,at:record.at??null};
     const reviews=reviewOutcomes(agent);
     for(const review of reviews)runtime.effects?.decide(agent,'projection',
       review.plausible===false?'review-implausible':review.plausible===null?'review-unavailable':'reviewed','projection-outcome',review);
@@ -313,6 +329,7 @@ export function createContextEconomics(ctx,runtime){
       reportedPromptTokens:state.reportedPromptTokens,reportedOutputTokens:state.reportedOutputTokens,
       mainPromptRequests:state.mainPromptRequests,
       missingUsageRequests:state.missingUsage,missingCacheUsageRequests:state.missingCacheUsage,pricedRequests:state.pricedRequests,
+      lastUnusableAttempt:state.lastUnusable??null,
       reportedCost:currencies.length===1&&state.pricedRequests===state.requests?state.costByCurrency[currencies[0]]:null,knownReportedCost:currencies.length===1?state.costByCurrency[currencies[0]]:null,costComplete:state.pricedRequests===state.requests,costByCurrency:{...state.costByCurrency},
       costObservation:{basis:'configured-reference-prices',actualCharge:null,allowanceConsumption:null,budgetEnforcement:'none'},
       currency:currencies.length===1?currencies[0]:null,skips:{...state.skips},recentDecisions:state.decisions.slice(-6),

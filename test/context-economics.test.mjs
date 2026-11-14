@@ -94,3 +94,28 @@ test('projection review settles after three main prompt observations and ignores
   assert.equal(reviewed[0].referencePromptTokens,1000);assert.equal(reviewed[0].observedPromptTokens,3000);
   assert.equal(reviewed[0].plausible,true);
 });
+
+
+test('a failed attempt with zero usage cannot license a free cache-overwriting rewrite',()=>{
+  const {agent,economics,finish,options}=harness();
+  finish(false,{inputTokens:1513,cacheReadTokens:81408,cacheWriteTokens:0,outputTokens:144,totalTokens:83065});
+  economics.requestFinished(agent,options,{usage:{inputTokens:0,cacheReadTokens:0,cacheWriteTokens:0,outputTokens:0,totalTokens:0},
+    settled:true,finishReason:'error',failureCode:'SERVER',usageConsistent:true,usageComplete:true});
+  const result=economics.assess(agent,{savedChars:8097*4,savedTokensEstimate:2122});
+  assert.equal(result.allowed,false);
+  assert.notEqual(result.reason,'no-additional-previous-request-prefix-exposure');
+  assert.ok(result.savedTokensEstimate>0);
+});
+
+test('the failed-attempt record keeps its zero usage out of the exposure baseline',()=>{
+  const {agent,economics,finish,options}=harness();
+  finish(false,{inputTokens:1513,cacheReadTokens:81408,cacheWriteTokens:0,outputTokens:144,totalTokens:83065});
+  const before=economics.assess(agent,{savedChars:8000,savedTokensEstimate:2100});
+  economics.requestFinished(agent,options,{usage:{inputTokens:0,cacheReadTokens:0,cacheWriteTokens:0,outputTokens:0,totalTokens:0},
+    settled:true,finishReason:'error',failureCode:'SERVER',usageConsistent:true,usageComplete:true});
+  const after=economics.assess(agent,{savedChars:8000,savedTokensEstimate:2100});
+  assert.equal(after.cachedSuffixTokensEstimate,before.cachedSuffixTokensEstimate);
+  assert.equal(after.reason,before.reason);
+  assert.equal(economics.lastUsage(agent).cacheReadTokens,81408);
+  assert.equal(economics.summary(agent).lastUnusableAttempt.reason,'failed-attempt');
+});

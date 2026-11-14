@@ -632,3 +632,21 @@ test('correct failing reproductions must be fixed, not deleted',()=>{
   assert.match(body,/不得改动无关断言/u);
   assert.doesNotMatch(body,/第二次仍失败则删除临时测试/u);
 });
+
+test('the long-response reminder is injected at most once per user request',()=>{
+  let seq=0;const log=[{seq:seq++,type:'turn/start',data:{turn:1}},
+    {seq:seq++,type:'user/message',data:{message:{id:'request',role:'user',source:{kind:'user'},content:[{type:'text',text:'继续修复任务'}]}}}];
+  for(const step of [1,2,3,4]){
+    log.push({seq:seq++,type:'step/start',data:{turn:1,step}});
+    log.push({seq:seq++,type:'tool/call',data:{turn:1,step, callId:'c'+step,name:'read',arguments:{file_path:'a.txt'}}});
+    log.push({seq:seq++,type:'tool/result',data:{turn:1,step,message:{role:'tool',source:{callId:'c'+step},content:[{type:'text',text:'ok'}]}}});
+    log.push({seq:seq++,type:'assistant/message',data:{turn:1,step,message:{role:'assistant',content:[{type:'text',text:'progress'}]},usage:{outputTokens:9000}}});
+  }
+  const state={config:{...defaults(),stepPacing:true},root:process.cwd()};
+  const flow=createTaskFlow({}, {get:()=>state,isEnabled:()=>true,activeMode:()=> 'aggressive'});
+  const agent={session:{id:'pacing-dedupe',log,seq,requestHeader:()=>({config:{provider:'p',model:'m'}}),eventAt:value=>log.find(event=>event.seq===value),surface:{nodes:[]}}};
+  const notices=[];
+  for(let round=0;round<4;round++)notices.push(...flow.beforeStep(agent,[]));
+  const keys=notices.map(message=>String(message.source?.taskFlow?.key??'')).filter(key=>key.includes('large-response'));
+  assert.equal(keys.length,1,JSON.stringify(keys));
+});
