@@ -288,9 +288,9 @@ export function createExecutionEvidence(ctx,runtime,call,{executionDependencies=
     try{
     if(plan.mode==='inspect')return {status:'available',tools:available(agent),
       note:'Use a concrete question and an already formed native call within the current task. No command or case is generated automatically.'};
-    if(!available(agent).includes(plan.tool))return {status:'deopt',reason:'requested-native-tool-unavailable',tool:plan.tool,executionOccurred:false};
     if(OPS_READ_TOOLS.has(plan.tool)&&s.config.opsAdapters!==true)
       return {status:'deopt',reason:'ops-adapters-disabled',tool:plan.tool,executionOccurred:false};
+    if(!available(agent).includes(plan.tool))return {status:'deopt',reason:'requested-native-tool-unavailable',tool:plan.tool,executionOccurred:false};
     if(SHELL.has(plan.tool)&&ctx.get('sandboxPolicy')?.resolve({session:agent.session})?.mode==='read-only')
       return {status:'unavailable',reason:'native-read-only-session',executionOccurred:false,
         error:'A read-only session cannot start an unrestricted Shell probe. Use native read tools or retained read-only calculations.'};
