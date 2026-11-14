@@ -129,6 +129,12 @@ export function createFeatureControl(ctx,runtime,{available,canRecall,workingSet
 
         if(['stubSummary','deferPressureCompaction'].includes(key)&&!nativeCompaction)reasons.push('native-compaction-not-attached');
         if(key==='deferPressureCompaction'&&runtime.hasRequestBudgetView?.(agent)!==true)reasons.push('request-budget-view-unavailable');
+        // These rewrite or omit visible text, and every one of them is gated by
+        // context-economics' route price. PACKAGE_DEFAULTS ships an empty
+        // projectionPricing, so the switch reads "on" while the gate can only
+        // answer route-pricing-unavailable. Report that instead of "ready".
+        if(['historyHygiene','contextPrune','contextProtocol','requestProjection'].includes(key)&&
+          (!Array.isArray(config.projectionPricing)||!config.projectionPricing.length))reasons.push('requires-setting:projectionPricing');
         if(['nativeProgramReuse','structuredCalls'].includes(key)&&!ptc)reasons.push('requires-ptc-tool-mode');
         if(key==='structuredCalls'&&(native?.language!=='typescript'||native?.programFormat!=='function-body'))reasons.push('requires-typescript-function-body-runtime');
         if(['hostNodeFallback','nativeShellScriptReuse'].includes(key)){

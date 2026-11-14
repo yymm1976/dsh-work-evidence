@@ -106,6 +106,10 @@ test('feature readiness distinguishes required settings, runtime dependencies an
     assert.ok(entry('stubSummary').reasons.includes('native-compaction-not-attached'));
     assert.ok(entry('deferPressureCompaction').reasons.includes('native-compaction-not-attached'));
     assert.ok(entry('deferPressureCompaction').reasons.includes('request-budget-view-unavailable'));
+    // Empty projectionPricing is the shipped default. historyHygiene and
+    // contextPrune are gated by that route price, so they must not read "ready".
+    assert.equal(entry('historyHygiene').configured,true);
+    assert.ok(entry('historyHygiene').reasons.includes('requires-setting:projectionPricing'),JSON.stringify(entry('historyHygiene')));
     const summary=await host.command(agent,'status');assert.ok(summary.featureReadiness.blocked.some(item=>item.key==='memberParsing'));
     const changed=await host.command(agent,'config {"swLedger":true,"finalJsonGuard":true}');
     assert.equal(changed.readiness.features.find(item=>item.key==='swEviction').status,'ready');
