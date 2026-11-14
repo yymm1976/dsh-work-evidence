@@ -32,10 +32,14 @@ function stubBackend(root,state){
     },
     async apply(_agent,group,observation){
       const text=await fs.readFile(path.join(root,group.file),'utf8');
-      const current=text===group.beforeHash?text:null;
-      const before=observation.exists?await revision():null;
+      // The production backend receives observation.revision, which is the
+      // revision the plan was built against. Reading the current file instead
+      // would let a source.txt change made after the last observation slip past
+      // the staleness fence and report the edit as applied.
+      const before=observation.exists?(observation.revision??await revision()):null;
       if(group.mode==='create'&&observation.exists)return {ok:false,status:'error',effectState:'none',error:{message:'create target exists'}};
-      if(group.mode==='replace_exact'&&hash(text)!==before)return {ok:false,status:'error',effectState:'none',error:{message:'stale'}};
+      if(group.mode==='replace_exact'&&(hash(text)!==group.beforeHash||hash(text)!==before))
+        return {ok:false,status:'error',effectState:'none',error:{message:'stale'}};
       await fs.writeFile(path.join(root,group.file),group.expectedText);
       state.writes++;
       const after=hash(group.expectedText);

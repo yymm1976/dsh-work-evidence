@@ -37,7 +37,11 @@ const normalizeFile=value=>{
   const absolute=flavor.isAbsolute(value);value=flavor.normalize(value);
   return {value:(windows?value.toLowerCase():value).replaceAll('\\','/'),absolute};
 };
-const OPAQUE=new Set(['pwsh','bash','run_code','work_exec','work_probe','verified_exec']);
+// Commands whose result says nothing about the source by itself. ops_bash is
+// here for saved histories: the adapter is gone from the live surface, but an
+// offline audit still reads sessions that used it, and a command run after a
+// check could have changed what the check observed.
+const OPAQUE=new Set(['pwsh','bash','run_code','work_exec','work_probe','verified_exec','ops_bash']);
 
 /** Compare recorded forecasts with identified main usage without claiming cache causation. */
 export function auditCacheTransitions(events,requestAccounting=null){
@@ -926,7 +930,7 @@ export function requirementEvidenceView(normal,review,verification,sourceProblem
         WRITE.has(call.name)&&call.resultSeq===null))));
     const successful=({check,item})=>item.reach==='addresses'&&check.outputIncomplete!==true&&check.toolOutcome==='succeeded'&&
       (!check.nested||check.enclosingOutcome==='succeeded')&&
-      (!['pwsh','bash','run_code','work_exec','work_probe','verified_exec','job_output'].includes(check.tool)||
+      (!['pwsh','bash','run_code','work_exec','work_probe','verified_exec','job_output','ops_bash'].includes(check.tool)||
         check.processOutcome==='exited-zero');
     let status,reason;
     if(sourceProblems.length){status='unknown';reason='incomplete-source';}

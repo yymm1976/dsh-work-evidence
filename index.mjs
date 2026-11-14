@@ -420,9 +420,13 @@ export function apply(ctx,config={}){
     toolSurfaceDisposers.delete(agent.session.id);
     try{
       const hidden=[...new Set([...COMPACT_HIDDEN_TOOLS.filter(name=>!exposedFeatures.includes(name)),...nativeEditHidden])];
+      // A read-only task must not keep an edit tool, even on the full surface.
+      // With nativeVerifiedEdits on, nativeEditHidden is empty, so `full` used to
+      // deny nothing and verified_exec stayed visible on a read-only request.
+      const readOnlyHide=surface==='full'&&['read-only','minimal'].includes(mode)?['verified_exec']:[];
       const deny=surface==='compact-read-only'?[...hidden,'work_exec']:
         surface==='compact-minimal'?[...hidden,'work_exec','work_recall']:
-        surface==='full'?(nativeEditHidden.length?nativeEditHidden:null):hidden;
+        surface==='full'?(readOnlyHide.length?readOnlyHide:nativeEditHidden.length?nativeEditHidden:null):hidden;
       const dispose=deny?.length?agent.ctx.tools.restrict({deny}):null;
       toolSurfaceDisposers.set(agent.session.id,{surface,readKey,dispose});
       effects.decide(agent,'toolSurface','applied',surface+'-surface',{configured:base,dynamic:surface!==base});

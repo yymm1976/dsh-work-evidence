@@ -2,12 +2,20 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import path from 'node:path';
+import {createRequire} from 'node:module';
 import {startHost,text,tool} from './helpers/host.mjs';
 
 // The installed @deepseek-ai/dsh-tools decides whether the conditional-write
 // backend exists. On 0.2.2-rc.2 it does, so an edit must apply; the
 // cas-file-tools-unavailable expectations below only describe hosts that lack it.
-const nativeSupported=(()=>{try{return JSON.parse(require('node:fs').readFileSync(require.resolve('@deepseek-ai/dsh-tools/package.json'),'utf8')).version==='0.2.2-rc.2';}catch{return false;}})();
+// This file is an ES module, so `require` is not a global here; createRequire is
+// what lets the version probe run instead of silently taking the catch branch.
+const nativeSupported=(()=>{
+  try{
+    const require=createRequire(import.meta.url);
+    return JSON.parse(fs.readFileSync(require.resolve('@deepseek-ai/dsh-tools/package.json'),'utf8')).version==='0.2.2-rc.2';
+  }catch{return false;}
+})();
 
 const valueOf=options=>JSON.parse(options.messages.findLast(message=>message.role==='tool').content.map(block=>block.text??'').join(''));
 const executeProgram=`import fs from 'node:fs';
@@ -117,7 +125,7 @@ test('structured calls, retained data, exact program references, editing and han
   }finally{await host.close();}
 });
 
-test('PTC exact editing reports the missing native conditional-write backend without changing the file',{skip:nativeSupported?'rc.2 host provides the conditional-write backend':'host lacks the backend'},async()=>{
+test('PTC exact editing reports the missing native conditional-write backend without changing the file',{skip:nativeSupported?'rc.2 host provides the conditional-write backend':false},async()=>{
   let result;
   const host=await startHost({toolMode:'ptc',workspace:{toolSurface:'full',nativeVerifiedEdits:true},extraMounts:[['dsh-ptc-runtime-node']],script:(options,n)=>{
     if(n===1)return [tool('run_code',{code:'console.log(JSON.stringify(await tools.verified_exec('+JSON.stringify({summary:'Change the exact amount',apply:true,

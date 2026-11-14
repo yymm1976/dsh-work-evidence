@@ -289,14 +289,16 @@ export function createContextEconomics(ctx,runtime){
     // take an incomplete observation as the exposure baseline. Keep the flag on
     // the observation so the later check can read it.
     const usageComplete=canonical.complete===true;
-    const usableForExposure=total>0&&!record.failureCode&&!record.aborted&&usageComplete;
+    const finishAccepted=successfulFinish.has(record.finishReason);
+    const usableForExposure=total>0&&!record.failureCode&&!record.aborted&&usageComplete&&finishAccepted;
     if(usableForExposure)state.last={provider:options.provider,model:options.model,reasoningEffort:options.reasoningEffort,usage,usageComplete,
       generation:record.generation,alignmentSafe:textProjection(options.messages),
       envelope,keys:options.messages.map(modelKey),ids:options.messages.map(message=>message.id),weights,
       envelopeTokens,
       factor:Math.max(0.25,Math.min(8,total/Math.max(1,weights.reduce((sum,value)=>sum+value,0)+envelopeTokens))),
       finishReason:record.finishReason,at:record.at};
-    else state.lastUnusable={reason:record.failureCode?'failed-attempt':record.aborted?'aborted':'no-prompt-usage',
+    else state.lastUnusable={reason:record.failureCode?'failed-attempt':record.aborted?'aborted':
+        !usageComplete?'incomplete-usage':!finishAccepted?'unusable-finish-reason':'no-prompt-usage',
       finishReason:record.finishReason??null,at:record.at??null};
     const reviews=reviewOutcomes(agent);
     for(const review of reviews)runtime.effects?.decide(agent,'projection',
