@@ -88,6 +88,7 @@
     "trajectory-audit.mjs",
     "README.md",
     "RELEASE-NOTES-1.1.2.md",
+    "OPS-ADAPTERS-OPT-IN.md",
     "MIGRATION-1.1.2.md",
     "ROLLBACK-1.1.2.md",
     "RELEASE-NOTES-1.1.1.md",

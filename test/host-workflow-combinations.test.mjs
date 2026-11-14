@@ -8,12 +8,14 @@ import {startHost,text,tool} from './helpers/host.mjs';
 // The installed @deepseek-ai/dsh-tools decides whether the conditional-write
 // backend exists. On 0.2.2-rc.2 it does, so an edit must apply; the
 // cas-file-tools-unavailable expectations below only describe hosts that lack it.
-// This file is an ES module, so `require` is not a global here; createRequire is
-// what lets the version probe run instead of silently taking the catch branch.
+// This file is an ES module, so `require` is not a global here. createRequire is
+// what lets the version probe run, and the manifest is read through its own
+// require: the `fs` binding above is node:fs/promises, which has no
+// readFileSync, so using it here would throw into the catch branch every time.
 const nativeSupported=(()=>{
   try{
     const require=createRequire(import.meta.url);
-    return JSON.parse(fs.readFileSync(require.resolve('@deepseek-ai/dsh-tools/package.json'),'utf8')).version==='0.2.2-rc.2';
+    return require('@deepseek-ai/dsh-tools/package.json').version==='0.2.2-rc.2';
   }catch{return false;}
 })();
 

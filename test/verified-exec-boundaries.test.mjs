@@ -250,12 +250,21 @@ test('validation accepts a zero producer exit and output below the first data la
  * need a backend whose `available` is true and whose observation says the target
  * is absent. The alias logic itself runs before any backend call.
  */
-function aliasService(record,calls){
+function aliasService(record){
+  // The counter is shared by reference and incremented by the backend and the
+  // dispatch callback. It starts at zero; any backend stat/apply or any tool
+  // dispatch means the alias plan failed to reject before dispatch, which is
+  // exactly what the assertions check.
+  const calls={count:0};
+  // stat is part of alias resolution itself, so it must stay uncounted; only a
+  // real apply or a tool dispatch means the plan went past the alias decision.
   const backend=()=>({async available(){return true;},
-    async stat(){return {ok:true,exists:false};}});
-  return createVerifiedExec({on(){},tools:{get:()=>({})}},
-    {init:async()=>record,save:async()=>{},execFor:()=>({})},
-    async()=>({isError:false,value:{status:'completed',exists:false}}),{backendFactory:backend});
+    async stat(){return {ok:true,exists:false};},
+    async apply(){calls.count++;return {ok:false,status:'error',effectState:'none',error:{message:'unexpected dispatch'}};}});
+  const dispatch=async()=>{calls.count++;return {isError:false,value:{status:'completed',exists:false}};};
+  const service=createVerifiedExec({on(){},tools:{get:()=>({})}},
+    {init:async()=>record,save:async()=>{},execFor:()=>({})},dispatch,{backendFactory:backend});
+  return {service,calls};
 }
 
 test('duplicate missing create targets through a directory alias reject before any tool dispatch',async()=>{
@@ -263,14 +272,13 @@ test('duplicate missing create targets through a directory alias reject before a
   try{
     await fs.symlink(root,path.join(root,'alias'),process.platform==='win32'?'junction':'dir');
     const record={root,dir:path.join(root,'.dsh'),id:'alias-boundary',config:{nativeVerifiedEdits:true},metrics:{verifiedExecDeopts:0}};
-    let calls=0;
-    const service=aliasService(record,calls);
+    const {service,calls}=aliasService(record);
     for(const file of ['new.txt','missing/nested/new.txt'])for(const apply of [false,true]){
       const result=await service.execute({}, {summary:'Reject duplicate creates before writes',apply,edits:[
         {file,mode:'create',content:'first'},{file:'alias/'+file,mode:'create',content:'second'}]},AbortSignal.timeout(10000));
       assert.equal(result.status,'deopt');assert.equal(result.reason,'invalid-plan');
       assert.match(result.error,/More than one create operation/u);assert.equal(result.effectState,'none');
-      assert.equal(calls,0);await assert.rejects(fs.stat(path.join(root,file)),error=>error.code==='ENOENT');
+      assert.equal(calls.count,0);await assert.rejects(fs.stat(path.join(root,file)),error=>error.code==='ENOENT');
     }
   }finally{await fs.rm(root,{recursive:true,force:true});}
 });
@@ -285,8 +293,7 @@ test('missing-target case aliases follow the actual directory and an unknown emp
     // reaches for a `get` service this fixture context does not provide, so
     // `available()` would answer false and the plan would deopt with
     // cas-file-tools-unavailable instead of exercising the alias decision.
-    let calls=0;
-    const service=aliasService(record,calls);
+    const {service,calls}=aliasService(record);
     const plan={summary:'Resolve the directory case behavior',edits:[{file:'new.txt',mode:'create',content:'one'},{file:'NEW.txt',mode:'create',content:'two'}]};
     const result=await service.execute({},plan,AbortSignal.timeout(10000));
     assert.equal(result.status,caseSensitive?'previewed':'deopt');
@@ -313,15 +320,14 @@ test('missing-target normalization aliases follow the actual directory and an un
       if(error.code!=='ENOENT')throw error;return true;
     });
     const record={root,dir:path.join(root,'.dsh'),id:'normalization-boundary',config:{nativeVerifiedEdits:true},metrics:{verifiedExecDeopts:0,verifiedExecPreviews:0}};
-    let calls=0;
-    const service=aliasService(record,calls);
+    const {service,calls}=aliasService(record);
     const plan={summary:'Resolve canonical normalization aliases',edits:[
       {file:'target-café.txt',mode:'create',content:'one'},
       {file:'target-cafe\u0301.txt',mode:'create',content:'two'}]};
     const result=await service.execute({},plan,AbortSignal.timeout(10000));
     assert.equal(result.status,normalizationSensitive?'previewed':'deopt');
     if(normalizationSensitive)assert.equal(result.files.length,2);
-    else{assert.match(result.error,/More than one create operation/u);assert.equal(calls,0);}
+    else{assert.match(result.error,/More than one create operation/u);assert.equal(calls.count,0);}
     await fs.mkdir(path.join(root,'empty'));
     const uncertain=await service.execute({}, {...plan,apply:true,edits:plan.edits.map(edit=>({...edit,file:'empty/'+edit.file}))},AbortSignal.timeout(10000));
     assert.equal(uncertain.status,'deopt');assert.match(uncertain.error,/Cannot establish/u);assert.equal(uncertain.effectState,'none');
@@ -356,14 +362,13 @@ test('mixed case and normalization candidates are compared with every earlier ta
     };
     try{
       const record={root,dir:path.join(root,'.dsh'),id:'mixed-alias-boundary',config:{nativeVerifiedEdits:true},metrics:{verifiedExecDeopts:0}};
-      let calls=0;
-      const service=aliasService(record,calls);
+      const {service,calls}=aliasService(record);
       const result=await service.execute({}, {summary:'Compare every mixed spelling candidate',apply:true,edits:[
         {file:'mixed/spelling-Café.txt',mode:'create',content:'one'},
         {file:'mixed/spelling-CAFÉ.txt',mode:'create',content:'two'},
         {file:'mixed/spelling-CAFE\u0301.txt',mode:'create',content:'three'}]},AbortSignal.timeout(10000));
       assert.equal(result.status,'deopt');assert.match(result.error,/More than one create operation/u);
-      assert.equal(result.effectState,'none');assert.equal(calls,0);
+      assert.equal(result.effectState,'none');assert.equal(calls.count,0);
       assert(!(await fs.readdir(mixed)).some(name=>name.startsWith('spelling-')));
     }finally{fs.lstat=nativeLstat;}
   }finally{await fs.rm(root,{recursive:true,force:true});}

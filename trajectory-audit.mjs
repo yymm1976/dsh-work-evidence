@@ -18,7 +18,11 @@ const STATIC_RESULTS=new Set([...READ,'glob','grep']);
 // reads saved histories, including sessions produced while the OPS adapters
 // existed. Dropping an ops write from recognition would record no mutation and
 // let requirement coverage report `supported` over a file that had changed.
-const WRITE=new Set(['write','edit','verified_exec','str_replace_editor','ops_write_file','ops_edit_file']);
+const WRITE=new Set(['write','edit','verified_exec','str_replace_editor','ops_write_file','ops_edit_file','fastedit_java']);
+// fastedit_java covered both edits and pure lookups. A lookup operation is not a
+// mutation, so a saved session's find_entity/read_entity call must not count as
+// a write in the offline audit.
+const readOnlyLegacyWrite=call=>call?.name==='fastedit_java'&&['find_entity','read_entity'].includes(call?.arguments?.operation);
 const messageOf=event=>event.data?.message??(event.data?.role?event.data:null);
 const integer=value=>Number.isSafeInteger(value)&&value>=0;
 const stable=value=>JSON.stringify(value,(_key,item)=>item&&typeof item==='object'&&!Array.isArray(item)?Object.fromEntries(Object.keys(item).sort().map(key=>[key,item[key]])):item);
@@ -281,13 +285,13 @@ export function normalizeDshEvents(input){
     const fileEffects=call.name==='verified_exec'&&Array.isArray(value?.files)?value.files.map(file=>({
       path:fileOf(file),status:file?.effectState})).filter(file=>['applied','partial','unknown'].includes(file.status)):null;
     if(fileEffects!==null)call.fileEffectEvidence=value.files.some(file=>['none','applied','partial','unknown'].includes(file?.effectState));
-    if(WRITE.has(call.name)&&(fileEffects?fileEffects.length>0:effect!=='none'&&
+    if(WRITE.has(call.name)&&!readOnlyLegacyWrite(call)&&(fileEffects?fileEffects.length>0:effect!=='none'&&
       (call.outcome==='succeeded'||['applied','partial','unknown'].includes(effect)))){
       mutationEpoch++;
       if(fileEffects)changes.push(...fileEffects.map(file=>({seq:call.resultSeq,callSeq:call.callSeq,...file,tool:call.name,currentState:'not-inferred'})));
       else changes.push({seq:call.resultSeq,callSeq:call.callSeq,path:fileOf(call.arguments),tool:call.name,
         status:effect??'native-operation-succeeded',currentState:'not-inferred'});
-    }else if(WRITE.has(call.name)&&!fileEffects&&effect!=='none'){
+    }else if(WRITE.has(call.name)&&!readOnlyLegacyWrite(call)&&!fileEffects&&effect!=='none'){
       possibleChanges.push({seq:call.resultSeq,callSeq:call.callSeq,path:fileOf(call.arguments),tool:call.name,status:'unknown'});
     }
     if(call.name==='run_code')opaqueEpoch++;

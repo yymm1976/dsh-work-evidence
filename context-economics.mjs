@@ -74,7 +74,7 @@ export function createContextEconomics(ctx,runtime){
   const states=new Map();
   const get=agent=>{
     let state=states.get(agent.session.id);
-    if(!state){state={last:null,lastSuccessfulMain:null,mainHistory:[],mainAttempts:[],decisions:[],skips:{},requests:0,reportedPromptTokens:0,reportedMainPromptTokens:0,mainPromptRequests:0,reportedOutputTokens:0,
+    if(!state){state={last:null,previousAttempt:null,lastSuccessfulMain:null,mainHistory:[],mainAttempts:[],decisions:[],skips:{},requests:0,reportedPromptTokens:0,reportedMainPromptTokens:0,mainPromptRequests:0,reportedOutputTokens:0,
       missingUsage:0,missingCacheUsage:0,pricedRequests:0,costByCurrency:Object.create(null),auxiliaryRequests:0,compactionRequests:0,mainFinished:0,
       surfaceChanges:0,cacheResetCount:0,uncachedInputAtReset:0,resetTaxByCurrency:Object.create(null),
       effortChanges:0,cacheResetAfterEffortChange:0,effortResetExposureByCurrency:Object.create(null),
@@ -266,10 +266,18 @@ export function createContextEconomics(ctx,runtime){
         outputTokens:usage.outputTokens,finishReason:record.finishReason});
       if(state.mainHistory.length>16)state.mainHistory.shift();
     }
-    const previous=state.last,envelope=envelopeKey(options),same=previous&&sameRoute(previous,options),changed=same&&previous.envelope!==envelope;
+    // Transition counters describe the step between adjacent attempts, so they
+    // belong on the immediately previous attempt, not on the retained exposure
+    // baseline: that baseline skips failed or partial attempts by design, which
+    // would make one effort change count twice when a retry follows a failure.
+    const previousAttempt=state.previousAttempt;
+    const previousBaseline=state.last;
+    const envelope=envelopeKey(options);
+    if(previousAttempt)state.surfaceChanges+=previousAttempt.envelope!==envelope?1:0;
+    if(previousAttempt)state.effortChanges+=previousAttempt.reasoningEffort!==options.reasoningEffort?1:0;
+    state.previousAttempt={provider:options.provider,model:options.model,reasoningEffort:options.reasoningEffort,envelope};
+    const previous=previousBaseline,same=previous&&sameRoute(previous,options),changed=same&&previous.envelope!==envelope;
     const effortChanged=same&&previous.reasoningEffort!==options.reasoningEffort;
-    if(changed)state.surfaceChanges++;
-    if(effortChanged)state.effortChanges++;
     if(previous?.usage?.cacheReadTokens>0&&usage?.cacheReadTokens<previous.usage.cacheReadTokens*.5&&usage?.inputTokens>2000){
       state.cacheResetCount++;state.uncachedInputAtReset+=usage.inputTokens;
       if(changed&&price){const extra=Math.max(0,Math.min(usage.inputTokens-previous.usage.inputTokens,previous.usage.cacheReadTokens-usage.cacheReadTokens));

@@ -14,7 +14,7 @@
 
 质量审查保留成功原生读取中已取得的源码，失败或截断的读取不作为完整文件。条件编辑在 workspace-write 模式通过已注入的文件服务解析权限范围；服务缺失时拒绝写入。
 
-**OPS 适配删除。** `opsAdapters`、`fastEditEnabled`、`fastedit_java`、`fastedit-bridge.py`、`requirements-fastedit.txt` 以及 OPS CAS 编辑后端已删除。OPS 独有的 `ops_*` 工具分类、OPS 错误建议注入、OPS 经济学计数器和 `ops_bash` Shell 偏好不再存在。完整清单和证据见 `OPS-REMOVAL.md`，选项说明见 `OPS-ADAPTERS-OPT-IN.md`。旧的 `opsAdapters` / `fastEditEnabled` 键仍能加载，但按退役设置强制为 `false`。
+**OPS 适配删除。** `opsAdapters`、`fastEditEnabled`、`fastedit_java`、`fastedit-bridge.py`、`requirements-fastedit.txt` 以及 OPS CAS 编辑后端已删除。OPS 独有的 `ops_*` 工具分类、OPS 错误建议注入、OPS 经济学计数器和 `ops_bash` Shell 偏好不再存在。选项说明见随包附带的 `OPS-ADAPTERS-OPT-IN.md`；删除清单与证据见仓库中的 2026-11-14 变更记录。旧的 `opsAdapters` / `fastEditEnabled` 键仍能加载，但按退役设置强制为 `false`。
 
 `verified_exec` 现在只有一个后端：原生条件写入（`nativeVerifiedEdits:true`），固定要求宿主 0.2.2-rc.2。在 0.2.1-rc.4 / 0.2.2-rc.1 上它返回 `cas-file-tools-unavailable` 和 `missing:["rc2-native-conditional-write"]`，工具面也不发布；不会退回未带版本条件的普通写入。
 
