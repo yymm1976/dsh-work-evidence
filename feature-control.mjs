@@ -85,7 +85,7 @@ export function latestObservedEffect(counters){
 }
 
 /** Local readiness only. A saved switch and available dependencies do not prove task success. */
-export function createFeatureControl(ctx,runtime,{available,canRecall,workingSet,qualityReview,compactionHandoff,retainedCompute,effects,verifiedExec}){
+export function createFeatureControl(ctx,runtime,{available,canRecall,workingSet,qualityReview,compactionHandoff,retainedCompute,effects,verifiedExec,contextEconomics}){
   const service=name=>{try{return ctx.get(name);}catch{return null;}};
   async function snapshot(agent,only){
     const state=runtime.get(agent),config=state.config,effective=runtime.isEnabled(agent),selection=runtime.currentSelection(agent);
@@ -132,9 +132,13 @@ export function createFeatureControl(ctx,runtime,{available,canRecall,workingSet
         // These rewrite or omit visible text, and every one of them is gated by
         // context-economics' route price. PACKAGE_DEFAULTS ships an empty
         // projectionPricing, so the switch reads "on" while the gate can only
-        // answer route-pricing-unavailable. Report that instead of "ready".
-        if(['historyHygiene','contextPrune','contextProtocol','requestProjection'].includes(key)&&
-          (!Array.isArray(config.projectionPricing)||!config.projectionPricing.length))reasons.push('requires-setting:projectionPricing');
+        // answer route-pricing-unavailable. An empty table and a table without a
+        // row for this active route fail the same way but need different fixes,
+        // so they are reported separately.
+        if(['historyHygiene','contextPrune','contextProtocol','requestProjection'].includes(key)){
+          if(!Array.isArray(config.projectionPricing)||!config.projectionPricing.length)reasons.push('requires-setting:projectionPricing');
+          else if(!contextEconomics?.pricingFor?.(agent))reasons.push('requires-setting:projectionPricing-for-active-route');
+        }
         if(['nativeProgramReuse','structuredCalls'].includes(key)&&!ptc)reasons.push('requires-ptc-tool-mode');
         if(key==='structuredCalls'&&(native?.language!=='typescript'||native?.programFormat!=='function-body'))reasons.push('requires-typescript-function-body-runtime');
         if(['hostNodeFallback','nativeShellScriptReuse'].includes(key)){

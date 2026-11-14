@@ -4,6 +4,11 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import {startHost,text,tool} from './helpers/host.mjs';
 
+// The installed @deepseek-ai/dsh-tools decides whether the conditional-write
+// backend exists. On 0.2.2-rc.2 it does, so an edit must apply; the
+// cas-file-tools-unavailable expectations below only describe hosts that lack it.
+const nativeSupported=(()=>{try{return JSON.parse(require('node:fs').readFileSync(require.resolve('@deepseek-ai/dsh-tools/package.json'),'utf8')).version==='0.2.2-rc.2';}catch{return false;}})();
+
 const valueOf=options=>JSON.parse(options.messages.findLast(message=>message.role==='tool').content.map(block=>block.text??'').join(''));
 const executeProgram=`import fs from 'node:fs';
 const adjustment = 0;
@@ -51,6 +56,9 @@ test('structured calls, retained data, exact program references, editing and han
         edits:[{file:'orders.json',mode:'replace_exact',old_text:'"amount":1200',new_text:'"amount":1300'}]})];}
       if(n===7){
         editApplied=valueOf(options).status==='applied';
+        // On the rc.2 conditional-write host this edit must actually apply; the
+        // deopt path below only describes hosts without that backend.
+        if(nativeSupported)assert.equal(editApplied,true,'expected verified_exec to apply on the rc.2 conditional-write backend: '+JSON.stringify(valueOf(options)));
         // On a host without the rc.2 conditional write the edit cannot run, so the
         // retained computation must NOT be invalidated; assert the honest deopt.
         if(!editApplied){
@@ -109,7 +117,7 @@ test('structured calls, retained data, exact program references, editing and han
   }finally{await host.close();}
 });
 
-test('PTC exact editing reports the missing native conditional-write backend without changing the file',async()=>{
+test('PTC exact editing reports the missing native conditional-write backend without changing the file',{skip:nativeSupported?'rc.2 host provides the conditional-write backend':'host lacks the backend'},async()=>{
   let result;
   const host=await startHost({toolMode:'ptc',workspace:{toolSurface:'full',nativeVerifiedEdits:true},extraMounts:[['dsh-ptc-runtime-node']],script:(options,n)=>{
     if(n===1)return [tool('run_code',{code:'console.log(JSON.stringify(await tools.verified_exec('+JSON.stringify({summary:'Change the exact amount',apply:true,

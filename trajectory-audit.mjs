@@ -13,7 +13,12 @@ export const ASSESSMENT_SCHEMA='work-evidence.task-assessment.v1';
 export const AUDIT_LABELS=Object.freeze(['W1','W2','W3','W4','W5','W6','W7','W8','Q1','Q2','Q3','Q4','Q5']);
 const READ=new Set(['read','project_evidence']);
 const STATIC_RESULTS=new Set([...READ,'glob','grep']);
-const WRITE=new Set(['write','edit','verified_exec','str_replace_editor']);
+// The live surface registers only `write`/`edit`/`verified_exec` now.
+// `str_replace_editor` and the two ops_* names stay accepted because this audit
+// reads saved histories, including sessions produced while the OPS adapters
+// existed. Dropping an ops write from recognition would record no mutation and
+// let requirement coverage report `supported` over a file that had changed.
+const WRITE=new Set(['write','edit','verified_exec','str_replace_editor','ops_write_file','ops_edit_file']);
 const messageOf=event=>event.data?.message??(event.data?.role?event.data:null);
 const integer=value=>Number.isSafeInteger(value)&&value>=0;
 const stable=value=>JSON.stringify(value,(_key,item)=>item&&typeof item==='object'&&!Array.isArray(item)?Object.fromEntries(Object.keys(item).sort().map(key=>[key,item[key]])):item);

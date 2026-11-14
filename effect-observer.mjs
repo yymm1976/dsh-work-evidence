@@ -47,7 +47,7 @@ FEATURES.nativeVerifiedEdit='nativeVerifiedEdits';
 FEATURES.fileProfile='fileProfiling';
 FEATURES.structuredJson='structuredJson';
 const PLUGIN_TOOLS=new Set(['project_evidence','work_report','work_status','work_state','work_recall','work_exec','work_compute','work_probe','evidence_index','candidate_select','ptc_patterns','ptc_fastpath','verified_exec','file_profile','structured_json']);
-const RETIRED_FEATURES=new Set(['programHistory','ledgerFold','foldPlan','reasoningHistory','executionAdvice','finishAdvice','presentationAdvice','nativeProgramReference']);
+const RETIRED_FEATURES=new Set(['programHistory','ledgerFold','foldPlan','reasoningHistory','executionAdvice','finishAdvice','presentationAdvice','nativeProgramReference','fastEdit']);
 export const featureSetting=name=>FEATURES[name]??null;
 
 /** Measures changes on the same task trajectory. Provider usage is never attributed by subtraction. */

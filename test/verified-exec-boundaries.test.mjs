@@ -277,8 +277,12 @@ test('missing-target case aliases follow the actual directory and an unknown emp
     await fs.writeFile(path.join(root,'case-probe.txt'),'probe');
     const caseSensitive=await fs.lstat(path.join(root,'CASE-PROBE.txt')).then(()=>false,error=>{if(error.code!=='ENOENT')throw error;return true;});
     const record={root,dir:path.join(root,'.dsh'),id:'volume-boundary',config:{nativeVerifiedEdits:true},metrics:{verifiedExecDeopts:0,verifiedExecPreviews:0}};
-    const service=createVerifiedExec({on(){},tools:{get:()=>({})}},
-      {init:async()=>record,save:async()=>{},execFor:()=>({})},async()=>({isError:false,value:{status:'completed',exists:false}}));
+    // Same injected backend as the other alias cases. The production backend
+    // reaches for a `get` service this fixture context does not provide, so
+    // `available()` would answer false and the plan would deopt with
+    // cas-file-tools-unavailable instead of exercising the alias decision.
+    let calls=0;
+    const service=aliasService(record,calls);
     const plan={summary:'Resolve the directory case behavior',edits:[{file:'new.txt',mode:'create',content:'one'},{file:'NEW.txt',mode:'create',content:'two'}]};
     const result=await service.execute({},plan,AbortSignal.timeout(10000));
     assert.equal(result.status,caseSensitive?'previewed':'deopt');

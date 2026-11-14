@@ -283,9 +283,14 @@ export function createContextEconomics(ctx,runtime){
     const weights=options.messages.map(messageTokens),envelopeTokens=textTokens(JSON.stringify({tools:options.tools??[],system:options.system??null}));
     // A failed or aborted attempt carries no observable prompt/cache usage, so it
     // must not replace the last usable observation. Otherwise the next economics
-    // decision reads a zero prompt as "nothing was cached".
-    const usableForExposure=total>0&&!record.failureCode&&!record.aborted;
-    if(usableForExposure)state.last={provider:options.provider,model:options.model,reasoningEffort:options.reasoningEffort,usage,
+    // decision reads a zero prompt as "nothing was cached". A partly reported
+    // usage has the same problem: a positive prompt with a missing output field
+    // still yields canonical.complete=false, and accepting it would let `assess`
+    // take an incomplete observation as the exposure baseline. Keep the flag on
+    // the observation so the later check can read it.
+    const usageComplete=canonical.complete===true;
+    const usableForExposure=total>0&&!record.failureCode&&!record.aborted&&usageComplete;
+    if(usableForExposure)state.last={provider:options.provider,model:options.model,reasoningEffort:options.reasoningEffort,usage,usageComplete,
       generation:record.generation,alignmentSafe:textProjection(options.messages),
       envelope,keys:options.messages.map(modelKey),ids:options.messages.map(message=>message.id),weights,
       envelopeTokens,

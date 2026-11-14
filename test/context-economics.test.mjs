@@ -119,3 +119,18 @@ test('the failed-attempt record keeps its zero usage out of the exposure baselin
   assert.equal(economics.lastUsage(agent).cacheReadTokens,81408);
   assert.equal(economics.summary(agent).lastUnusableAttempt.reason,'failed-attempt');
 });
+
+test('a partial usage observation cannot replace the exposure baseline',()=>{
+  const {agent,economics,finish,options}=harness();
+  finish(false,{inputTokens:1513,cacheReadTokens:81408,cacheWriteTokens:0,outputTokens:144,totalTokens:83065});
+  const before=economics.assess(agent,{savedChars:8000,savedTokensEstimate:2100});
+  // Positive prompt usage but the output field is missing, so the adapter's
+  // canonical view is incomplete. Replacing the baseline here would drop a
+  // known cache position in favour of a half-observed one.
+  economics.requestFinished(agent,options,{usage:{inputTokens:900,cacheReadTokens:0,cacheWriteTokens:0,totalTokens:900},
+    settled:true,finishReason:'tool-calls',usageConsistent:false,usageComplete:false});
+  const after=economics.assess(agent,{savedChars:8000,savedTokensEstimate:2100});
+  assert.equal(after.cachedSuffixTokensEstimate,before.cachedSuffixTokensEstimate);
+  assert.equal(after.reason,before.reason);
+  assert.equal(economics.lastUsage(agent).cacheReadTokens,81408);
+});
