@@ -70,7 +70,7 @@ export function registerManagementTools({ctx,runtime,state,effects,available,fea
     {path:{type:'string'},format:{type:'string',enum:['json','jsonl']},maxValueChars:{type:'integer',minimum:256,maximum:16000},
       selectors:{type:'array',minItems:1,maxItems:32,items:{type:'object',additionalProperties:false,properties:{pointer:{type:'string'},op:{type:'string',enum:['value','keys','count','page']},offset:{type:'integer',minimum:0},limit:{type:'integer',minimum:1,maximum:100}},required:['pointer','op']}}},['path','selectors'],
     (args,exec)=>structuredJson.query(exec.agent,args,exec.signal));
-  register('work_compute','Retained read-only Node REPL. Data, functions and imports persist between calls. Do not redeclare an existing const/let name in a later cell; reuse the binding, choose a new name, or pass reset:true only for a self-contained cell. Top-level await is allowed, return is not; print values or end with JSON. tools has only read/glob/grep/work_recall and OPS reads. State resets after DSH write/edit tools, tool-surface/session changes or interruption; shell/work_exec writes are not detected, so pass reset:true after them. Use normal tools for project edits and work_exec scriptRef for whole-program revisions.',
+  register('work_compute','Retained read-only Node REPL. Data, functions and imports persist between calls. Do not redeclare an existing const/let name in a later cell; reuse the binding, choose a new name, or pass reset:true only for a self-contained cell. Top-level await is allowed, return is not; print values or end with JSON. tools has only read/glob/grep/work_recall; OPS reads require opsAdapters. State resets after DSH write/edit tools, tool-surface/session changes or interruption; shell/work_exec writes are not detected, so pass reset:true after them. Use normal tools for project edits and work_exec scriptRef for whole-program revisions.',
     {code:{type:'string',description:'REPL statements up to 64000 characters. Reuse retained data/functions and submit only new input or local changes.'},
       reset:{type:'boolean',description:'Explicitly clear this agent\'s retained environment before running code.'},
       timeoutMs:{type:'integer',minimum:1,maximum:600000}},['code'],async(args,exec)=>{
@@ -315,7 +315,7 @@ export function registerManagementTools({ctx,runtime,state,effects,available,fea
   register('ptc_patterns','只读扫描当前工作区最近的DSH会话，从真实run_code源码与PTC嵌套派发事件提取跨多个模型请求的重复调用链、参数结构、数据依赖和阻塞原因，并保存到.dsh/work-evidence/ptc-patterns.json。不会执行候选、修改文件或声称减少Token；跨请求输入绑定和净收益仍未证明。',
     {scope:{type:'string',enum:['workspace','session']},sessionId:{type:'string'},maxSessions:{type:'integer',minimum:1,maximum:32},maxEventsPerSession:{type:'integer',minimum:2000,maximum:50000},minSupport:{type:'integer',minimum:1,maximum:20},minToolCalls:{type:'integer',minimum:2,maximum:32},maxCandidates:{type:'integer',minimum:1,maximum:30}},
     [],(args,exec)=>ptcPatterns.scan(exec.agent,args,exec.signal));
-  register('ptc_fastpath','保存并运行当前任务内已明确的一至八个只读步骤，支持DSH原生read/grep/glob与可选OPS。mode=define提供具体工具、输入与步骤，可引用$input.*和$steps.<id>.*，用$map绑定数组；mode=run运行已保存定义，工具缺失、参数不完整、失败或不完整则deopt。只读，无shell或源码写入。候选结构本身不扩大授权。',
+  register('ptc_fastpath','保存并运行当前任务内已明确的一至八个只读步骤，支持DSH原生read/grep/glob；OPS读取需启用 opsAdapters。mode=define提供具体工具、输入与步骤，可引用$input.*和$steps.<id>.*，用$map绑定数组；mode=run运行已保存定义，工具缺失、参数不完整、失败或不完整则deopt。只读，无shell或源码写入。候选结构本身不扩大授权。',
     {mode:{type:'string',enum:['define','list','run','remove']},name:{type:'string'},candidate_id:{type:'string'},definition:{type:'object'},inputs:{type:'object'}},
     ['mode'],async(args,exec)=>{
       if(args.mode==='list')return ptcFastpath.list(exec.agent,exec.signal);
@@ -327,7 +327,7 @@ export function registerManagementTools({ctx,runtime,state,effects,available,fea
       }
       return ptcFastpath.run(exec.agent,args,exec.signal);
     });
-  register('verified_exec','Apply several explicit exact replacements or new files in one call with version checks and native permission enforcement. Set apply:false for a preview. Conflicts preserve newer content and return deopt; cross-file writes take effect per file and report partial effects honestly. validations are optional and run only the explicitly supplied commands. applied means the files changed; validated means those commands also passed. Neither status declares the whole task complete.',
+  register('verified_exec','Apply several explicit exact replacements or new files in one call with version checks and native permission enforcement. Set apply:false for a preview. Conflicts preserve newer content and return deopt; cross-file writes take effect per file and report partial effects honestly. The OPS CAS backend requires opsAdapters; otherwise nativeVerifiedEdits must be enabled. validations are optional and run only the explicitly supplied commands. applied means the files changed; validated means those commands also passed. Neither status declares the whole task complete.',
     {summary:{type:'string'},apply:{type:'boolean'},
       edits:{type:'array',minItems:1,maxItems:50,items:{type:'object',additionalProperties:false,properties:{
         file:{type:'string'},mode:{type:'string',enum:['replace_exact','create']},old_text:{type:'string'},new_text:{type:'string'},content:{type:'string'}
@@ -337,7 +337,7 @@ export function registerManagementTools({ctx,runtime,state,effects,available,fea
         tool:{type:'string',enum:['ops_bash','bash','pwsh']}
       },required:['command','description']}}},
     ['summary','edits'],(args,exec)=>verifiedExec.execute(exec.agent,args,exec.signal));
-  register('fastedit_java','按Java符号定位、读取或修改一个方法或类。find_entity取得候选及行范围；read_entity读取唯一实体；replace_symbol、replace_symbol_full、after_symbol用snippet生成修改，apply=true通过OPS当前revision应用。仅在当前任务要求外部命令时提供validations。歧义、实体过大、匹配或语法解析失败时deopt；预览不修改源文件。',
+  register('fastedit_java','需启用 opsAdapters。按Java符号定位、读取或修改一个方法或类。find_entity取得候选及行范围；read_entity读取唯一实体；replace_symbol、replace_symbol_full、after_symbol用snippet生成修改，apply=true通过OPS当前revision应用。仅在当前任务要求外部命令时提供validations。歧义、实体过大、匹配或语法解析失败时deopt；预览不修改源文件。',
     {file:{type:'string'},operation:{type:'string',enum:['find_entity','read_entity','replace_symbol','replace_symbol_full','after_symbol']},symbol:{type:'string'},snippet:{type:'string'},
       apply:{type:'boolean'},validations:{type:'array',minItems:0,maxItems:10,items:{type:'object',additionalProperties:false,properties:{
         command:{type:'string'},description:{type:'string'},timeout_ms:{type:'integer',minimum:1000,maximum:600000},

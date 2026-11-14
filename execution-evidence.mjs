@@ -9,6 +9,7 @@ import {argsOf,eventLog} from './runtime.mjs';
 
 const TOOLS=['pwsh','ops_bash','bash','job_output','read','grep','glob','ops_stat','ops_read_files','ops_inspect_local_file'];
 const SHELL=new Set(['pwsh','ops_bash','bash']);
+const OPS_READ_TOOLS=new Set(['ops_stat','ops_read_files','ops_inspect_local_file']);
 const MAX_RECORD_BYTES=1500000;
 const MAX_RECORDS=32;
 const MAX_SUMMARY_RECORDS=8;
@@ -91,7 +92,7 @@ function checked(input){
 
 export function createExecutionEvidence(ctx,runtime,call,{executionDependencies=createExecutionDependencies()}={}){
   const evidenceStates=new Map();
-  const available=agent=>TOOLS.filter(name=>{try{return !!ctx.tools.get(name,agent);}catch{return false;}});
+  const available=agent=>TOOLS.filter(name=>{try{return (runtime.get(agent).config.opsAdapters===true||!OPS_READ_TOOLS.has(name))&&!!ctx.tools.get(name,agent);}catch{return false;}});
   const retrieveOriginal=id=>({tool:'work_probe',arguments:{mode:'recall',id,offset:0}});
 
   function replayPlan(agent,id,maxChars,seen=new Set()){
@@ -287,6 +288,8 @@ export function createExecutionEvidence(ctx,runtime,call,{executionDependencies=
     try{
     if(plan.mode==='inspect')return {status:'available',tools:available(agent),
       note:'Use a concrete question and an already formed native call within the current task. No command or case is generated automatically.'};
+    if(OPS_READ_TOOLS.has(plan.tool)&&s.config.opsAdapters!==true)
+      return {status:'deopt',reason:'ops-adapters-disabled',tool:plan.tool,executionOccurred:false};
     if(!available(agent).includes(plan.tool))return {status:'deopt',reason:'requested-native-tool-unavailable',tool:plan.tool,executionOccurred:false};
     if(SHELL.has(plan.tool)&&ctx.get('sandboxPolicy')?.resolve({session:agent.session})?.mode==='read-only')
       return {status:'unavailable',reason:'native-read-only-session',executionOccurred:false,

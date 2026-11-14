@@ -20,7 +20,7 @@ async function opsMounts(){
 const resultsOf=host=>host.events.filter(e=>e.type==='tool/result').map(e=>JSON.parse(e.data.message.content.map(b=>b.text??'').join('')));
 
 async function run(steps,files,workspace={}){
-  const host=await startHost({workspace:{toolSurface:'full',...workspace},extraMounts:await opsMounts(),script:(_o,n)=>steps[n-1]??[text('完成。')]});
+  const host=await startHost({workspace:{toolSurface:'full',opsAdapters:true,...workspace},extraMounts:await opsMounts(),script:(_o,n)=>steps[n-1]??[text('完成。')]});
   try{
     for(const [name,body] of Object.entries(files))await fs.writeFile(path.join(host.cwd,name),body);
     const agent=await host.createAgent('max');
@@ -67,7 +67,7 @@ test('fastedit_java finds, reads and replaces one method through the native pwsh
     [tool('fastedit_java',{file:'Calc.java',operation:'replace_symbol',symbol:'Calc.add',snippet:replacement})],
     [tool('fastedit_java',{file:'Calc.java',operation:'replace_symbol',symbol:'Calc.add',snippet:replacement,apply:true})],
     [tool('fastedit_java',{file:'Calc.java',operation:'read_entity',symbol:'Calc.missing'})],
-  ],{'Calc.java':java},{fastEditPython:PYTHON});
+  ],{'Calc.java':java},{fastEditPython:PYTHON,fastEditEnabled:true});
   assert.equal(results[0].status,'found');
   assert.equal(results[0].matches[0].line_start,2);
   assert.equal(results[1].status,'read');
@@ -81,7 +81,7 @@ test('fastedit_java finds, reads and replaces one method through the native pwsh
 
 test('fastEditEnabled disables fastedit_java and restores it in the same host session', {skip:!hasOps||!pythonFileAvailable(PYTHON)}, async()=>{
   const java='public class Calc {\n  public int add(int a, int b) {\n    return a + b;\n  }\n}\n';
-  const host=await startHost({workspace:{toolSurface:'full',fastEditEnabled:false,fastEditPython:PYTHON},extraMounts:await opsMounts(),
+  const host=await startHost({workspace:{toolSurface:'full',opsAdapters:true,fastEditEnabled:false,fastEditPython:PYTHON},extraMounts:await opsMounts(),
     script:(_o,n)=>n===1||n===3?[tool('fastedit_java',{file:'Calc.java',operation:'find_entity',symbol:'Calc.add'})]:[text('已记录结果。')]});
   try{
     await fs.writeFile(path.join(host.cwd,'Calc.java'),java);

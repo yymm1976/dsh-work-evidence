@@ -85,7 +85,7 @@ test('human commands expose compact-hidden tools and immediately restore the dis
 test('feature readiness distinguishes required settings, runtime dependencies and task conditions',async()=>{
   const host=await startHost({pluginConfig:{swEviction:true,requestProjection:true,finalJsonResultGuard:true,finalJsonGuard:false,
     nativeProgramReuse:true,structuredCalls:true,nativeReasoningReplay:true,qualityReview:true,stubSummary:true,deferPressureCompaction:true,
-    fastEditPython:path.resolve('missing-python.exe')},script:()=>[text('done')]});
+    opsAdapters:true,fastEditPython:path.resolve('missing-python.exe')},script:()=>[text('done')]});
   try{
     const agent=await host.createAgent('max');
     const view=await host.command(agent,'features'),entry=key=>view.features.find(item=>item.key===key);

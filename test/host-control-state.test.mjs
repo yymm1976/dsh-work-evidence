@@ -21,7 +21,7 @@ test('status stays readable while disabled but cannot enable or rewrite workspac
 
 test('the session gate hides management tools and restores them without touching native tools',async()=>{
   const seen=[];
-  const host=await startHost({workspace:{toolSurface:'full'},script:(options,call)=>{
+  const host=await startHost({workspace:{toolSurface:'full',opsAdapters:true},script:(options,call)=>{
     seen.push({call,names:(options.tools??[]).map(item=>item.name)});
     if(call===1)return [text('就绪。')];
     if(call===2)return [tool('work_status',{})];

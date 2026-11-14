@@ -234,7 +234,7 @@ function normalizeEffect(result){
   return {ok:completed,status:status||(result.isError?'error':'unknown'),
     effectState:completed?'applied':data?.effectState||value?.effectState||error?.effectState||'unknown',
     revision:data?.revision||null,bytes:data?.bytes??null,lineCount:data?.lineCount??null,
-    changed:data?.changed??null,error:completed?null:error||{message:textOf(result)||'OPS write returned an ambiguous result'}};
+    changed:data?.changed??null,error:completed?null:error||{message:textOf(result)||'File write returned an ambiguous result'}};
 }
 
 function failedEffect(error){
@@ -298,6 +298,12 @@ export function createVerifiedExec(ctx,runtime,call){
     if(useNative&&registeredNativeWrite)native??=createNativeCas(ctx,runtime,registeredNativeWrite,registeredNativeExecute);
     record.backend=useNative?'dsh-native-cas':'ops-cas';
     record.versionKind=useNative?'native-opaque':'sha256';
+    // OPS CAS is opt-in. Without native conditional writes, a caller that has
+    // not enabled opsAdapters gets an explicit deopt instead of an OPS call.
+    if(!useNative&&s.config.opsAdapters!==true){
+      record.status='deopt';record.reason='ops-adapters-disabled';s.metrics.verifiedExecDeopts++;await save();
+      return {status:'deopt',reason:record.reason,reportPath,effectState:'none'};
+    }
     const observe=file=>useNative?native.stat(agent,file,signal):statFile(call,runtime,agent,file,signal);
     async function save(){await runtime.save(agent,reportPath,record,signal);}
     function fileEffects(){return record.files.map(file=>({file:file.file,mode:file.mode,

@@ -118,7 +118,9 @@ function perMemberArguments(base, name) {
 
 function parserSettings(options) {
   const config = options.config && typeof options.config === 'object' ? options.config : {};
-  const enabled = options.fastEditEnabled ?? options.enabled ?? config.fastEditEnabled ?? true;
+  // Source-member parsing is a read-only feature. It must not inherit the Java
+  // edit switch: disabling edits should not turn member parsing into a deopt.
+  const enabled = options.memberParsing ?? options.enabled ?? config.memberParsing ?? true;
   const memberParsing = options.memberParsing ?? config.memberParsing ?? true;
   const python = options.python
     || options.fastEditPython

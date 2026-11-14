@@ -38,7 +38,7 @@ test('structured calls, retained data, exact program references, editing and han
   const wrapper='console.log(JSON.stringify(await tools.work_exec('+JSON.stringify({runtime:'node',code:executeProgram,sources:['orders.json']})+')));';
   assert.ok(wrapper.length>=1000);
   const batch=(name,args)=>tool('run_code',{calls:[{name,arguments:args}]});
-  const host=await startHost({toolMode:'ptc',workspace:{toolSurface:'full',nativeProgramReuse:true,structuredCalls:true},
+  const host=await startHost({toolMode:'ptc',workspace:{toolSurface:'full',opsAdapters:true,nativeProgramReuse:true,structuredCalls:true},
     extraMounts:[['dsh-ptc-runtime-node'],[file,{promptPolicy:false,required:true}],
       [discovery,{enabled:true,alwaysLoaded:['stat','edit_file','write_file'],required:true}],
       [ptc,{alwaysLoaded:['stat','edit_file','write_file'],required:true}]],script:(options,n)=>{
@@ -88,7 +88,7 @@ test('structured calls, retained data, exact program references, editing and han
 
 test('PTC exact editing reports absent OPS capabilities without changing the file',async()=>{
   let result;
-  const host=await startHost({toolMode:'ptc',workspace:{toolSurface:'full'},extraMounts:[['dsh-ptc-runtime-node']],script:(options,n)=>{
+  const host=await startHost({toolMode:'ptc',workspace:{toolSurface:'full',opsAdapters:true},extraMounts:[['dsh-ptc-runtime-node']],script:(options,n)=>{
     if(n===1)return [tool('run_code',{code:'console.log(JSON.stringify(await tools.verified_exec('+JSON.stringify({summary:'Change the exact amount',apply:true,
       edits:[{file:'orders.json',mode:'replace_exact',old_text:'1200',new_text:'1300'}]})+')));'})];
     result=valueOf(options);return [text('当前环境缺少 OPS 文件入口。')];
