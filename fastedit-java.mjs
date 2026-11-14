@@ -60,6 +60,12 @@ export function createFastEditJava(ctx,runtime,call,verifiedExec){
       record.status='deopt';record.reason='fastedit-disabled';s.metrics.fastEditDeopts++;await save();
       return {status:'deopt',reason:record.reason,reportPath};
     }
+    // FastEdit reads source through ops_stat and applies through OPS CAS; both
+    // require the opt-in. Keep fastedit-disabled precedence above.
+    if(s.config.opsAdapters!==true){
+      record.status='deopt';record.reason='ops-adapters-disabled';s.metrics.fastEditDeopts++;await save();
+      return {status:'deopt',reason:record.reason,reportPath};
+    }
     if(typeof python!=='string'||!path.isAbsolute(python)){
       record.status='deopt';record.reason='fastedit-python-not-configured';s.metrics.fastEditDeopts++;await save();
       return {status:'deopt',reason:record.reason,reportPath,next:'Set work-evidence fastEditPython to a Python environment with FastEdit core installed.'};
