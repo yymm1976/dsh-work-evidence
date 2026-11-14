@@ -471,6 +471,8 @@ test('a completed failed revision exposes its exact new version without claiming
 
 test('a long task gets one convergence reminder without claiming successful observations made no progress',()=>{
   const t=timeline({executionTriage:false}),reminders=[];
+  // The reminder is gated on having produced real file effects.
+  t.command('write',{file_path:'src/main.js',content:'export const n=1;'},{});
   for(let i=0;i<28;i++){
     t.add('assistant/message',{usage:{outputTokens:5000},message:{role:'assistant',content:[]}});
     t.command('pwsh',{command:'observe '+i},{exitCode:0,stdout:'new fact '+i,stderr:''});
@@ -638,6 +640,8 @@ test('the long-response reminder is injected at most once per user request',()=>
     {seq:seq++,type:'user/message',data:{message:{id:'request',role:'user',source:{kind:'user'},content:[{type:'text',text:'继续修复任务'}]}}}];
   for(const step of [1,2,3,4]){
     log.push({seq:seq++,type:'step/start',data:{turn:1,step}});
+    if(step===1)log.push({seq:seq++,type:'tool/call',data:{turn:1,step, callId:'w',name:'write',arguments:{file_path:'edit.txt',content:'x'}}}),
+      log.push({seq:seq++,type:'tool/result',data:{turn:1,step,message:{role:'tool',source:{callId:'w'},content:[{type:'text',text:'ok'}]}}});
     log.push({seq:seq++,type:'tool/call',data:{turn:1,step, callId:'c'+step,name:'read',arguments:{file_path:'a.txt'}}});
     log.push({seq:seq++,type:'tool/result',data:{turn:1,step,message:{role:'tool',source:{callId:'c'+step},content:[{type:'text',text:'ok'}]}}});
     log.push({seq:seq++,type:'assistant/message',data:{turn:1,step,message:{role:'assistant',content:[{type:'text',text:'progress'}]},usage:{outputTokens:9000}}});
