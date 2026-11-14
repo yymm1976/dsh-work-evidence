@@ -137,8 +137,11 @@ test('a scoped file change and ambiguous or indirect corrections leave judgment 
   }
 });
 
+const step1Edit=()=>[tool('write',{file_path:'note.txt',content:'one'})];
+
 test('stepPacing controls actual output-usage guidance',async()=>{
-  const steps=Array.from({length:4},()=>[tool('pwsh',{command:'echo ok',description:'observe'})]);
+  // The delivery nudge now requires real file work; keep one edit in the fixture.
+  const steps=[step1Edit(),...Array.from({length:3},()=>[tool('pwsh',{command:'echo ok',description:'observe'})])];
   const usage=()=>({inputTokens:1000,outputTokens:6500,cacheReadTokens:0,totalTokens:7500});
   const on=await scenario({},'修改项目并观察结果',steps,{usage}),off=await scenario({stepPacing:false},'修改项目并观察结果',steps,{usage});
   assert.ok(on.status.detail.observability.features.stageJudgment.applied>0);
