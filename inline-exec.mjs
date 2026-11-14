@@ -362,6 +362,36 @@ function resolveIndexedScript(input,calls,resultExecutables,resultHostRuntimes,e
 
 export const INLINE_ENV_KEYS=Object.freeze(['DSH_WORK_EVIDENCE_STDIN_ID',...Array.from({length:3},(_,index)=>'DSH_WORK_EVIDENCE_STDIN_'+index)]);
 const validTransferId=value=>typeof value==='string'&&/^[A-Za-z0-9_-]{1,128}$/u.test(value);
+
+/** The native shells `work_exec` can transport a program through. */
+export const NATIVE_SHELLS=Object.freeze(['pwsh','bash']);
+
+/** The shell a platform prefers, used to name what an unavailable report looked for. */
+export function preferredShell(platform=process.platform){return platform==='win32'?'pwsh':'bash';}
+
+/**
+ * Select the native shell from the shells the host actually publishes.
+ *
+ * The platform only orders the preference; it never decides the result. A
+ * host that publishes nothing yields null, so callers report the shell that
+ * was looked for rather than a platform guess. On Windows pwsh stays first
+ * (PowerShell 7 or the 5.1 fallback the executor already accepts); on POSIX
+ * bash stays first. A Windows host that publishes only bash therefore reaches
+ * bash instead of an unavailable pwsh.
+ *
+ * @param isAvailable - reports whether the host publishes the named shell.
+ * @param platform - the platform whose preference order applies.
+ * @returns the first published shell, or null when neither is published.
+ */
+export function selectShell(isAvailable,platform=process.platform){
+  for(const candidate of platform==='win32'?['pwsh','bash']:['bash','pwsh']){
+    let present=false;
+    try{present=Boolean(isAvailable(candidate));}catch{present=false;}
+    if(present)return candidate;
+  }
+  return null;
+}
+
 /** Ask the native shell about its own executor, including local functions on Bash. */
 export function nodeAvailabilityCommand(shell,marker){
   if(!validTransferId(marker))throw new Error('Node availability needs an exact marker');

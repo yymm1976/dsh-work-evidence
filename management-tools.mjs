@@ -5,7 +5,7 @@ import {randomUUID} from 'node:crypto';
 import {stat} from 'node:fs/promises';
 import {recallHistory} from "./compaction-handoff.mjs";
 import {recallCall} from "./history-hygiene.mjs";
-import {inlineCommand,inlineEnvironment,INLINE_ENV_KEYS,resolveInlineScript,declaredInlineExecutable,namedInlineExecutable,inlineFailureLocation,inlineFormatRecovery,inlineScriptEventRef,nodeAvailabilityCommand,hasInterpreterConstraint,sameDeclaredInlineExecutable} from './inline-exec.mjs';
+import {inlineCommand,inlineEnvironment,INLINE_ENV_KEYS,resolveInlineScript,declaredInlineExecutable,namedInlineExecutable,inlineFailureLocation,inlineFormatRecovery,inlineScriptEventRef,nodeAvailabilityCommand,hasInterpreterConstraint,sameDeclaredInlineExecutable,selectShell,preferredShell} from './inline-exec.mjs';
 import {declaredFileSources,dependencyExecutionComplete,executionResultLayers} from './execution-dependencies.mjs';
 import {reportedExecutionChecks} from './recovery.mjs';
 
@@ -101,8 +101,8 @@ export function registerManagementTools({ctx,runtime,state,effects,available,fea
       }
       if(args.reset!==undefined)throw new Error('reset requires mode: retained');
       const sources=declaredFileSources(args.sources);
-      const shell=process.platform==='win32'?'pwsh':'bash';
-      if(!available(exec.agent,shell))return {status:'unavailable',reason:`native-${shell}-unavailable`,executionOccurred:false};
+      const shell=selectShell(name=>available(exec.agent,name));
+      if(!shell)return {status:'unavailable',reason:`native-${preferredShell()}-unavailable`,executionOccurred:false};
       if(shell==='bash'&&!prepareShellEnvironment())return {status:'unavailable',reason:'native-shell-env-unavailable',executionOccurred:false};
       let script;
       try{script=resolveInlineScript(args,exec.agent.session,exec.signal,{nativeShellScriptReuse:runtime.get(exec.agent).config.nativeShellScriptReuse});}catch(error){

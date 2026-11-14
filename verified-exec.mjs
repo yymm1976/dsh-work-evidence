@@ -5,6 +5,7 @@ import {within} from './evidence.mjs';
 import {createNativeCas} from './native-cas.mjs';
 import {reportedExecutionChecks} from './recovery.mjs';
 import {dependencyExecutionComplete,executionResultLayers,executionExitCode} from './execution-dependencies.mjs';
+import {selectShell} from './inline-exec.mjs';
 import {createNativeFiles} from './native-files.mjs';
 
 export const VERSION='0.8.3';
@@ -193,7 +194,9 @@ function failedEffect(error){
     revision:null,changed:null,error:{message:String(error?.message||error).slice(0,1200)}};
 }
 
-function shellTool(ctx,agent){return (process.platform==='win32'?['pwsh','bash']:['bash','pwsh']).find(name=>{try{return Boolean(ctx.tools.get(name,agent));}catch{return false;}})||null;}
+// Same capability-based selection `work_exec` uses, so a Windows host that
+// publishes only one of the two shells resolves to it here too.
+function shellTool(ctx,agent){return selectShell(name=>ctx.tools.get(name,agent));}
 
 async function runValidation(ctx,call,runtime,agent,validation,signal){
   const requested=validation.tool;
