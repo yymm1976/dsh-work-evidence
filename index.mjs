@@ -356,7 +356,12 @@ export function apply(ctx,config={}){
     const writeVerb=/(?:修改|修复|实现|编写|重构|创建|编辑|写入|增加|删除|替换|重写|改|modify|fix|implement|write|edit|create|delete|replace)/iu;
     const deniedWrite=/(?:不得|不要|禁止|不允许|不可|无需|不必|do not|don't|never)/iu;
     const allowedAfterDenial=/(?:但|但是|不过|然而|而是|需要|允许|可以|请|必须|应当|instead|however|but|should|must|can|may).{0,40}(?:修改|修复|实现|编写|重构|创建|编辑|写入|增加|删除|替换|重写|改|modify|fix|implement|write|edit|create|delete|replace)/iu;
-    return !request.split(/[。；;\n]/u).some(sentence=>
+    // Split on sentence ends in both scripts. A period ends a sentence only when a
+    // space and a capital follow, so "src/a.js" and "v1.2" stay intact. Without the
+    // English form, "Do not modify a.js. Create b.js." stayed one sentence and the
+    // first denial suppressed the second request, making a writable task read-only.
+    const sentences=request.split(/[。；;\n]|\.(?=\s+[A-Z])/u);
+    return !sentences.some(sentence=>
       writeVerb.test(sentence)&&(!deniedWrite.test(sentence)||allowedAfterDenial.test(sentence)));
   };
   const surfaceModeForRequest=request=>{

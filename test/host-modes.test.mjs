@@ -83,3 +83,19 @@ test('switching aggressive off and on changes effectiveness from the next reques
     assert.equal((await host.command(agent,'status')).effective,true);
   }finally{await host.close();}
 });
+
+test('an English denial is scoped to its own sentence',async()=>{
+  // "Do not modify a.js. Create b.js." used to split only on 。；; and newline, so
+  // both sentences stayed one string: the denial in the first suppressed the write
+  // request in the second and the task became read-only, hiding work_exec.
+  const host=await startHost({toolMode:'ptc',extraMounts:[['dsh-ptc-runtime-node']],script:answer});
+  try{
+    const agent=await host.createAgent('max');
+    await host.send(agent,'Do not modify src/a.js. Create src/b.js.');
+    assert.match(systemOf(host.requests.at(-1)),/\bwork_exec: \{/u,
+      'the second sentence asks for a write, so the task is writable');
+    await host.send(agent,'Read src/a.js only. Do not modify anything.');
+    assert.doesNotMatch(systemOf(host.requests.at(-1)),/\bwork_exec: \{/u,
+      'both sentences are read-only, so the task stays read-only');
+  }finally{await host.close();}
+});

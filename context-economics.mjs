@@ -314,7 +314,11 @@ export function createContextEconomics(ctx,runtime){
     state.previousAttempt={provider:options.provider,model:options.model,reasoningEffort:options.reasoningEffort,envelope};
     const previous=previousBaseline,same=previous&&sameRoute(previous,options),changed=same&&previous.envelope!==envelope;
     const effortChanged=same&&previous.reasoningEffort!==options.reasoningEffort;
-    if(previous?.usage?.cacheReadTokens>0&&usage?.cacheReadTokens<previous.usage.cacheReadTokens*.5&&usage?.inputTokens>2000){
+    // An incomplete observation can leave cacheReadTokens null. `null < x*.5` is
+    // true in JavaScript, so an omitted count would read as a cache reset and would
+    // also consume the transition-dedupe key. A reset needs a reported count.
+    const resetObserved=finite(usage?.cacheReadTokens)&&finite(previous?.usage?.cacheReadTokens);
+    if(resetObserved&&previous.usage.cacheReadTokens>0&&usage.cacheReadTokens<previous.usage.cacheReadTokens*.5&&usage?.inputTokens>2000){
       state.cacheResetCount++;state.uncachedInputAtReset+=usage.inputTokens;
       if(changed&&price){const extra=Math.max(0,Math.min(usage.inputTokens-previous.usage.inputTokens,previous.usage.cacheReadTokens-usage.cacheReadTokens));
         state.resetTaxByCurrency[price.currency]=(state.resetTaxByCurrency[price.currency]??0)+extra*Math.max(0,price.input-price.cacheRead)/1e6;}

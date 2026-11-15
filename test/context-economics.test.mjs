@@ -198,3 +198,18 @@ test('the forecast horizon follows the session length instead of stopping at the
     tools:[],system:'system',horizon:4});
   assert.equal(explicit.horizonSteps,4);
 });
+
+test('an omitted cache-read count cannot register as a cache reset',()=>{
+  const {agent,economics,finish,state,options}=harness();
+  state.config.projectionPricing=[{provider:'p',model:'m',currency:'USD',input:.15,cacheRead:.003,cacheWrite:.15,output:.6}];
+  finish(false,{inputTokens:100,cacheReadTokens:5000,cacheWriteTokens:0,outputTokens:20,totalTokens:5120});
+  const before=economics.summary(agent).cacheResetCount;
+  // The output field is present and input is large, but cacheReadTokens is omitted.
+  // canonicalUsage leaves it null, and `null < 2500` is true, so the old guard read
+  // this as a full cache drop and counted a reset that did not happen.
+  // Omit cacheReadTokens and totalTokens so canonicalUsage keeps cacheRead null and
+  // still reports consistent, which is the shape that reached the comparison.
+  finish(false,{inputTokens:6000,outputTokens:20});
+  assert.equal(economics.summary(agent).cacheResetCount,before,
+    'a missing cache-read count is absent evidence, not a measured drop');
+});
