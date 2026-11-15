@@ -360,6 +360,16 @@ export function createObservationLedger(ctx,runtime,nativeFiles=null){
     const reads=rawReads.filter(read=>(read.mutationCountAtRead??0)>=latestMutation)||rawReads;
     const keptAll=reads.length===rawReads.length;
     const batch=keptAll?rawBatch:null;
+    // A dropped read still sits inside the outer JSON projection, and reading windows
+    // out of that object would re-admit the pre-write body. The projection is left
+    // untouched — it is the model's own result — but the dropped paths are carried to
+    // the window step, which skips them. Deleting inside the projection would also
+    // rewrite what the model sees, which is not this path's job.
+    const droppedPaths=new Set(keptAll?[]:rawReads
+      .filter(read=>!reads.includes(read))
+      .map(read=>pathsFromArguments(read.arguments)[0])
+      .filter(Boolean)
+      .map(value=>String(value).replaceAll('\\','/').toLowerCase()));
     if(batch&&sameJson(textBlocks(result.content),batch)){
       source={name:reads[0].name,arguments:{files:reads.map(read=>read.arguments)},value:batch};
     }else if(exec.name==='run_code'&&(source=renderedReads(reads,textBlocks(result.content)))){
@@ -374,7 +384,11 @@ export function createObservationLedger(ctx,runtime,nativeFiles=null){
       if(!sameJson(textBlocks(result.content),reads[0].value))return skip('outer-projection-mismatch');
       return skip('not-read-wrapper');
     }
-    const windows=collectReadWindows(projection??source.value,pathsFromArguments(source.arguments)[0]??null);
+    const allWindows=collectReadWindows(projection??source.value,pathsFromArguments(source.arguments)[0]??null);
+    // Drop the windows whose read was superseded by a later write in the same call.
+    const windows=droppedPaths.size
+      ?allWindows.filter(window=>!droppedPaths.has(String(window.path).replaceAll('\\','/').toLowerCase()))
+      :allWindows;
     if(!windows.length)return skip('no-line-windows');
     for(const window of windows){
       const file=relativePath(root,window.path);if(!file)return skip('path-outside-workspace');
