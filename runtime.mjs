@@ -430,12 +430,33 @@ export function createRuntime(ctx,call,initial={}){
           at:new Date().toISOString(),revisitOnly:true};
       }
     }
+    if(!s.pendingStateNotice&&s.pendingDuplicateDefinition&&!s.duplicateDefinitionNotified&&s.step>0){
+      const {pattern,name,pathCount,sample}=s.pendingDuplicateDefinition;
+      // Taken out of the queue here: this notice is delivered once, so leaving it in
+      // place would either re-deliver it or hold up the next obligation behind it.
+      s.pendingDuplicateDefinition=null;
+      s.pendingStateNotice={observations:0,searches:0,files:new Set(),revisions:new Map(),
+        at:new Date().toISOString(),duplicateDefinition:{pattern,name,pathCount,sample}};
+    }
     if(!s.pendingStateNotice)return null;
     const notice=s.pendingStateNotice;s.pendingStateNotice=null;
     if(notice.revisitOnly){
       // Emitting the reminder discharges the obligation for these files; a later
       // write re-arms it.
       for(const [key,item] of [...s.pendingRevisit.entries()])if(s.step-item.atStep>=3)s.pendingRevisit.delete(key);
+    }
+    // A definition found in two or more files is the shape of the lost cases: one
+    // semantic layer was fixed and the other was never located. Say so once, before
+    // the model commits to a single site, and name the files it already has.
+    if(notice.duplicateDefinition){
+      const {pattern,pathCount,sample}=notice.duplicateDefinition;
+      // One notice per session: a second search for the same or another definition
+      // would otherwise repeat it, and a repeated notice is noise rather than a
+      // decision input.
+      s.duplicateDefinitionNotified=true;
+      const text=`同一定义出现在 ${pathCount} 个文件（${sample.join('、')}${pathCount>sample.length?' 等':''}）：\`${pattern}\` 在多个位置实现。同一语义常分两层（校验层与计算层、外层采集与内层构造、注入与消费）；只改其中一处时，另一处仍按旧行为运行。落笔前确认这些位置是否属于同一能力，以及是否需要各自修正。`;
+      s.metrics.stateNotices++;s.metrics.stateNoticeChars+=text.length;s.dirty=true;
+      return {text,observations:0,searches:0,files:[],extraFiles:0,revisions:[],duplicateDefinition:true};
     }
     const files=[...notice.files].slice(0,5),extra=Math.max(0,notice.files.size-files.length);
     const revisions=[...notice.revisions].slice(0,5).map(([file,revision])=>`${file}@${revision.slice(0,12)}`);
@@ -575,6 +596,24 @@ export function createRuntime(ctx,call,initial={}){
       s.searches.push({tool:exec.name,query:args.pattern||'',scope:args.path||'.',seq,step:s.step,empty:Array.isArray(items)&&!items.length});if(s.searches.length>12)s.searches.shift();
       recordSearch(s,exec,result,seq);
       if(Array.isArray(items)&&!items.length){const key=JSON.stringify([exec.name,args]),prior=s.emptyLookups.get(key),now=Date.now();if(prior&&now-prior.time<120000&&!prior.noted){prior.noted=true;s.pendingLookupFact={tool:exec.name,arguments:args,firstCallId:prior.callId,repeatedCallId:exec.callId};s.active=true;}else if(!prior||now-prior.time>=120000)s.emptyLookups.set(key,{time:now,callId:exec.callId,noted:false});if(s.emptyLookups.size>24)s.emptyLookups.delete(s.emptyLookups.keys().next().value);}
+      // One symbol defined in two files is the shape of the lost 059/066 cases: the
+      // model fixed the validation layer, never found the calculation layer, and
+      // the task still failed. The existing reminder only fires after a write; this
+      // fires on the search that reveals both sites, before the model commits to one.
+      if(exec.name==='grep'&&!s.pendingDuplicateDefinition&&!s.duplicateDefinitionNotified&&Array.isArray(items)&&items.length>=2){
+        const pattern=typeof args.pattern==='string'?args.pattern.trim():'';
+        // A definition query, not a free-text search: one identifier, optionally the
+        // language's definition keyword. Anything wider is a normal search.
+        if(/^(?:def|func|function|class|interface|struct|fn|fun|void|public|private|protected|static|final|abstract)?\s*[A-Za-z_$][\w$]{2,64}$/u.test(pattern)){
+          const name=pattern.replace(/^[A-Za-z_$][\w$]*\s+/u,''),sites=new Map();
+          for(const match of items){
+            const path=typeof match?.path==='string'?match.path:null;
+            if(path)sites.set(path,(sites.get(path)??0)+1);
+          }
+          if(sites.size>=2)s.pendingDuplicateDefinition={pattern,name,pathCount:sites.size,
+            sample:[...sites.keys()].slice(0,3).map(file=>file.split(/[\\/]/u).pop())};
+        }
+      }
     }
   }
   function sync(agent){const s=get(agent),log=eventLog(agent.session);while(s.cursor<log.length){const event=log[s.cursor++];record(agent,event);}return s;}
