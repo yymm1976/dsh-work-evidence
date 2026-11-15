@@ -184,8 +184,14 @@ export function renderedReads(reads,outer){
 }
 
 function isSuccessfulWrite(name,result){
-  if(!WRITE_TOOLS.has(name)||result?.isError)return false;
-  return true;
+  if(!WRITE_TOOLS.has(name))return false;
+  // verified_exec applies files conditionally and can be interrupted after an
+  // apply while the wrapper still throws, so its result arrives as an error with no
+  // value.files. Treat it as a possible write anyway: an unchanged file would only
+  // cost a redundant re-read, while missing the write keeps pre-edit content
+  // looking current.
+  if(name==='verified_exec')return true;
+  return !result?.isError;
 }
 
 function mutationPathsFromValue(name,args,value){
@@ -565,7 +571,7 @@ export function createObservationLedger(ctx,runtime,nativeFiles=null){
     }
     if(event.type==='tool/ptc-dispatch'){
       const data=event.data??{};
-      if(WRITE_TOOLS.has(data.name)&&!data.isError)markMutation(agent,{name:data.name,args:data.arguments,value:data.content,seq:event.seq});
+      if(isSuccessfulWrite(data.name,data))markMutation(agent,{name:data.name,args:data.arguments,value:data.content,seq:event.seq});
       return;
     }
     if(event.type==='assistant/message'){

@@ -279,3 +279,20 @@ test('restored feature names cannot mutate shared prototypes', async () => {
     await remove(created.telemetryDir);
   }
 });
+
+test('a small saving against a larger overhead keeps every balance field lossless',()=>{
+  // savedTokens=-5 with spentTokens=2000 makes the ratio round to -0, which the
+  // host rejects as non-lossless JSON. The snapshot must never contain it.
+  const agent={session:{id:'balance-negzero'},seq:0};
+  const state={id:'balance-negzero',step:0,config:{},requestObservations:[]};
+  const effects=createEffectObserver({on:()=>()=>{}},{get:()=>state,isEnabled:()=>true});
+  const snap=effects.snapshot(agent);
+  const totals=snap.totals;
+  for(const value of [totals.directTokensEstimate,totals.balance.savedTokensEstimate,
+    totals.balance.spentTokensEstimate,totals.balance.netTokensEstimate]){
+    assert.ok(!Object.is(value,-0),'balance fields must not be negative zero');
+  }
+  if(Object.hasOwn(totals.balance,'ratioPercent'))assert.ok(!Object.is(totals.balance.ratioPercent,-0));
+  // The payload must survive a JSON round trip byte for byte.
+  assert.equal(JSON.stringify(JSON.parse(JSON.stringify(snap))),JSON.stringify(snap));
+});

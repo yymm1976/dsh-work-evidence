@@ -542,6 +542,16 @@ export function createRuntime(ctx,call,initial={}){
       if(s.pendingRevisit?.size){const target=ledgerPath(s,args.file_path);if(target)s.pendingRevisit.delete(target.key);}
       recordObservation(s,exec,result,seq,{file:args.file_path,lineStart:args.offset||1,lineEnd:Number.isInteger(args.limit)?(args.offset||1)+args.limit-1:null});
     }
+    // project_evidence mode:read delivers current source for named files, but its
+    // inner read uses a plugin call id and the outer tool is not `read`, so the
+    // obligation was never discharged and the reminder later claimed the file had
+    // not been reread. A failed or reference-only result does not count.
+    if(exec.name==='project_evidence'&&args.mode==='read'&&s.pendingRevisit?.size&&
+      !result.isError&&!['reference','reference-if-visible'].includes(result.value?.responseView?.kind)){
+      for(const item of Array.isArray(args.files)?args.files:[]){
+        const target=ledgerPath(s,item?.path);if(target)s.pendingRevisit.delete(target.key);
+      }
+    }
     if(['grep','glob'].includes(exec.name)){
       const items=exec.name==='grep'?result.value?.matches:result.value?.paths;
       s.searches.push({tool:exec.name,query:args.pattern||'',scope:args.path||'.',seq,step:s.step,empty:Array.isArray(items)&&!items.length});if(s.searches.length>12)s.searches.shift();

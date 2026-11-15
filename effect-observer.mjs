@@ -284,7 +284,7 @@ export function createEffectObserver(ctx,runtime){
     const savedTokens=plain(Math.round((state.totals.directTokensEstimate||0)+spentTokens));
     const balance={savedTokensEstimate:savedTokens,spentTokensEstimate:spentTokens,
       netTokensEstimate:plain(savedTokens-spentTokens),
-      ...(spentTokens>0?{ratioPercent:Math.round((savedTokens*100)/spentTokens)}:{}),
+      ...(spentTokens>0?{ratioPercent:plain(Math.round((savedTokens*100)/spentTokens))}:{}),
       scope:'local same-trajectory text estimate; savedTokensEstimate is gross of the overheads listed in spentTokensEstimate; not a provider billing measurement'};
     const full={version:1,schema:'work-evidence.observability.v1',requests:{count:state.requests,main:state.mainRequests,compaction:state.compactionRequests,auxiliary:state.auxiliaryRequests,missingUsage:state.missingUsage,unknownConsumption:state.unknownConsumption,completeUsageRequests:state.completeUsageRequests,providerReported:{...state.reported},providerReportedRaw:{...state.rawReported}},
       totals:{...state.totals,balance},features,recentRequests:state.recentRequests.slice(),decisions:state.decisions.slice(-24),

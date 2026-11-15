@@ -118,9 +118,14 @@ test('feature readiness distinguishes required settings, runtime dependencies an
     // an exact route row or the published family rate. This fixture's own route
     // may still be unpriceable, which is a different and legitimate reason.
     assert.ok(!entry('historyHygiene').reasons.some(reason=>reason.includes('projectionPricing')),JSON.stringify(entry('historyHygiene')));
+    // The scripted fixture route is scripted/scripted-model, which neither an exact
+    // row nor the DeepSeek-family fallback prices. Allowing zero reasons would let a
+    // wrong `ready` pass, so require blocked plus exactly one price reason.
+    assert.equal(entry('historyHygiene').status,'blocked',JSON.stringify(entry('historyHygiene')));
     const priceReasons=entry('historyHygiene').reasons.filter(reason=>reason.startsWith('route-price-unavailable'));
-    assert.ok(priceReasons.length<=1,JSON.stringify(entry('historyHygiene')));
-    if(priceReasons.length)assert.match(priceReasons[0],/uses-published-deepseek-v4\.1-flash/u);
+    assert.equal(priceReasons.length,1,JSON.stringify(entry('historyHygiene')));
+    assert.match(priceReasons[0],/uses-published-deepseek-v4\.1-flash/u);
+    assert.ok(!entry('historyHygiene').reasons.some(reason=>reason.includes('projectionPricing')),JSON.stringify(entry('historyHygiene')));
     const summary=await host.command(agent,'status');assert.ok(summary.featureReadiness.blocked.some(item=>item.key==='memberParsing'));
     const changed=await host.command(agent,'config {"swLedger":true,"finalJsonGuard":true}');
     // With the published fallback in place, enabling swLedger is enough for

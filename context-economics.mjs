@@ -305,12 +305,14 @@ export function createContextEconomics(ctx,runtime){
       state.cacheResetCount++;state.uncachedInputAtReset+=usage.inputTokens;
       if(changed&&price){const extra=Math.max(0,Math.min(usage.inputTokens-previous.usage.inputTokens,previous.usage.cacheReadTokens-usage.cacheReadTokens));
         state.resetTaxByCurrency[price.currency]=(state.resetTaxByCurrency[price.currency]??0)+extra*Math.max(0,price.input-price.cacheRead)/1e6;}
-      // The retained baseline skips failed attempts, so the same effort transition
-      // can be compared again on a retry. Count each observed transition once.
+      // The retained baseline skips failed attempts, so a retry compares against the
+      // same baseline and would count one transition twice. Dedupe only the adjacent
+      // retry: a later independent low→high must still be counted, and it can drop
+      // the cache on its own.
       const transitionKey=JSON.stringify([previous.reasoningEffort??null,options.reasoningEffort??null]);
-      if(effortChanged&&!state.countedEffortTransitions?.has(transitionKey)){
-        state.countedEffortTransitions??=new Set();
-        state.countedEffortTransitions.add(transitionKey);
+      const repeatedTransition=state.countedEffortTransition===transitionKey;
+      if(effortChanged&&!repeatedTransition){
+        state.countedEffortTransition=transitionKey;
         state.cacheResetAfterEffortChange++;
         if(price){const extra=Math.max(0,Math.min(usage.inputTokens-previous.usage.inputTokens,previous.usage.cacheReadTokens-usage.cacheReadTokens));
           state.effortResetExposureByCurrency[price.currency]=(state.effortResetExposureByCurrency[price.currency]??0)+extra*Math.max(0,price.input-price.cacheRead)/1e6;}
