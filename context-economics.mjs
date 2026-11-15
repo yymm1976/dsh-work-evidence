@@ -77,10 +77,14 @@ const successfulFinish=new Set(['stop','tool-calls','max-tokens','length']);
 // fallback for that family only, and label the source so an operator can tell a
 // published rate from an exact route setting.
 const PUBLISHED_PRICES=new Map([
+  // Family aliases that identify the same published rate card: the gateway routes
+  // spell out the family, while DeepSeek's own API documents `deepseek-flash`.
   ['deepseek-v4.1-flash',{input:1,cacheRead:0.02,cacheWrite:0,output:4,currency:'CNY'}],
+  ['deepseek-flash',{input:1,cacheRead:0.02,cacheWrite:0,output:4,currency:'CNY'}],
 ]);
 function publishedPrice(route){
   const model=typeof route?.model==='string'?route.model.toLowerCase():'';
+  if(!model)return null;
   for(const [family,price] of PUBLISHED_PRICES)if(model.includes(family))return {...price,publishedRate:true};
   return null;
 }
@@ -301,7 +305,12 @@ export function createContextEconomics(ctx,runtime){
       state.cacheResetCount++;state.uncachedInputAtReset+=usage.inputTokens;
       if(changed&&price){const extra=Math.max(0,Math.min(usage.inputTokens-previous.usage.inputTokens,previous.usage.cacheReadTokens-usage.cacheReadTokens));
         state.resetTaxByCurrency[price.currency]=(state.resetTaxByCurrency[price.currency]??0)+extra*Math.max(0,price.input-price.cacheRead)/1e6;}
-      if(effortChanged){
+      // The retained baseline skips failed attempts, so the same effort transition
+      // can be compared again on a retry. Count each observed transition once.
+      const transitionKey=JSON.stringify([previous.reasoningEffort??null,options.reasoningEffort??null]);
+      if(effortChanged&&!state.countedEffortTransitions?.has(transitionKey)){
+        state.countedEffortTransitions??=new Set();
+        state.countedEffortTransitions.add(transitionKey);
         state.cacheResetAfterEffortChange++;
         if(price){const extra=Math.max(0,Math.min(usage.inputTokens-previous.usage.inputTokens,previous.usage.cacheReadTokens-usage.cacheReadTokens));
           state.effortResetExposureByCurrency[price.currency]=(state.effortResetExposureByCurrency[price.currency]??0)+extra*Math.max(0,price.input-price.cacheRead)/1e6;}

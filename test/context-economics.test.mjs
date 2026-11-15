@@ -148,3 +148,12 @@ test('a DeepSeek V4.1 Flash route is priced from the published rate when no exac
   // An unrelated route stays unpriceable so the gate keeps refusing it.
   assert.equal(economics.pricingFor(agent,{provider:'magpie',model:'group/qwen3.8flash'}),null);
 });
+
+test('the published card also prices the official deepseek-flash model id',()=>{
+  const {agent,economics}=harness();
+  const price=economics.pricingFor(agent,{provider:'deepseek',model:'deepseek-flash'});
+  assert.ok(price,'the documented API model id must resolve to the published card');
+  assert.equal(price.publishedRate,true);
+  // A model name that merely contains no known family stays unpriced.
+  assert.equal(economics.pricingFor(agent,{provider:'x',model:'deepseek-chat'}),null);
+});
