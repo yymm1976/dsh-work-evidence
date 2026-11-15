@@ -5,17 +5,16 @@ import path from 'node:path';
 import {createRequire} from 'node:module';
 import {startHost,text,tool,APP} from './helpers/host.mjs';
 
-// The installed @deepseek-ai/dsh-tools decides whether the conditional-write
-// backend exists. On 0.2.2-rc.2 it does, so an edit must apply; the
-// cas-file-tools-unavailable expectations below only describe hosts that lack it.
-// The manifest is resolved from the host app's package root, the same way
-// test/native-cas.test.mjs and test/helpers/host.mjs do: @deepseek-ai/dsh-tools
-// is a host dependency, so resolving from this repository would throw and leave
-// nativeSupported false on every host, including rc.2.
+// The conditional-write backend exists only on 0.2.2-rc.2, so an edit must apply
+// there; the cas-file-tools-unavailable expectations below only describe hosts
+// that lack it. The gate has to match native.available() in native-cas.mjs, which
+// requires all three packages at 0.2.2-rc.2: checking only dsh-tools asserted
+// success on a host that correctly deopts with cas-file-tools-unavailable.
 const nativeSupported=(()=>{
   try{
     const require=createRequire(path.join(APP,'package.json'));
-    return require('@deepseek-ai/dsh-tools/package.json').version==='0.2.2-rc.2';
+    return ['@deepseek-ai/dsh-tools','@deepseek-ai/dsh-fs-local','@deepseek-ai/dsh-tool-fs']
+      .every(name=>require(name+'/package.json').version==='0.2.2-rc.2');
   }catch{return false;}
 })();
 

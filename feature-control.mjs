@@ -204,7 +204,10 @@ export function createFeatureControl(ctx,runtime,{available,canRecall,workingSet
         model:selection?{provider:selection.provider,model:selection.model}:null,retainedCompute:retained},
       features,tools:only?undefined:TOOLS.map(name=>{
         const exposed=available(agent,name);
-        const entry=exposed?name:name==='verified_exec'?'/work-evidence feature nativeVerifiedEdits on; feature toolSurface full'
+        // The handler executes one `feature` command, so a `;`-joined pair would
+        // return a usage error without enabling either setting. `config` takes a
+        // whole settings object in one command, which both settings need here.
+        const entry=exposed?name:name==='verified_exec'?'/work-evidence config {"nativeVerifiedEdits":true,"toolSurface":"full"}'
           :'/work-evidence feature toolSurface full';
         return {name,exposed,entry};
       }),

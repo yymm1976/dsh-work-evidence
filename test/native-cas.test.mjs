@@ -16,7 +16,11 @@ async function invoke(host,agent,input){
   assert.equal(result.isError,false,output(result));return result.value??JSON.parse(output(result));
 }
 const require=createRequire(path.join(APP,'package.json'));
-const nativeSupported=JSON.parse(readFileSync(require.resolve('@deepseek-ai/dsh-tools/package.json'),'utf8')).version==='0.2.2-rc.2';
+// Must match native.available() in native-cas.mjs: all three packages at
+// 0.2.2-rc.2. Checking only dsh-tools asserted success on a host that correctly
+// deopts with cas-file-tools-unavailable.
+const nativeSupported=['@deepseek-ai/dsh-tools','@deepseek-ai/dsh-fs-local','@deepseek-ai/dsh-tool-fs']
+  .every(name=>JSON.parse(readFileSync(require.resolve(name+'/package.json'),'utf8')).version==='0.2.2-rc.2');
 
 test('native edits capture file tools registered after plugin activation and preserve the sandbox filesystem fence',async()=>{
   const host=await startHost({mountPlugin:false,filesystem:nativeSupported?'dsh-fs-sandbox':'dsh-fs-local',fileTools:{write:false},

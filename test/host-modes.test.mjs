@@ -99,3 +99,19 @@ test('an English denial is scoped to its own sentence',async()=>{
       'both sentences are read-only, so the task stays read-only');
   }finally{await host.close();}
 });
+
+test('describing an edit inside a read-only request does not make it writable',async()=>{
+  // "edits" is the object of "review": the sentence asks for a read. Matching the
+  // bare verb made this request writable, keeping work_exec and verified_exec
+  // visible on a task the user had explicitly marked read-only.
+  const host=await startHost({toolMode:'ptc',extraMounts:[['dsh-ptc-runtime-node']],script:answer});
+  try{
+    const agent=await host.createAgent('max');
+    await host.send(agent,'Read-only: review the edits in src/a.js.');
+    assert.doesNotMatch(systemOf(host.requests.at(-1)),/\bwork_exec: \{/u,
+      'a review of someone else\u2019s edits is still a read');
+    await host.send(agent,'Read-only: review the code. Then modify src/a.js to add the feature.');
+    assert.match(systemOf(host.requests.at(-1)),/\bwork_exec: \{/u,
+      'an affirmative request in a later sentence makes the task writable');
+  }finally{await host.close();}
+});

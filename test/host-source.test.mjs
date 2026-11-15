@@ -11,7 +11,11 @@ const resultsOf=host=>host.events.filter(e=>e.type==='tool/result').map(e=>JSON.
 // still declared-supported host (0.2.1-rc.4 / 0.2.2-rc.1) verified_exec must
 // deopt explicitly instead of falling back to an unversioned write.
 const require=createRequire(path.join(APP,'package.json'));
-const nativeSupported=JSON.parse(readFileSync(require.resolve('@deepseek-ai/dsh-tools/package.json'),'utf8')).version==='0.2.2-rc.2';
+// Must match native.available() in native-cas.mjs: all three packages at
+// 0.2.2-rc.2. Checking only dsh-tools asserted success on a host that correctly
+// deopts with cas-file-tools-unavailable.
+const nativeSupported=['@deepseek-ai/dsh-tools','@deepseek-ai/dsh-fs-local','@deepseek-ai/dsh-tool-fs']
+  .every(name=>JSON.parse(readFileSync(require.resolve(name+'/package.json'),'utf8')).version==='0.2.2-rc.2');
 
 // verified_exec edits now have one backend: the native conditional-write CAS under
 // nativeVerifiedEdits. This file is its end-to-end host suite.

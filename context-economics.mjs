@@ -286,7 +286,12 @@ export function createContextEconomics(ctx,runtime){
     }else if(price){const reason=!billingComplete?'incomplete-request-billing':!cacheWritePriced?'cache-write-price-unavailable':'missing-usage-fields';state.skips[reason]=(state.skips[reason]??0)+1;}
     if(requestKind!=='main')return;
     state.mainFinished++;
-    if(total!==null){state.reportedMainPromptTokens+=total;state.mainPromptRequests++;}
+    // Only a positive prompt count is an observation of the request's size. A
+    // failed attempt reports zero usage, and counting those toward the review
+    // threshold let three failures look like three observed requests with a
+    // per-request average of zero. That made the projection review report
+    // observedPromptTokensPerRequest=0 and plausible=true on no evidence.
+    if(total!==null&&total>0){state.reportedMainPromptTokens+=total;state.mainPromptRequests++;}
     const successfulMain=record.settled&&!record.aborted&&!record.failureCode&&successfulFinish.has(record.finishReason),
       completeSuccess=successfulMain&&canonical.complete&&total>0;
     state.mainAttempts.push({at:record.at??new Date().toISOString(),provider:options.provider,model:options.model,

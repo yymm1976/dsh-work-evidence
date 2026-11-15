@@ -213,3 +213,20 @@ test('an omitted cache-read count cannot register as a cache reset',()=>{
   assert.equal(economics.summary(agent).cacheResetCount,before,
     'a missing cache-read count is absent evidence, not a measured drop');
 });
+
+test('zero-usage failures do not count as observed requests for the projection review',()=>{
+  const {agent,economics,finish}=harness();
+  economics.reviewAdoption(agent,{kind:'request-projection',appliedAtStep:1,expectedSavedChars:8000,expectedSavedTokens:2100});
+  const zero={inputTokens:0,cacheReadTokens:0,cacheWriteTokens:0,outputTokens:0,totalTokens:0};
+  // A failed attempt reports zero usage. Counting those as observed requests let
+  // three failures settle the review with an average of zero prompt tokens, which
+  // then read as plausible on no evidence at all.
+  for(let n=0;n<4;n++)finish(false,zero);
+  assert.equal(economics.summary(agent).mainPromptRequests,0,'zero-usage attempts are not observed requests');
+  assert.equal(economics.summary(agent).pendingProjectionReviews,1,'the review is still waiting for real evidence');
+  // Only requests with a positive prompt count advance it.
+  for(let n=0;n<3;n++)finish(false,{inputTokens:100,cacheReadTokens:900,cacheWriteTokens:0,outputTokens:20,totalTokens:1020});
+  const settled=economics.summary(agent).projectionReviews;
+  assert.equal(settled.length,1,'three real observations settle it');
+  assert.ok((settled[0].observedPromptTokensPerRequest??0)>0,'the settled review reports a real average');
+});

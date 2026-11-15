@@ -356,13 +356,19 @@ export function apply(ctx,config={}){
     const writeVerb=/(?:修改|修复|实现|编写|重构|创建|编辑|写入|增加|删除|替换|重写|改|modify|fix|implement|write|edit|create|delete|replace)/iu;
     const deniedWrite=/(?:不得|不要|禁止|不允许|不可|无需|不必|do not|don't|never)/iu;
     const allowedAfterDenial=/(?:但|但是|不过|然而|而是|需要|允许|可以|请|必须|应当|instead|however|but|should|must|can|may).{0,40}(?:修改|修复|实现|编写|重构|创建|编辑|写入|增加|删除|替换|重写|改|modify|fix|implement|write|edit|create|delete|replace)/iu;
+    // A sentence can mention an edit without asking for one: "review the edits in
+    // src/a.js" is a read, because "edits" is the object of "review". The English
+    // verbs are therefore matched in base form only (\b so "edits"/"edited" do not
+    // qualify), and a Chinese or English verb must be followed by a target rather
+    // than merely appear.
+    const writeRequest=/(?:^|[，,、：:\s])(?:[^。；;\n]{0,8})?(?:(?:修改|修复|实现|编写|重构|创建|编辑|写入|增加|删除|替换|重写|改(?!动|变))|(?:modify|fix|implement|write|edit|create|delete|replace)\b)[^。；;\n]{0,16}(?:[\w./\\-]+\.[a-z0-9]{1,8}\b|文件|代码|函数|方法|类|模块|程序|脚本|实现|逻辑|配置|file|code|function|method|class|module|program|script|config)/iu;
     // Split on sentence ends in both scripts. A period ends a sentence only when a
     // space and a capital follow, so "src/a.js" and "v1.2" stay intact. Without the
     // English form, "Do not modify a.js. Create b.js." stayed one sentence and the
     // first denial suppressed the second request, making a writable task read-only.
     const sentences=request.split(/[。；;\n]|\.(?=\s+[A-Z])/u);
     return !sentences.some(sentence=>
-      writeVerb.test(sentence)&&(!deniedWrite.test(sentence)||allowedAfterDenial.test(sentence)));
+      writeVerb.test(sentence)&&writeRequest.test(sentence)&&(!deniedWrite.test(sentence)||allowedAfterDenial.test(sentence)));
   };
   const surfaceModeForRequest=request=>{
     if(!isReadOnlyRequest(request))return 'writable';
