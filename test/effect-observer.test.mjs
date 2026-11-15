@@ -311,3 +311,24 @@ test('a small saving against a larger overhead keeps every balance field lossles
   // The payload must survive a JSON round trip byte for byte.
   assert.equal(JSON.stringify(JSON.parse(JSON.stringify(snap))),JSON.stringify(snap));
 });
+
+test('a restored older decision does not become the reported latest one',async()=>{
+  const created=await start();
+  try{
+    // Write the newer decision first, then an older one, which is the order a
+    // retried overflow append can produce after a later row already landed.
+    const file=path.join(created.telemetryDir,SESSION+'.observability.jsonl');
+    const pending=(decisions)=>({schema:'work-evidence.pending-decisions.v1',sessionId:SESSION,
+      at:'2026-11-02T00:00:00.000Z',step:5,decisions});
+    const newer={id:'newer',at:'2026-11-02T00:00:02.000Z',step:5,seq:9,feature:'retainedCompute',status:'applied',reason:'second'};
+    const older={id:'older',at:'2026-11-02T00:00:01.000Z',step:4,seq:3,feature:'retainedCompute',status:'deferred',reason:'first'};
+    await fs.writeFile(file,[JSON.stringify(pending([newer])),JSON.stringify(pending([older]))].join('\n')+'\n','utf8');
+    await created.effects.load(created.agent);
+    const feature=created.effects.snapshot(created.agent).features.retainedCompute;
+    assert.equal(feature.decisions,2,'both restored decisions are counted');
+    assert.equal(feature.lastReason,'second','the newest decision is still reported as the latest');
+    assert.equal(feature.lastSeq,9);
+    const window=created.effects.snapshot(created.agent).decisions.map(item=>item.seq);
+    assert.deepEqual(window,[3,9],'the rolling window stays in sequence order, got '+JSON.stringify(window));
+  }finally{await remove(created.telemetryDir);}
+});

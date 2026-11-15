@@ -216,10 +216,11 @@ export function createEffectObserver(ctx,runtime){
       value.lastStatus=decision.status;value.lastReason=decision.reason;
       value.lastAt=decision.at??at;value.lastStep=decision.step??step;value.lastSeq=seq;
     }
-    // The rolling window is read in order, so insert by seq rather than appending.
+    // The rolling window is read in order, so insert before the first entry with a
+    // larger seq rather than appending at the end.
     const restored=name===decision.feature?decision:{...decision,feature:name};
-    const index=state.decisions.findLastIndex(item=>Number.isSafeInteger(item.seq)&&item.seq>seq);
-    if(index<0)state.decisions.push(restored);else state.decisions.splice(index+1,0,restored);
+    const index=state.decisions.findIndex(item=>Number.isSafeInteger(item.seq)&&item.seq>seq);
+    if(index<0)state.decisions.push(restored);else state.decisions.splice(index,0,restored);
     if(state.decisions.length>64)state.decisions.shift();
   }
   function finish(agent,row){const state=get(agent);normalizeRow(row);accumulate(state,row);queue(state,agent,row);runtime.get(agent).dirty=true;}
