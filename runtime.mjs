@@ -129,7 +129,7 @@ export function createRuntime(ctx,call,initial={}){
         stateNotices:0,stateNoticeChars:0,longWaitRedirects:0,
         ledgerObservations:0,ledgerReceipts:0,ledgerReceiptCharsSaved:0,ledgerStale:0,ledgerUnresolvedInjected:0,
         archiveReadRoutes:0,readArgumentCorrections:0,readArgumentNormalizations:0,contextRequests:0,contextRequestChars:0,contextModelTextChars:0,
-        evidenceVisibleViews:0,evidenceFullViews:0,evidenceReferenceViews:0,evidenceReferenceMisses:0,evidenceViewOutputChars:0},problems:[]};states.set(id,s);}
+        evidenceVisibleViewRecords:0,evidenceVisibleViewTurns:0,evidenceFullViews:0,evidenceReferenceViews:0,evidenceReferenceMisses:0,evidenceViewOutputChars:0},problems:[]};states.set(id,s);}
     if(agent.ctx||agent.options||!s.agentRef)s.agentRef=agent;
     return s;
   }

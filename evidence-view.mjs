@@ -79,7 +79,14 @@ export function createEvidenceViews(ctx,runtime){
     for(const record of state.proof.keys())record.everVisible=true;
     runtime.get(agent).metrics.evidenceVisibilityStreams=(runtime.get(agent).metrics.evidenceVisibilityStreams??0)+1;
     runtime.get(agent).metrics.evidenceUniqueVisibleViews=(runtime.get(agent).metrics.evidenceUniqueVisibleViews??0)+newlyVisible;
-    const s=runtime.get(agent);s.metrics.evidenceVisibleViews+=state.proof.size;s.dirty=true;
+    // evidenceVisibleViews counts visible records per request, so one reused body
+    // adds its size every turn. That number grows with the session length and says
+    // nothing about how many distinct bodies were ever visible; keep both, and name
+    // the accumulating one for what it is.
+    const s=runtime.get(agent);
+    s.metrics.evidenceVisibleViewRecords+=state.proof.size;
+    s.metrics.evidenceVisibleViewTurns=(s.metrics.evidenceVisibleViewTurns??0)+1;
+    s.dirty=true;
   });
   ctx.on('session/event',(session,event)=>{if(event.type==='sandbox/mode')states.delete(session.id);});
   ctx.on('agent/disposed',({agent})=>states.delete(agent.session.id));
