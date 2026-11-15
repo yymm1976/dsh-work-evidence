@@ -109,15 +109,23 @@ function validateDefinition(definition){
     inputs,steps,boundedDefinition:boundedJson({name:definition.name,description:definition.description,
       candidate_id:definition.candidate_id||null,inputs,steps})};
 }
-function validateStoredDefinition(definition,index){
-  if(!definition||typeof definition!=='object'||Array.isArray(definition))throw new Error('Stored fast-path '+index+' is not an object');
-  try{
-    const validated=validateDefinition({name:definition.name,description:definition.description,candidate_id:definition.candidate_id,
-      inputs:definition.inputs,steps:definition.steps});
-    return {...definition,...validated.boundedDefinition};
-  }catch(error){
-    throw new Error(`Stored fast-path ${definition.name||index} is invalid: ${error.message}`);
+function validateStoredDefinition(definition){
+  const validated=validateDefinition({name:definition.name,description:definition.description,candidate_id:definition.candidate_id,
+    inputs:definition.inputs,steps:definition.steps});
+  return {...definition,...validated.boundedDefinition};
+}
+// A saved store can name tools that no longer exist (the OPS read tools are one
+// example). Rejecting the whole store over one such entry would disable every
+// valid fast-path, so invalid entries are dropped and reported by count while
+// the remaining definitions keep working.
+export function restoreStoredDefinitions(definitions){
+  const valid=[],skipped=[];
+  for(const [index,definition] of definitions.entries()){
+    if(!definition||typeof definition!=='object'||Array.isArray(definition)){skipped.push({index,reason:'not-an-object'});continue;}
+    try{valid.push(validateStoredDefinition(definition));}
+    catch(error){skipped.push({index,name:definition.name??null,reason:String(error.message).slice(0,200)});}
   }
+  return {valid,skipped};
 }
 
 function resultStatus(result,tool){
@@ -161,7 +169,8 @@ export function createPtcFastpath(ctx,runtime,call){
       throw new Error('Fast-path store is unavailable');
     }
     if(loaded.value?.schema!==STORE_SCHEMA||loaded.value?.version!==1||!Array.isArray(loaded.value.definitions))throw new Error('Unrecognized fast-path store');
-    return {s,file,store:{...loaded.value,definitions:loaded.value.definitions.map(validateStoredDefinition)}};
+    const restored=restoreStoredDefinitions(loaded.value.definitions);
+    return {s,file,store:{...loaded.value,definitions:restored.valid},skippedDefinitions:restored.skipped};
   }
   async function save(agent,file,store,signal){await runtime.save(agent,file,store,signal);}
   async function define(agent,args,signal){

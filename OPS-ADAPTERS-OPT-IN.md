@@ -22,4 +22,4 @@
 
 ## 宿主条件
 
-`verified_exec` 的原生条件写入固定要求宿主 0.2.2-rc.2。在 0.2.1-rc.4 / 0.2.2-rc.1 上它会返回 `reason:"cas-file-tools-unavailable"`、`missing:["rc2-native-conditional-write"]`、`effectState:"none"`，工具面也不发布该工具。它不会退回未带版本条件的普通写入。这是有意牺牲：没有 OPS CAS 之后，这两个宿主版本上没有 `verified_exec` 后端。
+`verified_exec` 的原生条件写入固定要求宿主 0.2.2-rc.2（`native-cas.mjs` 同时校验 `dsh-tools`、本地版与 `tool-fs` 三个版本号，并要求注入 `SandboxedFileSystem`）。在 0.2.1-rc.4 / 0.2.2-rc.1 上即使 `nativeVerifiedEdits:true`，调用也返回 `reason:"cas-file-tools-unavailable"`、`missing:["rc2-native-conditional-write"]`、`effectState:"none"`。工具面是否发布该工具由 `nativeVerifiedEdits` 决定（默认 `false` 时不发布），而后端能否执行由宿主版本决定；这是两个不同条件。它不会退回未带版本条件的普通写入。这是有意牺牲：没有 OPS CAS 之后，这两个宿主版本上没有可用的 `verified_exec` 后端。

@@ -570,7 +570,7 @@ function reviewedCheckCoverage(input,review,normal,sourceId,sourceProblems){
           (other.resultSeq===null||other.resultSeq>row.resultSeq));
         if(opaque)fileReasons.push('opaque-execution-after-check');
         for(const pending of normal.calls){
-          if(pending.resultSeq!==null||pending.callSeq>review.throughSeq||!WRITE.has(pending.name))continue;
+          if(pending.resultSeq!==null||pending.callSeq>review.throughSeq||!WRITE.has(pending.name)||readOnlyLegacyWrite(pending))continue;
           const changed=normalizeFile(fileOf(pending.arguments));
           if(!changed){fileReasons.push('file-scope-unresolved');break;}
           if(scopes?.some(scope=>scope.value===changed.value)){fileReasons.push('unsettled-mutation');break;}
