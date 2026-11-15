@@ -349,7 +349,7 @@ function exactMatchRecord({
   };
 }
 
-function ambiguousRecord(name, matches) {
+function ambiguousRecord(name, matches, mode = 'source') {
   return {
     member: name,
     memberState: 'ambiguous',
@@ -366,7 +366,11 @@ function ambiguousRecord(name, matches) {
       rangeComplete: false,
     })),
     contentLimitation: 'member-name-ambiguous',
-    nextFactNeeded: 'Disambiguate the overload by passing offset within one candidate range; no overload was selected.',
+    nextFactNeeded: mode === 'archive'
+      // Archive reads reject offset together with member/members, so an offset
+      // retry would fail validation. Point at the locator that archive accepts.
+      ? 'Disambiguate the overload without member: read the candidate range with mode archive, archive, entry, offset and limit; no overload was selected.'
+      : 'Disambiguate the overload by passing offset within one candidate range; no overload was selected.',
   };
 }
 
@@ -679,7 +683,7 @@ export async function sourceMemberSource({
       const lineSelected = Number.isInteger(args.offset)
         ? result.matches.filter(match => args.offset >= match.lineStart && args.offset <= match.lineEnd)
         : [];
-      if (result.total > 1 && lineSelected.length !== 1) return ambiguousRecord(name, result.matches);
+      if (result.total > 1 && lineSelected.length !== 1) return ambiguousRecord(name, result.matches, args.mode);
       return exactMatchRecord({
         name,
         match: lineSelected[0] || result.matches[0],

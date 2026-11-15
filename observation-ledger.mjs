@@ -3,7 +3,10 @@ import path from 'node:path';
 import {parseResult,resultHasProblem,resultReference} from './visible-results.mjs';
 
 const READ_TOOLS=new Set(['read','project_evidence']);
-const WRITE_TOOLS=new Set(['edit','write','str_replace_editor']);
+// verified_exec applies edits through the native conditional-write backend, so it
+// reports file entries instead of one file_path. Leaving it out of this set would
+// keep an earlier observation of the same file looking current after a write.
+const WRITE_TOOLS=new Set(['edit','write','str_replace_editor','verified_exec']);
 const SEARCH_TOOLS=new Set(['grep','glob']);
 const MAX_OBSERVATIONS=256;
 const MAX_BODY_CHARS=131072;
@@ -191,6 +194,13 @@ function mutationPathsFromValue(name,args,value){
     if(value?.status==='partial'&&Array.isArray(value?.data?.items)){
       for(const item of value.data.items)if(item.status==='completed'&&typeof item.path==='string')out.push(item.path);
     }else if(!resultHasProblem(value))for(const item of pathsFromArguments(args))out.push(item);
+    // verified_exec changes files named in args.edits and reports them under
+    // value.files; neither shape carries a top-level file_path.
+    if(name==='verified_exec'){
+      if(Array.isArray(args?.edits))for(const edit of args.edits)if(typeof edit?.file==='string')out.push(edit.file);
+      if(Array.isArray(value?.files))for(const file of value.files)
+        if(['applied','partial','unknown'].includes(file?.effectState)&&typeof file?.path==='string')out.push(file.path);
+    }
   }
   return [...new Set(out)];
 }

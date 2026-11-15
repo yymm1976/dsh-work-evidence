@@ -134,8 +134,9 @@ export function createFeatureControl(ctx,runtime,{available,canRecall,workingSet
         // projectionPricing, so the switch reads "on" while the gate can only
         // answer route-pricing-unavailable. An empty table and a table without a
         // row for this active route fail the same way but need different fixes,
-        // so they are reported separately.
-        if(['historyHygiene','contextPrune','contextProtocol','requestProjection'].includes(key)){
+        // so they are reported separately. swEviction folds repeated bodies
+        // through the same `decision.allowed` check in context-window.mjs.
+        if(['historyHygiene','contextPrune','contextProtocol','requestProjection','swEviction','stubSummary'].includes(key)){
           if(!Array.isArray(config.projectionPricing)||!config.projectionPricing.length)reasons.push('requires-setting:projectionPricing');
           else if(!contextEconomics?.pricingFor?.(agent))reasons.push('requires-setting:projectionPricing-for-active-route');
         }

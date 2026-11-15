@@ -360,7 +360,12 @@ function resolveIndexedScript(input,calls,resultExecutables,resultHostRuntimes,e
     ...(shellSource?{shellSource,nativeArguments:shellSource.effectiveArguments??shellSource.nativeArguments}:{})};
 }
 
-export const INLINE_ENV_KEYS=Object.freeze(['DSH_WORK_EVIDENCE_STDIN_ID',...Array.from({length:3},(_,index)=>'DSH_WORK_EVIDENCE_STDIN_'+index)]);
+// The source travels as environment values, and win32 builds the child environment
+// through CreateProcess: one variable holds 32,767 characters and the whole block
+// is about 32 KiB. Keeping the same total capacity there needs more, smaller
+// chunks rather than a smaller program limit.
+const STDIN_CHUNKS=process.platform==='win32'?9:3;
+export const INLINE_ENV_KEYS=Object.freeze(['DSH_WORK_EVIDENCE_STDIN_ID',...Array.from({length:STDIN_CHUNKS},(_,index)=>'DSH_WORK_EVIDENCE_STDIN_'+index)]);
 const validTransferId=value=>typeof value==='string'&&/^[A-Za-z0-9_-]{1,128}$/u.test(value);
 
 /** The native shells `work_exec` can transport a program through. */
@@ -413,14 +418,19 @@ function validateInlineInput(input){
   return executable;
 }
 
-/** Keep each environment string below Linux's per-string exec limit, including UTF-8 and NUL bytes. */
+/** Keep each environment string below the platform's per-string exec limit, including UTF-8 and NUL bytes.
+ *  On win32 the spawn goes through CreateProcess, which caps one variable at 32,767 characters and the
+ *  whole environment block near 32 KiB; the Linux path can carry much larger execve strings. */
 export function inlineEnvironment(input,transferId){
   validateInlineInput(input);
   if(!validTransferId(transferId))throw new Error('bash transport requires a valid transfer ID');
   const bytes=Buffer.from(input.code.replaceAll('\\','\\\\').replaceAll('\0','\\x00'),'utf8');
+  // win32 wins here because the child environment block itself is capped near 32 KiB,
+  // so the number of usable chunks is what the platform can carry, not a tuning choice.
+  const perVariable=process.platform==='win32'?32767:96000;
   const values={[INLINE_ENV_KEYS[0]]:transferId};let offset=0;
   for(const key of INLINE_ENV_KEYS.slice(1)){
-    let end=Math.min(offset+96000,bytes.length);
+    let end=Math.min(offset+perVariable,bytes.length);
     while(end<bytes.length&&(bytes[end]&0xc0)===0x80)end--;
     values[key]=bytes.subarray(offset,end).toString('utf8');offset=end;
   }

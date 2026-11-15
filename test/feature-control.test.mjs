@@ -94,7 +94,9 @@ test('feature readiness distinguishes required settings, runtime dependencies an
     assert.ok(view.features.every(item=>item.effect&&typeof item.effect.status==='string'));
     assert.equal(entry('enabled').effect.status,'not-observed');
     assert.equal(view.dependencies.archiveDecoder.available,true);
-    assert.deepEqual(entry('swEviction').reasons,['requires-setting:swLedger']);
+    // swEviction needs swLedger and also passes context-economics' price gate,
+    // which the shipped empty projectionPricing cannot satisfy.
+    assert.deepEqual(entry('swEviction').reasons,['requires-setting:swLedger','requires-setting:projectionPricing']);
     assert.ok(entry('requestProjection').reasons.includes('requires-setting:projectionRestore'));
     assert.ok(entry('finalJsonResultGuard').reasons.includes('requires-setting:finalJsonGuard'));
     assert.ok(entry('nativeProgramReuse').reasons.includes('requires-ptc-tool-mode'));
@@ -112,7 +114,9 @@ test('feature readiness distinguishes required settings, runtime dependencies an
     assert.ok(entry('historyHygiene').reasons.includes('requires-setting:projectionPricing'),JSON.stringify(entry('historyHygiene')));
     const summary=await host.command(agent,'status');assert.ok(summary.featureReadiness.blocked.some(item=>item.key==='memberParsing'));
     const changed=await host.command(agent,'config {"swLedger":true,"finalJsonGuard":true}');
-    assert.equal(changed.readiness.features.find(item=>item.key==='swEviction').status,'ready');
+    // swEviction also folds through context-economics' price gate, so enabling
+    // swLedger alone leaves it blocked on the shipped empty projectionPricing.
+    assert.ok(changed.readiness.features.find(item=>item.key==='swEviction').reasons.includes('requires-setting:projectionPricing'));
     assert.equal(changed.readiness.features.find(item=>item.key==='finalJsonResultGuard').status,'ready');
   }finally{await host.close();}
 });
