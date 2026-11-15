@@ -268,8 +268,24 @@ export function createEffectObserver(ctx,runtime){
     finally{state.loading=null;}
   }
   function snapshot(agent,options={}){const state=get(agent),config=runtime.get(agent).config,features={};for(const name of new Set([...Object.keys(FEATURES),...Object.keys(state.features)])){const base=state.features[name]??{decisions:0,applied:0};const setting=FEATURES[name],retired=RETIRED_FEATURES.has(name);features[name]={enabled:!retired&&runtime.isEnabled(agent)&&(setting?!!config[setting]:true),...(retired?{retired:true}:{}),...base,lastStatus:base.lastStatus??'not-observed',lastReason:base.lastReason??(base.decisions?'no-effect-applied':'no-opportunity-observed')};}
+    // Direct savings are negative deltas (a rewrite removed text), while the
+    // injected guidance and tool schemas are positive costs. Report both sides and
+    // the ratio, so "did this plugin pay for itself" is answerable from one row
+    // instead of requiring a manual subtraction across three counters.
+    // Integer-only arithmetic and a rounded integer ratio keep this payload
+    // lossless JSON; a raw division produced a value the host rejected.
+    // `-0` is not lossless JSON here: the host rejects a number that serializes
+    // back as 0 with a different sign, and negating a zero total produces exactly
+    // that. Normalise to a plain zero.
+    const negate=value=>value===0?0:-value;
+    const savedTokens=Math.round(negate(state.totals.directTokensEstimate||0));
+    const spentTokens=Math.round((state.totals.instructionTokensEstimate||0)+(state.totals.toolSchemaTokensEstimate||0));
+    const balance={savedTokensEstimate:savedTokens,spentTokensEstimate:spentTokens,
+      netTokensEstimate:savedTokens-spentTokens,
+      ...(spentTokens>0?{ratioPercent:Math.round((savedTokens*100)/spentTokens)}:{}),
+      scope:'local same-trajectory text estimate; guidance and tool-schema overhead included on the cost side; not a provider billing measurement'};
     const full={version:1,schema:'work-evidence.observability.v1',requests:{count:state.requests,main:state.mainRequests,compaction:state.compactionRequests,auxiliary:state.auxiliaryRequests,missingUsage:state.missingUsage,unknownConsumption:state.unknownConsumption,completeUsageRequests:state.completeUsageRequests,providerReported:{...state.reported},providerReportedRaw:{...state.rawReported}},
-      totals:{...state.totals},features,recentRequests:state.recentRequests.slice(),decisions:state.decisions.slice(-24),
+      totals:{...state.totals,balance},features,recentRequests:state.recentRequests.slice(),decisions:state.decisions.slice(-24),
       persistence:{file:storageFor(agent)?path.join(storageFor(agent),agent.session.id+'.observability.jsonl'):null,writeErrors:state.writeErrors.slice(),scope:'session-local start/settlement records and native event links outside workspace discovery; no prompt bodies; survives rolling status window'},
       interpretation:'providerReported totals include only complete, internally consistent adapter counts; providerReportedRaw retains finite fields from all rows for diagnosis and does not establish complete consumption. Main, compaction and auxiliary requests are separate. Direct feature token deltas are local estimates on the same trajectory, including visible guidance overhead; they are not measured task savings. Unmapped or evicted attribution remains unavailable.'};
     if(options.detail!==false)return full;
