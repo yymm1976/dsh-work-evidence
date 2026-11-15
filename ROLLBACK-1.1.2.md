@@ -25,7 +25,7 @@
 
 - 旧包会重新接受 `opsAdapters` / `fastEditEnabled`，但本构建写出的工作区配置里没有这两个键（本构建按退役设置强制为 `false`），因此需要在新工作区里显式设置 `opsAdapters:true` 才能恢复旧包的 OPS 读取/CAS 路径。
 - `fastedit_java` 的 Python 依赖现在由 `requirements-source-members.txt` 记录；旧包期望 `requirements-fastedit.txt`。两者是同一组版本（`fastedits==0.5.0`、`tree-sitter-java==0.23.5`），复制或改名即可。
-- 本构建在宿主 0.2.1-rc.4 / 0.2.2-rc.1 上不提供 `verified_exec`（`rc2-native-conditional-write` 不可用）。旧包在这些宿主上会退回到 OPS CAS，因此回退会**恢复**这两个宿主上的精确编辑能力——但同样重新引入了 OPS 依赖。
+- 本构建在宿主 0.2.1-rc.4 / 0.2.2-rc.1 上不提供可用的 `verified_exec` 后端（`rc2-native-conditional-write` 不可用）。**工具面与实际后端是两件事**：`nativeVerifiedEdits:true` 时工具面仍会发布 `verified_exec`，但每次调用都返回 `cas-file-tools-unavailable`、`missing:["rc2-native-conditional-write"]`、`effectState:"none"`，不写入任何文件；`/work-evidence feature nativeVerifiedEdits` 会报 `rc2-native-conditional-write-unavailable`。这是已知的时序限制：工具面在同步组装阶段无法等待宿主版本探测。旧包在这些宿主上会退回到 OPS CAS，因此回退会**恢复**这两个宿主上的精确编辑能力——但同样重新引入了 OPS 依赖。
 
 工作区配置、会话策略、原始会话、观察记录和编辑报告继续保留。旧包不能解析新报告时，原生会话仍是历史操作的来源；不能把缺少解析结果当作没有发生修改。本构建删除的 OPS 报告与计数器字段（`opsErrorNotices`、`opaqueOpsResults`、`fastEdit*`）不会出现在新快照里；旧包读取旧快照时不受影响。
 

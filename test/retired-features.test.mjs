@@ -39,3 +39,18 @@ test('old workspace settings preserve raw reasoning and do not make auxiliary ca
     assert.equal(status.reasoningHistory,undefined);
   }finally{await host.close();}
 });
+
+test('changing a workspace setting does not write retired keys back into the file',async()=>{
+  const host=await startHost({workspace:Object.fromEntries([...retired,'opsAdapters','fastEditEnabled'].map(key=>[key,false])),
+    efforts:['off','max'],script:(_o,n)=>n===1?[tool('read',{file_path:'a.txt'})]:[text('完成。')]});
+  try{
+    await fs.writeFile(path.join(host.cwd,'a.txt'),'a\n');
+    const agent=await host.createAgent('max');await host.send(agent,'读取 a.txt');
+    // workspaceConfig() folds a retired key to false so old files still load,
+    // but the key must not be echoed back on the next settings write.
+    await host.command(agent,'config {"stepPacing":false}');
+    const saved=JSON.parse(await fs.readFile(path.join(host.cwd,'.dsh','work-evidence','config.json'),'utf8'));
+    assert.equal(saved.stepPacing,false);
+    for(const key of [...retired,'opsAdapters','fastEditEnabled'])assert.ok(!Object.hasOwn(saved,key),key+' must not be persisted');
+  }finally{await host.close();}
+});

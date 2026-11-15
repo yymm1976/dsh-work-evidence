@@ -279,7 +279,13 @@ export function createRuntime(ctx,call,initial={}){
       signal?.throwIfAborted();
       await init(agent,signal);
       if(!s.workspaceConfigValid)throw new Error('Workspace configuration is unavailable or invalid');
-      const before=isEnabled(agent),next=defaults({...s.config,...patch});
+      const before=isEnabled(agent);
+      // workspaceConfig() folds every retired key to false so old workspaces keep
+      // loading, but that also puts the key on s.config. Persisting it here would
+      // write retired settings back into the user's file, which ROLLBACK-1.1.2
+      // tells them this build does not do.
+      const next=defaults({...s.config,...patch});
+      for(const retired of RETIRED_SETTINGS)delete next[retired];
       await save(agent,key,next,signal);
       s.config=next;s.workspaceFileSeen=true;s.workspaceFileMissing=false;s.dirty=true;
       if(before!==isEnabled(agent))clearSessionState(agent);
