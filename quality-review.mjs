@@ -21,6 +21,17 @@ const FILE_READS=new Set(['read']);
 // task-flow, observation-ledger); leaving it out here meant an applied conditional
 // edit could be absent from the review payload when no reread followed it.
 const FILE_WRITES=new Set(['write','edit','verified_exec']);
+// Per-file effect states from a verified_exec result, keyed by resolved path. A mixed
+// result can apply one file and leave another at `none` under a top-level `applied`.
+const perFileEffortStates=value=>{
+  const states=new Map();
+  if(!Array.isArray(value?.files))return states;
+  for(const file of value.files){
+    const target=typeof file?.path==='string'?file.path:typeof file?.file==='string'?file.file:null;
+    if(target&&typeof file?.effectState==='string')states.set(key(target),file.effectState);
+  }
+  return states;
+};
 // verified_exec names its targets inside edits[], under `file` in the supplied
 // mutation shape and `path`/`file_path` in the older one; all three are accepted so
 // an applied conditional edit can match its artifact.
@@ -219,9 +230,13 @@ function payloadFor(current,review,root){
       let value;try{value=JSON.parse((content??[]).map(block=>block.text??'').join(''));}catch{value=null}
       const states=[value?.effectState,...(Array.isArray(value?.files)?value.files.map(file=>file?.effectState):[])].filter(Boolean);
       if(states.length&&!states.some(state=>['applied','partial','unknown'].includes(state)))return null;
+      // A mixed result applies some files and not others; keep the per-file states so
+      // the change-history pass can skip the files that did not take the change.
+      call.editStates=perFileEffortStates(value);
     }
     return call;
   };
+  const verifiedEditStates=call=>call?.editStates??new Map();
   const requestSections=requestSourceSections(events,request,assistant,root,fileCall);
   const requestSourceData=new Map();
   for(const item of requestSections){
@@ -259,10 +274,22 @@ function payloadFor(current,review,root){
     // the plain content/new_string fields is joined into one bounded body here
     // rather than being dropped from the payload.
     if(call.name==='verified_exec'&&Array.isArray(callArgs.edits)){
-      const joined=callArgs.edits.map(edit=>{
+      // A mixed result can report one file applied and another `none` while the
+      // top-level state still says applied. Only the edits whose own file took the
+      // change belong in the history, or an unapplied file is described as changed.
+      const states=verifiedEditStates(call);
+      const applied=callArgs.edits.filter(edit=>{
+        const target=key(edit?.file??edit?.path??edit?.file_path??'');
+        const state=states.get(target);
+        return !state||['applied','partial','unknown'].includes(state);
+      });
+      if(!applied.length)return false;
+      const joined=applied.map(edit=>{
         const target=edit?.file??edit?.path??edit?.file_path??'';
         const before=typeof edit?.old_text==='string'?edit.old_text:'';
-        const after=typeof edit?.new_text==='string'?edit.new_text:'';
+        // A `create` edit carries its body in `content`, not `new_text`.
+        const after=typeof edit?.new_text==='string'?edit.new_text
+          :typeof edit?.content==='string'?edit.content:'';
         return `--- ${target}\n${before}${before&&after?'\n=>\n':''}${after}`;
       }).join('\n\n');
       if(!joined||joined.length>dataBudget)return false;
