@@ -321,8 +321,10 @@ export function createContextEconomics(ctx,runtime){
     const effortChanged=same&&previous.reasoningEffort!==options.reasoningEffort;
     // An incomplete observation can leave cacheReadTokens null. `null < x*.5` is
     // true in JavaScript, so an omitted count would read as a cache reset and would
-    // also consume the transition-dedupe key. A reset needs a reported count.
-    const resetObserved=finite(usage?.cacheReadTokens)&&finite(previous?.usage?.cacheReadTokens);
+    // also consume the transition-dedupe key. A reset needs a reported count, and
+    // it needs both observations on the same route: switching provider or model
+    // changes the cache namespace, so a smaller count there is not a reset.
+    const resetObserved=Boolean(same)&&finite(usage?.cacheReadTokens)&&finite(previous?.usage?.cacheReadTokens);
     if(resetObserved&&previous.usage.cacheReadTokens>0&&usage.cacheReadTokens<previous.usage.cacheReadTokens*.5&&usage?.inputTokens>2000){
       state.cacheResetCount++;state.uncachedInputAtReset+=usage.inputTokens;
       if(changed&&price){const extra=Math.max(0,Math.min(usage.inputTokens-previous.usage.inputTokens,previous.usage.cacheReadTokens-usage.cacheReadTokens));

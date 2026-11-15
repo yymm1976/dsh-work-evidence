@@ -596,19 +596,30 @@ export function createRuntime(ctx,call,initial={}){
       s.searches.push({tool:exec.name,query:args.pattern||'',scope:args.path||'.',seq,step:s.step,empty:Array.isArray(items)&&!items.length});if(s.searches.length>12)s.searches.shift();
       recordSearch(s,exec,result,seq);
       if(Array.isArray(items)&&!items.length){const key=JSON.stringify([exec.name,args]),prior=s.emptyLookups.get(key),now=Date.now();if(prior&&now-prior.time<120000&&!prior.noted){prior.noted=true;s.pendingLookupFact={tool:exec.name,arguments:args,firstCallId:prior.callId,repeatedCallId:exec.callId};s.active=true;}else if(!prior||now-prior.time>=120000)s.emptyLookups.set(key,{time:now,callId:exec.callId,noted:false});if(s.emptyLookups.size>24)s.emptyLookups.delete(s.emptyLookups.keys().next().value);}
-      // One symbol defined in two files is the shape of the lost 059/066 cases: the
-      // model fixed the validation layer, never found the calculation layer, and
-      // the task still failed. The existing reminder only fires after a write; this
-      // fires on the search that reveals both sites, before the model commits to one.
+      // One symbol defined in two files is a real risk: two implementations of the
+      // same capability, where fixing one leaves the other on the old behaviour.
+      // The reminder fires on the search that reveals both sites, before the model
+      // commits to one, because the write-after reminder cannot catch a second site
+      // that is never written.
       if(exec.name==='grep'&&!s.pendingDuplicateDefinition&&!s.duplicateDefinitionNotified&&Array.isArray(items)&&items.length>=2){
         const pattern=typeof args.pattern==='string'?args.pattern.trim():'';
         // A definition query, not a free-text search: one identifier, optionally the
         // language's definition keyword. Anything wider is a normal search.
         if(/^(?:def|func|function|class|interface|struct|fn|fun|void|public|private|protected|static|final|abstract)?\s*[A-Za-z_$][\w$]{2,64}$/u.test(pattern)){
-          const name=pattern.replace(/^[A-Za-z_$][\w$]*\s+/u,''),sites=new Map();
+          const bareName=pattern.replace(/^[A-Za-z_$][\w$]*\s+/u,'').trim(),name=bareName.split(/\s+/u).at(-1);
+          // A match is only a definition site when the matched line declares it. An
+          // import or a call in another file is a reference, and calling that a
+          // duplicate implementation would both mislead and spend the one notice.
+          const declares=line=>{
+            const text=typeof line==='string'?line:'';
+            if(!text||!new RegExp('(^|[^\\w$])'+name.replace(/[.*+?^${}()|[\]\\]/gu,'\\$&')+'(?![\\w$])','u').test(text))return false;
+            return /^\s*(?:export\s+)?(?:default\s+)?(?:async\s+)?(?:def|func|fn|fun|function|class|interface|struct|type|enum|const|let|var|public|private|protected|static|final|abstract|synchronized|@)/u.test(text)
+              ||new RegExp('(?:^|\\s)(?:def|func|fn|fun|function|class|interface|struct)\\s+'+name.replace(/[.*+?^${}()|[\]\\]/gu,'\\$&')+'\\s*[(<:]','u').test(text);
+          };
+          const sites=new Map();
           for(const match of items){
             const path=typeof match?.path==='string'?match.path:null;
-            if(path)sites.set(path,(sites.get(path)??0)+1);
+            if(path&&declares(match.line??match.text??''))sites.set(path,(sites.get(path)??0)+1);
           }
           if(sites.size>=2)s.pendingDuplicateDefinition={pattern,name,pathCount:sites.size,
             sample:[...sites.keys()].slice(0,3).map(file=>file.split(/[\\/]/u).pop())};

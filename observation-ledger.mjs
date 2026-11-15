@@ -486,9 +486,14 @@ export function createObservationLedger(ctx,runtime,nativeFiles=null){
     if(ledgerOn&&!result.isError)recordSearchResult(exec.agent,exec.name,exec.arguments,result.value,exec.rootCallId||exec.callId);
     if(Object.hasOwn(decision,'content')||Object.hasOwn(decision,'value'))return decision;
     let prepared;
+    // The mutation count is read before preparation, not at registration: preparing
+    // awaits file fingerprints, and a write completing during that await would
+    // otherwise leave the entry registered as current although its body predates the
+    // write. addObservation compares against this recorded count.
+    const mutationCountAtPrepare=state.mutationCount??0;
     if(ledgerOn)try{prepared=await prepareVisibleResult(exec.agent,exec,result);}catch(error){addProblem(state,'receipt-prepare: '+error.message);}
     if(prepared){
-      state.pending.set(exec.callId,{...prepared,receiptApplied:!!prepared.receipt,at:Date.now()});
+      state.pending.set(exec.callId,{...prepared,mutationCountAtPrepare,receiptApplied:!!prepared.receipt,at:Date.now()});
       if(state.pending.size>MAX_PENDING)state.pending.delete(state.pending.keys().next().value);
     }
     const content=prepared?.receipt?[{type:'text',text:prepared.receipt}]:result.content;
@@ -515,7 +520,10 @@ export function createObservationLedger(ctx,runtime,nativeFiles=null){
       revision:pending.windows[0].revision??null,windows:pending.windows.map(({source,...window})=>window),
       hash:pending.bodyHash,chars:pending.original.length,hasBody:pending.windows.some(window=>!window.referenceApplied),
       canonicalIds:[...new Set([...pending.priorById.values()].map(item=>item.id))],
-      visible:true,stale:false,observedAt:new Date().toISOString(),
+      // A write that landed after the read was taken (and even after preparation
+      // began) makes this body historical, not current. Only a mutation count that
+      // still matches the one recorded before preparation leaves it fresh.
+      visible:true,stale:(state.mutationCount??0)!==(pending.mutationCountAtPrepare??0),observedAt:new Date().toISOString(),
     };
     if(pending.receiptApplied){
       runtime.effects?.rewrite(agent,{feature:'receipt',seq:event.seq,retainedSeqs:[...new Set([...pending.priorById.values()].map(item=>item.seq))],afterMessage:event.data.message,beforeMessages:[{...event.data.message,content:[{type:'text',text:pending.original}]}]});

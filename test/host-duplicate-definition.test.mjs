@@ -80,3 +80,20 @@ test('the notice is raised once, not on every matching search',async()=>{
   assert.equal(observed.detail.metrics.stateNotices,1,'one notice per session, not one per search');
   assert.ok(observed.body.includes(REMINDER),'and it was actually delivered');
 });
+
+test('an import and a call are references, not duplicate definitions',async()=>{
+  // Two files matching a name is not evidence of two implementations: one may
+  // import it and another call it. Claiming "implemented in multiple places" there
+  // would mislead and would spend the session's single notice.
+  const observed=await run({
+    'one.py':'from helpers import calculate_total\n',
+    'two.py':'def use_it(rows):\n    return calculate_total(rows)\n',
+    'three.py':'def calculate_total(rows):\n    return sum(rows)\n'
+  },async(_o,n)=>{
+    if(n===1)return [tool('grep',{pattern:'calculate_total',path:'.'})];
+    return [text('完成。')];
+  });
+  assert.ok(!observed.body.includes(REMINDER),
+    'one definition plus references is not a duplicate implementation');
+  assert.equal(observed.detail.metrics.stateNotices,0);
+});

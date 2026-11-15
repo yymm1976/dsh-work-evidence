@@ -17,8 +17,16 @@ const messageOf=event=>event?.data?.message??event?.data;
 const pending=agent=>(agent.inbox?.nextStep?.length??0)>0||(agent.inbox?.nextTurn?.length??0)>0;
 const feedback=event=>event.type==='user/message'&&messageOf(event)?.source?.kind===SOURCE;
 const FILE_READS=new Set(['read']);
-const FILE_WRITES=new Set(['write','edit']);
-const filePaths=call=>[call.args.file_path??call.args.path];
+// verified_exec is a write everywhere else in this package (trajectory-audit,
+// task-flow, observation-ledger); leaving it out here meant an applied conditional
+// edit could be absent from the review payload when no reread followed it.
+const FILE_WRITES=new Set(['write','edit','verified_exec']);
+// verified_exec names its targets inside edits[], not in file_path/path.
+const filePaths=call=>{
+  const args=call?.args??{};
+  const edited=Array.isArray(args.edits)?args.edits.map(edit=>edit?.path??edit?.file_path).filter(Boolean):[];
+  return [...edited,args.file_path??args.path].filter(Boolean);
+};
 
 export function scopeReviewSources(payload,root,configured='auto'){
   const files=[...new Set(payload.observed.artifacts.map(item=>item.path))];
