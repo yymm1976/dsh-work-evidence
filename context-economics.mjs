@@ -121,7 +121,20 @@ export function createContextEconomics(ctx,runtime){
     const factor=firstReplayAssistant&&finite(old.usage?.outputTokens)
       ?Math.max(.25,Math.min(8,old.usage.outputTokens/Math.max(1,beforeOutput))):same?old.factor:1;
     const savedTokens=Math.max(0,Math.floor(rawSaving*factor));
-    const remainingSteps=Math.max(1,Math.min(64,horizon??config.projectionHorizonSteps));
+    // The horizon is how many further requests this saving keeps paying out on. A
+    // fixed 16 understated it on every measured run: the 屎山 arms issued 209–416
+    // tool calls over 209–388 steps, so at step 109 a rewrite whose break-even was
+    // 60 steps was rejected by the forecast while the session went on for 200 more.
+    // That made historyHygiene decide 919 times and apply zero times.
+    //
+    // Estimate the remainder from the session's own length so far: a run that has
+    // already issued this many requests plausibly issues about as many again. The
+    // estimate stays a forecast, so it is capped at the configured ceiling; an
+    // explicit caller horizon still wins, and a costly refill is still refused.
+    const declaredHorizon=horizon??config.projectionHorizonSteps;
+    const remainingSteps=horizon!==undefined
+      ?Math.max(1,Math.min(64,horizon))
+      :Math.max(1,Math.min(64,Math.max(declaredHorizon,state.requests??0)));
     let cachedSuffixTokens=null,prefixMessages=0,oldSuffixTokens=null,exposureMethod='conservative previous-request prompt';
     // An aborted/errored attempt reports zero usage. Its zero cache read is an
     // absence of evidence, not proof that no cached prefix exists; treating it

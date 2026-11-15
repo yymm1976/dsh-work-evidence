@@ -157,3 +157,44 @@ test('the published card also prices the official deepseek-flash model id',()=>{
   // A model name that merely contains no known family stays unpriced.
   assert.equal(economics.pricingFor(agent,{provider:'x',model:'deepseek-chat'}),null);
 });
+
+test('the forecast horizon follows the session length instead of stopping at the configured minimum',()=>{
+  const {agent,economics,finish,state,options}=harness();
+  // Same shape as the pointer-mismatch test: a complete prior request that leaves
+  // a usable exposure baseline, and an explicit price so the forecast is computed.
+  state.config.projectionPricing=[{provider:'p',model:'m',currency:'USD',input:.15,cacheRead:.003,cacheWrite:.15,output:.6}];
+  options.tools=[];options.system='system';
+  const system={id:'system',role:'system',content:[{type:'text',text:'rules'}]},
+    user={id:'user',role:'user',content:[{type:'text',text:'request'}]},
+    pointer={id:'old-result',role:'tool',content:[{type:'text',text:'[work-evidence source event:10]'}]};
+  const propose=()=>{
+    options.messages=[system,user,{
+      ...pointer,content:[{type:'text',text:'full original result body that differs from the previous pointer'}]}];
+    const changed={...pointer,content:[{type:'text',text:'[work-evidence source event:20]'}]};
+    return economics.assess(agent,{messages:options.messages,proposedMessages:[system,user,changed],tools:[],system:'system'});
+  };
+  options.messages=[system,user,pointer];
+  finish(false,{inputTokens:100,cacheReadTokens:900,cacheWriteTokens:0,outputTokens:20,totalTokens:1020});
+  const early=propose();
+  assert.equal(early.horizonSteps,16,'a young session keeps the configured horizon');
+  assert.ok(Number.isFinite(early.futureSavingEstimate),'the priced forecast is computed');
+
+  // The measured 屎山 arms issued 209-416 requests. Under a fixed 16-step horizon a
+  // rewrite whose break-even was 60 steps was rejected at step 109 while the session
+  // went on for 200 more; decision counts were 919 with 0 applied. Lengthening the
+  // session must lengthen the forecast.
+  for(let n=0;n<200;n++)finish(false,{inputTokens:100,cacheReadTokens:900,cacheWriteTokens:0,outputTokens:20,totalTokens:1020});
+  const late=propose();
+  assert.ok(late.horizonSteps>early.horizonSteps,
+    `horizon must follow the session: early=${early.horizonSteps} late=${late.horizonSteps}`);
+  assert.ok(late.horizonSteps<=64,'the forecast stays capped');
+  assert.ok(late.futureSavingEstimate>early.futureSavingEstimate,
+    `the same saving is worth more over the longer remaining run: ${early.futureSavingEstimate} -> ${late.futureSavingEstimate}`);
+  // An explicit caller horizon still wins, so a caller that knows better is obeyed.
+  options.messages=[system,user,{
+    ...pointer,content:[{type:'text',text:'full original result body that differs from the previous pointer'}]}];
+  const explicit=economics.assess(agent,{messages:options.messages,
+    proposedMessages:[system,user,{...pointer,content:[{type:'text',text:'[work-evidence source event:30]'}]}],
+    tools:[],system:'system',horizon:4});
+  assert.equal(explicit.horizonSteps,4);
+});
