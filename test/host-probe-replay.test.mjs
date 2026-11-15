@@ -9,7 +9,13 @@ import {createExecutionEvidence} from '../execution-evidence.mjs';
 const shell=process.platform==='win32'?'pwsh':'bash';
 const startHost=options=>baseStartHost({...options,...(process.platform==='win32'?{}:
   {mountShell:false,extraMounts:[['dsh-bash-local',{}],['dsh-tool-bash',{}]]})});
-const quote=value=>"'"+value.replaceAll("'",process.platform==='win32'?"''":"'\\''")+"'";
+// PowerShell single quotes are literal, so a double quote inside them reaches
+// node unescaped and `node -e` receives broken source. Escaping the double
+// quotes with a backtick keeps them inside the single-quoted argument; bash only
+// needs its own quote escaping.
+const quote=value=>process.platform==='win32'
+  ? "'"+value.replaceAll("'","''").replaceAll('"','`"')+"'"
+  : "'"+value.replaceAll("'","'\\''")+"'";
 const code='console.log(JSON.stringify(JSON.parse(require("node:fs").readFileSync("value.json","utf8"))));';
 const command=(process.platform==='win32'?'& ':'')+quote(process.execPath)+' -e '+quote(code);
 const plan={question:'Does the current project value equal the specified answer?',tool:shell,arguments:{command,description:'Read the current project value'},

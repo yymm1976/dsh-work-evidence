@@ -79,7 +79,10 @@ test('full tool surface and default reference work together and each setting clo
     await host.command(agent,'feature toolSurface compact');
     view=await host.command(agent,'features');
     assert.equal(view.tools.find(item=>item.name==='work_status').exposed,false);
-    assert.equal(view.tools.find(item=>item.name==='project_evidence').exposed,false);
+    // evidenceViews is on and project_evidence is its only entry point, so the
+    // compact surface keeps it reachable; hiding it would leave the switch on
+    // with no way to use it. Only a read-only/minimal task hides it.
+    assert.equal(view.tools.find(item=>item.name==='project_evidence').exposed,true);
     assert.equal(view.features.find(item=>item.key==='toolSurface').effect.lastReason,'compact-surface');
     await host.command(agent,'feature toolSurface full');
     view=await host.command(agent,'features');

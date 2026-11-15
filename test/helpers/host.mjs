@@ -19,6 +19,17 @@ const splitToolExecutor=toolsVersion.startsWith('0.2.2');
 registerHooks({resolve(specifier,context,next){
   try{
     const resolved=next(specifier,context);
+    // An installed profile can carry an older @deepseek-ai tree (0.1.x) beside
+    // the 0.2.2 kernel. Loading a mix of the two fails at module link time
+    // because the older dsh-llm has no CallId export for the newer dsh-session.
+    // Pin the shared kernel packages to the app the helper started with.
+    if(specifier.startsWith('@deepseek-ai/dsh')&&resolved.url?.startsWith('file:')){
+      const fromApp=path.join(APP,'node_modules',...specifier.split('/'));
+      if(!fileURLToPath(resolved.url).startsWith(APP+path.sep)){
+        try{return next(pathToFileURL(require.resolve(specifier)).href,context);}
+        catch{/* not installed in the app: keep the resolved copy */}
+      }
+    }
     if(specifier==='@deepseek-ai/dsh-llm'&&!context.conditions?.includes('require'))return next(pathToFileURL(require.resolve(specifier)).href,context);
     if(specifier==='zod'&&resolved.url?.startsWith('file:')){
       const nested=path.dirname(fileURLToPath(resolved.url));
