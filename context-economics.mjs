@@ -70,6 +70,21 @@ const forecastRoute=route=>Object.fromEntries(['provider','model','reasoningEffo
   [key,typeof route?.[key]==='string'&&route[key].trim()?route[key]:null]));
 const successfulFinish=new Set(['stop','tool-calls','max-tokens','length']);
 
+// The shipped default config leaves projectionPricing empty, so every price-gated
+// rewrite answered route-pricing-unavailable: historyHygiene alone was blocked
+// 10,112 times across measured sessions while the switch read "on". DeepSeek
+// publishes one off-peak rate card for the V4.1 Flash family, so use it as a
+// fallback for that family only, and label the source so an operator can tell a
+// published rate from an exact route setting.
+const PUBLISHED_PRICES=new Map([
+  ['deepseek-v4.1-flash',{input:1,cacheRead:0.02,cacheWrite:0,output:4,currency:'CNY'}],
+]);
+function publishedPrice(route){
+  const model=typeof route?.model==='string'?route.model.toLowerCase():'';
+  for(const [family,price] of PUBLISHED_PRICES)if(model.includes(family))return {...price,publishedRate:true};
+  return null;
+}
+
 export function createContextEconomics(ctx,runtime){
   const states=new Map();
   const get=agent=>{
@@ -83,7 +98,10 @@ export function createContextEconomics(ctx,runtime){
     return state;
   };
   function pricing(agent,route){
-    return runtime.get(agent).config.projectionPricing.find(row=>sameRoute(row,route))??null;
+    const configured=runtime.get(agent).config.projectionPricing.find(row=>sameRoute(row,route));
+    // An explicit exact-route row always wins; the published rate card is only a
+    // fallback, and its source stays distinguishable in the returned object.
+    return configured??publishedPrice(route);
   }
   function assess(agent,{messages,proposedMessages,savedChars=0,savedTokensEstimate=null,changedSeq=null,changedMessageId=null,route=null,tools,system,emergency=false,horizon,
     auxiliaryUsage=null,auxiliaryMargin=1.5}={}){
@@ -183,7 +201,8 @@ export function createContextEconomics(ctx,runtime){
       cachedExposureMethod:exposureMethod+'; prior misses may populate cache; not a cache-position measurement',
       horizonSteps:remainingSteps,refillCostEstimate:refillCost,futureSavingEstimate:futureSaving,breakEvenStepsEstimate:breakEvenSteps,
       auxiliaryCostEstimate:auxiliaryCost,auxiliaryMargin:auxiliaryUsage?auxiliaryMargin:null,
-      currency:price?.currency??null,pricingSource:price?'explicit-exact-route-setting':'unavailable',
+      currency:price?.currency??null,
+      pricingSource:!price?'unavailable':price.publishedRate===true?'published-family-rate':'explicit-exact-route-setting',
       tokenMethod:firstReplayAssistant?'text-density calibrated to previous generated output':same?'text-density calibrated to previous adapter usage':'text-density estimate',
       forecast:true,emergency,route:forecastRoute(route)};
   }

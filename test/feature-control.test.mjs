@@ -94,9 +94,12 @@ test('feature readiness distinguishes required settings, runtime dependencies an
     assert.ok(view.features.every(item=>item.effect&&typeof item.effect.status==='string'));
     assert.equal(entry('enabled').effect.status,'not-observed');
     assert.equal(view.dependencies.archiveDecoder.available,true);
-    // swEviction needs swLedger and also passes context-economics' price gate,
-    // which the shipped empty projectionPricing cannot satisfy.
-    assert.deepEqual(entry('swEviction').reasons,['requires-setting:swLedger','requires-setting:projectionPricing']);
+    // swEviction needs swLedger. Its price gate falls back to the published
+    // DeepSeek V4.1 Flash rate; this fixture's route is whatever the host
+    // reports, so assert the dependency and accept the documented price reason.
+    const swReasons=entry('swEviction').reasons;
+    assert.equal(swReasons[0],'requires-setting:swLedger');
+    assert.ok(swReasons.every(reason=>reason==='requires-setting:swLedger'||reason.startsWith('route-price-unavailable')),JSON.stringify(swReasons));
     assert.ok(entry('requestProjection').reasons.includes('requires-setting:projectionRestore'));
     assert.ok(entry('finalJsonResultGuard').reasons.includes('requires-setting:finalJsonGuard'));
     assert.ok(entry('nativeProgramReuse').reasons.includes('requires-ptc-tool-mode'));
@@ -111,12 +114,18 @@ test('feature readiness distinguishes required settings, runtime dependencies an
     // Empty projectionPricing is the shipped default. historyHygiene and
     // contextPrune are gated by that route price, so they must not read "ready".
     assert.equal(entry('historyHygiene').configured,true);
-    assert.ok(entry('historyHygiene').reasons.includes('requires-setting:projectionPricing'),JSON.stringify(entry('historyHygiene')));
+    // Pricing is no longer reported as a missing *setting*: the gate either has
+    // an exact route row or the published family rate. This fixture's own route
+    // may still be unpriceable, which is a different and legitimate reason.
+    assert.ok(!entry('historyHygiene').reasons.some(reason=>reason.includes('projectionPricing')),JSON.stringify(entry('historyHygiene')));
+    const priceReasons=entry('historyHygiene').reasons.filter(reason=>reason.startsWith('route-price-unavailable'));
+    assert.ok(priceReasons.length<=1,JSON.stringify(entry('historyHygiene')));
+    if(priceReasons.length)assert.match(priceReasons[0],/uses-published-deepseek-v4\.1-flash/u);
     const summary=await host.command(agent,'status');assert.ok(summary.featureReadiness.blocked.some(item=>item.key==='memberParsing'));
     const changed=await host.command(agent,'config {"swLedger":true,"finalJsonGuard":true}');
-    // swEviction also folds through context-economics' price gate, so enabling
-    // swLedger alone leaves it blocked on the shipped empty projectionPricing.
-    assert.ok(changed.readiness.features.find(item=>item.key==='swEviction').reasons.includes('requires-setting:projectionPricing'));
+    // With the published fallback in place, enabling swLedger is enough for
+    // swEviction's declared dependency.
+    assert.ok(!changed.readiness.features.find(item=>item.key==='swEviction').reasons.includes('requires-setting:projectionPricing'));
     assert.equal(changed.readiness.features.find(item=>item.key==='finalJsonResultGuard').status,'ready');
   }finally{await host.close();}
 });

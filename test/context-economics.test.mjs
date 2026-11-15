@@ -134,3 +134,17 @@ test('a partial usage observation cannot replace the exposure baseline',()=>{
   assert.equal(after.reason,before.reason);
   assert.equal(economics.lastUsage(agent).cacheReadTokens,81408);
 });
+
+test('a DeepSeek V4.1 Flash route is priced from the published rate when no exact row exists',()=>{
+  const {agent,economics}=harness();
+  const route={provider:'magpie',model:'opendesign/deepseek-v4.1-flash-eco'};
+  const price=economics.pricingFor(agent,route);
+  assert.ok(price,'the published family rate must price this route');
+  assert.equal(price.input,1);
+  assert.equal(price.cacheRead,0.02);
+  assert.equal(price.output,4);
+  assert.equal(price.currency,'CNY');
+  assert.equal(price.publishedRate,true,'the source must stay distinguishable from an exact setting');
+  // An unrelated route stays unpriceable so the gate keeps refusing it.
+  assert.equal(economics.pricingFor(agent,{provider:'magpie',model:'group/qwen3.8flash'}),null);
+});

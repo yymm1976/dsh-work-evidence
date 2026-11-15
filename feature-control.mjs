@@ -130,15 +130,14 @@ export function createFeatureControl(ctx,runtime,{available,canRecall,workingSet
         if(['stubSummary','deferPressureCompaction'].includes(key)&&!nativeCompaction)reasons.push('native-compaction-not-attached');
         if(key==='deferPressureCompaction'&&runtime.hasRequestBudgetView?.(agent)!==true)reasons.push('request-budget-view-unavailable');
         // These rewrite or omit visible text, and every one of them is gated by
-        // context-economics' route price. PACKAGE_DEFAULTS ships an empty
-        // projectionPricing, so the switch reads "on" while the gate can only
-        // answer route-pricing-unavailable. An empty table and a table without a
-        // row for this active route fail the same way but need different fixes,
-        // so they are reported separately. swEviction folds repeated bodies
-        // through the same `decision.allowed` check in context-window.mjs.
+        // context-economics' route price. That gate now falls back to the
+        // published DeepSeek V4.1 Flash rate when projectionPricing has no exact
+        // row for the active route, so the only remaining blocker is a route the
+        // fallback cannot price at all. swEviction folds repeated bodies through
+        // the same `decision.allowed` check in context-window.mjs.
         if(['historyHygiene','contextPrune','contextProtocol','requestProjection','swEviction','stubSummary'].includes(key)){
-          if(!Array.isArray(config.projectionPricing)||!config.projectionPricing.length)reasons.push('requires-setting:projectionPricing');
-          else if(!contextEconomics?.pricingFor?.(agent))reasons.push('requires-setting:projectionPricing-for-active-route');
+          const price=contextEconomics?.pricingFor?.(agent);
+          if(!price)reasons.push('route-price-unavailable:uses-published-deepseek-v4.1-flash');
         }
         if(['nativeProgramReuse','structuredCalls'].includes(key)&&!ptc)reasons.push('requires-ptc-tool-mode');
         if(key==='structuredCalls'&&(native?.language!=='typescript'||native?.programFormat!=='function-body'))reasons.push('requires-typescript-function-body-runtime');
