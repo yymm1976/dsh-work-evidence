@@ -215,6 +215,10 @@ export function createRuntime(ctx,call,initial={}){
     const s=get(agent);
     s.viewEpoch++;s.requestObservations=[];
     s.ledger={observations:[],searches:[],mutations:[]};s.reads=[];s.searches=[];
+    // The revisit obligation belongs to the ledger it was recorded against. A read
+    // cannot discharge it while the plugin is disabled (observe() returns early),
+    // so keeping it would let a later reminder claim a file was never reread.
+    s.pendingRevisit=null;
     s.active=false;s.pendingFailure=null;s.pendingLookupFact=null;s.pendingStateNotice=null;s.queuedMessages=[];s.dirty=true;
   }
   function effortSelection(agent){
@@ -404,13 +408,16 @@ export function createRuntime(ctx,call,initial={}){
     const observations=s.ledger.observations.map(({pathKey,...item})=>item);
     const searches=s.ledger.searches.map(({scopeKey,...item})=>item);
     const mutations=s.ledger.mutations.map(({pathKey,...item})=>item);
+    // The revisit obligation is state in its own right, not a derived view of the
+    // ledger: it survives while the ledger is consulted and is cleared with it.
+    const revisit=s.pendingRevisit?[...s.pendingRevisit.values()].map(item=>({file:item.display,atStep:item.atStep,mutations:item.mutations})):[];
     if(!detail)return {counts:{observations:observations.length,searches:searches.length,mutations:mutations.length,
-      staleObservations:observations.filter(item=>item.stale).length,staleSearches:searches.filter(item=>item.stale).length},
+      staleObservations:observations.filter(item=>item.stale).length,staleSearches:searches.filter(item=>item.stale).length,revisitObligations:revisit.length},
       recentObservations:observations.slice(-8),recentSearches:searches.slice(-5),recentMutations:mutations.slice(-8),
       pendingNotice:!!s.pendingStateNotice};
     return {counts:{observations:observations.length,searches:searches.length,mutations:mutations.length,
       returnedObservations:Math.min(24,observations.length),returnedSearches:Math.min(16,searches.length),returnedMutations:Math.min(12,mutations.length)},
-      observations:observations.slice(-24),searches:searches.slice(-16),mutations:mutations.slice(-12)};
+      observations:observations.slice(-24),searches:searches.slice(-16),mutations:mutations.slice(-12),revisitObligations:revisit};
   }
   function consumeStateNotice(s){
     // A file that was written and then left unread for a few steps is the exact

@@ -427,7 +427,9 @@ export function inlineEnvironment(input,transferId){
   const bytes=Buffer.from(input.code.replaceAll('\\','\\\\').replaceAll('\0','\\x00'),'utf8');
   // win32 wins here because the child environment block itself is capped near 32 KiB,
   // so the number of usable chunks is what the platform can carry, not a tuning choice.
-  const perVariable=process.platform==='win32'?32767:96000;
+  // 32,767 is the documented limit *including* the terminating NUL, so a chunk holds
+  // at most 32,766 characters. Nine chunks still carry the largest permitted input.
+  const perVariable=process.platform==='win32'?32766:96000;
   const values={[INLINE_ENV_KEYS[0]]:transferId};let offset=0;
   for(const key of INLINE_ENV_KEYS.slice(1)){
     let end=Math.min(offset+perVariable,bytes.length);
