@@ -97,3 +97,41 @@ test('an import and a call are references, not duplicate definitions',async()=>{
     'one definition plus references is not a duplicate implementation');
   assert.equal(observed.detail.metrics.stateNotices,0);
 });
+
+test('a search confined to one file raises a scope reminder naming that file',async()=>{
+  // Measured on the F1 run: 70 of 115 greps were single-file, and the lost 059 case
+  // searched only inside identity_metadata.py before editing it, so the calculation
+  // layer in another module was never searched for.
+  const observed=await run({
+    'identity.py':'def normalize_birthday(value):\n    return value\n',
+    'upcoming.py':'def days_until_birthday(today, birthday):\n    return 0\n'
+  },async(_o,n)=>{
+    if(n===1)return [tool('grep',{pattern:'normalize_birthday',path:'identity.py'})];
+    return [text('完成。')];
+  });
+  assert.ok(observed.body.includes('只在'),'the reminder states the restricted scope');
+  assert.ok(observed.body.includes('identity.py'),'and names the file it searched');
+  assert.ok(observed.body.includes('normalize_birthday'),'and the query');
+});
+
+test('a workspace-wide search raises no scope reminder',async()=>{
+  const observed=await run({
+    'identity.py':'def normalize_birthday(value):\n    return value\n'
+  },async(_o,n)=>{
+    if(n===1)return [tool('grep',{pattern:'normalize_birthday',path:'.'})];
+    return [text('完成。')];
+  });
+  assert.ok(!observed.body.includes('只在'),'a whole-project search already covers other files');
+});
+
+test('an empty single-file search raises no scope reminder',async()=>{
+  // Nothing was found, so there is no in-file result to generalise from; the empty
+  // lookup path already has its own notice.
+  const observed=await run({
+    'identity.py':'def other(value):\n    return value\n'
+  },async(_o,n)=>{
+    if(n===1)return [tool('grep',{pattern:'normalize_birthday',path:'identity.py'})];
+    return [text('完成。')];
+  });
+  assert.ok(!observed.body.includes('只在'),'no result means no scope advice');
+});

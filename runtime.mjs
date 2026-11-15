@@ -438,6 +438,12 @@ export function createRuntime(ctx,call,initial={}){
       s.pendingStateNotice={observations:0,searches:0,files:new Set(),revisions:new Map(),
         at:new Date().toISOString(),duplicateDefinition:{pattern,name,pathCount,sample}};
     }
+    if(!s.pendingStateNotice&&s.pendingNarrowSearch&&!s.narrowSearchNotified&&s.step>0){
+      const {pattern,scope}=s.pendingNarrowSearch;
+      s.pendingNarrowSearch=null;
+      s.pendingStateNotice={observations:0,searches:0,files:new Set(),revisions:new Map(),
+        at:new Date().toISOString(),narrowSearch:{pattern,scope}};
+    }
     if(!s.pendingStateNotice)return null;
     const notice=s.pendingStateNotice;s.pendingStateNotice=null;
     if(notice.revisitOnly){
@@ -457,6 +463,13 @@ export function createRuntime(ctx,call,initial={}){
       const text=`同一定义出现在 ${pathCount} 个文件（${sample.join('、')}${pathCount>sample.length?' 等':''}）：\`${pattern}\` 在多个位置实现。同一语义常分两层（校验层与计算层、外层采集与内层构造、注入与消费）；只改其中一处时，另一处仍按旧行为运行。落笔前确认这些位置是否属于同一能力，以及是否需要各自修正。`;
       s.metrics.stateNotices++;s.metrics.stateNoticeChars+=text.length;s.dirty=true;
       return {text,observations:0,searches:0,files:[],extraFiles:0,revisions:[],duplicateDefinition:true};
+    }
+    if(notice.narrowSearch){
+      const {pattern,scope}=notice.narrowSearch;
+      s.narrowSearchNotified=true;
+      const text=`上面的检索只在 \`${scope}\` 内进行（\`${pattern}\`）。同一能力常在另一个文件里另有实现——校验层与计算层、外层采集与内层构造、注入与消费往往分处不同模块。若这次改动涉及的行为可能由多处共同决定，先在工程范围内确认是否还有第二处，再落笔。仅是局部读取时不必扩大范围。`;
+      s.metrics.stateNotices++;s.metrics.stateNoticeChars+=text.length;s.dirty=true;
+      return {text,observations:0,searches:0,files:[],extraFiles:0,revisions:[],narrowSearch:true};
     }
     const files=[...notice.files].slice(0,5),extra=Math.max(0,notice.files.size-files.length);
     const revisions=[...notice.revisions].slice(0,5).map(([file,revision])=>`${file}@${revision.slice(0,12)}`);
@@ -595,6 +608,17 @@ export function createRuntime(ctx,call,initial={}){
       const items=exec.name==='grep'?result.value?.matches:result.value?.paths;
       s.searches.push({tool:exec.name,query:args.pattern||'',scope:args.path||'.',seq,step:s.step,empty:Array.isArray(items)&&!items.length});if(s.searches.length>12)s.searches.shift();
       recordSearch(s,exec,result,seq);
+      // A search confined to one file cannot reveal a second implementation of the
+      // same capability in another file. Measured on the F1 full-plugin run: 70 of
+      // 115 greps were single-file, and the lost 059 case searched only inside
+      // identity_metadata.py before editing it — the calculation layer in another
+      // module was never searched for. This is a scope reminder, not a finding.
+      if(exec.name==='grep'&&!s.pendingNarrowSearch&&!s.narrowSearchNotified
+        &&typeof args.path==='string'&&/\.(?:[cm]?[jt]sx?|py|java|rs|go|rb|php|cs|cpp|h)$/iu.test(args.path)
+        &&typeof args.pattern==='string'&&/^[\w$|\[\]().*+?^\\-]{3,120}$/u.test(args.pattern.trim())
+        &&Array.isArray(items)&&items.length>0){
+        s.pendingNarrowSearch={pattern:args.pattern.trim(),scope:args.path.split(/[\\/]/u).pop()};
+      }
       if(Array.isArray(items)&&!items.length){const key=JSON.stringify([exec.name,args]),prior=s.emptyLookups.get(key),now=Date.now();if(prior&&now-prior.time<120000&&!prior.noted){prior.noted=true;s.pendingLookupFact={tool:exec.name,arguments:args,firstCallId:prior.callId,repeatedCallId:exec.callId};s.active=true;}else if(!prior||now-prior.time>=120000)s.emptyLookups.set(key,{time:now,callId:exec.callId,noted:false});if(s.emptyLookups.size>24)s.emptyLookups.delete(s.emptyLookups.keys().next().value);}
       // One symbol defined in two files is a real risk: two implementations of the
       // same capability, where fixing one leaves the other on the old behaviour.
