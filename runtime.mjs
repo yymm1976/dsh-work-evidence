@@ -396,7 +396,11 @@ export function createRuntime(ctx,call,initial={}){
     // changed file again, that is the pattern behind the lost cases: it fixed one
     // site of a behaviour that exists twice and never checked back.
     if(!s.pendingRevisit)s.pendingRevisit=new Map();
-    s.pendingRevisit.set(target.key,{display:target.display,atStep:s.step,mutations:(s.pendingRevisit.get(target.key)?.mutations??0)+1});
+    // The revision the write produced is kept with the obligation: a read that
+    // started earlier can finish later, and only a read reporting this revision
+    // confirms the post-write content.
+    s.pendingRevisit.set(target.key,{display:target.display,atStep:s.step,revision:mutation.revision??null,
+      mutations:(s.pendingRevisit.get(target.key)?.mutations??0)+1});
     s.active=true;s.dirty=true;return mutation;
   }
   function recordStateObservation(agent,value){
@@ -584,7 +588,18 @@ export function createRuntime(ctx,call,initial={}){
       // file completes successfully with no lines, and that cannot confirm anything
       // about the change; an empty file (totalLines 0) is a real observation.
       const deliveredLines=(result.value?.lines?.length??0)>0||result.value?.totalLines===0;
-      if(deliveredLines&&s.pendingRevisit?.size){const target=ledgerPath(s,args.file_path);if(target)s.pendingRevisit.delete(target.key);}
+      if(deliveredLines&&s.pendingRevisit?.size){
+        const target=ledgerPath(s,args.file_path);
+        // A read can start before a write and finish after it. Its body then predates
+        // the write it would appear to confirm, so the obligation is only discharged
+        // when the read reports the revision the write recorded. Without a revision on
+        // either side the ordering is unproven, and the obligation stands.
+        const readRevision=revisionPattern.test(String(result.value?.version||result.value?.revision||''))
+          ?String(result.value.version||result.value.revision):null;
+        const pending=target?s.pendingRevisit.get(target.key):null;
+        const sameRevision=!pending?.revision||!readRevision||pending.revision===readRevision;
+        if(target&&sameRevision)s.pendingRevisit.delete(target.key);
+      }
       recordObservation(s,exec,result,seq,{file:args.file_path,lineStart:args.offset||1,lineEnd:Number.isInteger(args.limit)?(args.offset||1)+args.limit-1:null});
     }
     // project_evidence mode:read delivers current source for named files, but its
@@ -613,11 +628,14 @@ export function createRuntime(ctx,call,initial={}){
       for(const item of Array.isArray(args.files)?args.files:[]){
         const path=item?.path;
         if(typeof path!=='string'||omitted.has(path))continue;
-        // A record may be nested; accept delivery recorded under a longer path too.
-        const covered=delivered.has(path)||emptyFiles.has(path)
-          ||[...delivered,...emptyFiles].some(candidate=>candidate.endsWith(path)||path.endsWith(candidate));
-        if(!covered&&(delivered.size||emptyFiles.size))continue;
-        const target=ledgerPath(s,path);if(target)s.pendingRevisit.delete(target.key);
+        // Delivery is matched by canonical path key, not by suffix: `ba.txt` must not
+        // count as delivery for `a.txt`. The record and the request are both resolved
+        // through ledgerPath so relative and absolute forms agree.
+        const requested=ledgerPath(s,path);
+        const deliveredKeys=new Set([...delivered,...emptyFiles].map(candidate=>ledgerPath(s,candidate)?.key).filter(Boolean));
+        const covered=Boolean(requested)&&deliveredKeys.has(requested.key);
+        if(!covered&&deliveredKeys.size)continue;
+        if(requested)s.pendingRevisit.delete(requested.key);
       }
     }
     if(['grep','glob'].includes(exec.name)){

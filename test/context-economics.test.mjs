@@ -248,3 +248,20 @@ test('a per-route usage query returns that route s own latest success, not the n
   const b=economics.lastSuccessfulUsage(agent,{provider:'q',model:'n'});
   assert.equal(b.cacheReadTokens,800);
 });
+
+test('an error and its successful retry count one cache drop, not two',()=>{
+  const {agent,economics,finish,options}=harness();
+  const usage={inputTokens:6000,cacheReadTokens:0,cacheWriteTokens:0,outputTokens:100,totalTokens:6100};
+  finish(false,{inputTokens:1000,cacheReadTokens:5000,cacheWriteTokens:0,outputTokens:100,totalTokens:6100});
+  // The error reports a zero cache read, then the retry reports the real drop. Both
+  // used to compare with the retained successful baseline and each counted a reset,
+  // doubling cacheResetCount and uncachedInputAtReset for one observed transition.
+  // The error reports a real measurement with the cache already gone.
+  economics.requestFinished(agent,options,{usage,settled:true,finishReason:'error',failureCode:'SERVER',usageConsistent:true,usageComplete:true});
+  finish(false,usage);
+  const summary=economics.summary(agent);
+  // The error reports the drop (5000 -> 0). The retry reports the same post-drop value,
+  // so it is not a second drop and must not add to the counters again.
+  assert.equal(summary.cacheResetCount,1,'one drop is one reset');
+  assert.equal(summary.uncachedInputAtReset,6000,'and the uncached input is counted once');
+});

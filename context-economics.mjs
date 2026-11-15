@@ -327,6 +327,15 @@ export function createContextEconomics(ctx,runtime){
     // so comparing the raw values reported a change that did not happen.
     if(previousAttempt)state.effortChanges+=effortKey(previousAttempt.reasoningEffort)!==effortKey(options.reasoningEffort)?1:0;
     state.previousAttempt={provider:options.provider,model:options.model,reasoningEffort:options.reasoningEffort,envelope};
+    // Captured before this attempt replaces it: the reset check below compares with
+    // the previous measured attempt, not with the one being recorded now.
+    const resetPrevious=state.previousMeasured;
+    // A failed attempt still observed its own usage, so it becomes the next
+    // comparison point: the drop it saw is a real drop, and the retry that follows
+    // must not report the same transition again. Only an attempt that reported no
+    // usage at all is skipped, because a zero there is absent evidence.
+    if(usage&&total>0){state.previousMeasured={provider:options.provider,model:options.model,reasoningEffort:options.reasoningEffort,
+      cacheReadTokens:usage.cacheReadTokens,inputTokens:usage.inputTokens};}
     const previous=previousBaseline,same=previous&&sameRoute(previous,options),changed=same&&previous.envelope!==envelope;
     const effortChanged=same&&effortKey(previous.reasoningEffort)!==effortKey(options.reasoningEffort);
     // An incomplete observation can leave cacheReadTokens null. `null < x*.5` is
@@ -335,9 +344,15 @@ export function createContextEconomics(ctx,runtime){
     // it needs both observations on the same route: switching provider or model
     // changes the cache namespace, so a smaller count there is not a reset.
     const resetObserved=Boolean(same)&&finite(usage?.cacheReadTokens)&&finite(previous?.usage?.cacheReadTokens);
-    if(resetObserved&&previous.usage.cacheReadTokens>0&&usage.cacheReadTokens<previous.usage.cacheReadTokens*.5&&usage?.inputTokens>2000){
+    // Reset counters describe an observed transition, so they compare with the
+    // previous attempt rather than the retained exposure baseline. That baseline skips
+    // failed attempts, and comparing with it counted one drop twice when an error and
+    // its successful retry both matched it, doubling uncachedInputAtReset and the tax.
+    const resetSame=Boolean(resetPrevious)&&sameRoute(resetPrevious,options);
+    const resetComparable=resetSame&&finite(usage?.cacheReadTokens)&&finite(resetPrevious?.cacheReadTokens);
+    if(resetComparable&&resetPrevious.cacheReadTokens>0&&usage.cacheReadTokens<resetPrevious.cacheReadTokens*.5&&usage?.inputTokens>2000){
       state.cacheResetCount++;state.uncachedInputAtReset+=usage.inputTokens;
-      if(changed&&price){const extra=Math.max(0,Math.min(usage.inputTokens-previous.usage.inputTokens,previous.usage.cacheReadTokens-usage.cacheReadTokens));
+      if(changed&&price){const extra=Math.max(0,Math.min(usage.inputTokens-resetPrevious.inputTokens,resetPrevious.cacheReadTokens-usage.cacheReadTokens));
         state.resetTaxByCurrency[price.currency]=(state.resetTaxByCurrency[price.currency]??0)+extra*Math.max(0,price.input-price.cacheRead)/1e6;}
       // The retained baseline skips failed attempts, so a retry compares against the
       // same baseline and would count one transition twice. Dedupe only the adjacent
