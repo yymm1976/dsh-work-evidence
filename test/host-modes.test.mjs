@@ -115,3 +115,18 @@ test('describing an edit inside a read-only request does not make it writable',a
       'an affirmative request in a later sentence makes the task writable');
   }finally{await host.close();}
 });
+
+test('an extensionless filename after a write verb still counts as a write request',async()=>{
+  // "create README" names a real target but has no extension; without accepting it
+  // the request stayed read-only and hid work_exec despite the explicit creation.
+  const host=await startHost({toolMode:'ptc',extraMounts:[['dsh-ptc-runtime-node']],script:answer});
+  try{
+    const agent=await host.createAgent('max');
+    await host.send(agent,'Do not modify src/a.js; create README.');
+    assert.match(systemOf(host.requests.at(-1)),/\bwork_exec: \{/u,
+      'creating a file is a write request even without an extension');
+    await host.send(agent,'Read-only: review the edits in src/a.js.');
+    assert.doesNotMatch(systemOf(host.requests.at(-1)),/\bwork_exec: \{/u,
+      'describing edits is still a read');
+  }finally{await host.close();}
+});
