@@ -23,12 +23,14 @@ const FILE_READS=new Set(['read']);
 const FILE_WRITES=new Set(['write','edit','verified_exec']);
 // Per-file effect states from a verified_exec result, keyed by resolved path. A mixed
 // result can apply one file and leave another at `none` under a top-level `applied`.
-const perFileEffortStates=value=>{
+// The normaliser is passed in because the caller's fileKey resolves against the
+// workspace root; the state lookup and the edit lookup must use the same key.
+const perFileEffortStates=(value,normalize)=>{
   const states=new Map();
   if(!Array.isArray(value?.files))return states;
   for(const file of value.files){
     const target=typeof file?.path==='string'?file.path:typeof file?.file==='string'?file.file:null;
-    if(target&&typeof file?.effectState==='string')states.set(key(target),file.effectState);
+    if(target&&typeof file?.effectState==='string')states.set(normalize(target),file.effectState);
   }
   return states;
 };
@@ -232,7 +234,7 @@ function payloadFor(current,review,root){
       if(states.length&&!states.some(state=>['applied','partial','unknown'].includes(state)))return null;
       // A mixed result applies some files and not others; keep the per-file states so
       // the change-history pass can skip the files that did not take the change.
-      call.editStates=perFileEffortStates(value);
+      call.editStates=perFileEffortStates(value,fileKey);
     }
     return call;
   };
@@ -279,7 +281,7 @@ function payloadFor(current,review,root){
       // change belong in the history, or an unapplied file is described as changed.
       const states=verifiedEditStates(call);
       const applied=callArgs.edits.filter(edit=>{
-        const target=key(edit?.file??edit?.path??edit?.file_path??'');
+        const target=fileKey(edit?.file??edit?.path??edit?.file_path??'');
         const state=states.get(target);
         return !state||['applied','partial','unknown'].includes(state);
       });

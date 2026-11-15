@@ -593,19 +593,31 @@ export function createRuntime(ctx,call,initial={}){
     // not been reread. A failed or reference-only result does not count.
     if(exec.name==='project_evidence'&&args.mode==='read'&&s.pendingRevisit?.size&&
       !result.isError&&!['reference','reference-if-visible'].includes(result.value?.responseView?.kind)){
-      // A successful read can still omit bodies under the response budget; those
-      // records are marked omitted, and the file was not actually reread.
-      const omitted=new Set();
+      // A per-file record only proves the file was read when it delivered something:
+      // an offset past EOF returns an empty window, and an unavailable source returns
+      // state "unavailable". Neither is marked omitted, so without this check the
+      // obligation was cleared although no source was delivered.
+      const omitted=new Set(),delivered=new Set(),emptyFiles=new Set();
       const collect=value=>{
         if(!value||typeof value!=='object')return;
         if(Array.isArray(value)){for(const item of value)collect(item);return;}
-        if(value.omitted===true&&typeof value.path==='string')omitted.add(value.path);
+        if(typeof value.path==='string'){
+          if(value.omitted===true)omitted.add(value.path);
+          else if(value.state==='unavailable')omitted.add(value.path);
+          else if(Array.isArray(value.lines)&&value.lines.length>0)delivered.add(value.path);
+          else if(value.totalLines===0||value.empty===true)emptyFiles.add(value.path);
+        }
         for(const key of ['sources','files','items','failures','searches'])if(value[key])collect(value[key]);
       };
       collect(result.value);
       for(const item of Array.isArray(args.files)?args.files:[]){
-        if(omitted.has(item?.path))continue;
-        const target=ledgerPath(s,item?.path);if(target)s.pendingRevisit.delete(target.key);
+        const path=item?.path;
+        if(typeof path!=='string'||omitted.has(path))continue;
+        // A record may be nested; accept delivery recorded under a longer path too.
+        const covered=delivered.has(path)||emptyFiles.has(path)
+          ||[...delivered,...emptyFiles].some(candidate=>candidate.endsWith(path)||path.endsWith(candidate));
+        if(!covered&&(delivered.size||emptyFiles.size))continue;
+        const target=ledgerPath(s,path);if(target)s.pendingRevisit.delete(target.key);
       }
     }
     if(['grep','glob'].includes(exec.name)){

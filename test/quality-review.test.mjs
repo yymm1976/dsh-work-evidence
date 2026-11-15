@@ -411,3 +411,27 @@ test('an unreadable state record is only recovered by reading it again',async()=
     assert.equal(h.dispatched.length,1,'review resumes once the record is readable again');
   }finally{await h.close();}
 });
+
+test('a verified edit supplies its per-file change body and skips a file that did not apply',async()=>{
+  // A verified_exec call reports its changes inside edits[], not in content/new_string,
+  // and a mixed result can apply one file while leaving another at effectState none.
+  // Reading `key` instead of the scoped normaliser threw a ReferenceError here, which
+  // no test covered; this one exercises both the state lookup and the change body.
+  let payload;const artifacts=[],h=await harness({artifacts,review:value=>{payload=value;return {issues:[]};}});
+  try{
+    h.request('审阅 apply.mjs 与 skip.mjs 的已修改源码。');
+    const result=h.event('tool/ptc-dispatch',{subCallId:'edit',rootCallId:'outer',name:'verified_exec',isError:false,
+      arguments:{summary:'clamp',edits:[
+        {file:'apply.mjs',old_text:'return value',new_text:'return Math.max(0, value)'},
+        {file:'skip.mjs',content:'created body MARKER_CREATED'}]},
+      content:[{type:'text',text:JSON.stringify({effectState:'applied',files:[
+        {path:'apply.mjs',effectState:'applied'},{path:'skip.mjs',effectState:'none'}]})}]});
+    artifacts.push({seq:result.seq,path:'apply.mjs',tool:'verified_exec',effectState:'applied'});
+    artifacts.push({seq:result.seq,path:'skip.mjs',tool:'verified_exec',effectState:'none'});
+    h.answer('已审阅。');await h.run();
+    const evidence=payload.evidence.filter(item=>item.seq===result.seq);
+    const joined=evidence.map(item=>item.data).join('\n');
+    assert.ok(joined.includes('Math.max(0, value)'),'the applied edit body is in the payload');
+    assert.ok(!joined.includes('MARKER_CREATED'),'the file that did not apply is not described as changed');
+  }finally{await h.close();}
+});
