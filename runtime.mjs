@@ -412,7 +412,12 @@ export function createRuntime(ctx,call,initial={}){
     const notice=s.pendingStateNotice;s.pendingStateNotice=null;
     const files=[...notice.files].slice(0,5),extra=Math.max(0,notice.files.size-files.length);
     const revisions=[...notice.revisions].slice(0,5).map(([file,revision])=>`${file}@${revision.slice(0,12)}`);
-    const text=`工程状态已失效：写入 ${files.join('、')}${extra?' 等'+extra+'个文件':''} 后，${notice.observations} 个旧源码观察和 ${notice.searches} 个旧搜索命中不再代表当前工作区。不要继续复用修改前的行内容或搜索结果；需要时按当前内容重读。${revisions.length?' 当前协作 revision：'+revisions.join('、'):''}`;
+    // A notice that only says "state expired" was ignored in every measured
+    // session; the model kept working from pre-edit reads. Name the files and the
+    // concrete assertions to re-check, and ask about the second implementation
+    // site, because the lost cases were single-site fixes of a behaviour that
+    // exists in two places.
+    const text=`工程状态已失效（已修改 ${files.join('、')}${extra?' 等'+extra+'个文件':''}）：${notice.observations} 个旧源码观察和 ${notice.searches} 个旧搜索命中对应修改前的内容。按当前文件核对三类断言：(1) 被改动函数的行为，(2) 调用方是否仍假设旧行为，(3) 同一能力是否在另一个模块另有实现——同一语义常分两层（校验层与计算层、外层采集与内层构造、注入与消费）。只重读你准备据此下结论的区段，不整文件重读。${revisions.length?' 当前 revision：'+revisions.join('、'):''}`;
     s.metrics.stateNotices++;s.metrics.stateNoticeChars+=text.length;s.dirty=true;
     return {text,observations:notice.observations,searches:notice.searches,files,extraFiles:extra,revisions};
   }
