@@ -4,7 +4,10 @@ import {argsOf} from './runtime.mjs';
 export {historyReferences} from './visible-results.mjs';
 
 const count=text=>Array.from(text).length;
-const READ=new Set(['read','project_evidence']);
+// ops_read_files is retired, but a resumed session can replay its results. Keeping
+// the name here preserves the read-window protection those historical entries had;
+// dropping it let history hygiene excerpt a focused source window instead.
+const READ=new Set(['read','project_evidence','ops_read_files']);
 export const prunableMessage=message=>!!message&&!message.isError&&Array.isArray(message.content)&&
   message.content.length>0&&message.content.every(block=>block?.type==='text')&&!hasPruneProblem(message.content);
 

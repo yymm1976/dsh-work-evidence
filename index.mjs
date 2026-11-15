@@ -355,7 +355,10 @@ export function apply(ctx,config={}){
     if(!readOnly)return false;
     const writeVerb=/(?:修改|修复|实现|编写|重构|创建|编辑|写入|增加|删除|替换|重写|改|modify|fix|implement|write|edit|create|delete|replace)/iu;
     const deniedWrite=/(?:不得|不要|禁止|不允许|不可|无需|不必|do not|don't|never)/iu;
-    const allowedAfterDenial=/(?:但|但是|不过|然而|而是|需要|允许|可以|请|必须|应当|instead|however|but|should|must|can|may).{0,40}(?:修改|修复|实现|编写|重构|创建|编辑|写入|增加|删除|替换|重写|改|modify|fix|implement|write|edit|create|delete|replace)/iu;
+    // An allowance word must be its own token: in "src/can-edit.js" the `can` is part
+    // of a filename, not permission to write, and reading it as permission turned an
+    // explicit denial into a writable task.
+    const allowedAfterDenial=/(?:^|[^A-Za-z0-9_-])(?:但|但是|不过|然而|而是|需要|允许|可以|请|必须|应当|instead|however|but|should|must|can|may)(?![A-Za-z0-9_-]).{0,40}(?:(?:修改|修复|实现|编写|重构|创建|编辑|写入|增加|删除|替换|重写|改(?!动|变))|(?:modify|fix|implement|write|edit|create|delete|replace)\b)/iu;
     // A sentence can mention an edit without asking for one: "review the edits in
     // src/a.js" is a read, because "edits" is the object of "review". The English
     // verbs are therefore matched in base form only (\b so "edits"/"edited" do not

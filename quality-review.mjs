@@ -21,10 +21,12 @@ const FILE_READS=new Set(['read']);
 // task-flow, observation-ledger); leaving it out here meant an applied conditional
 // edit could be absent from the review payload when no reread followed it.
 const FILE_WRITES=new Set(['write','edit','verified_exec']);
-// verified_exec names its targets inside edits[], not in file_path/path.
+// verified_exec names its targets inside edits[], under `file` in the supplied
+// mutation shape and `path`/`file_path` in the older one; all three are accepted so
+// an applied conditional edit can match its artifact.
 const filePaths=call=>{
   const args=call?.args??{};
-  const edited=Array.isArray(args.edits)?args.edits.map(edit=>edit?.path??edit?.file_path).filter(Boolean):[];
+  const edited=Array.isArray(args.edits)?args.edits.map(edit=>edit?.file??edit?.path??edit?.file_path).filter(Boolean):[];
   return [...edited,args.file_path??args.path].filter(Boolean);
 };
 
@@ -253,6 +255,24 @@ function payloadFor(current,review,root){
     const dataBudget=Math.min(...parts.map(part=>part.budget));
     if(dataBudget<200)return false;
     const callArgs=call.args??{};
+    // A verified edit carries its changes per file inside edits[], so a call without
+    // the plain content/new_string fields is joined into one bounded body here
+    // rather than being dropped from the payload.
+    if(call.name==='verified_exec'&&Array.isArray(callArgs.edits)){
+      const joined=callArgs.edits.map(edit=>{
+        const target=edit?.file??edit?.path??edit?.file_path??'';
+        const before=typeof edit?.old_text==='string'?edit.old_text:'';
+        const after=typeof edit?.new_text==='string'?edit.new_text:'';
+        return `--- ${target}\n${before}${before&&after?'\n=>\n':''}${after}`;
+      }).join('\n\n');
+      if(!joined||joined.length>dataBudget)return false;
+      const data=JSON.stringify({tool:'verified_exec',summary:callArgs.summary??null,patch:joined,
+        sourceState:'successful-historical-change; later observations take precedence; current file not reconstructed'});
+      if(data.length>dataBudget)return false;
+      changeAllowance-=data.length;
+      for(const part of parts)sourceBudgets.set(part.file,part.budget-data.length);
+      sourceChanges.set(event.seq,data);seqs.add(event.seq);return true;
+    }
     const values=[{newText:call.name==='write'?callArgs.content:callArgs.new_string,oldText:callArgs.old_string}];
     if(values.some(value=>typeof value.newText!=='string'))return false;
     let changeArgs;

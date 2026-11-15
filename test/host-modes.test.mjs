@@ -130,3 +130,18 @@ test('an extensionless filename after a write verb still counts as a write reque
       'describing edits is still a read');
   }finally{await host.close();}
 });
+
+test('an allowance word inside a filename is not permission to write',async()=>{
+  // "can-edit" inside src/can-edit.js matched the allowance `can`, so an explicit
+  // denial with a filename in it classified the task writable and kept work_exec.
+  const host=await startHost({toolMode:'ptc',extraMounts:[['dsh-ptc-runtime-node']],script:answer});
+  try{
+    const agent=await host.createAgent('max');
+    await host.send(agent,'Read-only: do not modify src/can-edit.js');
+    assert.doesNotMatch(systemOf(host.requests.at(-1)),/\bwork_exec: \{/u,
+      'a denial stays a denial when the filename contains an allowance word');
+    await host.send(agent,'Do not modify src/can-edit.js. Then modify src/real.js to add the feature.');
+    assert.match(systemOf(host.requests.at(-1)),/\bwork_exec: \{/u,
+      'a real allowance clause in another sentence still permits the write');
+  }finally{await host.close();}
+});

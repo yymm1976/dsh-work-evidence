@@ -276,7 +276,10 @@ export function createContextEconomics(ctx,runtime){
     if(requestKind==='compaction')state.compactionRequests++;
     if(usage&&(!finite(usage.cacheReadTokens)||!finite(usage.cacheWriteTokens)))state.missingCacheUsage++;
     if(total===null)state.missingUsage++;
-    else{state.reportedPromptTokens+=total;state.reportedOutputTokens+=usage.outputTokens??0;}
+    else state.reportedPromptTokens+=total;
+    // A reported output count is its own observation. Requiring a prompt total to
+    // read it dropped the output of any request whose prompt fields were incomplete.
+    if(finite(usage?.outputTokens))state.reportedOutputTokens+=usage.outputTokens;
     const billingComplete=record.settled&&['stop','tool-calls','max-tokens','length'].includes(record.finishReason);
     const cacheWritePriced=usage?.cacheWriteTokens===0||finite(price?.cacheWrite);
     if(price&&canonical.complete&&usage&&total!==null&&finite(usage.outputTokens)&&billingComplete&&cacheWritePriced){
@@ -320,10 +323,12 @@ export function createContextEconomics(ctx,runtime){
     const previousBaseline=state.last;
     const envelope=envelopeKey(options);
     if(previousAttempt)state.surfaceChanges+=previousAttempt.envelope!==envelope?1:0;
-    if(previousAttempt)state.effortChanges+=previousAttempt.reasoningEffort!==options.reasoningEffort?1:0;
+    // An omitted effort and an explicit null are the same setting (effortKey says so),
+    // so comparing the raw values reported a change that did not happen.
+    if(previousAttempt)state.effortChanges+=effortKey(previousAttempt.reasoningEffort)!==effortKey(options.reasoningEffort)?1:0;
     state.previousAttempt={provider:options.provider,model:options.model,reasoningEffort:options.reasoningEffort,envelope};
     const previous=previousBaseline,same=previous&&sameRoute(previous,options),changed=same&&previous.envelope!==envelope;
-    const effortChanged=same&&previous.reasoningEffort!==options.reasoningEffort;
+    const effortChanged=same&&effortKey(previous.reasoningEffort)!==effortKey(options.reasoningEffort);
     // An incomplete observation can leave cacheReadTokens null. `null < x*.5` is
     // true in JavaScript, so an omitted count would read as a cache reset and would
     // also consume the transition-dedupe key. A reset needs a reported count, and
