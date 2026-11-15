@@ -579,8 +579,12 @@ export function createRuntime(ctx,call,initial={}){
     }
     if(exec.name==='read'&&args.file_path){
       s.reads.push({path:args.file_path,line:args.offset||1,seq,step:s.step});if(s.reads.length>12)s.reads.shift();
-      // Reading the changed file again discharges the revisit obligation.
-      if(s.pendingRevisit?.size){const target=ledgerPath(s,args.file_path);if(target)s.pendingRevisit.delete(target.key);}
+      // Reading the changed file again discharges the revisit obligation, but only
+      // when the read delivered something to check. An offset past the end of the
+      // file completes successfully with no lines, and that cannot confirm anything
+      // about the change; an empty file (totalLines 0) is a real observation.
+      const deliveredLines=(result.value?.lines?.length??0)>0||result.value?.totalLines===0;
+      if(deliveredLines&&s.pendingRevisit?.size){const target=ledgerPath(s,args.file_path);if(target)s.pendingRevisit.delete(target.key);}
       recordObservation(s,exec,result,seq,{file:args.file_path,lineStart:args.offset||1,lineEnd:Number.isInteger(args.limit)?(args.offset||1)+args.limit-1:null});
     }
     // project_evidence mode:read delivers current source for named files, but its

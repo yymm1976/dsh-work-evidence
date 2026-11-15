@@ -208,9 +208,19 @@ export function createEffectObserver(ctx,runtime){
     const value=feature(state,name),key=decision.status==='not-applicable'?'notApplicable':decision.status;
     const seq=Number.isSafeInteger(decision.seq)?decision.seq:++state.decisionSeq;
     state.decisionSeq=Math.max(state.decisionSeq,seq);
-    value.decisions++;value[key]=(value[key]??0)+1;value.lastStatus=decision.status;value.lastReason=decision.reason;
-    value.lastAt=decision.at??at;value.lastStep=decision.step??step;value.lastSeq=seq;value.reasons[decision.reason]=(value.reasons[decision.reason]??0)+1;
-    state.decisions.push(name===decision.feature?decision:{...decision,feature:name});if(state.decisions.length>64)state.decisions.shift();
+    value.decisions++;value[key]=(value[key]??0)+1;value.reasons[decision.reason]=(value.reasons[decision.reason]??0)+1;
+    // A retried overflow append can restore an older decision after newer rows were
+    // written. The counters still accumulate, but the "last" fields describe the
+    // newest decision, so they only move forward in sequence order.
+    if(!Number.isSafeInteger(value.lastSeq)||seq>=value.lastSeq){
+      value.lastStatus=decision.status;value.lastReason=decision.reason;
+      value.lastAt=decision.at??at;value.lastStep=decision.step??step;value.lastSeq=seq;
+    }
+    // The rolling window is read in order, so insert by seq rather than appending.
+    const restored=name===decision.feature?decision:{...decision,feature:name};
+    const index=state.decisions.findLastIndex(item=>Number.isSafeInteger(item.seq)&&item.seq>seq);
+    if(index<0)state.decisions.push(restored);else state.decisions.splice(index+1,0,restored);
+    if(state.decisions.length>64)state.decisions.shift();
   }
   function finish(agent,row){const state=get(agent);normalizeRow(row);accumulate(state,row);queue(state,agent,row);runtime.get(agent).dirty=true;}
   async function load(agent){

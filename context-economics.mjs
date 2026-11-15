@@ -296,6 +296,11 @@ export function createContextEconomics(ctx,runtime){
       completeSuccess=successfulMain&&canonical.complete&&total>0;
     state.mainAttempts.push({at:record.at??new Date().toISOString(),provider:options.provider,model:options.model,
       reasoningEffort:options.reasoningEffort??null,completeSuccess,promptTokens:total,
+      // The usage travels with the attempt so a per-route query reads that route's
+      // own observation. lastSuccessfulMain keeps only the newest success on any
+      // route, so using it for a route query returned null after a later success
+      // elsewhere even though this route had succeeded.
+      usage:completeSuccess?{...usage}:null,
       finishReason:record.finishReason,usageComplete:canonical.complete});
     if(state.mainAttempts.length>16)state.mainAttempts.shift();
     if(completeSuccess){
@@ -412,9 +417,8 @@ export function createContextEconomics(ctx,runtime){
     pricingFor:(agent,route)=>pricing(agent,route??agent.session.requestHeader()?.config??{}),
     lastSuccessfulUsage:(agent,route)=>{
       const state=get(agent),latest=state.mainAttempts.findLast(item=>sameObservedRoute(item,route));
-      if(!latest?.completeSuccess)return null;
-      const value=state.lastSuccessfulMain;
-      return value&&sameObservedRoute(value,route)?{...value.usage}:null;
+      if(!latest?.completeSuccess||!latest.usage)return null;
+      return {...latest.usage};
     },
     lastUsage:agent=>get(agent).last?.usage??null,
     clear:agent=>states.delete(agent.session.id),dispose:()=>states.clear()};

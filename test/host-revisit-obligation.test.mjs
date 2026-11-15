@@ -82,3 +82,19 @@ test('a read during a disabled interval never produces a reminder that the file 
       'disabling reset the ledger the write was recorded in');
   });
 });
+
+test('a read past the end of the file does not discharge the obligation',async()=>{
+  // A read with an offset past the end completes successfully with no lines. That
+  // delivers no source, so it cannot confirm anything about the change; discharging
+  // here would let the reminder disappear without the file having been checked.
+  await withHost(async({answers,send,body})=>{
+    writeAtFour(answers);
+    answers.set(6,[tool('read',{file_path:'a.txt',offset:900,limit:50})]);
+    await send('处理 a.txt');
+    await send('继续。');
+    await send('继续。');
+    await send('继续。');
+    assert.ok(body().includes(REMINDER),
+      'an out-of-range read leaves the obligation standing');
+  });
+});

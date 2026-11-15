@@ -210,6 +210,14 @@ function payloadFor(current,review,root){
         item.data?.turn===data.turn&&item.data?.step===data.step);
       if(!original)return null;call={name:original.data.name,args:argsOf(original.data.arguments)};content=messageOf(event)?.content;
     }
+    // A conditional edit can report a deopt with no error marker, in which case the
+    // file did not change. Counting it as a superseding write would drop an earlier
+    // read of the same path from the fallback evidence for no reason.
+    if(call.name==='verified_exec'){
+      let value;try{value=JSON.parse((content??[]).map(block=>block.text??'').join(''));}catch{value=null}
+      const states=[value?.effectState,...(Array.isArray(value?.files)?value.files.map(file=>file?.effectState):[])].filter(Boolean);
+      if(states.length&&!states.some(state=>['applied','partial','unknown'].includes(state)))return null;
+    }
     return call;
   };
   const requestSections=requestSourceSections(events,request,assistant,root,fileCall);

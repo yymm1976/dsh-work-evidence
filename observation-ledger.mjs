@@ -525,6 +525,11 @@ export function createObservationLedger(ctx,runtime,nativeFiles=null){
       // still matches the one recorded before preparation leaves it fresh.
       visible:true,stale:(state.mutationCount??0)!==(pending.mutationCountAtPrepare??0),observedAt:new Date().toISOString(),
     };
+    // Consumers read the window flag, not the observation flag: bestCanonical()
+    // skips a prior only when its window is stale, and metrics() counts the
+    // observation as visible when any window is not stale. A stale observation whose
+    // windows still claim freshness would therefore be reused as a current body.
+    if(observation.stale)for(const window of observation.windows){window.stale=true;window.staleCause='known-write';}
     if(pending.receiptApplied){
       runtime.effects?.rewrite(agent,{feature:'receipt',seq:event.seq,retainedSeqs:[...new Set([...pending.priorById.values()].map(item=>item.seq))],afterMessage:event.data.message,beforeMessages:[{...event.data.message,content:[{type:'text',text:pending.original}]}]});
       runtime.effects?.decide(agent,'receipt','applied','duplicate-visible-body',{seq:event.seq,charsSaved:pending.original.length-shownText.length});

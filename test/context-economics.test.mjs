@@ -230,3 +230,21 @@ test('zero-usage failures do not count as observed requests for the projection r
   assert.equal(settled.length,1,'three real observations settle it');
   assert.ok((settled[0].observedPromptTokensPerRequest??0)>0,'the settled review reports a real average');
 });
+
+test('a per-route usage query returns that route s own latest success, not the newest success anywhere',()=>{
+  const {agent,economics}=harness();
+  const optionsB={provider:'q',model:'n',messages:[{id:'u',role:'user',content:[{type:'text',text:'request'}]}]};
+  const usageA={inputTokens:100,cacheReadTokens:900,cacheWriteTokens:0,outputTokens:20,totalTokens:1020};
+  const usageB={inputTokens:200,cacheReadTokens:800,cacheWriteTokens:0,outputTokens:30,totalTokens:1030};
+  const finish=o=>economics.requestFinished(agent,o,{auxiliary:false,usage:o===optionsB?usageB:usageA,settled:true,finishReason:'stop'});
+  finish({provider:'p',model:'m',messages:[{id:'u',role:'user',content:[{type:'text',text:'request'}]}]});
+  finish(optionsB);
+  // Route A succeeded first and route B succeeded later. lastSuccessfulMain holds B,
+  // so reading that slot left a query for A with null and the compaction handoff
+  // fell back to its original path even though A had observed usage.
+  const a=economics.lastSuccessfulUsage(agent,{provider:'p',model:'m'});
+  assert.ok(a,'route A has its own successful usage');
+  assert.equal(a.cacheReadTokens,900,'and it is A s own count, not B s');
+  const b=economics.lastSuccessfulUsage(agent,{provider:'q',model:'n'});
+  assert.equal(b.cacheReadTokens,800);
+});
