@@ -548,7 +548,18 @@ export function createRuntime(ctx,call,initial={}){
     // not been reread. A failed or reference-only result does not count.
     if(exec.name==='project_evidence'&&args.mode==='read'&&s.pendingRevisit?.size&&
       !result.isError&&!['reference','reference-if-visible'].includes(result.value?.responseView?.kind)){
+      // A successful read can still omit bodies under the response budget; those
+      // records are marked omitted, and the file was not actually reread.
+      const omitted=new Set();
+      const collect=value=>{
+        if(!value||typeof value!=='object')return;
+        if(Array.isArray(value)){for(const item of value)collect(item);return;}
+        if(value.omitted===true&&typeof value.path==='string')omitted.add(value.path);
+        for(const key of ['sources','files','items','failures','searches'])if(value[key])collect(value[key]);
+      };
+      collect(result.value);
       for(const item of Array.isArray(args.files)?args.files:[]){
+        if(omitted.has(item?.path))continue;
         const target=ledgerPath(s,item?.path);if(target)s.pendingRevisit.delete(target.key);
       }
     }

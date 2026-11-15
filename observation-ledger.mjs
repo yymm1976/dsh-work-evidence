@@ -293,7 +293,11 @@ export function createObservationLedger(ctx,runtime,nativeFiles=null){
 
   function markMutation(agent,{name,args,value,seq=null}){
     const state=stateFor(agent);
-    for(const raw of mutationPathsFromValue(name,args,value))markStale(agent,raw,seq,name);
+    const paths=mutationPathsFromValue(name,args,value);
+    // A monotonic count lets a nested read tell whether a write happened after it
+    // was taken, even when the outer result is registered later.
+    if(paths.length)state.mutationCount=(state.mutationCount??0)+1;
+    for(const raw of paths)markStale(agent,raw,seq,name);
   }
 
   function rememberNested(agent,exec,result){
@@ -301,7 +305,8 @@ export function createObservationLedger(ctx,runtime,nativeFiles=null){
     state.root??=runtime.get(agent).root||null;
     if(!root)return;
     const list=state.nested.get(root)??[];
-    const entry={callId:exec.callId,name:exec.name,arguments:exec.arguments??{},value:result.value,meta:result.meta,content:textBlocks(result.content),isError:!!result.isError};
+    const entry={callId:exec.callId,name:exec.name,arguments:exec.arguments??{},value:result.value,meta:result.meta,content:textBlocks(result.content),isError:!!result.isError,
+      mutationCountAtRead:state.mutationCount??0};
     const prior=list.findIndex(item=>item.callId===exec.callId);
     if(prior>=0)list[prior]=entry;else list.push(entry);
     state.nested.set(root,list.slice(-32));
@@ -346,7 +351,15 @@ export function createObservationLedger(ctx,runtime,nativeFiles=null){
     const root=await refreshRoot(agent);
     if(!root)return skip('no-workspace-root');
     let source,projection=parseResult(textBlocks(result.content));
-    const nested=state.nested.get(exec.callId)??[],{reads,projected:batch}=nestedReadValues(nested);
+    const nested=state.nested.get(exec.callId)??[],{reads:rawReads,projected:rawBatch}=nestedReadValues(nested);
+    // Drop any nested read taken before a write in the same root call: its body
+    // predates the mutation, so accepting it would present pre-edit content as
+    // current. The remaining reads keep the original projection rule.
+    // Keep only reads taken at or after the latest mutation in this call.
+    const latestMutation=state.mutationCount??0;
+    const reads=rawReads.filter(read=>(read.mutationCountAtRead??0)>=latestMutation)||rawReads;
+    const keptAll=reads.length===rawReads.length;
+    const batch=keptAll?rawBatch:null;
     if(batch&&sameJson(textBlocks(result.content),batch)){
       source={name:reads[0].name,arguments:{files:reads.map(read=>read.arguments)},value:batch};
     }else if(exec.name==='run_code'&&(source=renderedReads(reads,textBlocks(result.content)))){

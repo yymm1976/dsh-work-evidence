@@ -5,6 +5,21 @@ import os from 'node:os';
 import path from 'node:path';
 import {createEffectObserver} from '../effect-observer.mjs';
 
+// A read-only mode only blocks writes when the process lacks CAP_DAC_OVERRIDE, so a
+// root container can still append after chmod(0o444). Detect the capability instead
+// of assuming the permission model, and skip only the cases that need it.
+async function readOnlyBlocksWrites(){
+  const dir=await fs.mkdtemp(path.join(os.tmpdir(),'we-chmod-'));
+  try{
+    const file=path.join(dir,'probe.txt');
+    await fs.writeFile(file,'a','utf8');
+    await fs.chmod(file,0o444);
+    try{await fs.appendFile(file,'b');return false;}catch{return true;}
+  }finally{await fs.rm(dir,{recursive:true,force:true});}
+}
+const chmodBlocks=await readOnlyBlocksWrites();
+
+
 const SESSION='we-effects-session';
 const COMPLETE={inputTokens:1000,cacheReadTokens:0,cacheWriteTokens:0,outputTokens:100,totalTokens:1100};
 const REJECTED={inputTokens:100,cacheReadTokens:-5,outputTokens:50,totalTokens:150};
@@ -41,7 +56,7 @@ test('a missing trailing newline is repaired so later rows keep their own line',
   }finally{await remove(created.telemetryDir);}
 });
 
-test('a failed trailing-newline write is recorded and does not block later requests',async()=>{
+test('a failed trailing-newline write is recorded and does not block later requests',{skip:!chmodBlocks?'read-only mode does not block writes here (CAP_DAC_OVERRIDE)' : false},async()=>{
   const created=await start();
   const file=path.join(created.telemetryDir,SESSION+'.observability.jsonl');
   try{
