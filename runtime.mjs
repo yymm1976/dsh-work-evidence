@@ -388,6 +388,11 @@ export function createRuntime(ctx,call,initial={}){
       callId,seq,step:s.step,at:new Date().toISOString()};
     boundedPush(s.ledger.mutations,mutation,32);
     markStateStale(s,[{...target,revision:mutation.revision}]);
+    // Remember what was just written. If the model moves on without reading the
+    // changed file again, that is the pattern behind the lost cases: it fixed one
+    // site of a behaviour that exists twice and never checked back.
+    if(!s.pendingRevisit)s.pendingRevisit=new Map();
+    s.pendingRevisit.set(target.key,{display:target.display,atStep:s.step,mutations:(s.pendingRevisit.get(target.key)?.mutations??0)+1});
     s.active=true;s.dirty=true;return mutation;
   }
   function recordStateObservation(agent,value){
@@ -408,8 +413,23 @@ export function createRuntime(ctx,call,initial={}){
       observations:observations.slice(-24),searches:searches.slice(-16),mutations:mutations.slice(-12)};
   }
   function consumeStateNotice(s){
+    // A file that was written and then left unread for a few steps is the exact
+    // pattern behind the lost cases. Queue one reminder naming those files even
+    // when no new staleness event fired, so the obligation is not forgotten.
+    if(!s.pendingStateNotice&&s.pendingRevisit?.size&&s.step>0){
+      const overdue=[...s.pendingRevisit.values()].filter(item=>s.step-item.atStep>=3);
+      if(overdue.length){
+        s.pendingStateNotice={observations:0,searches:0,files:new Set(overdue.map(item=>item.display)),revisions:new Map(),
+          at:new Date().toISOString(),revisitOnly:true};
+      }
+    }
     if(!s.pendingStateNotice)return null;
     const notice=s.pendingStateNotice;s.pendingStateNotice=null;
+    if(notice.revisitOnly){
+      // Emitting the reminder discharges the obligation for these files; a later
+      // write re-arms it.
+      for(const [key,item] of [...s.pendingRevisit.entries()])if(s.step-item.atStep>=3)s.pendingRevisit.delete(key);
+    }
     const files=[...notice.files].slice(0,5),extra=Math.max(0,notice.files.size-files.length);
     const revisions=[...notice.revisions].slice(0,5).map(([file,revision])=>`${file}@${revision.slice(0,12)}`);
     // A notice that only says "state expired" was ignored in every measured
@@ -417,7 +437,9 @@ export function createRuntime(ctx,call,initial={}){
     // concrete assertions to re-check, and ask about the second implementation
     // site, because the lost cases were single-site fixes of a behaviour that
     // exists in two places.
-    const text=`工程状态已失效（已修改 ${files.join('、')}${extra?' 等'+extra+'个文件':''}）：${notice.observations} 个旧源码观察和 ${notice.searches} 个旧搜索命中对应修改前的内容。按当前文件核对三类断言：(1) 被改动函数的行为，(2) 调用方是否仍假设旧行为，(3) 同一能力是否在另一个模块另有实现——同一语义常分两层（校验层与计算层、外层采集与内层构造、注入与消费）。只重读你准备据此下结论的区段，不整文件重读。${revisions.length?' 当前 revision：'+revisions.join('、'):''}`;
+    const text=notice.revisitOnly
+      ? `改动后未复核：${files.join('、')}${extra?' 等'+extra+'个文件':''} 已被修改若干步，之后没有再读取。请在继续修改其他文件前，按当前内容确认这三件事：(1) 被改动函数的行为是否符合要求，(2) 调用方是否仍假设旧行为，(3) 同一能力是否在另一个模块另有实现——同一语义常分两层（校验层与计算层、外层采集与内层构造、注入与消费）。只读你准备据此下结论的区段。`
+      : `工程状态已失效（已修改 ${files.join('、')}${extra?' 等'+extra+'个文件':''}）：${notice.observations} 个旧源码观察和 ${notice.searches} 个旧搜索命中对应修改前的内容。按当前文件核对三类断言：(1) 被改动函数的行为，(2) 调用方是否仍假设旧行为，(3) 同一能力是否在另一个模块另有实现——同一语义常分两层（校验层与计算层、外层采集与内层构造、注入与消费）。只重读你准备据此下结论的区段，不整文件重读。${revisions.length?' 当前 revision：'+revisions.join('、'):''}`;
     s.metrics.stateNotices++;s.metrics.stateNoticeChars+=text.length;s.dirty=true;
     return {text,observations:notice.observations,searches:notice.searches,files,extraFiles:extra,revisions};
   }
@@ -516,6 +538,8 @@ export function createRuntime(ctx,call,initial={}){
     }
     if(exec.name==='read'&&args.file_path){
       s.reads.push({path:args.file_path,line:args.offset||1,seq,step:s.step});if(s.reads.length>12)s.reads.shift();
+      // Reading the changed file again discharges the revisit obligation.
+      if(s.pendingRevisit?.size){const target=ledgerPath(s,args.file_path);if(target)s.pendingRevisit.delete(target.key);}
       recordObservation(s,exec,result,seq,{file:args.file_path,lineStart:args.offset||1,lineEnd:Number.isInteger(args.limit)?(args.offset||1)+args.limit-1:null});
     }
     if(['grep','glob'].includes(exec.name)){
