@@ -295,7 +295,11 @@ function payloadFor(current,review,root){
         return `--- ${target}\n${before}${before&&after?'\n=>\n':''}${after}`;
       }).join('\n\n');
       if(!joined||joined.length>dataBudget)return false;
-      const data=JSON.stringify({tool:'verified_exec',summary:callArgs.summary??null,patch:joined,
+      // The target paths travel with the record: scopeReviewSources associates evidence
+      // with the selected source or a retained check file through sourceFiles, and
+      // without them a filtered verified-edit change is dropped from a large payload.
+      const targets=[...new Set(applied.map(edit=>edit?.file??edit?.path??edit?.file_path).filter(Boolean))];
+      const data=JSON.stringify({tool:'verified_exec',summary:callArgs.summary??null,patch:joined,sourceFiles:targets,
         sourceState:'successful-historical-change; later observations take precedence; current file not reconstructed'});
       if(data.length>dataBudget)return false;
       changeAllowance-=data.length;
@@ -325,9 +329,15 @@ function payloadFor(current,review,root){
     const key=fileKey(artifact.path);if(!key)continue;
     let changes=events.filter(event=>event.seq>request.seq&&event.seq<=artifact.seq).map(event=>({event,call:fileCall(event)}))
       .filter(({call})=>FILE_WRITES.has(call?.name)&&filePaths(call).some(file=>fileKey(file)===key));
-    const overwrite=changes.findLastIndex(({call})=>call.name==='write');
+    // A verified_exec create inserts the implementation just as a write does, so it
+    // belongs in the prioritized pass too; only the file-writing `write` trimmed the
+    // history after it. Without this the create was dropped and a later small edit
+    // survived alone, leaving the review with no implementation body.
+    const inserts=call=>call?.name==='write'
+      ||(call?.name==='verified_exec'&&(call.args?.edits??[]).some(edit=>typeof edit?.content==='string'));
+    const overwrite=changes.findLastIndex(({call})=>inserts(call));
     if(overwrite>=0)changes=changes.slice(overwrite);
-    for(const {event,call}of changes.filter(({call})=>checkArtifacts.includes(artifact)||call.name==='write')){
+    for(const {event,call}of changes.filter(({call})=>checkArtifacts.includes(artifact)||inserts(call))){
       if(sourceChanges.has(event.seq))continue;
       reserveChange(event);
     }

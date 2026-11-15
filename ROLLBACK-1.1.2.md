@@ -23,7 +23,7 @@
 
 **OPS 删除后的回退差异。** 本构建删除了 `opsAdapters`、`fastEditEnabled`、`fastedit_java`、`fastedit-bridge.py`、`requirements-fastedit.txt` 和 OPS CAS 后端。回到仍带 OPS 适配的旧包时：
 
-- 旧包会重新接受 `opsAdapters` / `fastEditEnabled`，但本构建写出的工作区配置里没有这两个键（本构建按退役设置强制为 `false`），因此需要在新工作区里显式设置 `opsAdapters:true` 才能恢复旧包的 OPS 读取/CAS 路径。
+- 旧包会重新接受 `opsAdapters` / `fastEditEnabled`，但本构建写出的工作区配置里没有这两个键（本构建按退役设置强制为 `false`）。**每一个**要回到 OPS 路径的工作区都要显式设置 `opsAdapters:true`——包括本构建保存过配置的既有工作区，不只是新工作区。已保存的文件不再包含这两个键，旧包会使用自己的默认值（OPS 关闭）。
 - `fastedit_java` 的 Python 依赖现在由 `requirements-source-members.txt` 记录；旧包期望 `requirements-fastedit.txt`。两者是同一组版本（`fastedits==0.5.0`、`tree-sitter-java==0.23.5`），复制或改名即可。
 - 本构建在宿主 0.2.1-rc.4 / 0.2.2-rc.1 上不提供可用的 `verified_exec` 后端（`rc2-native-conditional-write` 不可用）。**工具面与实际后端是两件事**：`nativeVerifiedEdits:true` 时工具面仍会发布 `verified_exec`，但每次调用都返回 `cas-file-tools-unavailable`、`missing:["rc2-native-conditional-write"]`、`effectState:"none"`，不写入任何文件；`/work-evidence feature nativeVerifiedEdits` 会报 `rc2-native-conditional-write-unavailable`。这是已知的时序限制：工具面在同步组装阶段无法等待宿主版本探测。旧包在这些宿主上会退回到 OPS CAS，因此回退会**恢复**这两个宿主上的精确编辑能力——但同样重新引入了 OPS 依赖。
 
