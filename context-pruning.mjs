@@ -289,7 +289,7 @@ function applyOperations(text,operations){
 // to come off here. Handling only the colon form made `run_code` output rendered with a pipe
 // pass window matching and then fail source recognition, which sends a real source body down
 // the prune path.
-const LINE_NUMBER_PREFIX=/^\s*\d+(?::| \| |\t)\s?/u;
+const LINE_NUMBER_PREFIX=/^\s*\d+(?::|\t|[ \t]*\|[ \t]?)[ \t]?/u;
 export function stripLineNumbers(text){
   return String(text??'').split('\n').map(line=>line.replace(LINE_NUMBER_PREFIX,'')).join('\n');
 }

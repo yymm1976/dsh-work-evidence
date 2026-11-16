@@ -35,7 +35,12 @@ const VERB_EN='modify|fix|implement|write|rewrite|edit|create|delete|replace|upd
 // 不可 is deliberately absent: it is far more often part of an adjective (不可用, 不可靠,
 // 不可避免) than a denial, and including it classified "执行程序并保留真实不可用结果" as
 // read-only. 不能被/不可修改 are covered by 不能 plus the verb scan.
-const DENIAL_ZH='不得|不要|不能|无需|不必|不用|不准|不需要|严禁|禁止|不允许|不应|请勿|勿|别|莫';
+// 别 and 勿 are single characters, so they match inside compound words: 分别 (separately),
+// 识别 (recognise), 区别, 特别, 类别. Measured: `分别修改 src/a.js 和 src/b.js。` was read-only
+// because 别 inside 分别 was taken as a denial and 修改 as denied. They therefore require a
+// character that cannot be part of a compound: start of text, punctuation, or a space.
+// 不要/不必/不准 stay in the plain list because a two-character form is unambiguous.
+const DENIAL_ZH='不得|不要|不能|无需|不必|不用|不准|不需要|严禁|禁止|不允许|不应|请勿|(?<![分识区特类级告性鉴辨个])别|(?<![请])勿|莫';
 const DENIAL_EN="do not|don't|never|must not|mustn't|may not|mayn't|should not|shouldn't|shall not|shan't|cannot|can't|won't|wouldn't|would not|will not|need not|needn't|not allowed to|not supposed to|make sure not to|be sure not to|no need to|there is no need to";
 // A denial that only introduces an idiom does not deny the verb after it.
 const IDIOM='forget|hesitate|fail|neglect|忘记|忘了|犹豫';
@@ -46,7 +51,14 @@ const ALLOWANCE='但|但是|不过|然而|而是|反而|只|仅|需要|允许|�
 // the suite, and without these the denied first sentence of a two-clause task decides the
 // whole request and hides the edit tools. Adding them to the ONE target definition (rather
 // than to a second predicate) is what keeps the request test and the allowance test agreeing.
-const TARGET='[\\w./\\\\-]+\\.[a-z0-9]{1,8}|[\\w-]*\\/[\\w.-]+|文件|代码|函数|方法|类|模块|程序|脚本|实现|逻辑|配置|测试|用例|单测|回归|文件|file|code|function|method|class|module|program|script|config|test|tests|spec|specs|suite|fixture|anything|everything|任何|一切';
+// The English nouns are wrapped in word boundaries. Without them `file` matches inside
+// `files`, so `Do not modify any files.` counts as a request WITH a target — and that made a
+// denied sentence set sawRequest, which then hid `work_exec` from an explicit
+// "Use work_exec to run ..." request in the next sentence. The Chinese nouns need no
+// boundary; they are already whole words.
+const TARGET='[\\w./\\\\-]+\\.[a-z0-9]{1,8}|[\\w-]*\\/[\\w.-]+|文件|代码|函数|方法|类|模块|程序|脚本|实现|逻辑|配置|测试|用例|单测|回归|'+
+  '(?<![A-Za-z0-9_])(?:file|files|code|function|method|class|module|program|script|config|test|tests|spec|specs|suite|fixture|anything|everything)(?![A-Za-z0-9_])'+
+  '|任何|一切';
 // An ALL-CAPS identifier (README, MAKEFILE) is a target too. It is matched separately
 // because a case-insensitive verb pattern cannot also be case-sensitive about its object.
 const CAPS_TARGET=/[A-Z][A-Z0-9_-]{1,30}(?![A-Za-z0-9_])/u;
@@ -205,6 +217,14 @@ function sentenceImplements(sentence){
   return implementProbe.test(sentence);
 }
 
+// The plugin's own execution tools. A task that names one is asking for a run, which is a
+// different verb class from "modify": `Do not modify any files. Use work_exec to run ...`
+// forbids edits and requests an execution, so the execution must stay available.
+const EXECUTION_TOOL=/(?<![A-Za-z0-9_])(?:work_exec|verified_exec|work_reason|bash|pwsh)(?![A-Za-z0-9_])/iu;
+function namesExecutionTool(text){
+  return EXECUTION_TOOL.test(String(text??''));
+}
+
 export function isReadOnlyTaskRequest(request){
   const text=String(request??'');
   const prose=stripPaths(text);
@@ -235,6 +255,13 @@ export function isReadOnlyTaskRequest(request){
     // writable; otherwise it is denied here and the remaining sentences are still checked.
     if(sentenceIsWritable(sentenceProse,sentence))return false;
   }
+  // A named execution request survives a denied write. "Do not modify any files. Use
+  // work_exec to run the Node program console.log(42)." is a task whose operative verb is
+  // outside this classifier's vocabulary, and hiding work_exec from it is the harmful
+  // direction — the same rule the marker-only fallback below already states. The execution
+  // verb has to be checked before `sawRequest` decides, because the denied sentence is what
+  // set it.
+  if(namesExecutionTool(text)&&!readOnlyMarker.test(prose))return false;
   if(sawRequest)return true;
   // No tracked write verb with a target. A denial alone does not make the task read-only:
   // "don't use old/node.exe; use the new one to run the program" is a task whose verb

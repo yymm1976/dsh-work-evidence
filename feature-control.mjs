@@ -129,13 +129,21 @@ export function createFeatureControl(ctx,runtime,{available,canRecall,workingSet
 
         if(['stubSummary','deferPressureCompaction'].includes(key)&&!nativeCompaction)reasons.push('native-compaction-not-attached');
         if(key==='deferPressureCompaction'&&runtime.hasRequestBudgetView?.(agent)!==true)reasons.push('request-budget-view-unavailable');
-        // These rewrite or omit visible text, and every one of them is gated by
-        // context-economics' route price. That gate now falls back to the
-        // published DeepSeek V4.1 Flash rate when projectionPricing has no exact
-        // row for the active route, so the only remaining blocker is a route the
-        // fallback cannot price at all. swEviction folds repeated bodies through
-        // the same `decision.allowed` check in context-window.mjs.
-        if(['historyHygiene','contextPrune','contextProtocol','requestProjection','swEviction','stubSummary'].includes(key)){
+        // These rewrite or omit visible text, and each one asks context-economics for the
+        // route price before it acts. That gate falls back to the published DeepSeek V4.1
+        // Flash rate when projectionPricing has no exact row for the active route, so the only
+        // remaining blocker is a route the fallback cannot price at all.
+        //
+        // Two features are deliberately not in this list, because listing them reported a
+        // blocker that does not exist:
+        //   - stubSummary runs its deterministic stub branch without any price call, so an
+        //     unpriced route never stops it;
+        //   - swEviction asks for a price only when compressionControl is on
+        //     (context-window.mjs:86). With that switch off it folds repeated bodies without a
+        //     price check, so it must not be reported as price-blocked.
+        const routePriced=['historyHygiene','contextPrune','contextProtocol','requestProjection'];
+        if(key==='swEviction'&&config.compressionControl)routePriced.push('swEviction');
+        if(routePriced.includes(key)){
           // Price the route this snapshot REPORTS, not the header's: after a model switch
           // the two differ, and a readiness line could claim a priced route while the
           // displayed model is unpriced (or the reverse).

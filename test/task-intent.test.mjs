@@ -130,3 +130,22 @@ test('task intent: a Chinese noun use of an implementation verb is not a request
   // harmless direction: no tracked request was named, so nothing proves a write either.
   assert.equal(isReadOnlyTaskRequest('分析 bug，不要修改。'),false);
 });
+
+test('task intent: a single-character denial is not matched inside a compound word',()=>{
+  // Found by review. 别 matched inside 分别 (separately) and 识别 (recognise), so an
+  // affirmative request was read as denied and the edit tools were hidden.
+  assert.equal(isReadOnlyTaskRequest('分别修改 src/a.js 和 src/b.js。'),false);
+  assert.equal(isReadOnlyTaskRequest('识别并修复 src/a.js 中的问题。'),false);
+  // The imperative use must still deny.
+  assert.equal(isReadOnlyTaskRequest('别修改 src/a.js。'),true);
+  assert.equal(isReadOnlyTaskRequest('请勿修改 src/a.js。'),true);
+});
+
+test('task intent: a named execution tool survives a denied write',()=>{
+  // 'Do not modify any files.' set sawRequest via the `file` target, and the next sentence's
+  // execution request was outside the verb vocabulary, so work_exec was hidden from a task
+  // that explicitly asks to run something.
+  assert.equal(isReadOnlyTaskRequest('Do not modify any files. Use work_exec to run the Node program console.log(42).'),false);
+  // An explicit read-only marker still wins over an execution tool mention.
+  assert.equal(isReadOnlyTaskRequest('Read-only: do not modify src/a.js. Use work_exec to run the tests.'),true);
+});

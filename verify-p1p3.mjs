@@ -5,7 +5,8 @@
 import fs from 'node:fs';
 import {isSourceBody,isSourceBodyPath} from './context-pruning.mjs';
 
-const arm='C:/Users/杨铭/Desktop/DSH/runs/v251/bench-run/F2-C-1116/stdout.jsonl';
+const arm=process.argv[2];
+if(!arm){console.error('usage: node verify-p1p3.mjs <arm-stdout.jsonl>');process.exit(2);}
 const lines=fs.readFileSync(arm,'utf8').split(/\r?\n/u).filter(Boolean);
 const calls=new Map();let step=0;const bodies=[];
 for(const line of lines){

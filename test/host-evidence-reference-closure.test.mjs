@@ -13,7 +13,9 @@ const JAVA='package demo;\npublic class Calc {\n  public int add(int a, int b) {
 const ask={mode:'source',query:'Calc',member:'add'};
 
 test('a repeated identical evidence read is answered by a reference, not the body again',async()=>{
-  const host=await startHost({toolSurface:'full',script:(_o,n)=>
+  // toolSurface goes through `workspace`: startHost drops a top-level toolSurface option, so
+  // the test ran on the default compact surface where project_evidence may be hidden.
+  const host=await startHost({workspace:{toolSurface:'full'},script:(_o,n)=>
     n===1?[tool('project_evidence',ask)]:n===2?[tool('project_evidence',ask)]:[text('完成。')]});
   try{
     await fs.mkdir(path.join(host.cwd,'src'));

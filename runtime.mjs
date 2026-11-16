@@ -572,11 +572,13 @@ export function createRuntime(ctx,call,initial={}){
     if(s.commandRoots.size>256)s.commandRoots.delete(s.commandRoots.keys().next().value);
     if(event.type==='tool/ptc-dispatch'||event.type==='tool/code-dispatch'){
       s.metrics.ptcResults++;
-      // A nested dispatch carries no issue step of its own, and the completion event's
-      // step is not a substitute: an older read can finish after a newer write. The step
-      // recorded here is the one the dispatch-start event arrived in, which is the
-      // closest observable point to the issue, and it is what the obligation check
-      // compares against.
+      // A nested dispatch carries no issue step of its own. There is no dispatch-start hook
+      // for `tool/ptc-dispatch` (only `commandRoots` is tracked there), so the value available
+      // here is the step this COMPLETION event is processed in, which can be later than the
+      // issue. The obligation check treats a completion with issuedStep > pending.atStep as
+      // satisfying, so a read that started before a write and finished after it can be
+      // credited when it should not be. This is a known approximation, recorded as such
+      // instead of claiming to be the issue step; closing it needs a dispatch-start hook.
       const issuedStep=Number.isInteger(s.step)?s.step:null;
       observe(agent,{name:d.name,arguments:argsOf(d.arguments),callId:d.subCallId,rootCallId:d.rootCallId,issuedStep},
         {isError:!!d.isError,error:d.error?{info:d.error,message:textOf(d)}:undefined,content:d.content,value:parseValue(d)},event.seq);
@@ -624,7 +626,16 @@ export function createRuntime(ctx,call,initial={}){
       // when the read delivered something to check. An offset past the end of the
       // file completes successfully with no lines, and that cannot confirm anything
       // about the change; an empty file (totalLines 0) is a real observation.
-      const deliveredLines=(result.value?.lines?.length??0)>0||result.value?.totalLines===0;
+      //
+      // Two sources, because the persisted event and the live hook carry different shapes.
+      // A live read has `value.lines`; a persisted `tool/result` has rendered text and
+      // `parseValue` yields undefined, so `lines` alone made deliveredLines false there and
+      // the live observation was then skipped by `s.seen` — a reread never discharged the
+      // obligation and a later reminder could claim the file was not reread.
+      const lineRecords=(result.value?.lines?.length??0)>0||result.value?.totalLines===0;
+      const renderedRows=/^\s*\d+(?:[:|]|\t)/mu.test(textOf(result.content??[]));
+      const emptyFile=/\(End of file - total 0 lines\)/u.test(textOf(result.content??[]));
+      const deliveredLines=lineRecords||renderedRows||emptyFile;
       if(deliveredLines&&s.pendingRevisit?.size){
         const target=ledgerPath(s,args.file_path);
         const pending=target?s.pendingRevisit.get(target.key):null;
