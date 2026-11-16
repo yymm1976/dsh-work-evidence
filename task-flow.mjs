@@ -668,7 +668,7 @@ export function createTaskFlow(ctx,runtime,{nativeFiles,call,executionDependenci
     }
     if(config.executionTriage&&user&&state.lastInlineExec<user.seq&&!state.inlineExecAdvised.has(key)&&
       (state.lastMutation>user.seq||state.executions.some(item=>item.userSeq===user.seq&&item.status==='failed'))){
-      let ready=false;try{ready=process.platform==='win32'&&!!ctx.tools.get('work_exec',agent)&&!!selectShell(name=>ctx.tools.get(name,agent));}catch{}
+      let ready=false;try{ready=!!ctx.tools.get('work_exec',agent)&&!!selectShell(name=>ctx.tools.get(name,agent));}catch{}
       if(ready){
         state.inlineExecAdvised.add(key);
         return emit('inlineExec',key,'[work-evidence] 若下一实际缺口确需运行完整Node/Python程序，可用work_exec提交原文；项目修改仍用write/edit，已有结果足够时不因本提示新增执行。'+WORK_EXEC_DISCOVERY);

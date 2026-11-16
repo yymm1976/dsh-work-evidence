@@ -454,6 +454,12 @@ function textWindowRecord({
     lineTextLimit,
   };
   const nextLineTextLimit = Math.max(0, ...matches.map(match => match.nextLineTextLimit || 0));
+  // A selector-free archive retry reads one range, so it must target the match that
+  // actually needs more text; using the first match's offset leaves the truncated one
+  // unread.
+  const truncatedMatch = matches.find(match => match.lineTextTruncated && match.nextLineTextLimit);
+  const retryOffset = retrieveArguments?.mode === 'archive' && truncatedMatch
+    ? truncatedMatch.lines?.[0]?.line ?? truncatedMatch.line : undefined;
   const lineTextMaximumReached = matches.some(match =>
     match.lineTextTruncated && !match.nextLineTextLimit);
   return {
@@ -467,7 +473,7 @@ function textWindowRecord({
     fallbackReason,
     ...(nextLineTextLimit ? {nextRetrieval: {
       tool: 'project_evidence',
-      arguments: {...currentArguments, lineTextLimit: nextLineTextLimit},
+      arguments: {...currentArguments, ...(retryOffset ? {offset: retryOffset} : {}), lineTextLimit: nextLineTextLimit},
     }} : {}),
     retrieveCurrent: {tool: 'project_evidence', arguments: currentArguments},
   };
@@ -593,11 +599,15 @@ function lexicalJavaRecord({
     return Math.max(0, ...selected.map(line => line.length));
   }));
   const canIncreaseText = nextLineTextLimit > lineTextLimit && nextLineTextLimit <= MAX_LINE_TEXT_LIMIT;
+  // Without selectors the retry reads one range, so a line-text increase must target
+  // the truncated member rather than the first one.
+  const lexicalTruncated = retrieveArguments?.mode === 'archive' && canIncreaseText
+    ? matches.find(match => match.lineTextTruncated) : undefined;
   const lineTextMaximumReached = matches.some(match => match.lineTextMaximumReached);
   const next = lineTextMaximumReached
     ? null
     : canIncreaseText
-      ? {...currentArguments,lineTextLimit: nextLineTextLimit}
+      ? {...currentArguments, ...(lexicalTruncated ? {offset: lexicalTruncated.lineStart} : {}), lineTextLimit: nextLineTextLimit}
       : nextMatch?.hasMore
         ? {...currentArguments,offset: nextMatch.nextOffset}
         : null;
@@ -655,6 +665,12 @@ export async function sourceMemberSource({
   const retrieveBase = args.archive
     ? {mode: 'archive', archive: args.archive, ...(args.entry ? {entry: args.entry} : {}), offset: args.offset ?? 1, limit}
     : {mode: 'source', ...sourceRetrieval(args, requested)};
+  // A plural archive request replays the selector, not a fixed range: publishing the
+  // caller's offset as the top-level replay returns the entry prefix instead of the
+  // requested members.
+  const replayBase = args.archive && requested.plural
+    ? {mode: 'archive', archive: args.archive, ...(args.entry ? {entry: args.entry} : {}), members: requested.names, limit}
+    : retrieveBase;
   const base = {
     state: 'observed',
     path: displayPath,
@@ -769,7 +785,7 @@ export async function sourceMemberSource({
     return {
       ...base,
       members: records,
-      retrieveCurrent: {tool: 'project_evidence', arguments: retrieveBase},
+      retrieveCurrent: {tool: 'project_evidence', arguments: replayBase},
       note: 'Members remain an array for an array request. Each match.complete covers only that declaration; parsed range completeness is separate from related callers, constants, and runtime behavior.',
     };
   }

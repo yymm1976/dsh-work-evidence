@@ -392,7 +392,7 @@ export function createContextEconomics(ctx,runtime){
     // response omitted output usage and therefore cannot become the exposure baseline.
     if(total>0&&!record.failureCode&&!record.aborted&&finishAccepted)
       state.latestPrompt={provider:options.provider,model:options.model,reasoningEffort:options.reasoningEffort,
-        usage,usageComplete,at:record.at};
+        usage,usageComplete,weights,envelopeTokens,at:record.at};
     const usableForExposure=total>0&&!record.failureCode&&!record.aborted&&usageComplete&&finishAccepted;
     if(usableForExposure)state.last={provider:options.provider,model:options.model,reasoningEffort:options.reasoningEffort,usage,usageComplete,
       generation:record.generation,alignmentSafe:textProjection(options.messages),
@@ -413,7 +413,7 @@ export function createContextEconomics(ctx,runtime){
     // Prefer the newest measured prompt for this route even when its output usage was
     // missing; the exposure baseline below still comes from a complete `last` row.
     const latestPrompt=state.latestPrompt&&sameObservedRoute(state.latestPrompt,currentRoute)?state.latestPrompt:null;
-    const reported=promptTokens((latestPrompt??last)?.usage);
+    const observed=latestPrompt??last,reported=promptTokens(observed?.usage);
     let measured=null;
     try{const measurement=(ctx.get?ctx.get('tokenMeter'):ctx.tokenMeter)?.measure(agent.session);measured=measurement?.totalTokens??measurement?.projectedTokens??null;}catch{}
     const projected=runtime.projectedMessages?.(agent);
@@ -421,9 +421,14 @@ export function createContextEconomics(ctx,runtime){
     if(projected){
       const header=agent.session.requestHeader(),envelope=textTokens(JSON.stringify({tools:header?.tools??[],system:null})),
         current=projected.reduce((sum,message)=>sum+messageTokens(message),0)+envelope;
-      if(reported!==null&&last){
-        const previous=last.weights.reduce((sum,value)=>sum+value,0)+(last.envelopeTokens??0);
-        tokens=Math.max(0,reported+(current-previous)*last.factor);
+      if(reported!==null&&observed){
+        // The growth since the observed request is measured against THAT request's own
+        // footprint. Using an older baseline would count the same growth twice when the
+        // newer prompt already includes it. Only the calibration factor from `last` is
+        // reused, because an incomplete observation has no usable output total.
+        const previous=(observed.weights??[]).reduce((sum,value)=>sum+value,0)+(observed.envelopeTokens??0);
+        const factor=last?.factor??observed.factor??1;
+        tokens=Math.max(0,reported+(current-previous)*factor);
       }else tokens=Math.max(reported??0,current);
       method='actual-request usage plus estimated effective-view growth; original surface meter excluded';
     }else{tokens=Math.max(reported??0,measured??0);method='actual usage and host surface meter';}

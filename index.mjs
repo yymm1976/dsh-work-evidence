@@ -377,10 +377,20 @@ export function apply(ctx,config={}){
     // only match when an ASCII letter follows immediately, and Chinese text normally
     // puts a space before an ASCII name ("创建 README").
     const upperCaseTarget=/(?:^|[，,、：:\s])(?:[^。；;\n]{0,8})?(?:(?:修改|修复|实现|编写|重构|创建|编辑|写入|增加|更新|添加|新增|更改|移除|删除|替换|重写|修补|重命名|改(?!动|变))|[Mm]odify\b|[Ff]ix\b|[Ii]mplement\b|[Ww]rite\b|[Ee]dit\b|[Cc]reate\b|[Dd]elete\b|[Rr]eplace\b|[Uu]pdate\b|[Aa]dd\b|[Cc]hange\b|[Rr]efactor\b|[Rr]emove\b|[Rr]ename\b|[Pp]atch\b)[^。；;\n]{0,16}[A-Z][A-Z0-9_-]{1,30}\b/u;
-    // A denial governs only its coordinate clause. Sentence ends and every comma
-    // separate decisions; a conjunction alone does not, so the prefix test below keeps
-    // "Fix a.js and do not modify b.js" writable.
-    const clauses=request.split(/[。；;\n，,]|\.(?=\s+[A-Z])/u);
+    // A denial governs only its own coordinate clause. Sentence ends and every comma
+    // separate decisions, but a comma list under one denial ("do not modify, create, or
+    // delete src/a.js") must stay one clause: a segment joins the previous clause when
+    // it starts with a list conjunction, or when the previous clause names no target.
+    const clauses=[];
+    for(const raw of request.split(/[。；;\n，,]|\.(?=\s+[A-Z])/u)){
+      const previous=clauses.at(-1);
+      const continues=/^\s*(?:or|nor|and|以及|或者|或是|或|和)\b/iu.test(raw)&&previous!==undefined;
+      // A segment whose predecessor named a verb but no target is part of that verb
+      // list, not a new decision: "do not modify, create, or delete src/a.js".
+      const incomplete=previous!==undefined&&writeVerb.test(previous)&&!writeRequest.test(previous)&&!upperCaseTarget.test(previous);
+      if(continues||incomplete)clauses[clauses.length-1]+=raw;
+      else clauses.push(raw);
+    }
     return !clauses.some(clause=>{
       if(!writeVerb.test(clause))return false;
       if(!writeRequest.test(clause)&&!upperCaseTarget.test(clause))return false;
@@ -391,7 +401,11 @@ export function apply(ctx,config={}){
       // allowance and reject the clause before a later real allowance.
       const denialAt=clause.search(deniedWrite),prefix=clause.slice(0,denialAt);
       // The text before the first denial is not governed by it: "Fix a.js, do not
-      // modify b.js" asks for the first edit and forbids only the second.
+      // modify b.js" asks for the first edit and forbids only the second. A denial
+      // that only introduces an idiom ("don't forget to", "do not hesitate to") does
+      // not deny the write verb it precedes.
+      const idiom=/^\s*(?:forget|hesitate|fail|neglect)\b|^\s*(?:忘记|忘了|犹豫)/iu.test(clause.slice(denialAt).replace(deniedWrite,''));
+      if(idiom)return true;
       if(writeVerb.test(prefix)&&(writeRequest.test(prefix)||upperCaseTarget.test(prefix)))return true;
       const after=clause.slice(denialAt),denial=deniedWrite.exec(after);
       if(!denial)return true;

@@ -391,10 +391,12 @@ function payloadFor(current,review,root){
     // A verified_exec create inserts the implementation just as a write does, so it
     // belongs in the prioritized pass too. The create must target THIS artifact: one
     // call can replace a line in A and create B, and treating the call as an insertion
-    // for both would trim A's earlier full write and leave only a fragment.
+    // for both would trim A's earlier full write and leave only a fragment. A
+    // replace_exact edit may also carry `content`, which the producer ignores, so only
+    // an explicit create mode counts as a full overwrite.
     const inserts=(call,forKey)=>call?.name==='write'
-      ||(call?.name==='verified_exec'&&appliedVerifiedEdits(call).some(edit=>typeof edit?.content==='string'
-        &&fileKey(edit?.file??edit?.path??edit?.file_path??'')===forKey));
+      ||(call?.name==='verified_exec'&&appliedVerifiedEdits(call).some(edit=>edit?.mode==='create'
+        &&typeof edit?.content==='string'&&fileKey(edit?.file??edit?.path??edit?.file_path??'')===forKey));
     const overwrite=changes.findLastIndex(({call})=>inserts(call,key));
     if(overwrite>=0)changes=changes.slice(overwrite);
     for(const {event,call}of changes.filter(({call})=>checkArtifacts.includes(artifact)||inserts(call,key))){

@@ -88,6 +88,25 @@ test('capacity pressure sees a newer positive prompt even when its output usage 
   assert.equal(pressure.emergency,true);
   assert.equal(economics.lastUsage(agent).outputTokens,100,'the exposure baseline stays on the complete row');
 });
+test('capacity pressure subtracts the footprint of the observation it counts',()=>{
+  const state={step:0,config:{projectionPricing:[],projectionHorizonSteps:16}};
+  const small=[{id:'u',role:'user',content:[{type:'text',text:'short request'}]}];
+  // The session grows between the two observations: the newer prompt count already
+  // includes that growth, so measuring it again against the older footprint would
+  // double-count it.
+  const grown=[...small,{id:'a',role:'assistant',content:[{type:'text',text:'g'.repeat(4000)}]}];
+  const agent={session:{id:'footprint',surface:{nodes:[]},requestHeader:()=>({config:{provider:'p',model:'m'}}),
+    requestContext:()=>({contextWindow:10000})}};
+  const economics=createContextEconomics({tokenMeter:{measure:()=>({totalTokens:0})}},
+    {get:()=>state,projectedMessages:()=>grown});
+  economics.requestFinished(agent,{provider:'p',model:'m',messages:small},
+    {usage:{inputTokens:1000,cacheReadTokens:0,cacheWriteTokens:0,outputTokens:100,totalTokens:1100},settled:true,finishReason:'stop'});
+  economics.requestFinished(agent,{provider:'p',model:'m',messages:grown},
+    {usage:{inputTokens:6000,cacheReadTokens:0,cacheWriteTokens:0,totalTokens:6000},settled:true,finishReason:'stop',usageComplete:false});
+  const pressure=economics.pressure(agent);
+  assert.ok(pressure.tokens<=7000,JSON.stringify({tokens:pressure.tokens}));
+  assert.equal(pressure.emergency,false);
+});
 test('capacity pressure uses the optional service getter when direct property access requires inject',()=>{
   const {agent}=harness(),state={config:{projectionPricing:[],projectionHorizonSteps:16}};
   const ctx={get:name=>name==='tokenMeter'?{measure:()=>({totalTokens:9500})}:undefined,
