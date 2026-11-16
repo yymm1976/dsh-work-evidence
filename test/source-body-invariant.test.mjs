@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {SOURCE_BODY_PATH,planContextPrune} from '../context-pruning.mjs';
+import {SOURCE_BODY_PATH,isSourceBodyPath,looksLikeSourceBody,planContextPrune} from '../context-pruning.mjs';
 
 // The F2-C failure was a source body cut to head+tail. Two entry points can reduce a body
 // (the live prune path and the stage-checkpoint builder), so the "is this source code"
@@ -45,4 +45,25 @@ test('a flat result naming a retained path is not reduced even when another path
   const plan=planContextPrune(message,[],{seq:9,thresholdChars:8000,headChars:4096,tailChars:1024,
     retainSource:file=>SOURCE_BODY_PATH.test(file??'')});
   assert.equal(plan,null,'a retained path anywhere in the result forbids the cut');
+});
+
+test('a source body with no <path> markup is still retained',()=>{
+  // `bash cat src/widget.py` returns a whole file with no markup at all. With no path to
+  // ask about, the body itself is the evidence; a source-shaped body must not be cut.
+  const body=['import os','','class Widget:','    def render(self):','        return os.path.basename(__file__)','',
+    ...Array.from({length:300},(_,i)=>`    value_${i} = ${i}`)].join('\n');
+  const message={role:'tool',content:[{type:'text',text:body}]};
+  const plan=planContextPrune(message,[],{seq:11,thresholdChars:8000,headChars:4096,tailChars:1024,
+    retainSource:footer=>isSourceBodyPath(footer)});
+  assert.equal(plan,null,'a metadata-free source body is retained');
+});
+
+test('extensionless build files count as source',()=>{
+  for(const name of ['Makefile','Dockerfile','CMakeLists.txt','Gemfile','Rakefile','Jenkinsfile'])assert.equal(isSourceBodyPath(name),true,name);
+  for(const name of ['output.log','data.csv','notes.txt'])assert.equal(isSourceBodyPath(name),false,name);
+});
+
+test('a source-shaped body is recognised from its content alone',()=>{
+  assert.equal(looksLikeSourceBody(['def run():','    return 1','','class A:','    pass',''].join('\n').repeat(60)),true);
+  assert.equal(looksLikeSourceBody(Array.from({length:200},(_,i)=>`log line ${i}`).join('\n')),false);
 });

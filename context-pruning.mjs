@@ -9,6 +9,31 @@ const count=text=>Array.from(text).length;
 // way regardless of which one reaches it. Splitting the list between them is how a source
 // body kept being cut to head+tail on the path that did not have it.
 export const SOURCE_BODY_PATH=/\.(?:py|pyi|js|jsx|mjs|cjs|ts|tsx|java|go|rs|c|cc|cpp|cxx|h|hpp|rb|php|cs|kt|swift|scala|m|mm|pl|lua|sql|json|jsonc|json5|yaml|yml|toml|ini|cfg|conf|md|mdx|rst|adoc|html|htm|css|scss|sass|less|vue|svelte|astro|sh|bash|zsh|ps1|psm1|bat|cmd|gradle|xml|proto|graphql|gql|tf|hcl)$/iu;
+// Build and project files that carry source without an extension. They are read and edited
+// the same way, so they must be retained the same way.
+const SOURCE_BODY_NAME=/^(?:Makefile|makefile|GNUmakefile|Dockerfile|Containerfile|CMakeLists\.txt|Rakefile|Gemfile|Procfile|Vagrantfile|Jenkinsfile|Brewfile|Pipfile)$/u;
+/** Is this path a source file whose body a repair task works on? */
+export const isSourceBodyPath=file=>typeof file==='string'&&(SOURCE_BODY_PATH.test(file)||SOURCE_BODY_NAME.test(file.split(/[\\/]/).pop()??''));
+// A source body can arrive without any markup at all (a shell `cat`, a program that prints
+// a file). Statements and declarations are the closed signal that a body is code rather
+// than a log; prose, listings and test output do not match them densely.
+const SOURCE_SHAPE=[
+  /^\s*(?:async\s+)?def\s+\w+\s*\(|^\s*class\s+\w+\s*[:(]/mu,
+  /^\s*(?:export\s+)?(?:function|class|interface|struct|enum|impl|func|fn|package|import|from|using|namespace|module)\b/mu,
+  /^\s*(?:public|private|protected|static|final|abstract)\s+\S/mu,
+  /^\s*(?:const|let|var|val)\s+[\w$]+\s*=/mu,
+  /^\s*(?:if|for|while|switch|try|catch|return|raise|throw|yield)\b.*[:{;]\s*$/mu,
+  /^\s*[\w$.]+\s*\([^)]*\)\s*\{\s*$/mu,
+  /^\s*#\s*(?:include|define|ifndef|pragma)\b/mu,
+];
+/** Does this body look like source code regardless of where it came from? */
+export function looksLikeSourceBody(text){
+  const body=String(text??'');
+  if(body.length<2000)return false;
+  let hits=0;
+  for(const pattern of SOURCE_SHAPE)if(pattern.test(body))hits++;
+  return hits>=2;
+}
 
 /**
  * Advance a per-session annotation over an append-only event log.
@@ -24,10 +49,13 @@ export const SOURCE_BODY_PATH=/\.(?:py|pyi|js|jsx|mjs|cjs|ts|tsx|java|go|rs|c|cc
  */
 export function cacheAdvance(cache,id,events,consume){
   const at=cache.get(id);
-  const replaced=!at||events.length<at.cursor;
+  // A replaced session is not always shorter: a same-length log would otherwise keep the
+  // old annotations and skip its first events. Compare the last consumed event's identity.
+  const lastSeen=at?.lastSeq??null;
+  const replaced=!at||events.length<at.cursor||(lastSeen!==null&&at.cursor>0&&events[at.cursor-1]?.seq!==lastSeen);
   const state=replaced?consume.initial():at.state;
   consume.apply(state,replaced?events:events.slice(at.cursor));
-  cache.set(id,{cursor:events.length,state});
+  cache.set(id,{cursor:events.length,state,lastSeq:events.at(-1)?.seq??null});
   return state;
 }
 // The retired OPS read tools stay recognised: a resumed session can replay their
@@ -200,6 +228,10 @@ export function planContextPrune(message,reads,options){
   if(!reads.length&&options.retainSource){
     const named=[...original.matchAll(/<path>([^<]+)<\/path>/gu)].map(match=>match[1]);
     if(named.some(file=>options.retainSource(file)))return null;
+    // A body with no <path> can still be source: `bash cat src/widget.py` returns the file
+    // with no markup at all. In that case there is no path to ask about, so the body itself
+    // is the only evidence, and a source-shaped body is retained.
+    if(!named.length&&looksLikeSourceBody(original))return null;
   }
   let content,ranges=[],dedupStats=[];
   if(reads.length){

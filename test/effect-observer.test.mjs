@@ -388,21 +388,30 @@ test('restored feature names cannot mutate shared prototypes', async () => {
   }
 });
 
-test('a small saving against a larger overhead keeps every balance field lossless',()=>{
-  // savedTokens=-5 with spentTokens=2000 makes the ratio round to -0, which the
-  // host rejects as non-lossless JSON. The snapshot must never contain it.
-  const agent={session:{id:'balance-negzero'},seq:0};
-  const state={id:'balance-negzero',step:0,config:{},requestObservations:[]};
-  const effects=createEffectObserver({on:()=>()=>{}},{get:()=>state,isEnabled:()=>true});
-  const snap=effects.snapshot(agent);
-  const totals=snap.totals;
-  for(const value of [totals.directTokensEstimate,totals.balance.savedTokensEstimate,
-    totals.balance.spentTokensEstimate,totals.balance.netTokensEstimate]){
-    assert.ok(!Object.is(value,-0),'balance fields must not be negative zero');
-  }
-  if(Object.hasOwn(totals.balance,'ratioPercent'))assert.ok(!Object.is(totals.balance.ratioPercent,-0));
-  // The payload must survive a JSON round trip byte for byte.
-  assert.equal(JSON.stringify(JSON.parse(JSON.stringify(snap))),JSON.stringify(snap));
+test('a small saving against a larger overhead keeps every balance field lossless',async()=>{
+  // Deliver a real row: with no request the totals are all zero, ratioPercent is omitted,
+  // and the assertions below could never see the failing input. savedTokens=-5 against
+  // spentTokens=2000 makes the ratio round to -0, which the host rejects as non-lossless.
+  const created=await start();
+  try{
+    await created.effects.load(created.agent);
+    await created.effects.finish(created.agent,row('balance-negzero',COMPLETE,{
+      effects:{directTokensEstimate:-2005,directChars:-10,instructionTokensEstimate:1000,systemTokensEstimate:2,messageTokensEstimate:3,
+        schemaTokensEstimate:1000,byFeature:{},reconstructionMisses:0,coverage:'test',method:'test',causalTaskSaving:false}}));
+    await created.effects.flush(created.agent);
+    const totals=created.effects.snapshot(created.agent).totals;
+    // Gross saving recovers the pre-overhead value, then spentTokens is subtracted.
+    assert.equal(totals.balance.savedTokensEstimate,-5);
+    assert.equal(totals.balance.spentTokensEstimate,2000);
+    for(const value of [totals.directTokensEstimate,totals.balance.savedTokensEstimate,
+      totals.balance.spentTokensEstimate,totals.balance.netTokensEstimate]){
+      assert.ok(!Object.is(value,-0),'balance fields must not be negative zero');
+    }
+    assert.ok(!Object.is(totals.balance.ratioPercent,-0),'a -0 ratio is normalised to 0');
+    assert.equal(totals.balance.ratioPercent,0);
+    const snap=created.effects.snapshot(created.agent);
+    assert.equal(JSON.stringify(JSON.parse(JSON.stringify(snap))),JSON.stringify(snap));
+  }finally{await remove(created.telemetryDir);}
 });
 
 test('a restored older decision does not become the reported latest one',async()=>{

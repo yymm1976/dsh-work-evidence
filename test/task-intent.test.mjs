@@ -36,6 +36,31 @@ const CASES = [
   ['Do not modify src/a.js? Create src/b.js.', false, 'a question mark ends a clause'],
   ['Do not modify src/a.js. Fix src/never.js.', false, 'never inside a path is not a denial'],
   ['Do not modify src/can-edit.js.', true, 'can inside a path is not an allowance'],
+  ['不需要修改 src/a.js。', true, '不需要 is a denial'],
+  ['不用修改 src/a.js。', true, '不用 is a denial'],
+  ['别改 src/a.js。', true, '别 is a denial'],
+  ['严禁修改 src/a.js。', true, '严禁 is a denial'],
+  // '动' alone is not in the write-verb list, so this sentence names no request; it is a
+  // denial of an action the classifier does not track and the task is not writable either way.
+  // '动' is not in the write-verb list, so this sentence names no tracked request. A denial
+  // alone no longer decides read-only (see the interpreter-constraint case), so the surface
+  // stays writable, which is the harmless direction.
+  ['请不要动 src/a.js 的代码。', false, 'an untracked verb plus a denial leaves the surface writable'],
+  ['You are not allowed to modify src/a.js.', true, 'not allowed to is a denial'],
+  ['Make sure not to modify src/a.js.', true, 'make sure not to is a denial'],
+  ['There is no need to edit src/a.js.', true, 'there is no need to is a denial'],
+  ['Do not modify src/a.js but review the update to README.md.', true, 'the update is a noun, not an allowance'],
+  ['Do not edit src/a.js but explain the patch.', true, 'the patch is a noun, not an allowance'],
+  ['Keep the fix as is. Do not touch src/a.js.', false, 'touch is untracked, so the denial cannot decide alone'],
+  ['Do not modify anything. Create src/b.js.', false, 'a new sentence after a period still counts'],
+  ['Do not modify src/a.js.Create src/b.js.', false, 'a period with no space still ends a sentence'],
+  ["Don't forget: do not modify src/a.js.", true, 'a real denial after an idiom still holds'],
+  ['Whenever you fix src/a.js, run the tests.', false, 'never inside whenever is not a denial'],
+  ['Read-only: summarize the bugfix in README.md.', true, 'fix inside bugfix is not a verb'],
+  ['Read-only: explain the prefix in src/a.js.', true, 'fix inside prefix is not a verb'],
+  ['Read-only: explain the hotfix in src/a.js.', true, 'fix inside hotfix is not a verb'],
+  // The request precedes 'whenever', so it is affirmative regardless of the subclause.
+  ['Please implement this whenever you can in src/a.js.', false, 'the request precedes whenever, so it is affirmative'],
 ];
 
 for (const [request, expected, why] of CASES) {

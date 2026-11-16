@@ -45,8 +45,15 @@ test('a written file that is never read back gets one reminder that names it',as
     await send('继续。');
     await send('继续。');
     assert.equal((await command('detail')).state.counts.mutations,1,'the write is recorded');
-    assert.ok(body().includes(REMINDER),'the reminder is delivered');
-    assert.ok(body().includes('a.txt'),'the reminder names the changed file');
+    // The whole transcript contains a.txt in the user request and in the write arguments,
+    // so a bare `body().includes('a.txt')` would pass even if the reminder omitted the
+    // file. Anchor on the reminder text and count the reminder, which the title claims.
+    const text=body();
+    const reminders=[...text.matchAll(new RegExp(REMINDER,'gu'))];
+    assert.equal(reminders.length,1,'exactly one reminder is delivered');
+    const from=reminders[0].index;
+    const clause=text.slice(from,from+240);
+    assert.match(clause,/a\.txt/u,'the reminder itself names the changed file');
   });
 });
 

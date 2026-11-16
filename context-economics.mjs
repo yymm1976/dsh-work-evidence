@@ -371,16 +371,21 @@ export function createContextEconomics(ctx,runtime){
     const resetComparable=resetSame&&finite(usage?.cacheReadTokens)&&finite(resetPrevious?.cacheReadTokens);
     // One transition is counted once. The key records the last COUNTED transition, and the
     // reset branch below and the marker update at the end of this block agree on it.
-    const effortTransitionKey=JSON.stringify([effortKey(previous?.reasoningEffort),effortKey(options.reasoningEffort)]);
-    const repeatedEffortTransition=Boolean(previous)&&effortChanged&&state.countedEffortTransition===effortTransitionKey;
+    // The effort comparison uses `resetPrevious`, the attempt the drop is actually measured
+    // against: `previous` is the retained baseline, which skips failed attempts, so an
+    // error on a new effort followed by a success on the same effort would otherwise be
+    // attributed to an effort change that did not cause it.
+    const effortTransitionKey=JSON.stringify([effortKey(resetPrevious?.reasoningEffort),effortKey(options.reasoningEffort)]);
+    const repeatedEffortTransition=Boolean(resetPrevious)&&resetSame&&
+      effortKey(resetPrevious.reasoningEffort)!==effortKey(options.reasoningEffort)&&state.countedEffortTransition===effortTransitionKey;
     if(resetComparable&&resetPrevious.cacheReadTokens>0&&usage.cacheReadTokens<resetPrevious.cacheReadTokens*.5&&usage?.inputTokens>2000){
       state.cacheResetCount++;state.uncachedInputAtReset+=usage.inputTokens;
       if(changed&&price){const extra=Math.max(0,Math.min(usage.inputTokens-resetPrevious.inputTokens,resetPrevious.cacheReadTokens-usage.cacheReadTokens));
         state.resetTaxByCurrency[price.currency]=(state.resetTaxByCurrency[price.currency]??0)+extra*Math.max(0,price.input-price.cacheRead)/1e6;}
-      if(previous&&effortChanged&&!repeatedEffortTransition){
+      if(resetPrevious&&effortKey(resetPrevious.reasoningEffort)!==effortKey(options.reasoningEffort)&&!repeatedEffortTransition){
         state.cacheResetAfterEffortChange++;
         state.countedEffortTransition=effortTransitionKey;
-        if(price){const extra=Math.max(0,Math.min(usage.inputTokens-previous.usage.inputTokens,previous.usage.cacheReadTokens-usage.cacheReadTokens));
+        if(price){const extra=Math.max(0,Math.min(usage.inputTokens-resetPrevious.inputTokens,resetPrevious.cacheReadTokens-usage.cacheReadTokens));
           state.effortResetExposureByCurrency[price.currency]=(state.effortResetExposureByCurrency[price.currency]??0)+extra*Math.max(0,price.input-price.cacheRead)/1e6;}
       }
     }
@@ -388,7 +393,10 @@ export function createContextEconomics(ctx,runtime){
     // attempt with no usage, or a step that saw no drop) leaves the key untouched, so the
     // following real drop still counts; an unchanged effort clears it so the next change
     // is treated as new.
-    if(!effortChanged)state.countedEffortTransition=null;
+    // Clear the marker only when there is no transition at all relative to the attempt the
+    // next drop will be measured against. Using `previous` here would clear it while a
+    // pending effort change is still unmeasured on the measured chain.
+    if(!resetPrevious||effortKey(resetPrevious.reasoningEffort)===effortKey(options.reasoningEffort))state.countedEffortTransition=null;
     const weights=options.messages.map(messageTokens),systemTokens=textTokens(typeof options.system==='string'?options.system:JSON.stringify(options.system??null)),
       toolSchemaTokens=textTokens(JSON.stringify(options.tools??[])),
       envelopeTokens=textTokens(JSON.stringify({tools:options.tools??[],system:options.system??null}));

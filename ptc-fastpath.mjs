@@ -170,7 +170,12 @@ export function createPtcFastpath(ctx,runtime,call){
     }
     if(loaded.value?.schema!==STORE_SCHEMA||loaded.value?.version!==1||!Array.isArray(loaded.value.definitions))throw new Error('Unrecognized fast-path store');
     const restored=restoreStoredDefinitions(loaded.value.definitions);
-    return {s,file,store:{...loaded.value,definitions:restored.valid},skippedDefinitions:restored.skipped};
+    // Skipped entries stay in the store under their own field. Dropping them would make the
+    // first save after a restore delete every definition this build cannot validate, which
+    // is irreversible: a rollback then finds them gone.
+    const retired=[...(Array.isArray(loaded.value.retiredDefinitions)?loaded.value.retiredDefinitions:[]),
+      ...restored.skipped.map(entry=>loaded.value.definitions[entry.index]).filter(Boolean)];
+    return {s,file,store:{...loaded.value,definitions:restored.valid,retiredDefinitions:retired},skippedDefinitions:restored.skipped};
   }
   async function save(agent,file,store,signal){await runtime.save(agent,file,store,signal);}
   async function define(agent,args,signal){
@@ -197,9 +202,14 @@ export function createPtcFastpath(ctx,runtime,call){
     });
   }
   async function list(agent,signal){
-    await runtime.init(agent,signal);const {file,store}=await load(agent,signal);
+    await runtime.init(agent,signal);const {file,store,skippedDefinitions}=await load(agent,signal);
     return {storePath:file,definitions:store.definitions.map(item=>({name:item.name,description:item.description,candidate_id:item.candidate_id,
-      tools:item.steps.map(step=>step.tool),uses:item.uses||0,successes:item.successes||0,lastUsedAt:item.lastUsedAt,lastOutcome:item.lastOutcome}))};
+      tools:item.steps.map(step=>step.tool),uses:item.uses||0,successes:item.successes||0,lastUsedAt:item.lastUsedAt,lastOutcome:item.lastOutcome})),
+      // Reported, not silently dropped: these entries remain in the store under
+      // `retiredDefinitions` and can be restored by a build that understands them.
+      retiredDefinitions:{count:Array.isArray(store.retiredDefinitions)?store.retiredDefinitions.length:0,
+        skippedNow:(skippedDefinitions??[]).length,
+        reasons:[...new Set((skippedDefinitions??[]).map(item=>item.reason))].slice(0,5)}};
   }
   async function remove(agent,name,signal){
     const s=await runtime.init(agent,signal);if(typeof name!=='string'||!SAFE_NAME.test(name))throw new Error('Invalid name');

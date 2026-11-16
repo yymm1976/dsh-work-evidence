@@ -1,6 +1,6 @@
 import path from 'node:path';
 import {argsOf,eventLog} from './runtime.mjs';
-import {SOURCE_BODY_PATH,planContextPrune,readDispatch,hasPruneProblem} from './context-pruning.mjs';
+import {isSourceBodyPath,looksLikeSourceBody,planContextPrune,readDispatch,hasPruneProblem} from './context-pruning.mjs';
 import {resultText,surfaceReferences} from './visible-results.mjs';
 import {renderedReads} from './observation-ledger.mjs';
 import {messageTokens} from './context-economics.mjs';
@@ -93,6 +93,11 @@ export function toolOutputDigest(name,text,{seq=null,command=null,truncated=fals
   // check must keep its canonical body instead of being replaced by this generic receipt.
   if(TEST_COMMAND.test(String(command??'').trim()))return null;
   if(/\[output truncated; full output:|\[truncated\]/iu.test(text))return null;
+  // A source body is never replaced by a head/tail receipt, whatever produced it: a shell
+  // `cat` returns the whole file with no native read dispatch and no markup, and hiding its
+  // middle makes the task re-read exactly the part that was hidden.
+  const namedSource=[...text.matchAll(/<path>([^<]+)<\/path>/gu)].map(match=>match[1]);
+  if(namedSource.some(file=>isSourceBodyPath(file))||(!namedSource.length&&looksLikeSourceBody(text)))return null;
   const failureLines=text.split(/\r?\n/u).filter(line=>/ERROR|FAILED|Exception|not ok|Traceback|What went wrong/iu.test(line)).slice(0,8).map(line=>line.slice(0,300));
   const head=text.slice(0,2000),tail=text.slice(-2500);
   const header='[work-evidence output receipt] tool='+name+(command?' command='+String(command).trim().slice(0,180):'');
@@ -298,7 +303,18 @@ export function createHistoryHygiene(runtime,taskFlow,{isProtected=()=>false,ret
           return after;
         }
       }
-      if(textOnly&&entry?.toolDigest&&!isProtected(agent,entry.callId)&&runtime.get(agent).config?.swLedger!==true&&state.step-entry.step>=1&&!state.fullOutputRequested&&!state.pinnedResults.has(entry.seq)&&!pins.opaque&&!pins.targets.has(entry.seq)){
+      // A source body returned by a shell command is not a log to summarise: `bash cat`
+      // can return a whole file with no native read dispatch, and replacing it with a
+      // head/tail digest would hide the middle exactly as middle-pruning does. The
+      // retention rule therefore applies before the generic digest branch.
+      const originalText=resultText(original?.content??[]);
+      const sourceBodyPath=[...originalText.matchAll(/<path>([^<]+)<\/path>/gu)]
+        .map(match=>fileKey(root,match[1])).find(file=>isSourceBodyPath(file))??null;
+      // A body can be source without any <path> (a shell `cat`), so the body itself is the
+      // remaining evidence. Without this the digest branch was a fourth truncator that the
+      // retention rule never saw.
+      const sourceBody=Boolean(sourceBodyPath)||looksLikeSourceBody(originalText);
+      if(textOnly&&entry?.toolDigest&&!sourceBody&&!isProtected(agent,entry.callId)&&runtime.get(agent).config?.swLedger!==true&&state.step-entry.step>=1&&!state.fullOutputRequested&&!state.pinnedResults.has(entry.seq)&&!pins.opaque&&!pins.targets.has(entry.seq)){
         const reduction=resultText(message.content).length-entry.toolDigest.length;
         if(reduction>=MIN_SAVING){
           const after={...message,content:[{type:'text',text:entry.toolDigest}]};
@@ -319,7 +335,7 @@ export function createHistoryHygiene(runtime,taskFlow,{isProtected=()=>false,ret
       // A result that names source code is the object of the repair, not a log: keep it
       // whole here too. Every prune entry point must give the same answer for the same
       // body, or one path silently undoes the retention the others enforce.
-      const protect=file=>SOURCE_BODY_PATH.test(file??'')||retainedSource(agent,file)||state.retainedSources.has(fileKey(root,file))||focus.has(fileKey(root,file));
+      const protect=file=>isSourceBodyPath(file)||retainedSource(agent,file)||state.retainedSources.has(fileKey(root,file))||focus.has(fileKey(root,file));
       const existing=state.outputPlans.get(entry.seq);
       if(existing?.test||existing?.tool)return message;
       const planned=existing??planContextPrune(original,entry.reads,{seq:entry.seq,...pruneSettings,retainSource:protect});

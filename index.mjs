@@ -5,7 +5,7 @@ import {createFeatureControl} from './feature-control.mjs';
 import {isReadOnlyTaskRequest} from './task-intent.mjs';
 import path from 'node:path';
 import fs from 'node:fs/promises';
-import {randomUUID} from 'node:crypto';
+import {createHash,randomUUID} from 'node:crypto';
 import {limits,within,literal,textWindow,references} from "./evidence.mjs";
 import {createRuntime,VERSION,argsOf,eventLog,textOf,isUserRequestMessage} from "./runtime.mjs";
 import {createSelfIndex} from './self-index.mjs';
@@ -37,7 +37,7 @@ import {createHostReferences} from './host-references.mjs';
 import {createNativeFiles} from './native-files.mjs';
 import {createEffectObserver} from './effect-observer.mjs';
 import {createHistoryCoordinator} from './history-coordinator.mjs';
-import {SOURCE_BODY_PATH,cacheAdvance,planContextPrune,prunableMessage,hasPruneProblem,readDispatch,historyReferences} from './context-pruning.mjs';
+import {isSourceBodyPath,cacheAdvance,planContextPrune,prunableMessage,hasPruneProblem,readDispatch,historyReferences} from './context-pruning.mjs';
 import {createHistoryHygiene} from "./history-hygiene.mjs";
 import {createReferenceContext} from './reference-context.mjs';
 import {createDisposalCoordinator} from './disposal-coordinator.mjs';
@@ -205,7 +205,7 @@ export function apply(ctx,config={}){
     fileProfiler=createFileProfiler(ctx,runtime),structuredJson=createStructuredJson(ctx,runtime);
   // Keep general workflow guidance fixed; dynamic notices carry observed facts.
   ctx.systemPrompt.section({name:'work-evidence:task-flow',order:750,interpolate:false,text:''});
-  const contextPruning=new Set(),pendingContextPrunes=new Map(),preserveContextResults=new Set(),contextReadCalls=new Map(),contextRetainedSources=new Map(),editedSources=new Map(),supersededCache=new Map(),readCountsCache=new Map();
+  const contextPruning=new Set(),pendingContextPrunes=new Map(),preserveContextResults=new Set(),contextReadCalls=new Map(),contextRetainedSources=new Map(),editedSources=new Map(),supersededCache=new Map(),readCountsCache=new Map(),bodyHashCache=new Map();
   const preserveContextResult=(sessionId,callId)=>{
     if(typeof callId!=='string'||!callId)return;
     preserveContextResults.add(sessionId+':'+callId);
@@ -253,7 +253,7 @@ export function apply(ctx,config={}){
   // pruned only when a later complete read of the same path has already superseded it.
   // Non-source blobs (listings, logs, generated data) keep the old behaviour.
   // The pattern itself lives in context-pruning.mjs so every prune entry point agrees.
-  const isSourceBodyPath=file=>typeof file==='string'&&SOURCE_BODY_PATH.test(file);
+
   // These three caches annotate the live session, so they must track it: computing once
   // would freeze the first step's view and make a later complete read unable to supersede
   // anything. Each keeps the number of session events it has consumed and only walks the
@@ -273,22 +273,52 @@ export function apply(ctx,config={}){
           const text=(message.content??[]).filter(block=>block?.type==='text').map(block=>block.text??'').join('');
           const pathMatch=/<path>([^<]+)<\/path>/.exec(text);
           if(!pathMatch)continue;
-          const complete=/\(End of file - total \d+ lines\)/.test(text)||/<content complete="true"/.test(text);
+          // The end-of-file marker only says this window reached the end; a tail read
+          // with offset 900 prints it too. Treating that as a complete body would let a
+          // tail supersede the full read and then lose the middle. Line 1 must be present,
+          // unless the producer states completeness explicitly.
+          const eofMarker=/\(End of file - total \d+ lines\)/.test(text);
+          const startsAtLineOne=/(?:^|\n)1: /.test(text);
+          const complete=(eofMarker&&startsAtLineOne)||/<content complete="true"/.test(text);
           if(!complete)continue;
           latest.set(sourceKey(agent,pathMatch[1]),event.seq);
         }
       },
     });
   };
-  // How much of the region a rewrite would hide has this session already re-read? A file
+  // A whole-result prune has no path, so identify the file by the body it delivered: the
+  // session's own read events are the only record of which path produced this text. The
+  // match is exact on a hash, so a similar file cannot be charged for another's re-reads.
+  const sourceKeyForBody=(agent,body)=>{
+    const hash=bodyHashCache.get(body)??(()=>{
+      const value=createHash('sha256').update(String(body)).digest('hex');
+      bodyHashCache.set(body,value);return value;
+    })();
+    for(const event of eventLog(agent.session)){
+      if(event.type!=='tool/result'||event.surfaceOp?.op==='replace')continue;
+      const message=event.data?.message;
+      const text=(message?.content??[]).filter(block=>block?.type==='text').map(block=>block.text??'').join('');
+      const named=/<path>([^<]+)<\/path>/u.exec(text)?.[1];
+      if(!named)continue;
+      const eventHash=bodyHashCache.get(text)??(()=>{
+        const value=createHash('sha256').update(text).digest('hex');
+        bodyHashCache.set(text,value);return value;
+      })();
+      if(eventHash===hash)return sourceKey(agent,named);
+    }
+    return null;
+  };
   // whose rows were read twice is exactly the file whose hidden middle comes back, so its
   // size is charged as a revisit cost. Read counts are per source key and monotone.
-  const revisitTokens=(agent,ranges)=>{
+  // A whole-result range carries no path, so the body is used to find which read produced
+  // it: without that the charge was structurally zero for every flat-branch prune.
+  const revisitTokens=(agent,ranges,body='')=>{
     if(!ranges.length)return 0;
     const counts=readCountsFor(agent);
+    const bodyKey=body?sourceKeyForBody(agent,body):null;
     let tokens=0;
     for(const range of ranges){
-      const key=sourceKey(agent,range.path??'');
+      const key=bodyKey??(range.path?sourceKey(agent,range.path):null);
       const rows=(range.end??0)-(range.offset??0);
       if(!key||rows<=0)continue;
       // Only the excess over the first read is a revisit; one read is the minimum any
@@ -426,7 +456,7 @@ export function apply(ctx,config={}){
             // Rows of this result that the session has already re-read are a measured
             // cost of hiding its middle, so they enter the forecast instead of being
             // discovered after the fact.
-            revisitCostTokens:revisitTokens(agent,result.ranges??[]),
+            revisitCostTokens:revisitTokens(agent,result.ranges??[],original),
           }),'contextPrune');
           effects.decide(agent,'contextPrune',economics.allowed?'approved':'deferred',economics.reason,{seq,economics});
           if(!economics.allowed)continue;

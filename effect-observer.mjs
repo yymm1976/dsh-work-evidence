@@ -90,11 +90,12 @@ export function createEffectObserver(ctx,runtime){
     // marker for the next attempt.
     state.needsLeadingNewline.add(kind);
     let raw;
-    try{raw=await fs.readFile(file);}catch{return;}
+    // A missing file has a clean boundary: the first append creates it.
+    try{raw=await fs.readFile(file);}catch(error){return error?.code==='ENOENT';}
     // truncate() takes a byte offset, so the last newline must be located in the
     // buffer: a string index is short whenever a retained row holds non-ASCII text.
     const boundary=raw.lastIndexOf(0x0a)+1,tail=raw.subarray(boundary).toString('utf8');
-    if(!tail){state.needsLeadingNewline.delete(kind);return;}
+    if(!tail){state.needsLeadingNewline.delete(kind);return true;}
     // A complete row without its trailing newline is still data. If a partial append
     // follows it, retain the first complete JSON object and drop only the unparseable
     // remainder instead of truncating the row together with the fragment.
@@ -124,7 +125,8 @@ export function createEffectObserver(ctx,runtime){
         await fs.appendFile(file,'\n','utf8');
       }else await fs.truncate(file,boundary);
       state.needsLeadingNewline.delete(kind);
-    }catch{}
+      return true;
+    }catch{return false;}
   }
   function queue(state,agent,row,kind='observability'){
     const dir=storageFor(agent);if(!dir){state.writeErrors.push('Observability storage outside the workspace is unavailable');state.writeErrors=state.writeErrors.slice(-8);return Promise.resolve(false);}
@@ -133,9 +135,14 @@ export function createEffectObserver(ctx,runtime){
     // Boundary inspection and repair stay in this same queue, so a later row cannot
     // overtake recovery and turn a partial append into a corrupt persistent ledger.
     state.queue=state.queue.catch(()=>{}).then(async()=>{await fs.mkdir(dir,{recursive:true});
-      // A repair that failed last time left the boundary unknown. Retry the repair before
-      // appending: a bare newline would only seal the fragment and lose the joined row.
-      if(state.needsLeadingNewline.has(kind))await repairAppendBoundary(state,file,kind);
+      // A repair that failed last time left the boundary unknown. Retry it before
+      // appending: if it still fails, appending would seal the fragment and destroy the
+      // joined row, so the row stays pending instead.
+      if(state.needsLeadingNewline.has(kind)){
+        state.writeErrors.push('Boundary repair retry failed; the row stays pending');
+        state.writeErrors=state.writeErrors.slice(-8);
+        if(!await repairAppendBoundary(state,file,kind))return false;
+      }
       await fs.appendFile(file,(state.needsLeadingNewline.has(kind)?'\n':'')+JSON.stringify(row)+'\n','utf8');
       state.needsLeadingNewline.delete(kind);return true;}).catch(async error=>{
       state.writeErrors.push(String(error.message).slice(0,240));state.writeErrors=state.writeErrors.slice(-8);
