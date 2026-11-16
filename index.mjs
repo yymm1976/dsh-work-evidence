@@ -37,7 +37,7 @@ import {createHostReferences} from './host-references.mjs';
 import {createNativeFiles} from './native-files.mjs';
 import {createEffectObserver} from './effect-observer.mjs';
 import {createHistoryCoordinator} from './history-coordinator.mjs';
-import {planContextPrune,prunableMessage,hasPruneProblem,readDispatch,historyReferences} from './context-pruning.mjs';
+import {SOURCE_BODY_PATH,planContextPrune,prunableMessage,hasPruneProblem,readDispatch,historyReferences} from './context-pruning.mjs';
 import {createHistoryHygiene} from "./history-hygiene.mjs";
 import {createReferenceContext} from './reference-context.mjs';
 import {createDisposalCoordinator} from './disposal-coordinator.mjs';
@@ -252,8 +252,8 @@ export function apply(ctx,config={}){
   // redundant copy there. The defensible rule is narrower: a source file's body may be
   // pruned only when a later complete read of the same path has already superseded it.
   // Non-source blobs (listings, logs, generated data) keep the old behaviour.
-  const SOURCE_BODY=/\.(?:py|pyi|js|jsx|mjs|cjs|ts|tsx|java|go|rs|c|cc|cpp|cxx|h|hpp|rb|php|cs|kt|swift|scala|m|mm|pl|lua|sql|json|jsonc|json5|yaml|yml|toml|ini|cfg|conf|md|mdx|rst|adoc|html|htm|css|scss|sass|less|vue|svelte|astro|sh|bash|zsh|ps1|psm1|bat|cmd|gradle|xml|proto|graphql|gql|tf|hcl)$/iu;
-  const isSourceBodyPath=file=>typeof file==='string'&&SOURCE_BODY.test(file);
+  // The pattern itself lives in context-pruning.mjs so every prune entry point agrees.
+  const isSourceBodyPath=file=>typeof file==='string'&&SOURCE_BODY_PATH.test(file);
   const supersededSourceKeys=agent=>{
     const id=agent.session.id;
     if(!supersededReads.has(id)){

@@ -4,6 +4,11 @@ import {argsOf} from './runtime.mjs';
 export {historyReferences} from './visible-results.mjs';
 
 const count=text=>Array.from(text).length;
+// One definition of "this body is source code". Both prune entry points (the live path and
+// the stage-checkpoint builder) consult it, because the same body must be treated the same
+// way regardless of which one reaches it. Splitting the list between them is how a source
+// body kept being cut to head+tail on the path that did not have it.
+export const SOURCE_BODY_PATH=/\.(?:py|pyi|js|jsx|mjs|cjs|ts|tsx|java|go|rs|c|cc|cpp|cxx|h|hpp|rb|php|cs|kt|swift|scala|m|mm|pl|lua|sql|json|jsonc|json5|yaml|yml|toml|ini|cfg|conf|md|mdx|rst|adoc|html|htm|css|scss|sass|less|vue|svelte|astro|sh|bash|zsh|ps1|psm1|bat|cmd|gradle|xml|proto|graphql|gql|tf|hcl)$/iu;
 // The retired OPS read tools stay recognised: a resumed session can replay their
 // results. Keeping the names here preserves the read-window protection those historical
 // entries had; dropping them let history hygiene excerpt a focused source window.
