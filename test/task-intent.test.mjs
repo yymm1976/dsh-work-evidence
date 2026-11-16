@@ -115,3 +115,18 @@ test('task intent: an allowance accepts a target-free implementation request',()
   assert.equal(isReadOnlyTaskRequest('Do not modify README.md. Rewrite the parser.'),false);
   assert.equal(isReadOnlyTaskRequest('Do not rewrite the parser.'),true);
 });
+
+test('task intent: a Chinese noun use of an implementation verb is not a request',()=>{
+  // Found by adversarial review. 「实现」 is extremely common as a noun ("the implementation"),
+  // and the classifier counted it as a write verb, so an explicit 只读 marker never decided.
+  //   measured before: `只读分析 src/a.js 的实现。` -> false (writable, edit tools shown)
+  assert.equal(isReadOnlyTaskRequest('只读分析 src/a.js 的实现。'),true);
+  assert.equal(isReadOnlyTaskRequest('只读分析这个模块的实现。'),true);
+  assert.equal(isReadOnlyTaskRequest('严禁修改任何文件；只读分析 src/a.js 的实现。'),true);
+  // The verb use must still be a request: a determiner-free 实现 at the start of a clause.
+  assert.equal(isReadOnlyTaskRequest('实现分页功能。'),false);
+  assert.equal(isReadOnlyTaskRequest('请实现 src/a.js 里的重试。'),false);
+  // And a denial of an untracked-verb clause keeps the writable default, which is the
+  // harmless direction: no tracked request was named, so nothing proves a write either.
+  assert.equal(isReadOnlyTaskRequest('分析 bug，不要修改。'),false);
+});

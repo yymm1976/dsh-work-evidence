@@ -68,6 +68,12 @@ const idiomPattern=new RegExp(`(?:${enWord(IDIOM)})|(?:${IDIOM.split('|').filter
 const allowancePattern=new RegExp(`(?:^|[^A-Za-z0-9_-])(?:${ALLOWANCE})(?![A-Za-z0-9_-])`,'iu');
 // A determiner directly before the verb makes it the object of that phrase.
 const nounPrefix=/(?:^|\s)(?:a|an|the|this|that|these|those|its|their|his|her|our|your|my|any|some|each|every|no)\s+$/iu;
+// Chinese has no determiner, but it does have a possessive/attributive particle that turns a
+// verb into the head noun of a phrase: "这个模块的实现" is "this module's implementation", and
+// 「实现」 there is a noun. Measured: `只读分析 src/a.js 的实现。` was classified writable
+// because 实现 was read as a write verb, so the explicit 只读 marker never decided.
+// The characters before the verb are what make it a noun: 的 / 此 / 该 / 这 / 那 / 本 / 其.
+const CJK_NOUN_PREFIX=/(?:的|之|此|该|这|那|本|其|各|每|某|所有|全部)\s*$/u;
 const readOnlyMarker=/(?:只读|read[- ]only)/iu;
 // Sentence boundaries. A period splits only before a capital so "src/a.js" survives.
 const SENTENCE_BOUNDARY=/[。！？；;\n]|[.!?](?!\s*[a-z0-9])/u;
@@ -89,7 +95,10 @@ function positions(pattern,text){
  * Is the verb at `index` a request rather than a noun? Only a preceding determiner makes
  * it a noun; that is the one noun construction this classifier claims to recognise.
  */
-const isVerbUse=(text,index)=>!nounPrefix.test(text.slice(Math.max(0,index-24),index));
+const isVerbUse=(text,index)=>{
+  const before=text.slice(Math.max(0,index-24),index);
+  return !nounPrefix.test(before)&&!CJK_NOUN_PREFIX.test(before);
+};
 
 /** Does `text` ask for a change, and is it not denied? `raw` is the same text unstripped. */
 function sentenceIsWritable(prose,raw=prose){

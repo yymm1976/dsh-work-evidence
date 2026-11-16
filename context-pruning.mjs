@@ -61,6 +61,16 @@ export function isSourceBody(text){
   // path anywhere in a compound result keeps the whole result. Only the absence of any
   // source path leaves the body itself as the remaining evidence.
   if(looksLikeSourceBody(body))return true;
+  // A native read or `run_code` renders `N: row`, `N | row` or `N\trow`, and every shape
+  // detector anchors on a line start, so a real source body with rendered line numbers reads
+  // as a log. Measured: a 400-line Python module behind `.txt` markup and `N | ` prefixes was
+  // classified as a log and its middle was cut 13,782 -> 5,320, while the same body without
+  // the prefixes was refused.
+  //
+  // This has to live HERE, not in the callers: the reads branch already stripped the prefix
+  // for its own decision, and the flat branch did not, so the same body got two answers
+  // depending on which branch reached it. One body, one answer.
+  if(looksLikeSourceBody(stripLineNumbers(body)))return true;
   // A shell result is a serialized envelope: the source sits in `stdout.text` as a JSON
   // string, where every newline is the two characters `\` and `n`. Both detectors look for
   // shapes at LINE STARTS and count assignment rows split on real newlines, so a whole file
@@ -71,7 +81,10 @@ export function isSourceBody(text){
   // Only when the raw form did not match, and only for text that actually contains escaped
   // newlines, so an ordinary body pays nothing for this.
   if(!body.includes('\\n'))return false;
-  try{return looksLikeSourceBody(decodeEscapedNewlines(body));}catch{return false;}
+  try{
+    const decoded=decodeEscapedNewlines(body);
+    return looksLikeSourceBody(decoded)||looksLikeSourceBody(stripLineNumbers(decoded));
+  }catch{return false;}
 }
 
 /**

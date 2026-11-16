@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {SOURCE_BODY_PATH,isSourceBodyPath,looksLikeSourceBody,planContextPrune,stripLineNumbers} from '../context-pruning.mjs';
+import {SOURCE_BODY_PATH,isSourceBodyPath,looksLikeSourceBody,isSourceBody,planContextPrune,stripLineNumbers} from '../context-pruning.mjs';
 
 // The F2-C failure was a source body cut to head+tail. Two entry points can reduce a body
 // (the live prune path and the stage-checkpoint builder), so the "is this source code"
@@ -163,4 +163,31 @@ test('a serialized shell envelope carrying source is not pruned in the flat bran
   assert.equal(plan(source),null,'escaped source is retained');
   const log=Array.from({length:400},(_,i)=>`build step ${i} completed in ${i}ms`).join('\n');
   assert.ok(plan(log),'a log in the same envelope is still reduced');
+});
+
+test('a rendered line-number prefix cannot hide a source body from the classifier',()=>{
+  // Found by adversarial review. `isSourceBody` did not strip line-number prefixes, and every
+  // shape detector anchors on a line start, so a real module rendered as `N | row` read as a
+  // log. The reads branch stripped the prefix for its own decision and the flat branch did
+  // not, so the same body got two answers depending on which branch reached it.
+  //   measured before the fix: 13,782 -> 5,320 (pruned), while the same body without
+  //   prefixes was refused.
+  const py=['import os','','def run(x):','    return x+1','',
+    ...Array.from({length:400},(_,i)=>`    value_${i} = compute(${i})`)].join('\n');
+  const options={seq:9,thresholdChars:8000,headChars:4096,tailChars:1024,retainSource:()=>false};
+  const prefixed=(text,sep)=>'<path>out.txt</path>\n<content>\n'+
+    text.split('\n').map((row,i)=>`${i+1}${sep}${row}`).join('\n')+'\n</content>';
+  for(const [sep,label] of [[': ','colon'],[' | ','pipe'],['\t','tab']]){
+    const text=prefixed(py,sep);
+    assert.ok(text.length>=8000,`the ${label} fixture clears thresholdChars`);
+    assert.equal(isSourceBody(text),true,`${label}-prefixed source is recognised`);
+    assert.equal(planContextPrune({role:'tool',content:[{type:'text',text}]},[],options),null,
+      `${label}-prefixed source is not reduced`);
+  }
+  // The control: a log with the same prefixes must still shrink, or the fix disabled pruning.
+  const log=Array.from({length:600},(_,i)=>`build step ${i} completed in ${i}ms`).join('\n');
+  const logText=prefixed(log,' | ');
+  assert.equal(isSourceBody(logText),false,'a prefixed log is not source');
+  assert.ok(planContextPrune({role:'tool',content:[{type:'text',text:logText}]},[],options),
+    'and it is still reduced');
 });
