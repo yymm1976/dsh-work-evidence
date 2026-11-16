@@ -37,9 +37,28 @@ const perFileEffortStates=(value,normalize)=>{
 // verified_exec names its targets inside edits[], under `file` in the supplied
 // mutation shape and `path`/`file_path` in the older one; all three are accepted so
 // an applied conditional edit can match its artifact.
+//
+// The per-file effect state applies HERE, not only in reserveChange: every consumer of
+// this helper (the sql-join, the read filter, the insertion test, the change-history
+// passes) would otherwise treat a file the call did not change as a target. `call`
+// carries the states recorded by fileCall.
 const filePaths=call=>{
   const args=call?.args??{};
-  const edited=Array.isArray(args.edits)?args.edits.map(edit=>edit?.file??edit?.path??edit?.file_path).filter(Boolean):[];
+  // The key used for the state lookup is the caller's fileKey when the call carries one;
+  // otherwise the raw target is compared, which is still exact per edit entry.
+  const stateOf=target=>{
+    const states=call?.editStates;
+    if(!states||!target)return undefined;
+    const normalizer=call?.stateKey??(value=>value);
+    return states.get(normalizer(target));
+  };
+  const applied=edit=>{
+    const target=edit?.file??edit?.path??edit?.file_path;
+    if(!target)return false;
+    const state=stateOf(target);
+    return !state||['applied','partial','unknown'].includes(state);
+  };
+  const edited=Array.isArray(args.edits)?args.edits.filter(applied).map(edit=>edit?.file??edit?.path??edit?.file_path).filter(Boolean):[];
   return [...edited,args.file_path??args.path].filter(Boolean);
 };
 
@@ -235,6 +254,8 @@ function payloadFor(current,review,root){
       // A mixed result applies some files and not others; keep the per-file states so
       // the change-history pass can skip the files that did not take the change.
       call.editStates=perFileEffortStates(value,fileKey);
+      // filePaths() must key its state lookup the same way the states were keyed.
+      call.stateKey=fileKey;
     }
     return call;
   };

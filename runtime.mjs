@@ -710,14 +710,19 @@ export function createRuntime(ctx,call,initial={}){
         // language's definition keyword. Anything wider is a normal search.
         if(/^(?:def|func|function|class|interface|struct|fn|fun|void|public|private|protected|static|final|abstract)?\s*[A-Za-z_$][\w$]{2,64}$/u.test(pattern)){
           const bareName=pattern.replace(/^[A-Za-z_$][\w$]*\s+/u,'').trim(),name=bareName.split(/\s+/u).at(-1);
-          // A match is only a definition site when the matched line declares it. An
-          // import or a call in another file is a reference, and calling that a
-          // duplicate implementation would both mislead and spend the one notice.
+          // A match is only a definition site when the matched line declares THIS name.
+          // A line that merely starts with a declaration keyword declares something
+          // else, and an import or a call is a reference; calling either a duplicate
+          // implementation would mislead and spend the one notice.
           const declares=line=>{
             const text=typeof line==='string'?line:'';
-            if(!text||!new RegExp('(^|[^\\w$])'+name.replace(/[.*+?^${}()|[\]\\]/gu,'\\$&')+'(?![\\w$])','u').test(text))return false;
-            return /^\s*(?:export\s+)?(?:default\s+)?(?:async\s+)?(?:def|func|fn|fun|function|class|interface|struct|type|enum|const|let|var|public|private|protected|static|final|abstract|synchronized|@)/u.test(text)
-              ||new RegExp('(?:^|\\s)(?:def|func|fn|fun|function|class|interface|struct)\\s+'+name.replace(/[.*+?^${}()|[\]\\]/gu,'\\$&')+'\\s*[(<:]','u').test(text);
+            if(!text)return false;
+            const escaped=name.replace(/[.*+?^${}()|[\]\\]/gu,'\\$&');
+            if(!new RegExp('(^|[^\\w$])'+escaped+'(?![\\w$])','u').test(text))return false;
+            // The declaration must bind the name: keyword then name, allowing modifiers
+            // and an annotation between them (Java), and `export`/`default`/`async` in JS.
+            return new RegExp('(?:^|[;{}\\s])(?:export\\s+)?(?:default\\s+)?(?:async\\s+)?(?:public\\s+|private\\s+|protected\\s+|static\\s+|final\\s+|abstract\\s+|synchronized\\s+)?(?:def|func|fn|fun|function|class|interface|struct|type|enum|const|let|var|val)\\s+'+escaped+'(?![\\w$])','u').test(text)
+              ||new RegExp('(?:^|[;{}\\s])(?:public|private|protected|static|final|abstract|synchronized|native|transient|volatile)[\\w\\s<>\\[\\],.?]*\\s+'+escaped+'\\s*\\(','u').test(text);
           };
           const sites=new Map();
           for(const match of items){

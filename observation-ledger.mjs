@@ -309,7 +309,11 @@ export function createObservationLedger(ctx,runtime,nativeFiles=null){
     const entry={callId:exec.callId,name:exec.name,arguments:exec.arguments??{},value:result.value,meta:result.meta,content:textBlocks(result.content),isError:!!result.isError,
       mutationCountAtRead:state.mutationCount??0};
     const prior=list.findIndex(item=>item.callId===exec.callId);
-    if(prior>=0)list[prior]=entry;else list.push(entry);
+    // A re-recorded call keeps the mutation count it was first read at. Overwriting it
+    // with the current count would make a read taken before a write look post-write,
+    // because the superseded-read filter compares against this value.
+    if(prior>=0)list[prior]={...entry,mutationCountAtRead:list[prior].mutationCountAtRead??entry.mutationCountAtRead};
+    else list.push(entry);
     state.nested.set(root,list.slice(-32));
     if(state.nested.size>MAX_PENDING)state.nested.delete(state.nested.keys().next().value);
     if(isSuccessfulWrite(exec.name,result))markMutation(agent,{name:exec.name,args:exec.arguments,value:result.value,seq:null});

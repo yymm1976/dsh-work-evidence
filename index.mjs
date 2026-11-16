@@ -382,8 +382,21 @@ export function apply(ctx,config={}){
     // English form, "Do not modify a.js. Create b.js." stayed one sentence and the
     // first denial suppressed the second request, making a writable task read-only.
     const sentences=request.split(/[。；;\n]|\.(?=\s+[A-Z])/u);
-    return !sentences.some(sentence=>
-      writeVerb.test(sentence)&&(writeRequest.test(sentence)||upperCaseTarget.test(sentence))&&(!deniedWrite.test(sentence)||allowedAfterDenial.test(sentence)));
+    return !sentences.some(sentence=>{
+      if(!writeVerb.test(sentence))return false;
+      if(!writeRequest.test(sentence)&&!upperCaseTarget.test(sentence))return false;
+      if(!deniedWrite.test(sentence))return true;
+      // The allowance must come AFTER the denial and must itself be a write clause. A
+      // read permission that precedes a denied write ("you can read a.js, but do not
+      // modify b.js") would otherwise match and turn the denial into permission.
+      const denialAt=sentence.search(deniedWrite);
+      if(denialAt<0)return true;
+      const after=sentence.slice(denialAt);
+      const allowanceAt=after.search(allowedAfterDenial);
+      if(allowanceAt<0)return false;
+      // The allowance clause itself must not start before the denial it is meant to lift.
+      return after.slice(allowanceAt).length<after.length;
+    });
   };
   const surfaceModeForRequest=request=>{
     if(!isReadOnlyRequest(request))return 'writable';

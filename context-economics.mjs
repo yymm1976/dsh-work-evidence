@@ -351,26 +351,26 @@ export function createContextEconomics(ctx,runtime){
     // its successful retry both matched it, doubling uncachedInputAtReset and the tax.
     const resetSame=Boolean(resetPrevious)&&sameRoute(resetPrevious,options);
     const resetComparable=resetSame&&finite(usage?.cacheReadTokens)&&finite(resetPrevious?.cacheReadTokens);
+    // One transition is counted once. The key records the last COUNTED transition, and the
+    // reset branch below and the marker update at the end of this block agree on it.
+    const effortTransitionKey=JSON.stringify([effortKey(previous?.reasoningEffort),effortKey(options.reasoningEffort)]);
+    const repeatedEffortTransition=Boolean(previous)&&effortChanged&&state.countedEffortTransition===effortTransitionKey;
     if(resetComparable&&resetPrevious.cacheReadTokens>0&&usage.cacheReadTokens<resetPrevious.cacheReadTokens*.5&&usage?.inputTokens>2000){
       state.cacheResetCount++;state.uncachedInputAtReset+=usage.inputTokens;
       if(changed&&price){const extra=Math.max(0,Math.min(usage.inputTokens-resetPrevious.inputTokens,resetPrevious.cacheReadTokens-usage.cacheReadTokens));
         state.resetTaxByCurrency[price.currency]=(state.resetTaxByCurrency[price.currency]??0)+extra*Math.max(0,price.input-price.cacheRead)/1e6;}
-      if(previous&&effortChanged){
-        const transitionKey=JSON.stringify([effortKey(previous.reasoningEffort),effortKey(options.reasoningEffort)]);
-        if(state.countedEffortTransition!==transitionKey){
-          state.cacheResetAfterEffortChange++;
-          if(price){const extra=Math.max(0,Math.min(usage.inputTokens-previous.usage.inputTokens,previous.usage.cacheReadTokens-usage.cacheReadTokens));
-            state.effortResetExposureByCurrency[price.currency]=(state.effortResetExposureByCurrency[price.currency]??0)+extra*Math.max(0,price.input-price.cacheRead)/1e6;}
-          state.countedEffortTransition=transitionKey;
-        }
+      if(previous&&effortChanged&&!repeatedEffortTransition){
+        state.cacheResetAfterEffortChange++;
+        state.countedEffortTransition=effortTransitionKey;
+        if(price){const extra=Math.max(0,Math.min(usage.inputTokens-previous.usage.inputTokens,previous.usage.cacheReadTokens-usage.cacheReadTokens));
+          state.effortResetExposureByCurrency[price.currency]=(state.effortResetExposureByCurrency[price.currency]??0)+extra*Math.max(0,price.input-price.cacheRead)/1e6;}
       }
     }
-    // The dedupe key follows every observed effort change, not only the ones that saw a
-    // cache drop. Leaving it on an earlier pair would let a later independent
-    // same-direction transition be suppressed; clearing it on an unchanged effort means
-    // the next transition is treated as new.
-    if(previous&&effortChanged)state.countedEffortTransition=JSON.stringify([effortKey(previous.reasoningEffort),effortKey(options.reasoningEffort)]);
-    else if(previous&&!effortChanged)state.countedEffortTransition=null;
+    // The key marks the last COUNTED transition only. An unmeasured transition (a failed
+    // attempt with no usage, or a step that saw no drop) leaves the key untouched, so the
+    // following real drop still counts; an unchanged effort clears it so the next change
+    // is treated as new.
+    if(!effortChanged)state.countedEffortTransition=null;
     const weights=options.messages.map(messageTokens),envelopeTokens=textTokens(JSON.stringify({tools:options.tools??[],system:options.system??null}));
     // A failed or aborted attempt carries no observable prompt/cache usage, so it
     // must not replace the last usable observation. Otherwise the next economics
