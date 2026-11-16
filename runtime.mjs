@@ -1,5 +1,7 @@
 import path from 'node:path';
 import fs from 'node:fs/promises';
+// The synchronous realpath lives on the callback/sync API, not on fs/promises.
+import {realpathSync} from 'node:fs';
 import os from 'node:os';
 import {randomUUID} from 'node:crypto';
 import {within,references,assertExistingFileWithin,readUtf8File} from './evidence.mjs';
@@ -342,7 +344,7 @@ export function createRuntime(ctx,call,initial={}){
   const realKeyOf=full=>{
     if(realRootCache.has(full))return realRootCache.get(full);
     let key=process.platform==='win32'?full.toLowerCase():full;
-    try{const real=fs.realpathSync.native(full);key=process.platform==='win32'?real.toLowerCase():real;}catch{/* not on disk: keep the lexical key */}
+    try{const real=realpathSync.native(full);key=process.platform==='win32'?real.toLowerCase():real;}catch{/* not on disk: keep the lexical key */}
     realRootCache.set(full,key);
     return key;
   };

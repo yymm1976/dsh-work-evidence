@@ -370,7 +370,10 @@ export function createEffectObserver(ctx,runtime){
         const written=await queue(state,agent,{schema:'work-evidence.pending-decisions.v1',sessionId:agent.session.id,
           at:new Date().toISOString(),step:runtime.get(agent).step,decisions});
         if(!written)return;
-        state.pendingDecisions.splice(0,decisions.length);
+        // Remove by identity: decisions may have been appended while the append was in
+        // flight, and a positional prefix would drop those instead of the ones written.
+        const writtenIds=new Set(decisions.map(item=>item?.id));
+        state.pendingDecisions=state.pendingDecisions.filter(item=>!writtenIds.has(item?.id));
       }
       // The overflowed decisions are the same kind of unpersisted record: if their
       // append failed and the queue is still non-empty, keep the state rather than

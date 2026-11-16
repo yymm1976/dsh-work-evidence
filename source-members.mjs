@@ -112,10 +112,11 @@ function limitationFor({hasMore, lineTextTruncated, canIncreaseText, prefixOmitt
 }
 
 function perMemberArguments(base, name) {
-  // Archive mode selects by locator: adding member/members alongside offset fails the
-  // mode/field validator, so the selectors only apply to source mode. Handled here so
-  // every caller is covered — patching individual call sites left two of them emitting
-  // an unusable argument set.
+  // Archive mode selects by locator: adding member/members alongside the member range
+  // fails the mode/field validator, so the selectors only apply to source mode. Handled
+  // here so every caller is covered — patching individual call sites left two of them
+  // emitting an unusable argument set. The caller merges the member's own range into the
+  // result, so an archive retry still asks for the range the member occupied.
   if (base?.mode === 'archive' || base?.archive) return {...base};
   if (Array.isArray(base.members)) return {...base, members: [name]};
   return {...base, member: name};

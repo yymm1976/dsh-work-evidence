@@ -306,8 +306,12 @@ export function createObservationLedger(ctx,runtime,nativeFiles=null){
     state.root??=runtime.get(agent).root||null;
     if(!root)return;
     const list=state.nested.get(root)??[];
+    // The mutation count is captured when the dispatch is registered, not when its result
+    // arrives: a read issued before a write but completing after it would otherwise carry
+    // the post-write count and pass the superseded-read filter.
+    const dispatchedAt=Number.isSafeInteger(exec.mutationCountAtDispatch)?exec.mutationCountAtDispatch:(state.mutationCount??0);
     const entry={callId:exec.callId,name:exec.name,arguments:exec.arguments??{},value:result.value,meta:result.meta,content:textBlocks(result.content),isError:!!result.isError,
-      mutationCountAtRead:state.mutationCount??0};
+      mutationCountAtRead:dispatchedAt};
     const prior=list.findIndex(item=>item.callId===exec.callId);
     // A re-recorded call keeps the mutation count it was first read at. Overwriting it
     // with the current count would make a read taken before a write look post-write,
@@ -777,6 +781,16 @@ export function createObservationLedger(ctx,runtime,nativeFiles=null){
   }
 
   function observe(){
+    ctx.on('tools/execute',async(exec,next)=>{
+      // A read issued before a write can complete after it. The mutation count is
+      // stamped on the call here, at dispatch, so rememberNested can record what the
+      // read could actually have observed rather than what had happened by the time its
+      // result arrived.
+      if(exec?.agent&&READ_TOOLS.has(exec.name)&&!Number.isSafeInteger(exec.mutationCountAtDispatch)){
+        try{exec.mutationCountAtDispatch=stateFor(exec.agent).mutationCount??0;}catch{}
+      }
+      return next();
+    });
     ctx.on('tools/post-execute',postExecute);
     // Result observers still receive the tool's structured value and metadata.
     // They run before the outer PTC result is prepared for model projection.
