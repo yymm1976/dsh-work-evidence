@@ -12,8 +12,8 @@ const DEPENDENCY_LADDER='total is the merged unique dependencies this result rec
 const RESTORE_REASON_SEMANTICS='Listed reasons are the recorded signals that matched each observation before this restore decision. They do not show that the model read a body, that later requests needed it, or any cache and cost effect.';
 const ADAPTER_OWNER=Symbol.for('@local/dsh-work-evidence/request-adapter');
 const diagnosticDependency=({kind,display})=>kind==='command'||kind==='url'?{kind,source:null,sourceOmission:'not-copied'}:{kind,source:display};
-const READ=/^(?:read|ops_read_files|ops_inspect_local_file|ops_stat|ops_grep|ops_glob|grep|glob|project_evidence|fastedit_java|web_fetch|web_search|fetch|search|browse|bash|pwsh|ops_bash)$/;
-const WRITE=/^(?:write|edit|str_replace_editor|ops_write_file|ops_edit_file|verified_exec|fastedit_java)$/;
+const READ=/^(?:read|grep|glob|project_evidence|web_fetch|web_search|fetch|search|browse|bash|pwsh)$/;
+const WRITE=/^(?:write|edit|str_replace_editor|verified_exec)$/;
 const INTERNAL=new Set(['work_status','work_state','work_report','work_probe','compress','decompress','search_context','acp_status','acp_cache','acp_rule']);
 const messageOf=event=>event?.data?.message??(event?.data?.role?event.data:null);
 const normalizeText=text=>String(text??'').replaceAll('\\','/').toLowerCase();
@@ -26,7 +26,7 @@ const requestChars=messages=>messages.reduce((sum,message)=>sum+(message.content
     block.type==='tool-call'?JSON.stringify({name:block.name,arguments:block.arguments}).length:0),0),0);
 const appliedMutation=(name,args,value,isError)=>{
   if(!WRITE.test(name))return false;
-  if(['verified_exec','fastedit_java'].includes(name)){
+  if(name==='verified_exec'){
     const payload=value?.data??value;
     return payload?.effectState==='applied'||payload?.files?.some(file=>file.effectState==='applied')===true;
   }

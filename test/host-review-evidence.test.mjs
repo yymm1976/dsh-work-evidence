@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {pathToFileURL} from 'node:url';
 import {startHost,text,tool} from './helpers/host.mjs';
-import {OPS_ROOT} from './helpers/paths.mjs';
+
 import {scopeReviewSources} from '../quality-review.mjs';
 
 for(const toolMode of ['native','ptc'])test(`quality review retains implementation reads after modification (${toolMode})`,async()=>{
@@ -99,6 +99,18 @@ test('focused review retains a later check identified by a successful source rea
   assert.ok(result.evidence.some(item=>item.seq===2));
 });
 
+test('a stored Tool-text verified edit for a check file is retained by focused scope',()=>{
+  const call='Tool: verified_exec\nArguments: '+JSON.stringify({edits:[{file:'test/api.core.js',content:'CHECK_MARKER'}]});
+  const payload={observed:{mutation:{seq:3},artifacts:[
+    {seq:1,path:'lib/core.mjs',effectState:'applied'},
+    {seq:2,path:'test/api.core.js',effectState:'applied'}],executions:[],unresolvedErrors:[],pendingJobEvents:[]},evidence:[
+    {seq:1,type:'tool/result',data:'implementation\n'.repeat(2000)},
+    {seq:2,type:'tool/result',data:call}]};
+  const result=scopeReviewSources(payload,process.cwd(),'auto');
+  assert.equal(result.sourceReview.mode,'focused');
+  assert.ok(result.evidence.some(item=>item.seq===2),'the check edit is associated through its stored arguments');
+});
+
 test('review retains every bounded artifact and focused scope counts retained uncertain files',()=>{
   const artifacts=Array.from({length:9},(_,index)=>({seq:index+1,path:`src/file-${index}.mjs`,
     effectState:index===0?'unknown':'applied'}));
@@ -111,51 +123,10 @@ test('review retains every bounded artifact and focused scope counts retained un
   assert.equal(result.sourceReview.omittedFiles.includes('src/file-0.mjs'),false);
 });
 
-for(const toolMode of ['native','ptc'])test(`quality review retains successful OPS source changes (${toolMode})`,async t=>{
-  const root=OPS_ROOT;
-  const [file,discovery,ptc]=await Promise.all(['file','discovery','ptc'].map(name=>import(pathToFileURL(root+'/'+name+'/index.js').href)));
-  const marker='OPS_MIDDLE_REQUIREMENT_BRANCH',body='/*\n'+'source heading\n'.repeat(250)+'*/\nexport const '+marker+' = true;\n/*\n'+'source tail\n'.repeat(250)+'original-ending\n*/\n';
-  let payload,revision;
-  const invoke=(name,args)=>toolMode==='native'?tool(name,args):tool('run_code',{code:'console.log(JSON.stringify(await tools.'+name+'('+JSON.stringify(args)+')));'});
-  const host=await startHost({workspace:{qualityReview:true},toolMode,extraMounts:[...(toolMode==='ptc'?[['dsh-ptc-runtime-node']]:[]),
-    [file,{promptPolicy:false,required:true}],[discovery,{alwaysLoaded:['stat','write_file','edit_file','inspect_local_file'],required:true}],
-    ...(toolMode==='ptc'?[[ptc,{alwaysLoaded:['stat','write_file','edit_file','read_files'],required:true}]]:[])],script:(options,n)=>{
-      if(n===1)return [invoke('ops_write_file',{path:'core.mjs',content:body,expectedRevision:'absent'})];
-      if(n===2){const output=options.messages.findLast(message=>message.role==='tool').content.map(block=>block.text??'').join('');
-        const result=toolMode==='ptc'?JSON.parse(output):null;revision=result?(result.data??result).revision:/\brevision=([a-f0-9]{64})\b/u.exec(output)?.[1];
-        return [invoke('ops_write_file',{path:'core.mjs',expectedRevision:revision,content:'PREVIEWED_SOURCE_ONLY',dryRun:true})];}
-      if(n===3)return [invoke('ops_edit_file',{path:'core.mjs',expectedRevision:revision,edits:[{oldText:'missing-source-text',newText:'FAILED_SOURCE_ONLY'}]})];
-      if(n===4)return [invoke('ops_edit_file',{path:'core.mjs',expectedRevision:revision,edits:[{oldText:'original-ending',newText:'final-ending'}]})];
-      if(n===5)return [toolMode==='ptc'?invoke('ops_read_files',{files:[{path:'core.mjs',offset:245,limit:20}]}):invoke('ops_inspect_local_file',{path:'core.mjs',offset:245,limit:20})];
-      return [text('源码已写入并修正末尾。')];
-    },auxiliary:options=>{payload=JSON.parse(options.messages[0].content[0].text);return [text('{"issues":[]}')];}});
-  try{
-    const agent=await host.createAgent('ultra');
-    // OPS publishes scoped tool definitions asynchronously; wait for the PTC SDK too.
-    let ready=false;
-    for(let attempt=0;attempt<50&&!ready;attempt++){
-      if(host.ctx.tools.get('ops_write_file',agent)){
-        if(toolMode!=='ptc')ready=true;
-        else{
-          const assembly=await host.ctx.systemPrompt.assemble({agent,scope:agent});
-          ready=(assembly.sections?.find(section=>section.name==='tools:sdk')?.text??'').includes('ops_write_file');
-        }
-      }
-      if(!ready)await new Promise(resolve=>setTimeout(resolve,20));
-    }
-    if(!ready)return t.skip('The optional dsh-ops file component publishes no write tools on this host.');
-    await host.send(agent,'写入 core.mjs，再准确修正末尾，保留中间的需求分支。');
-    assert.ok(payload,JSON.stringify({end:host.events.findLast(event=>event.type==='turn/end')?.data.reason,
-      results:host.events.filter(event=>event.type==='tool/result').map(event=>event.data.message.content.map(block=>block.text??'').join('').slice(0,500))}));
-    assert.ok(payload.observed.artifacts.some(item=>item.tool==='ops_edit_file'));
-    const changes=payload.evidence.filter(item=>item.data.includes('successful-historical-change'));
-    assert.ok(changes.some(item=>item.data.includes(marker)),'The OPS inserted source must reach review even after a later small edit.');
-    assert.ok(changes.some(item=>item.data.includes('final-ending')));
-    assert.ok(changes.every(item=>!item.data.includes('PREVIEWED_SOURCE_ONLY')&&!item.data.includes('FAILED_SOURCE_ONLY')));
-    const sourceRead=host.events.findLast(event=>toolMode==='ptc'?event.type==='tool/ptc-dispatch'&&event.data.name==='ops_read_files':event.type==='tool/result');
-    const read=payload.evidence.find(item=>item.seq===sourceRead.seq);
-    assert.ok(read?.data.includes(marker),'A successful OPS read receives the same source excerpt allowance as a native read: '+JSON.stringify({
-      seq:sourceRead.seq,evidenceChars:read?.data.length,head:read?.data.slice(0,300),tail:read?.data.slice(-300),
-      originalChars:JSON.stringify(sourceRead.data).length,originalContainsMarker:JSON.stringify(sourceRead.data).includes(marker)}));
-  }finally{await host.close();}
-});
+// REMOVED: the two `quality review retains successful OPS source changes` cases
+// drove review through ops_write_file / ops_edit_file / ops_read_files. Those
+// tools were part of the dsh-ops adapter surface, and the OPS-only observation,
+// pagination and source-excerpt branches they exercised were deleted with the
+// adapters (see OPS-ADAPTERS-OPT-IN.md). The equivalent behaviour is still covered on the
+// native path by the earlier cases in this file plus test/quality-review.test.mjs
+// and test/native-cas.test.mjs; do not re-add an OPS-only variant.

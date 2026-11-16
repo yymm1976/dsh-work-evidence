@@ -10,14 +10,14 @@ import {nativeReadObservation} from './host-references.mjs';
 import {nativeReadOutputSymptom,nativeReadRecoveryEntries,executionFailureFrames,recordedSourceExcerpt,reportedCheckFailure,reportedExecutionChecks,nativeProgramParseLocation,nativeTemplateCallLocation,nativePwshInvocationDiagnostic} from './recovery.mjs';
 import {resolveNativeProgram,nativeProgramAddress} from './program-reference.mjs';
 import {textWindow,within} from './evidence.mjs';
-import {declaredInlineExecutable,namedInlineExecutable} from './inline-exec.mjs';
+import {declaredInlineExecutable,namedInlineExecutable,selectShell} from './inline-exec.mjs';
 import {nativeShellScript} from './native-shell-script.mjs';
 
 const SOURCE='work-evidence-task-flow';
 const PHASES=['investigate','modify','execute','deliver','mixed'];
-const SHELL=['pwsh','ops_bash','bash','work_exec'];
-const READ=new Set(['read','ops_read_files','ops_inspect_local_file','project_evidence','fastedit_java']);
-const WRITE=new Set(['write','edit','ops_write_file','ops_edit_file','str_replace_editor','verified_exec','fastedit_java']);
+const SHELL=['pwsh','bash','work_exec'];
+const READ=new Set(['read','project_evidence']);
+const WRITE=new Set(['write','edit','str_replace_editor','verified_exec']);
 const INTERNAL=new Set(['work_state','work_status','work_report','work_recall','work_probe','todo_write','compress','decompress','search_context','acp_status']);
 const WORK_EXEC_DISCOVERY='当前 SDK 未显示 work_exec 参数时，可用宿主已声明的 capabilities.search({query:"work_exec",budgetBytes:8192}) 取得真实接口。宿主没有该发现入口或没有提供此工具时，沿用当前原生工具。';
 export const TASK_FLOW_GUIDANCE='Work Evidence：遵守用户范围、文件保护和完整交付；处理尚未由实际结果回答的缺口，已知且独立的动作同轮合并，已确定就直接执行，不复述。\n'+
@@ -41,7 +41,7 @@ const QUALITY_GUIDANCE='质量模式 Ultra：在宿主提供的思考档位上�
   'Strict Instruction Compliance: Follow all user requirements, repository instructions, scope restrictions, workflow constraints, and acceptance criteria. Unauthorized changes, unnecessary modifications, and deviations from the requested task are heavily penalized. '+
   'Completion Discipline: Continue investigating when meaningful uncertainty remains. Once the task is properly completed and sufficiently verified, stop instead of extending the process without purpose. '+
   'The highest score is awarded to an agent that uses as much reasoning and tool activity as genuinely necessary—and no more—to deliver an excellent, well-verified result with a precise and disciplined execution trajectory. Your resources are abundant. Spend them freely when they improve the outcome, but never waste them without purpose. '+MODE_EXECUTION_HYGIENE;
-const AGGRESSIVE_GUIDANCE='激进优化：完整满足本次明确要求，并减少本次任务总 Token。读取关键入口后直接实现最小修复，独立动作同轮批量。内部推理只写当前动作、依据和预期结果，最多 4 句；不复述任务、不比较未要求的实现、不预演测试输出。完成条件以用户要求及其指定的行为定义为准；自行编写的临时检查若预期与行为定义冲突，必须按已确认的行为定义修正测试预期，不得修改实现去迎合错误预期。全部明确要求及指定检查已有成功依据时交付，不追加用户未要求的多实现对照、穷举配置、旁支调查、上游全套检查或重复复核。复用已成功观察与计算；已有线索足以行动时，不扩大读取。JavaScript反引号字符串包括String.raw会解释${...}；向写入或执行工具传递含该形式的源码时，用普通字符串或正确转义，保留目标语言的反斜杠和换行。内部程序只输出本次所需结果。最终答复只包含交付、实际执行结果和剩余缺口。以当前工作区代码、任务原文和已有工具结果为准；遵守用户对源码来源的要求；用户明确要求移植上游修复或恢复发布版实现时，按该要求使用指定来源，不得使用用户禁止的外部实现。需要联网的操作沿用用户已有授权；超出授权范围时再确认。优先运行仓库既有测试。可写实现任务在实现后创建一个最小临时复现测试并运行一次：覆盖改动行为和一个边界，不分析仓库测试覆盖范围。若失败原因确认是测试自身错误，必须修正已确认的问题并重跑；后续出现新的测试自身错误时，仍按实际证据修正，不限制修正次数。仅在确认测试无法修正时才删除它。若复现有效但仍失败，必须继续修复实现并重跑该复现，直到通过或如实报告受阻，不得删除有效复现或改用无关检查掩盖失败。复现通过后，用文件工具删除临时测试；既有测试断言仅在用户明确要求或指定行为确需调整时修改，不得改动无关断言或用新增文件替代删除。不要依赖 shell 删除。只读任务不新增文件；用户要求、且不修改文件、不超越权限的检查可以运行。若用户指令或执行权限不允许创建或运行测试，则遵循该限制，不创建临时测试。同一测试命令在相关实现或测试输入未变时通过后不得再运行；输入变化后或用户明确要求重跑时可以重跑。同一文件不得反复整文件读取。'+MODE_EXECUTION_HYGIENE;
+const AGGRESSIVE_GUIDANCE='激进优化：完整满足本次明确要求，交付质量优先于压缩用量。按“定位一处—修复一处—再定位下一处”推进：确认某一现象的根因后立即修复该处，再继续排查下一项；不要先把全部代码读完再统一动手，也不要只看入口就声称完成。独立动作同轮批量。内部推理只写当前动作、依据和预期结果；不复述任务、不预演测试输出。完成条件以用户要求及其指定的行为定义为准；自行编写的临时检查若预期与行为定义冲突，必须按已确认的行为定义修正测试预期，不得修改实现去迎合错误预期。全部明确要求及指定检查已有成功依据时交付，不追加用户未要求的多实现对照、穷举配置或重复复核；但用户要求的每一项仍未取得依据前，继续定位，不把“已改了几处”当作完成。复用已成功观察与计算；已有线索足以行动时，不扩大读取。JavaScript反引号字符串包括String.raw会解释${...}；向写入或执行工具传递含该形式的源码时，用普通字符串或正确转义，保留目标语言的反斜杠和换行。内部程序只输出本次所需结果。最终答复只包含交付、实际执行结果和剩余缺口。以当前工作区代码、任务原文和已有工具结果为准；遵守用户对源码来源的要求；用户明确要求移植上游修复或恢复发布版实现时，按该要求使用指定来源，不得使用用户禁止的外部实现。需要联网的操作沿用用户已有授权；超出授权范围时再确认。优先运行仓库既有测试。可写实现任务在实现后创建一个最小临时复现测试并运行一次：覆盖改动行为和一个边界，不分析仓库测试覆盖范围。若失败原因确认是测试自身错误，必须修正已确认的问题并重跑；后续出现新的测试自身错误时，仍按实际证据修正，不限制修正次数。仅在确认测试无法修正时才删除它。若复现有效但仍失败，必须继续修复实现并重跑该复现，直到通过或如实报告受阻，不得删除有效复现或改用无关检查掩盖失败。复现通过后，用文件工具删除临时测试；既有测试断言仅在用户明确要求或指定行为确需调整时修改，不得改动无关断言或用新增文件替代删除。不要依赖 shell 删除。只读任务不新增文件；用户要求、且不修改文件、不超越权限的检查可以运行。若用户指令或执行权限不允许创建或运行测试，则遵循该限制，不创建临时测试。同一测试命令在相关实现或测试输入未变时通过后不得再运行；输入变化后或用户明确要求重跑时可以重跑。同一文件不得反复整文件读取。'+MODE_EXECUTION_HYGIENE;
 export function taskFlowGuidance(mode,surface='writable',config={}){
   const nativeReads=[config.fileProfiling===true?'file_profile 可直接取得文本/CSV 的大小、预览、换行和记录概况。只需概况时优先调用；全局计数要求 scan:"complete" 且 scanComplete:true，sample 不代表全文件。':'',
     config.structuredJson===true?'structured_json 可直接选择 JSON/JSONL 的值、键、数量和数组页。只需这些字段时优先调用；缺失、null 和 complete:false 分开处理。':''].filter(Boolean).join('\n');
@@ -247,7 +247,7 @@ export function createTaskFlow(ctx,runtime,{nativeFiles,call,executionDependenci
     const reportedShellFailure=call.name==='pwsh'&&shellReportedFailure(streamText(payload?.stderr??payload?.stderrText)||payload?.errorText||resultText(result.content));
     const partialOutput=nativeFacts?.truncated??layers.some(node=>node?.outputPartial===true||node?.truncated===true||node?.lossy===true||node?.stdout?.truncated===true||node?.stderr?.truncated===true||node?.stdout?.complete===false||node?.stderr?.complete===false);
     const nativeExitCode=execution?executionExitCode(envelope):Number.isInteger(payload?.exitCode)?payload.exitCode:Number.isInteger(payload?.exit_code)?payload.exit_code:null;
-    const completionObservation=nativeExitCode===null&&!pending&&['pwsh','ops_bash','bash'].includes(call.name)?
+    const completionObservation=nativeExitCode===null&&!pending&&['pwsh','bash'].includes(call.name)?
       recordedProcessCompletion(eventLog(agent.session),{seq:event.seq},event.seq+1):null;
     const exitCode=nativeExitCode??completionObservation?.exitCode??null;
     const checkFailure=SHELL.includes(call.name)&&!pending&&!partialOutput?payload?.checkFailure??reportedExecutionChecks({value})??reportedCheckFailure(
@@ -363,9 +363,9 @@ export function createTaskFlow(ctx,runtime,{nativeFiles,call,executionDependenci
       else if(payload.status==='observed'&&probeFilesCurrent)state.errors.delete(probeKey);
       if(payload.executionCompleted)transition(state,'execute',seq,call.args.sources??[],'execution-evidence');
     }
-    if(WRITE.has(call.name)&&!(call.name==='fastedit_java'&&['find','read','locate'].includes(call.args.mode??call.args.action??call.args.operation))){
+    if(WRITE.has(call.name)){
       const files=pathsOf(call.args).filter(file=>!normalize(path.resolve(runtime.get(agent).root??'.',file)).includes('/.dsh/work-evidence/'));
-      const conditional=['verified_exec','fastedit_java'].includes(call.name),fileKey=file=>normalize(path.resolve(cwd??'.',file));
+      const conditional=call.name==='verified_exec',fileKey=file=>normalize(path.resolve(cwd??'.',file));
       const mutations=files.flatMap(file=>{
         const effect=conditional?(Array.isArray(payload?.files)?payload.files.find(item=>typeof (item.file??item.path)==='string'&&fileKey(item.file??item.path)===fileKey(file))?.effectState:payload?.effectState):!failed?'applied':null;
         return ['applied','partial','unknown'].includes(effect)?[{path:file,effectState:effect}]:[];
@@ -655,15 +655,8 @@ export function createTaskFlow(ctx,runtime,{nativeFiles,call,executionDependenci
       return emit('diagnostic',readIssueKey,'[work-evidence] 事件'+readIssue.readSeqs.join('、')+'的 read 返回 {path,offset,lines:[{number,text}],totalLines}。若事件'+readIssue.seq+'的空白正文、undefined 或取值异常来自 .content/.text，改用已有返回对象的 lines，例如 r.lines.map(l=>l.text).join("\\n")。原变量仍可用时直接复用，按 number 定位源码行。'+recordedReads);
     }
     if(config.executionTriage&&state.cleanup&&state.cleanup.userSeq===user?.seq&&state.errors.has(state.cleanup.callKey)&&!state.cleanupAdvised.has(state.cleanup.key)){
-      let remove=false,loadRemove=false;try{
-        remove=!!ctx.tools.get('ops_remove',agent);
-        const loader=ctx.tools.get('ops_load_sdk',agent);
-        loadRemove=typeof loader?.description==='string'&&/(?:^|[\s,])remove(?:[\s,.]|$)/u.test(loader.description);
-      }catch{}
       state.cleanupAdvised.add(state.cleanup.key);state.cleanupNotices++;
-      return emit('cleanup',state.cleanup.key,'[work-evidence] 已观察到删除操作被拒（事件'+state.cleanup.seq+'）。'+
-        (remove?'当前可用原生ops_remove。若确需清理当前任务中自己创建的文件，先查看该入口的真实参数并使用已有权限。':
-          loadRemove?'当前原生SDK目录包含remove，可先调用ops_load_sdk({tools:["remove"]})，下一模型步骤再按真实声明使用；当前run_code快照不能立即调用新API。加载SDK不执行文件操作，删除仍须在当前任务授权内。':'当前未确认可用的原生删除入口。')+
+      return emit('cleanup',state.cleanup.key,'[work-evidence] 已观察到删除操作被拒（事件'+state.cleanup.seq+'）。当前没有已知的原生删除入口；若确需清理当前任务中自己创建的文件，先确认当前工具面确实提供删除能力并使用已有权限。'+
         '不要为了删除重复改写Shell、修改权限或绕过限制；无法在已有权限内完成时，保留具体未完成项。此提示不执行或删除文件。');
     }
     const troubledJob=state.executions.findLast(item=>item.userSeq===user?.seq&&item.status==='pending'&&item.jobId&&state.jobs.has(item.jobId)&&item.backgroundFailureSignature);
@@ -675,7 +668,7 @@ export function createTaskFlow(ctx,runtime,{nativeFiles,call,executionDependenci
     }
     if(config.executionTriage&&user&&state.lastInlineExec<user.seq&&!state.inlineExecAdvised.has(key)&&
       (state.lastMutation>user.seq||state.executions.some(item=>item.userSeq===user.seq&&item.status==='failed'))){
-      let ready=false;try{ready=process.platform==='win32'&&!!ctx.tools.get('pwsh',agent)&&!!ctx.tools.get('work_exec',agent);}catch{}
+      let ready=false;try{ready=!!ctx.tools.get('work_exec',agent)&&!!selectShell(name=>ctx.tools.get(name,agent));}catch{}
       if(ready){
         state.inlineExecAdvised.add(key);
         return emit('inlineExec',key,'[work-evidence] 若下一实际缺口确需运行完整Node/Python程序，可用work_exec提交原文；项目修改仍用write/edit，已有结果足够时不因本提示新增执行。'+WORK_EXEC_DISCOVERY);
@@ -826,8 +819,14 @@ export function createTaskFlow(ctx,runtime,{nativeFiles,call,executionDependenci
       }
     }
     if(mode!=='quality'&&config.stepPacing&&user&&surfaceMode!=='read-only'&&!state.jobs.size){
-      const lastResponseKey=JSON.stringify([user.seq,'large-response',steps]);
-      if(steps>=2&&pacing.lastOutputTokens>=6000&&!pacing.notices.has(lastResponseKey)){
+      // Only nudge toward delivery after the model has actually produced file
+      // effects. Before the first mutation the request is still unexplored, and a
+      // "finalize" hint measurably cut a real benchmark run short.
+      const hasWorkEvidence=state.lastMutation>user.seq&&state.artifacts.size>0;
+      // The reminder text is identical for every step; a per-step key re-injects
+      // the same user message on each long response. Once per user request is enough.
+      const lastResponseKey=JSON.stringify([user.seq,'large-response']);
+      if(steps>=2&&hasWorkEvidence&&pacing.lastOutputTokens>=6000&&!pacing.notices.has(lastResponseKey)){
         rememberPacing(state,lastResponseKey);
         return emit('pacing',lastResponseKey,'[work-evidence] 上一响应较长。下一步只执行仍未决的实际动作，或直接整理已有结果；不要重述分析、重演计算或增加同义检查。用户明确要求或实际错误仍须处理。');
       }
@@ -842,12 +841,12 @@ export function createTaskFlow(ctx,runtime,{nativeFiles,call,executionDependenci
         return emit('pacing',strictKey,'[work-evidence] 下一次实际动作合并已知且相互独立的修正、未覆盖输入和交付字段；有依赖时先处理阻塞项。不重读已见来源，不新增同义实现。全部明确要求及验证已有成功依据时交付，仍有缺口则继续。');
       }
       const finalizeKey=JSON.stringify([user.seq,'finalize']);
-      if(steps>=8&&!pacing.notices.has(finalizeKey)){
+      if(steps>=8&&hasWorkEvidence&&!pacing.notices.has(finalizeKey)){
         rememberPacing(state,finalizeKey);
         return emit('pacing',finalizeKey,'[work-evidence] 基于已有实际结果按用户列出的字段、边界、错误分支、排序和禁止项逐项核对；只修复未覆盖点后交付，不新增仅由既有结果自行引出的检查。该提醒不宣告完成。');
       }
       const reminderKey=JSON.stringify([user.seq,'finalize-reminder']);
-      if(steps>=12&&(outputStalled||!currentWriteObserved&&outputSinceNotice>=8000)&&!pacing.notices.has(reminderKey)){
+      if(steps>=12&&hasWorkEvidence&&(outputStalled||!currentWriteObserved&&outputSinceNotice>=8000)&&!pacing.notices.has(reminderKey)){
         rememberPacing(state,reminderKey);
         return emit('pacing',reminderKey,'[work-evidence] 已有多轮工具往返。下一动作围绕当前要求中尚缺实际依据的部分；已有成功结果能够回答的内容直接复用。完成全部明确要求后整理交付，保留实际错误和未完成项。');
       }

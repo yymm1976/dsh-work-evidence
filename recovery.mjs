@@ -132,13 +132,9 @@ export function nativeTemplateCallLocation(code,result){
 
 const forms={
   read:'{file_path:"file",offset:1,limit:80} -> {path,offset,lines:[{number,text}],totalLines}; use result.lines, not result.content or result.text',
-  ops_read_files:'{files:[{path:"file",offset:1,limit:80}]} -> items[].items[] has line/text; some hosts wrap the native value in data',
-  ops_glob:'{path:"src",pattern:["**/*.java"]} -> items[] contains paths; some hosts wrap the native value in data',
-  ops_grep:'{path:"src",pattern:"symbol",outputMode:"content",limit:40} -> items[] has path/line/text; some hosts wrap the native value in data',
-  ops_stat:'{path:"file"} -> path/exists/revision, possibly inside data. One path per call; use separate native calls for several paths, without inventing data.items',
   project_evidence:'source: {mode:"source",query:"ClassName",members:["method"]} or batch queries:[{query,members},...]; archive: {mode:"archive",archive:"lib.jar",entry:"pkg/Class.java",members:["method"]}; read: {mode:"read",files:[{path:"file",offset:1,limit:80}]}'
 };
-const readTools=new Set(['read','ops_read_files','ops_glob','ops_grep','ops_stat','project_evidence']);
+const readTools=new Set(['read','project_evidence']);
 export function nativeReadOutputSymptom(source,output,{nonemptyRead=false,lineTextTruncated=false,isError=false}={}){
   if(isError&&lineTextTruncated&&/\.lines\b/u.test(source)&&/\bJSON\s*\.\s*parse\s*\(/u.test(source)&&
     /^Error: code run failed \(exception\): SyntaxError:/mu.test(output)&&/^\s+at JSON\.parse \(<anonymous>\)/mu.test(output))return 'line-text-truncated-json';
@@ -197,7 +193,7 @@ export function executionFailureFrames(result,root){
 export function recordedSourceExcerpt(event,frame){
   let args=event?.data?.arguments;
   if(typeof args==='string')try{args=JSON.parse(args);}catch{return null;}
-  const tool=event?.data?.name,full=['write','ops_write_file'].includes(tool),edited=['edit','ops_edit_file'].includes(tool);
+  const tool=event?.data?.name,full=['write'].includes(tool),edited=['edit'].includes(tool);
   const source=full?args?.content:edited?args?.new_string:undefined;
   if(typeof source!=='string'||!source)return null;
   const lines=source.split(/\r\n|\n|\r/u);let index=full?frame.line-1:-1;
@@ -349,52 +345,6 @@ export function correctedReadArguments(name,args){
     if(!text(next.path)||Object.hasOwn(next,'file_path')&&next.file_path!==next.path)return null;
     next.file_path=next.path;delete next.path;changed=true;
   }
-  if(name==='ops_stat'&&!Object.hasOwn(next,'path')&&Array.isArray(next.paths)&&next.paths.length===1&&text(next.paths[0])){
-    next.path=next.paths[0];delete next.paths;changed=true;
-  }
-  if(name==='ops_glob'&&text(next.pattern)){next.pattern=[next.pattern];changed=true;}
-  // An identical redundant alias carries no additional query intent. Conflicts stay errors.
-  if(name==='ops_glob'&&Object.hasOwn(next,'glob')){
-    const alias=text(next.glob)?[next.glob]:next.glob;
-    if(!Array.isArray(alias)||!alias.length||alias.some(value=>!text(value)))return null;
-    if(Object.hasOwn(next,'pattern')&&JSON.stringify(next.pattern)!==JSON.stringify(alias))return null;
-    next.pattern=alias;delete next.glob;changed=true;
-  }
-  if(name==='ops_grep'){
-    if(next.outputMode==='files'){next.outputMode='files_with_matches';changed=true;}
-    const modes=['files_with_matches','content','count','summary'];
-    if(Object.hasOwn(next,'outputMode')&&!modes.includes(next.outputMode))return null;
-    for(const alias of ['mode','output_mode']){
-      if(!Object.hasOwn(next,alias))continue;
-      const value=next[alias]==='files'?'files_with_matches':next[alias];
-      if(!modes.includes(value))return null;
-      if(Object.hasOwn(next,'outputMode')&&next.outputMode!==value)return null;
-      next.outputMode=value;delete next[alias];changed=true;
-    }
-    if(Object.hasOwn(next,'caseInsensitive')&&typeof next.caseInsensitive!=='boolean')return null;
-    if(Object.hasOwn(next,'case_insensitive')){
-      if(typeof next.case_insensitive!=='boolean')return null;
-      if(Object.hasOwn(next,'caseInsensitive')&&next.caseInsensitive!==next.case_insensitive)return null;
-      next.caseInsensitive=next.case_insensitive;delete next.case_insensitive;changed=true;
-    }
-    // Keep meaningful whitespace and bound inline regex flags to each alternative.
-    if(Array.isArray(next.pattern)&&next.pattern.length>=1&&next.pattern.every(value=>typeof value==='string'&&value.length>0)){
-      next.pattern=next.pattern.length===1?next.pattern[0]:next.pattern.map(value=>'(?:'+value+')').join('|');changed=true;
-    }
-    if(Object.hasOwn(next,'files_only')){
-      if(next.files_only!==true)return null;
-      if(Object.hasOwn(next,'outputMode')&&next.outputMode!=='files_with_matches')return null;
-      next.outputMode='files_with_matches';delete next.files_only;changed=true;
-    }
-    // maxMatches is the common ripgrep-style synonym for grep's limit; seen in edit-019.
-    if(Object.hasOwn(next,'maxMatches')){
-      if(!Number.isInteger(next.maxMatches)||next.maxMatches<1||Object.hasOwn(next,'limit'))return null;
-      next.limit=next.maxMatches;delete next.maxMatches;changed=true;
-    }
-  }
-  if(name==='ops_read_files'&&!Object.hasOwn(next,'files')&&text(next.path)&&Object.keys(next).every(key=>['path','offset','limit'].includes(key))){
-    return {files:[next]};
-  }
   if(name==='project_evidence'){
     if(next.mode!=='read'&&Array.isArray(next.files)&&next.files.length>=1&&!text(next.archive)&&!text(next.entry)&&!text(next.query)&&!Array.isArray(next.queries)){
       next.mode='read';changed=true;
@@ -434,8 +384,8 @@ export function withRecovery(result,recovery){
   if(!recovery)return result;
   if(object(result.value)){
     const original=result.value;
-    // OPS PTC envelopes forbid new top-level fields. Their data object permits
-    // extension; preserve status, error, coverage and the existing data fields.
+    // Provider envelopes with a closed top-level schema allow extension inside
+    // their data object; preserve status, error, coverage and data fields.
     const envelope=['completed','partial','rejected','conflict','error','unknown'].includes(original.status)
       &&(object(original.data)||object(original.error));
     const value=envelope

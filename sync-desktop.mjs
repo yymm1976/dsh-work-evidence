@@ -51,7 +51,6 @@ try{await fs.lstat(dependencyLink);}catch(error){
   if(error.code!=='ENOENT')throw error;
   await fs.symlink(hostDependency,dependencyLink,'junction');
 }
-await fs.cp(path.join(source,'.fastedit-venv'),path.join(release,'.fastedit-venv'),{recursive:true});
 const profilePackage=path.join(profile,'package.json');
 const config=JSON.parse(await fs.readFile(profilePackage,'utf8'));
 config.dependencies[manifest.name]='link:'+normalized(release);

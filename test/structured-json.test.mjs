@@ -52,7 +52,7 @@ test('native JSON rejects concurrent changes, invalid encoding and unsafe number
   try{
     const filename=path.join(host.cwd,'source.json');await fs.writeFile(filename,'{"x":1}');const backend=host.ctx.get('fs');
     const modified=new Proxy(backend,{get(target,key){
-      if(key==='readBytes')return async(...args)=>{const bytes=await backend.readBytes(...args);await fs.writeFile(filename,'{"x":2}');return bytes;};
+      if(key==='readBytes')return async(...args)=>{const bytes=await backend.readBytes(...args);await fs.writeFile(filename,'{"x":2,"changed":true}');return bytes;};
       return Reflect.get(target,key);
     }});
     const input={path:'source.json',selectors:[{pointer:'/x',op:'value'}]};

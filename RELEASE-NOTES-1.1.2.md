@@ -12,7 +12,13 @@
 
 卸载插件时移除工具声明转换，后续会话恢复原生工具接口。执行适配按真实宿主服务复用，避免重载叠加包装或访问旧实例。已开始卸载的实例不再改写正在组装的工具声明。重载时先读取会话配置，再应用工具面限制，首个请求能调用插件工具。
 
-质量审查保留 OPS 成功分页读取中已取得的源码。原分页、后续读取入口和未完整标记保持不变。条件编辑在 workspace-write 模式通过已注入的文件服务解析权限范围；服务缺失时拒绝写入。
+质量审查保留成功原生读取中已取得的源码，失败或截断的读取不作为完整文件。条件编辑在 workspace-write 模式通过已注入的文件服务解析权限范围；服务缺失时拒绝写入。
+
+**OPS 适配删除。** `opsAdapters`、`fastEditEnabled`、`fastedit_java`、`fastedit-bridge.py`、`requirements-fastedit.txt` 以及 OPS CAS 编辑后端已删除。OPS 独有的 `ops_*` 工具分类、OPS 错误建议注入、OPS 经济学计数器和 `ops_bash` Shell 偏好不再存在。选项说明见随包附带的 `OPS-ADAPTERS-OPT-IN.md`；删除清单与证据见仓库中的 2026-11-14 变更记录。旧的 `opsAdapters` / `fastEditEnabled` 键仍能加载，但按退役设置强制为 `false`。
+
+`verified_exec` 现在只有一个后端：原生条件写入（`nativeVerifiedEdits:true`），固定要求宿主 0.2.2-rc.2。在 0.2.1-rc.4 / 0.2.2-rc.1 上它返回 `cas-file-tools-unavailable` 和 `missing:["rc2-native-conditional-write"]`，工具面也不发布；不会退回未带版本条件的普通写入。
+
+Java 实体级读取/编辑入口（`fastedit_java`）不复存在。源码成员范围（`memberParsing`）仍保留，使用 `source-members-bridge.py`，Python 依赖改为 `requirements-source-members.txt`。
 
 ## 可选的新功能
 

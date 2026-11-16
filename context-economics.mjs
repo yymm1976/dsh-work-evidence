@@ -26,7 +26,14 @@ export function canonicalUsage(raw){
   const sumKeys=['inputTokens','cacheReadTokens','cacheWriteTokens','outputTokens'];
   let complete=sumKeys.every(key=>usage[key]!==null);
   const sum=complete?sumCounts(sumKeys.map(key=>usage[key])):null;
-  const consistent=!Object.values(sources).includes('invalid-adapter-value')&&(!complete||sum!==null&&(usage.totalTokens===null||sum===usage.totalTokens));
+  // A reported total cannot be smaller than the fields already known, even when the
+  // usage is incomplete: nonnegative output could never make input+cache+output equal a
+  // smaller total. Accepting that contradiction fed a 6000-token prompt into the totals
+  // and advanced projection reviews on impossible data.
+  const knownSubtotal=sumCounts([usage.inputTokens??0,usage.cacheReadTokens??0,usage.cacheWriteTokens??0,...(usage.outputTokens===null?[]:[usage.outputTokens])]);
+  const totalContradicts=usage.totalTokens!==null&&knownSubtotal!==null&&usage.totalTokens<knownSubtotal;
+  const consistent=!Object.values(sources).includes('invalid-adapter-value')&&!totalContradicts&&
+    (!complete||sum!==null&&(usage.totalTokens===null||sum===usage.totalTokens));
   if(complete&&sum!==null&&sources.totalTokens==='missing'){usage.totalTokens=sum;sources.totalTokens='sum-of-reported-disjoint-fields';}
   complete=complete&&consistent;
   return {usage,sources,consistent,complete,method:'disjoint-adapter-usage; omitted-zero-cache-fields require exact total equality'};
@@ -70,12 +77,31 @@ const forecastRoute=route=>Object.fromEntries(['provider','model','reasoningEffo
   [key,typeof route?.[key]==='string'&&route[key].trim()?route[key]:null]));
 const successfulFinish=new Set(['stop','tool-calls','max-tokens','length']);
 
+// The shipped default config leaves projectionPricing empty, so every price-gated
+// rewrite answered route-pricing-unavailable: historyHygiene alone was blocked
+// 10,112 times across measured sessions while the switch read "on". DeepSeek
+// publishes one off-peak rate card for the V4.1 Flash family, so use it as a
+// fallback for that family only, and label the source so an operator can tell a
+// published rate from an exact route setting.
+const PUBLISHED_PRICES=new Map([
+  // Family aliases that identify the same published rate card: the gateway routes
+  // spell out the family, while DeepSeek's own API documents `deepseek-flash`.
+  ['deepseek-v4.1-flash',{input:1,cacheRead:0.02,cacheWrite:0,output:4,currency:'CNY'}],
+  ['deepseek-flash',{input:1,cacheRead:0.02,cacheWrite:0,output:4,currency:'CNY'}],
+]);
+function publishedPrice(route){
+  const model=typeof route?.model==='string'?route.model.toLowerCase():'';
+  if(!model)return null;
+  for(const [family,price] of PUBLISHED_PRICES)if(model.includes(family))return {...price,publishedRate:true};
+  return null;
+}
+
 export function createContextEconomics(ctx,runtime){
   const states=new Map();
   const get=agent=>{
     let state=states.get(agent.session.id);
-    if(!state){state={last:null,lastSuccessfulMain:null,mainHistory:[],mainAttempts:[],decisions:[],skips:{},requests:0,reportedPromptTokens:0,reportedMainPromptTokens:0,mainPromptRequests:0,reportedOutputTokens:0,
-      missingUsage:0,missingCacheUsage:0,pricedRequests:0,costByCurrency:Object.create(null),auxiliaryRequests:0,compactionRequests:0,mainFinished:0,
+    if(!state){state={last:null,latestPrompt:null,previousAttempt:null,lastSuccessfulMain:null,mainHistory:[],mainAttempts:[],decisions:[],skips:{},requests:0,reportedPromptTokens:0,reportedMainPromptTokens:0,mainPromptRequests:0,reportedOutputTokens:0,
+      missingUsage:0,missingCacheUsage:0,pricedRequests:0,publishedRateUsed:false,costByCurrency:Object.create(null),auxiliaryRequests:0,compactionRequests:0,mainFinished:0,
       surfaceChanges:0,cacheResetCount:0,uncachedInputAtReset:0,resetTaxByCurrency:Object.create(null),
       effortChanges:0,cacheResetAfterEffortChange:0,effortResetExposureByCurrency:Object.create(null),
       pendingReviews:[],reviewedOutcomes:[],
@@ -83,10 +109,13 @@ export function createContextEconomics(ctx,runtime){
     return state;
   };
   function pricing(agent,route){
-    return runtime.get(agent).config.projectionPricing.find(row=>sameRoute(row,route))??null;
+    const configured=runtime.get(agent).config.projectionPricing.find(row=>sameRoute(row,route));
+    // An explicit exact-route row always wins; the published rate card is only a
+    // fallback, and its source stays distinguishable in the returned object.
+    return configured??publishedPrice(route);
   }
   function assess(agent,{messages,proposedMessages,savedChars=0,savedTokensEstimate=null,changedSeq=null,changedMessageId=null,route=null,tools,system,emergency=false,horizon,
-    auxiliaryUsage=null,auxiliaryMargin=1.5}={}){
+    auxiliaryUsage=null,auxiliaryMargin=1.5,revisitCostTokens=0}={}){
     const state=get(agent),config=runtime.get(agent).config;
     route??=agent.session.requestHeader()?.config??{};
     const old=state.last,price=pricing(agent,route),same=old&&sameObservedRoute(old,route);
@@ -99,9 +128,28 @@ export function createContextEconomics(ctx,runtime){
     const factor=firstReplayAssistant&&finite(old.usage?.outputTokens)
       ?Math.max(.25,Math.min(8,old.usage.outputTokens/Math.max(1,beforeOutput))):same?old.factor:1;
     const savedTokens=Math.max(0,Math.floor(rawSaving*factor));
-    const remainingSteps=Math.max(1,Math.min(64,horizon??config.projectionHorizonSteps));
+    // The horizon is how many further requests this saving keeps paying out on. A
+    // fixed 16 understated it on every measured run: the 屎山 arms issued 209–416
+    // tool calls over 209–388 steps, so at step 109 a rewrite whose break-even was
+    // 60 steps was rejected by the forecast while the session went on for 200 more.
+    // That made historyHygiene decide 919 times and apply zero times.
+    //
+    // Estimate the remainder from the session's own length so far: a run that has
+    // already issued this many requests plausibly issues about as many again.
+    // `projectionHorizonSteps` is the FLOOR here, not a cap — the estimate grows past
+    // it with the session and is bounded only by the 64-step ceiling. An explicit
+    // caller horizon still wins, and a costly refill is still refused.
+    const declaredHorizon=horizon??config.projectionHorizonSteps;
+    const remainingSteps=horizon!==undefined
+      ?Math.max(1,Math.min(64,horizon))
+      :Math.max(1,Math.min(64,Math.max(declaredHorizon,state.requests??0)));
     let cachedSuffixTokens=null,prefixMessages=0,oldSuffixTokens=null,exposureMethod='conservative previous-request prompt';
-    if(same&&old.usage&&promptTokens(old.usage)!==null){
+    // An aborted/errored attempt reports zero usage. Its zero cache read is an
+    // absence of evidence, not proof that no cached prefix exists; treating it
+    // as "no exposure" approves a rewrite that then pays a full cache refill.
+    const previousAttemptUsable=Boolean(old?.usage)&&promptTokens(old.usage)>0&&
+      !['error','aborted'].includes(String(old.finishReason??''))&&!old.failureCode&&old.usageComplete!==false;
+    if(same&&old?.usage&&promptTokens(old.usage)!==null&&previousAttemptUsable){
       // A preceding miss can populate the next request's cache. Treat the
       // previously dispatched prompt as potentially warm; low/missing hits
       // never establish that a new projection is free.
@@ -150,16 +198,30 @@ export function createContextEconomics(ctx,runtime){
     }
     let allowed=false,reason='usage-or-cache-exposure-unavailable',refillCost=null,futureSaving=null,breakEvenSteps=null;
     const auxiliaryCost=auxiliaryUsage?usageCost(auxiliaryUsage,price):0;
+    // cachedSuffixTokens===0 is only meaningful when a usable prior observation
+    // exists. Without one the value is unproven, so a free rewrite must not be
+    // assumed and the pricing path below decides.
+    const exposureProven=previousAttemptUsable&&cachedSuffixTokens!==null;
     if(savedTokens<=0)reason='no-request-reduction';
     else if(emergency&&!auxiliaryUsage){allowed=true;reason='context-capacity';}
     else if(auxiliaryUsage&&auxiliaryCost===null)reason='auxiliary-price-or-usage-unavailable';
-    else if (cachedSuffixTokens === 0 && auxiliaryUsage === null) {allowed=true;reason='no-additional-previous-request-prefix-exposure';refillCost=0;breakEvenSteps=0;
+    else if (exposureProven && cachedSuffixTokens === 0 && auxiliaryUsage === null &&
+      // A zero-refill shortcut is only free when the session has not already been
+      // re-reading the body: a large revisit cost means the hidden middle comes back,
+      // and approving here would bypass the priced path entirely.
+      !(revisitCostTokens>0)) {allowed=true;reason='no-additional-previous-request-prefix-exposure';refillCost=0;breakEvenSteps=0;
       if(price)futureSaving=savedTokens*Math.min(price.input,price.cacheRead)*remainingSteps/1e6;}
     else if(cachedSuffixTokens!==null&&price){
       if(old?.usage?.cacheWriteTokens>0&&!finite(price.cacheWrite))reason='cache-write-price-unavailable';
       else if(price.input===0&&price.cacheRead===0&&(price.cacheWrite??0)===0&&auxiliaryCost===0){allowed=true;reason='zero-priced-route';refillCost=0;futureSaving=0;breakEvenSteps=0;}
       else{
         refillCost=cachedSuffixTokens*Math.max(0,Math.max(price.input,price.cacheWrite??price.input)-price.cacheRead)/1e6;
+        // A rewrite of a body the session keeps re-reading is not a one-off refill: the
+        // forecaster measured 50 prunes saving 832,846 chars while the model re-read
+        // 737,310 chars of the same middle. Charge that observed revisit rate so a
+        // rewrite whose own subject is still being read is refused on its own numbers.
+        const revisitCost=Math.max(0,revisitCostTokens)*Math.max(0,price.input)/1e6;
+        refillCost+=revisitCost;
         const perStep=savedTokens*Math.min(price.input,price.cacheRead)/1e6;
         futureSaving=perStep*remainingSteps;
         const required=refillCost*1.25+auxiliaryCost*auxiliaryMargin;
@@ -167,13 +229,16 @@ export function createContextEconomics(ctx,runtime){
         allowed=perStep>0&&futureSaving>required;
         reason=allowed?'predicted-cache-cost-positive':'predicted-cache-cost-insufficient';
       }
-    }else if(cachedSuffixTokens!==null)reason='route-pricing-unavailable';
+    }else if(!previousAttemptUsable)reason='prior-observation-unusable';
+    else if(cachedSuffixTokens!==null)reason='route-pricing-unavailable';
     return {allowed,reason,savedTokensEstimate:savedTokens,cachedSuffixTokensEstimate:cachedSuffixTokens,
       oldSuffixTokensEstimate:oldSuffixTokens,
       cachedExposureMethod:exposureMethod+'; prior misses may populate cache; not a cache-position measurement',
       horizonSteps:remainingSteps,refillCostEstimate:refillCost,futureSavingEstimate:futureSaving,breakEvenStepsEstimate:breakEvenSteps,
+      revisitCostTokensEstimate:Math.max(0,revisitCostTokens),
       auxiliaryCostEstimate:auxiliaryCost,auxiliaryMargin:auxiliaryUsage?auxiliaryMargin:null,
-      currency:price?.currency??null,pricingSource:price?'explicit-exact-route-setting':'unavailable',
+      currency:price?.currency??null,
+      pricingSource:!price?'unavailable':price.publishedRate===true?'published-family-rate':'explicit-exact-route-setting',
       tokenMethod:firstReplayAssistant?'text-density calibrated to previous generated output':same?'text-density calibrated to previous adapter usage':'text-density estimate',
       forecast:true,emergency,route:forecastRoute(route)};
   }
@@ -230,21 +295,37 @@ export function createContextEconomics(ctx,runtime){
     if(requestKind==='compaction')state.compactionRequests++;
     if(usage&&(!finite(usage.cacheReadTokens)||!finite(usage.cacheWriteTokens)))state.missingCacheUsage++;
     if(total===null)state.missingUsage++;
-    else{state.reportedPromptTokens+=total;state.reportedOutputTokens+=usage.outputTokens??0;}
+    else state.reportedPromptTokens+=total;
+    // A reported output count is its own observation. Requiring a prompt total to
+    // read it dropped the output of any request whose prompt fields were incomplete.
+    if(finite(usage?.outputTokens))state.reportedOutputTokens+=usage.outputTokens;
     const billingComplete=record.settled&&['stop','tool-calls','max-tokens','length'].includes(record.finishReason);
     const cacheWritePriced=usage?.cacheWriteTokens===0||finite(price?.cacheWrite);
     if(price&&canonical.complete&&usage&&total!==null&&finite(usage.outputTokens)&&billingComplete&&cacheWritePriced){
       state.costByCurrency[price.currency]=(state.costByCurrency[price.currency]??0)+(usage.inputTokens*price.input+(usage.cacheReadTokens??0)*price.cacheRead+
         usage.cacheWriteTokens*(price.cacheWrite??0)+usage.outputTokens*price.output)/1e6;
       state.pricedRequests++;
+      // An operator has to be able to tell a published family rate from an exact route
+      // setting: only the latter is a real charge, and the summary labelled both the same.
+      if(price.publishedRate===true)state.publishedRateUsed=true;
     }else if(price){const reason=!billingComplete?'incomplete-request-billing':!cacheWritePriced?'cache-write-price-unavailable':'missing-usage-fields';state.skips[reason]=(state.skips[reason]??0)+1;}
     if(requestKind!=='main')return;
     state.mainFinished++;
-    if(total!==null){state.reportedMainPromptTokens+=total;state.mainPromptRequests++;}
+    // Only a positive prompt count is an observation of the request's size. A
+    // failed attempt reports zero usage, and counting those toward the review
+    // threshold let three failures look like three observed requests with a
+    // per-request average of zero. That made the projection review report
+    // observedPromptTokensPerRequest=0 and plausible=true on no evidence.
+    if(total!==null&&total>0){state.reportedMainPromptTokens+=total;state.mainPromptRequests++;}
     const successfulMain=record.settled&&!record.aborted&&!record.failureCode&&successfulFinish.has(record.finishReason),
       completeSuccess=successfulMain&&canonical.complete&&total>0;
     state.mainAttempts.push({at:record.at??new Date().toISOString(),provider:options.provider,model:options.model,
       reasoningEffort:options.reasoningEffort??null,completeSuccess,promptTokens:total,
+      // The usage travels with the attempt so a per-route query reads that route's
+      // own observation. lastSuccessfulMain keeps only the newest success on any
+      // route, so using it for a route query returned null after a later success
+      // elsewhere even though this route had succeeded.
+      usage:completeSuccess?{...usage}:null,
       finishReason:record.finishReason,usageComplete:canonical.complete});
     if(state.mainAttempts.length>16)state.mainAttempts.shift();
     if(completeSuccess){
@@ -256,45 +337,146 @@ export function createContextEconomics(ctx,runtime){
         outputTokens:usage.outputTokens,finishReason:record.finishReason});
       if(state.mainHistory.length>16)state.mainHistory.shift();
     }
-    const previous=state.last,envelope=envelopeKey(options),same=previous&&sameRoute(previous,options),changed=same&&previous.envelope!==envelope;
-    const effortChanged=same&&previous.reasoningEffort!==options.reasoningEffort;
-    if(changed)state.surfaceChanges++;
-    if(effortChanged)state.effortChanges++;
-    if(previous?.usage?.cacheReadTokens>0&&usage?.cacheReadTokens<previous.usage.cacheReadTokens*.5&&usage?.inputTokens>2000){
+    // Transition counters describe the step between adjacent attempts, so they
+    // belong on the immediately previous attempt, not on the retained exposure
+    // baseline: that baseline skips failed or partial attempts by design, which
+    // would make one effort change count twice when a retry follows a failure.
+    const previousAttempt=state.previousAttempt;
+    const previousBaseline=state.last;
+    const envelope=envelopeKey(options);
+    if(previousAttempt)state.surfaceChanges+=previousAttempt.envelope!==envelope?1:0;
+    // An omitted effort and an explicit null are the same setting (effortKey says so),
+    // so comparing the raw values reported a change that did not happen.
+    if(previousAttempt)state.effortChanges+=effortKey(previousAttempt.reasoningEffort)!==effortKey(options.reasoningEffort)?1:0;
+    state.previousAttempt={provider:options.provider,model:options.model,reasoningEffort:options.reasoningEffort,envelope};
+    // Captured before this attempt replaces it: the reset check below compares with
+    // the previous measured attempt, not with the one being recorded now.
+    const resetPrevious=state.previousMeasured;
+    // A failed attempt still observed its own usage, so it becomes the next comparison
+    // point: the drop it saw is a real drop, and the retry that follows must not report
+    // the same transition again.
+    //
+    // The comparison point therefore needs the SAME fields the reset branch reads, or the
+    // two disagree about what a measurement is. An attempt reporting inputTokens=6000 and
+    // cacheReadTokens=0 but no totalTokens has `total===null`, so the old guard left
+    // `previousMeasured` untouched while the reset branch still accepted it — the drop was
+    // counted, the comparison point was not advanced, and the complete retry with the same
+    // counts counted the same drop again. Both sides now require a reported cache-read
+    // count and a positive prompt size.
+    if(usage&&finite(usage.cacheReadTokens)&&(total>0||usage.inputTokens>0)){
+      state.previousMeasured={provider:options.provider,model:options.model,reasoningEffort:options.reasoningEffort,
+        envelope,cacheReadTokens:usage.cacheReadTokens,inputTokens:usage.inputTokens};}
+    const previous=previousBaseline,same=previous&&sameRoute(previous,options);
+    const effortChanged=same&&effortKey(previous.reasoningEffort)!==effortKey(options.reasoningEffort);
+    // An incomplete observation can leave cacheReadTokens null. `null < x*.5` is
+    // true in JavaScript, so an omitted count would read as a cache reset and would
+    // also consume the transition-dedupe key. A reset needs a reported count, and
+    // it needs both observations on the same route: switching provider or model
+    // changes the cache namespace, so a smaller count there is not a reset.
+    const resetObserved=Boolean(same)&&finite(usage?.cacheReadTokens)&&finite(previous?.usage?.cacheReadTokens);
+    // Reset counters describe an observed transition, so they compare with the
+    // previous attempt rather than the retained exposure baseline. That baseline skips
+    // failed attempts, and comparing with it counted one drop twice when an error and
+    // its successful retry both matched it, doubling uncachedInputAtReset and the tax.
+    const resetSame=Boolean(resetPrevious)&&sameRoute(resetPrevious,options);
+    const resetComparable=resetSame&&finite(usage?.cacheReadTokens)&&finite(resetPrevious?.cacheReadTokens);
+    // One transition is counted once. The key records the last COUNTED transition, and the
+    // reset branch below and the marker update at the end of this block agree on it.
+    // The effort comparison uses `resetPrevious`, the attempt the drop is actually measured
+    // against: `previous` is the retained baseline, which skips failed attempts, so an
+    // error on a new effort followed by a success on the same effort would otherwise be
+    // attributed to an effort change that did not cause it.
+    const effortTransitionKey=JSON.stringify([effortKey(resetPrevious?.reasoningEffort),effortKey(options.reasoningEffort)]);
+    const repeatedEffortTransition=Boolean(resetPrevious)&&resetSame&&
+      effortKey(resetPrevious.reasoningEffort)!==effortKey(options.reasoningEffort)&&state.countedEffortTransition===effortTransitionKey;
+    // The tax answers "did a surface change make this attempt re-read its prefix?", so it must
+    // compare the envelopes of the two attempts the drop is measured BETWEEN. `previous` is
+    // the retained exposure baseline and can be several attempts old: if A succeeded on
+    // envelope X, B failed on envelope Y, and C succeeded on Y after a drop, comparing with A
+    // charges a surface change that did not cause that transition. `resetPrevious` is B.
+    const resetEnvelopeChanged=Boolean(resetSame)&&resetPrevious.envelope!==envelope;
+    if(resetComparable&&resetPrevious.cacheReadTokens>0&&usage.cacheReadTokens<resetPrevious.cacheReadTokens*.5&&usage?.inputTokens>2000){
       state.cacheResetCount++;state.uncachedInputAtReset+=usage.inputTokens;
-      if(changed&&price){const extra=Math.max(0,Math.min(usage.inputTokens-previous.usage.inputTokens,previous.usage.cacheReadTokens-usage.cacheReadTokens));
+      if(resetEnvelopeChanged&&price){const extra=Math.max(0,Math.min(usage.inputTokens-resetPrevious.inputTokens,resetPrevious.cacheReadTokens-usage.cacheReadTokens));
         state.resetTaxByCurrency[price.currency]=(state.resetTaxByCurrency[price.currency]??0)+extra*Math.max(0,price.input-price.cacheRead)/1e6;}
-      if(effortChanged){
+      if(resetPrevious&&effortKey(resetPrevious.reasoningEffort)!==effortKey(options.reasoningEffort)&&!repeatedEffortTransition){
         state.cacheResetAfterEffortChange++;
-        if(price){const extra=Math.max(0,Math.min(usage.inputTokens-previous.usage.inputTokens,previous.usage.cacheReadTokens-usage.cacheReadTokens));
+        state.countedEffortTransition=effortTransitionKey;
+        if(price){const extra=Math.max(0,Math.min(usage.inputTokens-resetPrevious.inputTokens,resetPrevious.cacheReadTokens-usage.cacheReadTokens));
           state.effortResetExposureByCurrency[price.currency]=(state.effortResetExposureByCurrency[price.currency]??0)+extra*Math.max(0,price.input-price.cacheRead)/1e6;}
       }
     }
-    const weights=options.messages.map(messageTokens),envelopeTokens=textTokens(JSON.stringify({tools:options.tools??[],system:options.system??null}));
-    state.last={provider:options.provider,model:options.model,reasoningEffort:options.reasoningEffort,usage,
+    // The key marks the last COUNTED transition only. An unmeasured transition (a failed
+    // attempt with no usage, or a step that saw no drop) leaves the key untouched, so the
+    // following real drop still counts; an unchanged effort clears it so the next change
+    // is treated as new.
+    // Clear the marker only when there is no transition at all relative to the attempt the
+    // next drop will be measured against. Using `previous` here would clear it while a
+    // pending effort change is still unmeasured on the measured chain.
+    if(!resetPrevious||effortKey(resetPrevious.reasoningEffort)===effortKey(options.reasoningEffort))state.countedEffortTransition=null;
+    const weights=options.messages.map(messageTokens),systemTokens=textTokens(typeof options.system==='string'?options.system:JSON.stringify(options.system??null)),
+      toolSchemaTokens=textTokens(JSON.stringify(options.tools??[])),
+      envelopeTokens=textTokens(JSON.stringify({tools:options.tools??[],system:options.system??null}));
+    // A failed or aborted attempt carries no observable prompt/cache usage, so it
+    // must not replace the last usable observation. Otherwise the next economics
+    // decision reads a zero prompt as "nothing was cached". A partly reported
+    // usage has the same problem: a positive prompt with a missing output field
+    // still yields canonical.complete=false, and accepting it would let `assess`
+    // take an incomplete observation as the exposure baseline. Keep the flag on
+    // the observation so the later check can read it.
+    const usageComplete=canonical.complete===true;
+    const finishAccepted=successfulFinish.has(record.finishReason);
+    // Capacity pressure needs the newest positive prompt count even when the same
+    // response omitted output usage and therefore cannot become the exposure baseline.
+    if(total>0&&!record.failureCode&&!record.aborted&&finishAccepted)
+      state.latestPrompt={provider:options.provider,model:options.model,reasoningEffort:options.reasoningEffort,
+        usage,usageComplete,weights,systemTokens,toolSchemaTokens,envelopeTokens,at:record.at};
+    const usableForExposure=total>0&&!record.failureCode&&!record.aborted&&usageComplete&&finishAccepted;
+    if(usableForExposure)state.last={provider:options.provider,model:options.model,reasoningEffort:options.reasoningEffort,usage,usageComplete,
       generation:record.generation,alignmentSafe:textProjection(options.messages),
       envelope,keys:options.messages.map(modelKey),ids:options.messages.map(message=>message.id),weights,
-      envelopeTokens,
-      factor:total===null?1:Math.max(0.25,Math.min(8,total/Math.max(1,weights.reduce((sum,value)=>sum+value,0)+envelopeTokens))),
+      systemTokens,toolSchemaTokens,envelopeTokens,
+      factor:Math.max(0.25,Math.min(8,total/Math.max(1,weights.reduce((sum,value)=>sum+value,0)+envelopeTokens))),
       finishReason:record.finishReason,at:record.at};
+    else state.lastUnusable={reason:record.failureCode?'failed-attempt':record.aborted?'aborted':
+        !usageComplete?'incomplete-usage':!finishAccepted?'unusable-finish-reason':'no-prompt-usage',
+      finishReason:record.finishReason??null,at:record.at??null};
     const reviews=reviewOutcomes(agent);
     for(const review of reviews)runtime.effects?.decide(agent,'projection',
       review.plausible===false?'review-implausible':review.plausible===null?'review-unavailable':'reviewed','projection-outcome',review);
   }
   function pressure(agent,routeContext=null,maxTokens=null){
     const context=routeContext??agent.session.requestContext(),limit=context?.contextWindow;
-    const last=get(agent).last,reported=promptTokens(last?.usage);
+    const state=get(agent),header=agent.session.requestHeader()?.config;
+    // Only an observation from this exact route and effort may inform this route's
+    // pressure: another route's prompt count includes a different model's tokenization
+    // and would report a false emergency here.
+    const latestPrompt=state.latestPrompt&&sameObservedRoute(state.latestPrompt,header)?state.latestPrompt:null;
+    const last=state.last&&sameObservedRoute(state.last,header)?state.last:null;
+    const observed=latestPrompt??last,reported=promptTokens(observed?.usage);
     let measured=null;
     try{const measurement=(ctx.get?ctx.get('tokenMeter'):ctx.tokenMeter)?.measure(agent.session);measured=measurement?.totalTokens??measurement?.projectedTokens??null;}catch{}
     const projected=runtime.projectedMessages?.(agent);
     let tokens,method;
     if(projected){
-      const header=agent.session.requestHeader(),envelope=textTokens(JSON.stringify({tools:header?.tools??[],system:null})),
-        current=projected.reduce((sum,message)=>sum+messageTokens(message),0)+envelope;
-      if(reported!==null&&last){
-        const previous=last.weights.reduce((sum,value)=>sum+value,0)+(last.envelopeTokens??0);
-        tokens=Math.max(0,reported+(current-previous)*last.factor);
-      }else tokens=current;
+      const requestHeader=agent.session.requestHeader(),messagesTokens=projected.reduce((sum,message)=>sum+messageTokens(message),0),
+        // The current envelope counts the LIVE tool schema, because a surface that grew
+        // after the observed request carries those tokens now. The previous envelope uses
+        // the stored schema weight, so an unchanged surface yields a zero delta and the
+        // existing estimate is preserved.
+        system=observed?.systemTokens??0,
+        liveTools=textTokens(JSON.stringify(requestHeader?.tools??[])),
+        previousTools=observed?.toolSchemaTokens??liveTools,
+        current=messagesTokens+system+liveTools;
+      if(reported!==null&&observed){
+        // The growth since the observed request is measured against THAT request's own
+        // footprint. Using an older baseline would count the same growth twice when the
+        // newer prompt already includes it. Only the calibration factor from `last` is
+        // reused, because an incomplete observation has no usable output total.
+        const previous=(observed.weights??[]).reduce((sum,value)=>sum+value,0)+system+previousTools;
+        const factor=last?.factor??observed.factor??1;
+        tokens=Math.max(0,reported+(current-previous)*factor);
+      }else tokens=Math.max(reported??0,current);
       method='actual-request usage plus estimated effective-view growth; original surface meter excluded';
     }else{tokens=Math.max(reported??0,measured??0);method='actual usage and host surface meter';}
     const reserve=maxTokens??agent.session.requestHeader()?.config?.maxTokens??0;
@@ -313,8 +495,9 @@ export function createContextEconomics(ctx,runtime){
       reportedPromptTokens:state.reportedPromptTokens,reportedOutputTokens:state.reportedOutputTokens,
       mainPromptRequests:state.mainPromptRequests,
       missingUsageRequests:state.missingUsage,missingCacheUsageRequests:state.missingCacheUsage,pricedRequests:state.pricedRequests,
+      lastUnusableAttempt:state.lastUnusable??null,
       reportedCost:currencies.length===1&&state.pricedRequests===state.requests?state.costByCurrency[currencies[0]]:null,knownReportedCost:currencies.length===1?state.costByCurrency[currencies[0]]:null,costComplete:state.pricedRequests===state.requests,costByCurrency:{...state.costByCurrency},
-      costObservation:{basis:'configured-reference-prices',actualCharge:null,allowanceConsumption:null,budgetEnforcement:'none'},
+      costObservation:{basis:state.publishedRateUsed?'published-family-rate':'configured-reference-prices',actualCharge:null,allowanceConsumption:null,budgetEnforcement:'none'},
       currency:currencies.length===1?currencies[0]:null,skips:{...state.skips},recentDecisions:state.decisions.slice(-6),
       projectionReviews:state.reviewedOutcomes.slice(-6),pendingProjectionReviews:state.pendingReviews.length,
       note:'Observed usage and configured-price cost are totals, not causal savings; forecast decisions predict reuse and do not prove a global cost optimum.'};
@@ -326,9 +509,8 @@ export function createContextEconomics(ctx,runtime){
     pricingFor:(agent,route)=>pricing(agent,route??agent.session.requestHeader()?.config??{}),
     lastSuccessfulUsage:(agent,route)=>{
       const state=get(agent),latest=state.mainAttempts.findLast(item=>sameObservedRoute(item,route));
-      if(!latest?.completeSuccess)return null;
-      const value=state.lastSuccessfulMain;
-      return value&&sameObservedRoute(value,route)?{...value.usage}:null;
+      if(!latest?.completeSuccess||!latest.usage)return null;
+      return {...latest.usage};
     },
     lastUsage:agent=>get(agent).last?.usage??null,
     clear:agent=>states.delete(agent.session.id),dispose:()=>states.clear()};

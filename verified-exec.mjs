@@ -1,10 +1,11 @@
 import path from 'node:path';
 import fs from 'node:fs/promises';
 import {createHash,randomUUID} from 'node:crypto';
-import {within,assertExistingFileWithin,readUtf8File} from './evidence.mjs';
+import {within} from './evidence.mjs';
 import {createNativeCas} from './native-cas.mjs';
 import {reportedExecutionChecks} from './recovery.mjs';
 import {dependencyExecutionComplete,executionResultLayers,executionExitCode} from './execution-dependencies.mjs';
+import {selectShell} from './inline-exec.mjs';
 import {createNativeFiles} from './native-files.mjs';
 
 export const VERSION='0.8.3';
@@ -12,19 +13,9 @@ export const VERSION='0.8.3';
 const HEX_REVISION=/^[a-f0-9]{64}$/;
 const MAX_EDIT_TEXT=250000;
 const MAX_TOTAL_EDIT_TEXT=1000000;
-const MAX_SOURCE_BYTES=2_000_000;
 
 function hash(value){return createHash('sha256').update(value).digest('hex');}
 function textOf(result){return (result?.content||[]).filter(block=>block.type==='text').map(block=>block.text).join('\n');}
-function wrapped(value){return value&&typeof value==='object'&&value.data&&typeof value.data==='object'?value.data:value;}
-function outcomeStatus(value){
-  const outer=value?.status;
-  const inner=value?.data?.status;
-  return inner||outer||null;
-}
-function outcomeError(value){
-  return value?.data?.error||value?.error||null;
-}
 function boundedOutput(value,max=8000){
   const text=typeof value==='string'?value:JSON.stringify(value??null);
   return text.length<=max?text:text.slice(0,max)+'…';
@@ -60,7 +51,7 @@ function validatePlan(input){
     if(typeof validation.description!=='string'||!validation.description.trim()||validation.description.length>300)throw new Error('Validation '+index+' requires a description');
     const timeoutMs=validation.timeout_ms??120000;
     if(!Number.isInteger(timeoutMs)||timeoutMs<1000||timeoutMs>600000)throw new Error('Validation '+index+' timeout_ms must be from 1000 to 600000');
-    if(validation.tool!==undefined&&!['ops_bash','bash','pwsh'].includes(validation.tool))throw new Error('Validation '+index+' tool must be ops_bash, bash or pwsh');
+    if(validation.tool!==undefined&&!['bash','pwsh'].includes(validation.tool))throw new Error('Validation '+index+' tool must be bash or pwsh');
     return {command:validation.command,description:validation.description,timeoutMs,tool:validation.tool||null};
   });
   return {summary:input.summary,apply:input.apply===true,edits,validations};
@@ -197,53 +188,15 @@ async function groupEdits(edits,root){
   return [...groups.values()];
 }
 
-async function readFullText(root,full,expectedRevision){
-  try{
-    const verifiedPath=await assertExistingFileWithin(root,full),source=await readUtf8File(verifiedPath.real,{maxBytes:MAX_SOURCE_BYTES});
-    if(source.text.length>MAX_EDIT_TEXT*2)return {ok:false,error:{message:'Source exceeds verified_exec read budget'}};
-    if(HEX_REVISION.test(String(expectedRevision||''))&&source.sha256!==expectedRevision){
-      return {ok:false,error:{message:'File changed while its source was being read'}};
-    }
-    return {ok:true,text:source.text,sha256:source.sha256,totalLines:source.text.split(/\r\n|\r|\n/).length};
-  }catch(error){
-    return {ok:false,error:{message:error.message}};
-  }
-}
-
-async function statFile(call,runtime,agent,file,signal){
-  const result=await call('ops_stat',{path:file},runtime.execFor(agent,signal));
-  const value=result.value,status=outcomeStatus(value),data=wrapped(value);
-  if(result.isError||status==='error'||status==='rejected'||!data||typeof data.exists!=='boolean'){
-    return {ok:false,error:outcomeError(value)||result.error||{message:textOf(result)||'ops_stat returned no usable observation'}};
-  }
-  return {ok:true,exists:data.exists,revision:data.revision,bytes:data.bytes,lineCount:data.lineCount};
-}
-
-async function applyEditGroup(call,runtime,agent,group,revision,signal){
-  if(group.mode==='create'){
-    const result=await call('ops_write_file',{path:group.file,content:group.content,expectedRevision:'absent'},runtime.execFor(agent,signal));
-    return normalizeEffect(result);
-  }
-  const result=await call('ops_edit_file',{path:group.file,expectedRevision:revision,edits:group.edits},runtime.execFor(agent,signal));
-  return normalizeEffect(result);
-}
-
-function normalizeEffect(result){
-  const value=result.value,status=outcomeStatus(value),data=wrapped(value),error=outcomeError(value)||result.error;
-  const completed=!result.isError&&status==='completed'&&!error;
-  return {ok:completed,status:status||(result.isError?'error':'unknown'),
-    effectState:completed?'applied':data?.effectState||value?.effectState||error?.effectState||'unknown',
-    revision:data?.revision||null,bytes:data?.bytes??null,lineCount:data?.lineCount??null,
-    changed:data?.changed??null,error:completed?null:error||{message:textOf(result)||'OPS write returned an ambiguous result'}};
-}
-
 function failedEffect(error){
   const observed=error?.effectState||error?.info?.effectState;
   return {ok:false,status:'error',effectState:['none','applied','partial','unknown'].includes(observed)?observed:'unknown',
     revision:null,changed:null,error:{message:String(error?.message||error).slice(0,1200)}};
 }
 
-function shellTool(ctx,agent){return (process.platform==='win32'?['pwsh','ops_bash','bash']:['ops_bash','bash','pwsh']).find(name=>{try{return Boolean(ctx.tools.get(name,agent));}catch{return false;}})||null;}
+// Same capability-based selection `work_exec` uses, so a Windows host that
+// publishes only one of the two shells resolves to it here too.
+function shellTool(ctx,agent){return selectShell(name=>ctx.tools.get(name,agent));}
 
 async function runValidation(ctx,call,runtime,agent,validation,signal){
   const requested=validation.tool;
@@ -267,7 +220,13 @@ async function runValidation(ctx,call,runtime,agent,validation,signal){
     error:passed?null:producerLayers.find(node=>node.error)?.error??null};
 }
 
-export function createVerifiedExec(ctx,runtime,call){
+/**
+ * `options.backendFactory` is a test seam only: it lets the plan-level boundary
+ * suite exercise the backend-independent planning/validation logic without a
+ * full host. Production always constructs the native conditional-write backend.
+ */
+export function createVerifiedExec(ctx,runtime,call,options={}){
+  const backendFactory=options.backendFactory??createNativeCas;
   let native;
   let registeredNativeWrite=ctx.tools.get('write')??null;
   let registeredNativeExecute=registeredNativeWrite?.execute;
@@ -294,16 +253,25 @@ export function createVerifiedExec(ctx,runtime,call){
     }
     const record={version:1,id,sessionId:s.id,createdAt:new Date().toISOString(),summary:plan.summary,applyRequested:plan.apply,
       status:'preflight',effectState:'none',files:[],validations:[],validationResults:[],atomicity:'per-file; cross-file writes are not transactional'};
+    // Native conditional writes are the only backend. There is no fallback that
+    // writes without a recorded version condition, because that would make
+    // verified_exec an unverified write.
     const useNative=s.config.nativeVerifiedEdits===true;
-    if(useNative&&registeredNativeWrite)native??=createNativeCas(ctx,runtime,registeredNativeWrite,registeredNativeExecute);
-    record.backend=useNative?'dsh-native-cas':'ops-cas';
-    record.versionKind=useNative?'native-opaque':'sha256';
-    const observe=file=>useNative?native.stat(agent,file,signal):statFile(call,runtime,agent,file,signal);
+    // The seam contributes its own availability; production needs the captured
+    // native write tool before the backend can even be constructed.
+    if(useNative&&(registeredNativeWrite||options.backendFactory))native??=backendFactory(ctx,runtime,registeredNativeWrite,registeredNativeExecute);
+    record.backend='dsh-native-cas';
+    record.versionKind='native-opaque';
+    if(!useNative){
+      record.status='deopt';record.reason='native-verified-edits-disabled';s.metrics.verifiedExecDeopts++;await save();
+      return {status:'deopt',reason:record.reason,reportPath,effectState:'none'};
+    }
+    const observe=file=>native.stat(agent,file,signal);
     async function save(){await runtime.save(agent,reportPath,record,signal);}
     function fileEffects(){return record.files.map(file=>({file:file.file,mode:file.mode,
       status:file.effect?.status||'not-attempted',effectState:file.effect?.effectState||'none',
       beforeRevision:file.beforeRevision,afterRevision:file.afterRevision||file.effect?.revision||null,
-      versionKind:record.versionKind,contentHash:file.effect?.contentHash??(record.versionKind==='sha256'?file.effect?.revision??null:null),
+      versionKind:record.versionKind,contentHash:file.effect?.contentHash??null,
       expectedAfterHash:file.expectedAfterHash,
       changed:file.effect?.changed??null,...(file.effect?.error?{error:file.effect.error}:{})}));}
     function effectState(){
@@ -341,11 +309,8 @@ export function createVerifiedExec(ctx,runtime,call){
       record.status='deopt';record.reason='invalid-plan';record.error=error.message;s.metrics.verifiedExecDeopts++;await save();
       return {status:'deopt',reason:record.reason,error:error.message,reportPath,effectState:'none'};
     }
-    const required=useNative?[]:['ops_stat'];
-    if(!useNative&&plan.apply&&groups.some(group=>group.mode==='create'))required.push('ops_write_file');
-    if(!useNative&&plan.apply&&groups.some(group=>group.mode==='replace_exact'))required.push('ops_edit_file');
-    const missing=required.filter(name=>{try{return !ctx.tools.get(name,agent);}catch{return true;}});
-    if(useNative&&(!native||!await native.available(agent)))missing.push('rc2-native-conditional-write');
+    const missing=[];
+    if(!native||!await native.available(agent))missing.push('rc2-native-conditional-write');
     if(missing.length){
       record.status='deopt';record.reason='cas-file-tools-unavailable';record.missing=missing;s.metrics.verifiedExecDeopts++;await save();
       return {status:'deopt',reason:record.reason,missing,reportPath,effectState:'none'};
@@ -382,18 +347,18 @@ export function createVerifiedExec(ctx,runtime,call){
         group.expectedText=group.content;
         continue;
       }
-      if(!observation.exists||(useNative?observation.type!=='file'||typeof observation.revision!=='string'||!observation.revision:!HEX_REVISION.test(String(observation.revision||'')))){
+      if(!observation.exists||observation.type!=='file'||typeof observation.revision!=='string'||!observation.revision){
         record.status='deopt';record.reason='existing-file-revision-unavailable';record.file=group.file;
         s.metrics.verifiedExecDeopts++;await save();return {status:'deopt',reason:record.reason,file:group.file,reportPath,effectState:'none'};
       }
-      const source=useNative?await native.read(agent,group.file,observation.revision,signal):await readFullText(s.root,group.full,observation.revision);
+      const source=await native.read(agent,group.file,observation.revision,signal);
       if(!source.ok){
         record.status='deopt';record.reason='source-read-unavailable';record.error=source.error;record.file=group.file;
         s.metrics.verifiedExecDeopts++;await save();return {status:'deopt',reason:record.reason,file:group.file,error:source.error,reportPath,effectState:'none'};
       }
       const ranges=[];
       for(const edit of group.edits){
-        const preserveCrlf=useNative&&source.text.includes('\r\n')&&!/(?<!\r)\n/u.test(source.text);
+        const preserveCrlf=source.text.includes('\r\n')&&!/(?<!\r)\n/u.test(source.text);
         const oldText=preserveCrlf?edit.oldText.replaceAll('\r\n','\n').replaceAll('\n','\r\n'):edit.oldText;
         const newText=preserveCrlf?edit.newText.replaceAll('\r\n','\n').replaceAll('\n','\r\n'):edit.newText;
         const found=countExact(source.text,oldText);
@@ -410,7 +375,7 @@ export function createVerifiedExec(ctx,runtime,call){
       }
       let expectedText=source.text;
       for(const edit of ranges.toReversed())expectedText=expectedText.slice(0,edit.start)+edit.newText+expectedText.slice(edit.end);
-      if(useNative&&(expectedText.length>500000||Buffer.byteLength(expectedText)>2_000_000)){
+      if(expectedText.length>500000||Buffer.byteLength(expectedText)>2_000_000){
         record.status='deopt';record.reason='native-readback-budget-exceeded';record.file=group.file;
         s.metrics.verifiedExecDeopts++;await save();return {status:'deopt',reason:record.reason,file:group.file,reportPath,effectState:'none'};
       }
@@ -449,16 +414,15 @@ export function createVerifiedExec(ctx,runtime,call){
     record.status='applying';
     for(const item of beforeApply){
       let effect;
-      try{effect=useNative?await native.available(agent)?await native.apply(agent,item.group,item.observation,signal):
-        {ok:false,status:'deopt',effectState:'none',error:{message:'The native conditional-write composition changed before application.'}}:
-        await applyEditGroup(call,runtime,agent,item.group,item.revision,signal);}
+      try{effect=await native.available(agent)?await native.apply(agent,item.group,item.observation,signal):
+        {ok:false,status:'deopt',effectState:'none',error:{message:'The native conditional-write composition changed before application.'}};}
       catch(error){effect=failedEffect(error);}
       const file=record.files.find(entry=>entry.file===item.group.file);
       file.effect=effect;
       record.effectState=effectState();
       if(effect.ok||['applied','partial','unknown'].includes(effect.effectState)){
-        runtime.recordMutation?.(agent,{tool:useNative?'write':item.group.mode==='create'?'ops_write_file':'ops_edit_file',
-          file:item.group.file,revision:effect.ok||effect.effectState==='applied'?(useNative?effect.contentHash:effect.revision):null,callId:`verified:${record.id}`,seq:null});
+        runtime.recordMutation?.(agent,{tool:'write',file:item.group.file,
+          revision:effect.ok||effect.effectState==='applied'?effect.contentHash:null,callId:`verified:${record.id}`,seq:null});
       }
       if(!effect.ok){
         record.status='partial';record.reason='file-apply-failed';
@@ -467,7 +431,7 @@ export function createVerifiedExec(ctx,runtime,call){
           ...(effect.permissionDenied?{permissionDenied:true}:{}),reportPath,...saved,
           files:fileEffects(),note:'Per-file effects are listed. Inspect applied and unknown files before deciding the next edit.'};
       }
-      if(!HEX_REVISION.test(String(useNative?effect.contentHash:effect.revision||''))||(useNative?effect.contentHash:effect.revision)!==file.expectedAfterHash){
+      if(!HEX_REVISION.test(String(effect.contentHash||''))||effect.contentHash!==file.expectedAfterHash){
         record.status='partial';record.reason='post-write-revision-mismatch';record.effectState='applied';
         s.metrics.verifiedExecPartial++;const saved=await saveOutcome();
         return {status:'partial',reason:record.reason,file:item.group.file,effectState:'applied',reportPath,...saved,files:fileEffects(),
@@ -496,22 +460,6 @@ export function createVerifiedExec(ctx,runtime,call){
       validations:record.validationResults.map(result=>({description:result.description,tool:result.tool,exitCode:result.exitCode})),
       note:plan.validations.length?'Only the declared commands passed. This does not prove unlisted requirements.':'The requested edits were applied. No external command was requested or run.'};
   }
-  async function readCurrentText(agent,file,signal){
-    const s=await runtime.init(agent,signal);
-    let full;
-    try{full=within(s.root,file);}catch(error){return {ok:false,error:{message:error.message}};}
-    const observation=await statFile(call,runtime,agent,full,signal);
-    if(!observation.ok||!observation.exists||!HEX_REVISION.test(String(observation.revision||''))){
-      return {ok:false,error:observation.error||{message:'Existing file revision is unavailable'}};
-    }
-    const source=await readFullText(s.root,full,observation.revision);
-    if(!source.ok)return source;
-    const after=await statFile(call,runtime,agent,full,signal);
-    if(!after.ok||!after.exists||after.revision!==observation.revision){
-      return {ok:false,error:{message:'File changed while its exact source was being read'}};
-    }
-    return {ok:true,full,text:source.text,sha256:source.sha256,revision:observation.revision,bytes:observation.bytes,lineCount:observation.lineCount};
-  }
-  return {execute,readCurrentText,
-    nativeAvailable(agent){if(!registeredNativeWrite)return false;native??=createNativeCas(ctx,runtime,registeredNativeWrite,registeredNativeExecute);return native.available(agent);}};
+  return {execute,
+    nativeAvailable(agent){if(!registeredNativeWrite)return false;native??=backendFactory(ctx,runtime,registeredNativeWrite,registeredNativeExecute);return native.available(agent);}};
 }

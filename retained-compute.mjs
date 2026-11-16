@@ -1,6 +1,6 @@
 import {parseResult,resultText} from './visible-results.mjs';
 
-const READ_TOOLS=new Set(['read','glob','grep','work_recall','ops_read_files','ops_inspect_local_file','ops_glob','ops_grep']);
+const READ_TOOLS=new Set(['read','glob','grep','work_recall']);
 const NATIVE_DEPENDENCIES=['fs','subprocess','sandbox','sandboxPolicy'];
 
 /** Reuse the kernel's owner-isolated REPL without replacing its run_code provider. */

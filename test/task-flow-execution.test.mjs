@@ -471,6 +471,8 @@ test('a completed failed revision exposes its exact new version without claiming
 
 test('a long task gets one convergence reminder without claiming successful observations made no progress',()=>{
   const t=timeline({executionTriage:false}),reminders=[];
+  // The reminder is gated on having produced real file effects.
+  t.command('write',{file_path:'src/main.js',content:'export const n=1;'},{});
   for(let i=0;i<28;i++){
     t.add('assistant/message',{usage:{outputTokens:5000},message:{role:'assistant',content:[]}});
     t.command('pwsh',{command:'observe '+i},{exitCode:0,stdout:'new fact '+i,stderr:''});
@@ -631,4 +633,24 @@ test('correct failing reproductions must be fixed, not deleted',()=>{
   assert.match(body,/既有测试断言仅在用户明确要求或指定行为确需调整时修改/u);
   assert.match(body,/不得改动无关断言/u);
   assert.doesNotMatch(body,/第二次仍失败则删除临时测试/u);
+});
+
+test('the long-response reminder is injected at most once per user request',()=>{
+  let seq=0;const log=[{seq:seq++,type:'turn/start',data:{turn:1}},
+    {seq:seq++,type:'user/message',data:{message:{id:'request',role:'user',source:{kind:'user'},content:[{type:'text',text:'继续修复任务'}]}}}];
+  for(const step of [1,2,3,4]){
+    log.push({seq:seq++,type:'step/start',data:{turn:1,step}});
+    if(step===1)log.push({seq:seq++,type:'tool/call',data:{turn:1,step, callId:'w',name:'write',arguments:{file_path:'edit.txt',content:'x'}}}),
+      log.push({seq:seq++,type:'tool/result',data:{turn:1,step,message:{role:'tool',source:{callId:'w'},content:[{type:'text',text:'ok'}]}}});
+    log.push({seq:seq++,type:'tool/call',data:{turn:1,step, callId:'c'+step,name:'read',arguments:{file_path:'a.txt'}}});
+    log.push({seq:seq++,type:'tool/result',data:{turn:1,step,message:{role:'tool',source:{callId:'c'+step},content:[{type:'text',text:'ok'}]}}});
+    log.push({seq:seq++,type:'assistant/message',data:{turn:1,step,message:{role:'assistant',content:[{type:'text',text:'progress'}]},usage:{outputTokens:9000}}});
+  }
+  const state={config:{...defaults(),stepPacing:true},root:process.cwd()};
+  const flow=createTaskFlow({}, {get:()=>state,isEnabled:()=>true,activeMode:()=> 'aggressive'});
+  const agent={session:{id:'pacing-dedupe',log,seq,requestHeader:()=>({config:{provider:'p',model:'m'}}),eventAt:value=>log.find(event=>event.seq===value),surface:{nodes:[]}}};
+  const notices=[];
+  for(let round=0;round<4;round++)notices.push(...flow.beforeStep(agent,[]));
+  const keys=notices.map(message=>String(message.source?.taskFlow?.key??'')).filter(key=>key.includes('large-response'));
+  assert.equal(keys.length,1,JSON.stringify(keys));
 });

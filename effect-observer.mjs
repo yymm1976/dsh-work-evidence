@@ -6,7 +6,7 @@ import {canonicalUsage,messageTokens,textTokens,requestKindOf} from './context-e
 const contentKey=message=>JSON.stringify({role:message.role,content:message.content,toolCallId:message.toolCallId,isError:message.isError});
 const chars=messages=>messages.reduce((sum,message)=>sum+(message.content??[]).reduce((n,block)=>n+String(block.text??(block.type==='tool-call'?JSON.stringify(block.arguments??{}):'')).length,0),0);
 const tokens=messages=>messages.reduce((sum,message)=>sum+messageTokens(message),0);
-const FEATURES={historyOutput:'historyHygiene',receipt:'ledgerReceipt',evidenceView:'evidenceViews',contextPrune:'contextProtocol',swFold:'swEviction',projection:'requestProjection',restoration:'projectionRestore',state:'stateLedger',unresolved:'ledgerUnresolved',reuseAdvice:'executionTriage',cleanupAdvice:'executionTriage',stepPacing:'stepPacing',contextRecall:'contextProtocol',argumentRecovery:'readArgumentRecovery',archive:'archiveReadRouting',stage:'stageWorkingSet',automaticIndex:'selfIndex',index:null,candidate:null,patterns:null,fastpath:null,verifiedEdit:null,probe:'executionTriage',report:null,fastEdit:'fastEditEnabled'};
+const FEATURES={historyOutput:'historyHygiene',receipt:'ledgerReceipt',evidenceView:'evidenceViews',contextPrune:'contextProtocol',swFold:'swEviction',projection:'requestProjection',restoration:'projectionRestore',state:'stateLedger',unresolved:'ledgerUnresolved',reuseAdvice:'executionTriage',cleanupAdvice:'executionTriage',stepPacing:'stepPacing',contextRecall:'contextProtocol',argumentRecovery:'readArgumentRecovery',archive:'archiveReadRouting',stage:'stageWorkingSet',automaticIndex:'selfIndex',index:null,candidate:null,patterns:null,fastpath:null,verifiedEdit:null,probe:'executionTriage',report:null};
 const unknownProjectionObservation=reason=>({status:'unknown',planSeq:null,planMessageId:null,resultSeqs:[],reason});
 FEATURES.inlineExec=null;
 FEATURES.inlineExecAdvice='executionTriage';
@@ -46,8 +46,8 @@ FEATURES.contextBlockDedup='contextProtocol';
 FEATURES.nativeVerifiedEdit='nativeVerifiedEdits';
 FEATURES.fileProfile='fileProfiling';
 FEATURES.structuredJson='structuredJson';
-const PLUGIN_TOOLS=new Set(['project_evidence','work_report','work_status','work_state','work_recall','work_exec','work_compute','work_probe','evidence_index','candidate_select','ptc_patterns','ptc_fastpath','verified_exec','fastedit_java','file_profile','structured_json']);
-const RETIRED_FEATURES=new Set(['programHistory','ledgerFold','foldPlan','reasoningHistory','executionAdvice','finishAdvice','presentationAdvice','nativeProgramReference']);
+const PLUGIN_TOOLS=new Set(['project_evidence','work_report','work_status','work_state','work_recall','work_exec','work_compute','work_probe','evidence_index','candidate_select','ptc_patterns','ptc_fastpath','verified_exec','file_profile','structured_json']);
+const RETIRED_FEATURES=new Set(['programHistory','ledgerFold','foldPlan','reasoningHistory','executionAdvice','finishAdvice','presentationAdvice','nativeProgramReference','fastEdit']);
 export const featureSetting=name=>FEATURES[name]??null;
 
 /** Measures changes on the same task trajectory. Provider usage is never attributed by subtraction. */
@@ -55,12 +55,26 @@ export function createEffectObserver(ctx,runtime){
   const states=new Map();
   const nativeAttempts=new WeakMap();
   const storageFor=agent=>{const s=runtime.get(agent);return s.telemetryDir===undefined?s.dir:s.telemetryDir;};
-  const get=agent=>{let state=states.get(agent.session.id);if(!state){state={features:Object.create(null),effects:new Map(),decisions:[],pendingDecisions:[],pendingOverflow:[],decisionSeq:0,overflowWriting:false,overflowQueue:Promise.resolve(),recentRequests:[],requests:0,mainRequests:0,auxiliaryRequests:0,compactionRequests:0,completeUsageRequests:0,missingUsage:0,unknownConsumption:0,reported:{inputTokens:0,cacheReadTokens:0,cacheWriteTokens:0,outputTokens:0,totalTokens:0},rawReported:{inputTokens:0,cacheReadTokens:0,cacheWriteTokens:0,outputTokens:0,totalTokens:0},totals:{directTokensEstimate:0,directChars:0,instructionTokensEstimate:0,systemTokensEstimate:0,messageTokensEstimate:0,toolSchemaTokensEstimate:0,requestReconstructionMisses:0},queue:Promise.resolve(),writeErrors:[],effectBytes:0,loaded:false,snippets:new Map(),needsLeadingNewline:new Set()};states.set(agent.session.id,state);}return state;};
+  const get=agent=>{let state=states.get(agent.session.id);if(!state){state={agent,features:Object.create(null),effects:new Map(),decisions:[],pendingDecisions:[],pendingOverflow:[],decisionSeq:0,overflowWriting:false,overflowQueue:Promise.resolve(),recentRequests:[],requests:0,mainRequests:0,auxiliaryRequests:0,compactionRequests:0,completeUsageRequests:0,missingUsage:0,unknownConsumption:0,reported:{inputTokens:0,cacheReadTokens:0,cacheWriteTokens:0,outputTokens:0,totalTokens:0},rawReported:{inputTokens:0,cacheReadTokens:0,cacheWriteTokens:0,outputTokens:0,totalTokens:0},totals:{directTokensEstimate:0,directChars:0,instructionTokensEstimate:0,systemTokensEstimate:0,messageTokensEstimate:0,toolSchemaTokensEstimate:0,requestReconstructionMisses:0},queue:Promise.resolve(),writeErrors:[],effectBytes:0,loaded:false,snippets:new Map(),needsLeadingNewline:new Set()};states.set(agent.session.id,state);}return state;};
   function feature(state,name){return state.features[name]??=( {decisions:0,applied:0,deferred:0,notApplicable:0,unavailable:0,failed:0,requestsAffected:0,directTokensEstimate:0,directChars:0,reasons:Object.create(null)} );}
   function decide(agent,name,status,reason,details={}){
     const state=get(agent),item=feature(state,name),at=new Date().toISOString(),step=runtime.get(agent).step,seq=++state.decisionSeq;
     item.decisions++;item[status==='not-applicable'?'notApplicable':status]=(item[status==='not-applicable'?'notApplicable':status]??0)+1;item.lastStatus=status;item.lastReason=reason;item.lastAt=at;item.lastStep=step;item.lastSeq=seq;item.reasons[reason]=(item.reasons[reason]??0)+1;
-    const decision={id:randomUUID(),at,step,seq,feature:name,status,reason,...details};state.decisions.push(decision);state.pendingDecisions.push(decision);
+    // `details` is spread for the payload but must not overwrite the generated identity.
+    // Callers pass `{seq,...}` where that `seq` names a SOURCE event — the prune path passes
+    // the pruned result's sequence. With decisions about source events 100 and 20, the live
+    // feature reported 20 as latest while a restored decision log picked 100, because the two
+    // read the same field for different meanings. The source event travels in its own field.
+    // `details` may carry its own `reason` — reviewOutcomes passes the review object, which
+    // has one. Spreading it over the generated `reason` made the live feature count
+    // "projection-outcome" while a restored log counted the review's reason, so the same
+    // history produced two different tallies. The generated reason wins; the caller's is kept
+    // under `detailReason` when both are present and differ.
+    const {seq:sourceSeq=null,economics:decisionEconomics,reason:detailReason,...rest}=details;
+    const decision={id:randomUUID(),at,step,seq,feature:name,status,reason,...rest,
+      ...(sourceSeq===null?{}:{sourceSeq}),...(decisionEconomics===undefined?{}:{economics:decisionEconomics}),
+      ...(detailReason===undefined||detailReason===reason?{}:{detailReason})};
+    state.decisions.push(decision);state.pendingDecisions.push(decision);
     if(state.pendingDecisions.length>256){
       const overflow=state.pendingDecisions.splice(0,state.pendingDecisions.length-256);
       state.pendingOverflow.push(...overflow);
@@ -82,17 +96,77 @@ export function createEffectObserver(ctx,runtime){
     if(saving<8){decide(agent,name,'not-applicable','no-local-token-benefit',{tokensEstimate:saving});return false;}
     return true;
   }
+  async function repairAppendBoundary(state,file,kind){
+    // appendFile is not transactional: a rejected append can leave a JSON prefix at EOF.
+    // The next newline alone cannot repair that prefix, so retain complete rows and remove
+    // only the unparseable tail before any later append. A complete unterminated row only
+    // needs its newline; if that repair also fails, keep the conservative leading-newline
+    // marker for the next attempt.
+    state.needsLeadingNewline.add(kind);
+    let raw;
+    // A missing file has a clean boundary: the first append creates it.
+    try{raw=await fs.readFile(file);}catch(error){
+      // A missing file has a clean boundary: the first append creates it, so the marker
+      // this call set must be cleared or the next append reports a repair failure that
+      // never happened and prepends a newline to an empty file.
+      if(error?.code==='ENOENT'){state.needsLeadingNewline.delete(kind);return true;}
+      return false;
+    }
+    // truncate() takes a byte offset, so the last newline must be located in the
+    // buffer: a string index is short whenever a retained row holds non-ASCII text.
+    const boundary=raw.lastIndexOf(0x0a)+1,tail=raw.subarray(boundary).toString('utf8');
+    if(!tail){state.needsLeadingNewline.delete(kind);return true;}
+    // A complete row without its trailing newline is still data. If a partial append
+    // follows it, retain the first complete JSON object and drop only the unparseable
+    // remainder instead of truncating the row together with the fragment.
+    let keep=null;
+    try{JSON.parse(tail);keep=tail;}catch{}
+    if(keep===null&&tail.startsWith('{')){
+      let depth=0,inString=false,escape=false;
+      for(let index=0;index<tail.length;index++){
+        const character=tail[index];
+        if(inString){
+          if(escape)escape=false;
+          else if(character==='\\')escape=true;
+          else if(character==='"')inString=false;
+        }else if(character==='"')inString=true;
+        else if(character==='{')depth++;
+        else if(character==='}'&&--depth===0){
+          const candidate=tail.slice(0,index+1);
+          try{JSON.parse(candidate);keep=candidate;}catch{}
+          break;
+        }
+      }
+    }
+    try{
+      if(keep!==null){
+        const keepBytes=Buffer.byteLength(keep,'utf8');
+        await fs.truncate(file,boundary+keepBytes);
+        await fs.appendFile(file,'\n','utf8');
+      }else await fs.truncate(file,boundary);
+      state.needsLeadingNewline.delete(kind);
+      return true;
+    }catch{return false;}
+  }
   function queue(state,agent,row,kind='observability'){
     const dir=storageFor(agent);if(!dir){state.writeErrors.push('Observability storage outside the workspace is unavailable');state.writeErrors=state.writeErrors.slice(-8);return Promise.resolve(false);}
     if(!/^[-a-zA-Z0-9_][-.a-zA-Z0-9_]{0,127}$/.test(agent.session.id)){state.writeErrors.push('Invalid session ID for observability record');return Promise.resolve(false);}
     const file=path.join(dir,agent.session.id+'.'+kind+'.jsonl');
-    // After a failed trailing-newline repair the file is known to end mid-line, so the next
-    // append for that file starts with its own newline instead of merging two rows.
+    // Boundary inspection and repair stay in this same queue, so a later row cannot
+    // overtake recovery and turn a partial append into a corrupt persistent ledger.
     state.queue=state.queue.catch(()=>{}).then(async()=>{await fs.mkdir(dir,{recursive:true});
+      // A repair that failed last time left the boundary unknown. Retry it before
+      // appending: if it still fails, appending would seal the fragment and destroy the
+      // joined row, so the row stays pending instead.
+      if(state.needsLeadingNewline.has(kind)){
+        state.writeErrors.push('Boundary repair retry failed; the row stays pending');
+        state.writeErrors=state.writeErrors.slice(-8);
+        if(!await repairAppendBoundary(state,file,kind))return false;
+      }
       await fs.appendFile(file,(state.needsLeadingNewline.has(kind)?'\n':'')+JSON.stringify(row)+'\n','utf8');
-      // Clear the marker only once a row actually landed: an append that failed wrote nothing,
-      // so the file still ends mid-line and the following row must keep its own leading newline.
-      state.needsLeadingNewline.delete(kind);return true;}).catch(error=>{state.writeErrors.push(String(error.message).slice(0,240));state.writeErrors=state.writeErrors.slice(-8);return false;});
+      state.needsLeadingNewline.delete(kind);return true;}).catch(async error=>{
+      state.writeErrors.push(String(error.message).slice(0,240));state.writeErrors=state.writeErrors.slice(-8);
+      await repairAppendBoundary(state,file,kind);return false;});
     return state.queue;
   }
   function persistOverflow(state,agent){
@@ -147,6 +221,10 @@ export function createEffectObserver(ctx,runtime){
     }
     const nativeAttempt=native&&!native.requestId?{attemptId:native.attemptId,turn:native.turn,step:native.step}:null;
     if(nativeAttempt)native.requestId=requestId;
+    // The decisions are copied, not taken: the row is only known to be persisted once
+    // the append resolved, and a failed append must leave them available for the
+    // cleanup flush instead of losing everything recorded for this request.
+    const rowDecisions=main?state.pendingDecisions.slice():[];
     return {schema:'work-evidence.request-effects.v1',sessionId:agent.session.id,requestId,nativeAttempt,at:new Date().toISOString(),provider:options.provider,model:options.model,reasoningEffort:options.reasoningEffort??null,requestKind,auxiliary:requestKind==='auxiliary',
       projectionObservation,
       usage:null,usageChunks:0,usageAggregation:'last-non-null-adapter-value-per-field',settled:false,failureCode:null,finishReason:null,
@@ -156,7 +234,7 @@ export function createEffectObserver(ctx,runtime){
         coverage:'Recorded body changes, recognizable guidance and top-level plugin schemas; host-generated PTC SDK/prelude overhead is not reconstructed',
         method:'same-trajectory message reconstruction; local text-density estimate; provider tokenization not observed',causalTaskSaving:false},
       localRequestTokensEstimate:tokens(options.messages)+textTokens(JSON.stringify({system:options.system??null,tools:options.tools??[]})),
-      decisions:main?state.pendingDecisions.splice(0):[],sourceSeq:agent.session.seq,step:runtime.get(agent).step};
+      decisions:rowDecisions,sourceSeq:agent.session.seq,step:runtime.get(agent).step};
   }
   async function start(agent,row){
     row.startRecorded=await queue(get(agent),agent,{schema:'work-evidence.request-start.v1',sessionId:agent.session.id,
@@ -208,11 +286,35 @@ export function createEffectObserver(ctx,runtime){
     const value=feature(state,name),key=decision.status==='not-applicable'?'notApplicable':decision.status;
     const seq=Number.isSafeInteger(decision.seq)?decision.seq:++state.decisionSeq;
     state.decisionSeq=Math.max(state.decisionSeq,seq);
-    value.decisions++;value[key]=(value[key]??0)+1;value.lastStatus=decision.status;value.lastReason=decision.reason;
-    value.lastAt=decision.at??at;value.lastStep=decision.step??step;value.lastSeq=seq;value.reasons[decision.reason]=(value.reasons[decision.reason]??0)+1;
-    state.decisions.push(name===decision.feature?decision:{...decision,feature:name});if(state.decisions.length>64)state.decisions.shift();
+    value.decisions++;value[key]=(value[key]??0)+1;value.reasons[decision.reason]=(value.reasons[decision.reason]??0)+1;
+    // A retried overflow append can restore an older decision after newer rows were
+    // written. The counters still accumulate, but the "last" fields describe the
+    // newest decision, so they only move forward in sequence order.
+    if(!Number.isSafeInteger(value.lastSeq)||seq>=value.lastSeq){
+      value.lastStatus=decision.status;value.lastReason=decision.reason;
+      value.lastAt=decision.at??at;value.lastStep=decision.step??step;value.lastSeq=seq;
+    }
+    // The rolling window is read in order, so insert before the first entry with a
+    // larger seq rather than appending at the end.
+    const restored=name===decision.feature?decision:{...decision,feature:name};
+    const index=state.decisions.findIndex(item=>Number.isSafeInteger(item.seq)&&item.seq>seq);
+    if(index<0)state.decisions.push(restored);else state.decisions.splice(index,0,restored);
+    if(state.decisions.length>64)state.decisions.shift();
   }
-  function finish(agent,row){const state=get(agent);normalizeRow(row);accumulate(state,row);queue(state,agent,row);runtime.get(agent).dirty=true;}
+  function finish(agent,row){
+    const state=get(agent);normalizeRow(row);accumulate(state,row);
+    // The row carries a copy of the pending decisions, so they are only removed once
+    // the append succeeded. A failed append keeps them for the cleanup flush and for a
+    // later retry instead of dropping everything recorded for this request.
+    const carried=row.decisions??[];
+    queue(state,agent,row).then(ok=>{
+      if(ok&&carried.length){
+        const ids=new Set(carried.map(item=>item?.id));
+        state.pendingDecisions=state.pendingDecisions.filter(item=>!ids.has(item?.id));
+      }
+    }).catch(()=>{});
+    runtime.get(agent).dirty=true;
+  }
   async function load(agent){
     const state=get(agent);if(state.loaded)return;if(state.loading)return state.loading.catch(()=>{});
     const dir=storageFor(agent);if(!dir)return;
@@ -268,8 +370,26 @@ export function createEffectObserver(ctx,runtime){
     finally{state.loading=null;}
   }
   function snapshot(agent,options={}){const state=get(agent),config=runtime.get(agent).config,features={};for(const name of new Set([...Object.keys(FEATURES),...Object.keys(state.features)])){const base=state.features[name]??{decisions:0,applied:0};const setting=FEATURES[name],retired=RETIRED_FEATURES.has(name);features[name]={enabled:!retired&&runtime.isEnabled(agent)&&(setting?!!config[setting]:true),...(retired?{retired:true}:{}),...base,lastStatus:base.lastStatus??'not-observed',lastReason:base.lastReason??(base.decisions?'no-effect-applied':'no-opportunity-observed')};}
+    // Direct savings are negative deltas (a rewrite removed text), while the
+    // injected guidance and tool schemas are positive costs. Report both sides and
+    // the ratio, so "did this plugin pay for itself" is answerable from one row
+    // instead of requiring a manual subtraction across three counters.
+    // Integer-only arithmetic and a rounded integer ratio keep this payload
+    // lossless JSON; a raw division produced a value the host rejected.
+    // begin() stores directTokensEstimate as delta - instruction - schemaOverhead,
+    // i.e. the saving with both overheads already subtracted. Recover the gross
+    // saving by adding the overhead back; negating would report a net cost as if it
+    // were a saving, and with schema-only changes the two would cancel to zero.
+    const spentTokens=Math.round((state.totals.instructionTokensEstimate||0)+(state.totals.toolSchemaTokensEstimate||0));
+    // A zero total must stay a plain zero: the host rejects -0 as non-lossless JSON.
+    const plain=value=>value===0?0:value;
+    const savedTokens=plain(Math.round((state.totals.directTokensEstimate||0)+spentTokens));
+    const balance={savedTokensEstimate:savedTokens,spentTokensEstimate:spentTokens,
+      netTokensEstimate:plain(savedTokens-spentTokens),
+      ...(spentTokens>0?{ratioPercent:plain(Math.round((savedTokens*100)/spentTokens))}:{}),
+      scope:'local same-trajectory text estimate; savedTokensEstimate is gross of the overheads listed in spentTokensEstimate; not a provider billing measurement'};
     const full={version:1,schema:'work-evidence.observability.v1',requests:{count:state.requests,main:state.mainRequests,compaction:state.compactionRequests,auxiliary:state.auxiliaryRequests,missingUsage:state.missingUsage,unknownConsumption:state.unknownConsumption,completeUsageRequests:state.completeUsageRequests,providerReported:{...state.reported},providerReportedRaw:{...state.rawReported}},
-      totals:{...state.totals},features,recentRequests:state.recentRequests.slice(),decisions:state.decisions.slice(-24),
+      totals:{...state.totals,balance},features,recentRequests:state.recentRequests.slice(),decisions:state.decisions.slice(-24),
       persistence:{file:storageFor(agent)?path.join(storageFor(agent),agent.session.id+'.observability.jsonl'):null,writeErrors:state.writeErrors.slice(),scope:'session-local start/settlement records and native event links outside workspace discovery; no prompt bodies; survives rolling status window'},
       interpretation:'providerReported totals include only complete, internally consistent adapter counts; providerReportedRaw retains finite fields from all rows for diagnosis and does not establish complete consumption. Main, compaction and auxiliary requests are separate. Direct feature token deltas are local estimates on the same trajectory, including visible guidance overhead; they are not measured task savings. Unmapped or evicted attribution remains unavailable.'};
     if(options.detail!==false)return full;
@@ -315,14 +435,50 @@ export function createEffectObserver(ctx,runtime){
         }
       }
       // Decisions recorded after the last main request was assembled have no request row
-      // to carry them. Persist them before the in-memory state is dropped.
+      // to carry them. Persist them before the in-memory state is dropped — but only
+      // discard them once the append succeeded, and only then delete the state; a
+      // failed write leaves both in place so nothing recorded after the last request is
+      // lost silently.
       if(state.pendingDecisions.length){
-        const decisions=state.pendingDecisions.splice(0);
-        await queue(state,agent,{schema:'work-evidence.pending-decisions.v1',sessionId:agent.session.id,
+        const decisions=state.pendingDecisions.slice();
+        const written=await queue(state,agent,{schema:'work-evidence.pending-decisions.v1',sessionId:agent.session.id,
           at:new Date().toISOString(),step:runtime.get(agent).step,decisions});
+        if(!written)return;
+        // Remove by identity: decisions may have been appended while the append was in
+        // flight, and a positional prefix would drop those instead of the ones written.
+        const writtenIds=new Set(decisions.map(item=>item?.id));
+        state.pendingDecisions=state.pendingDecisions.filter(item=>!writtenIds.has(item?.id));
       }
+      // The overflowed decisions are the same kind of unpersisted record, and decisions
+      // can arrive while these appends are in flight. Both are checked after the flush:
+      // deleting the state with either still non-empty would drop records that never
+      // reached disk.
+      if(state.pendingOverflow.length||state.pendingDecisions.length)return;
       nativeAttempts.delete(agent);states.delete(agent.session.id);
     },async dispose(){
       for(const stop of [unsubscribe,unsubscribeStreams])if(typeof stop==='function')stop();
-      await Promise.allSettled([...states.values()].map(async state=>{await state.overflowQueue;await state.queue;}));states.clear();}};
+      // An unload with live sessions must not discard records that never reached disk.
+      // The flush uses the state's own agent, not a synthetic one: storageFor() resolves
+      // the telemetry directory through runtime.get(agent), so a fabricated agent has no
+      // directory and queue() would silently fail, losing exactly what this keeps.
+      await Promise.allSettled([...states.entries()].map(async([id,state])=>{
+        await state.overflowQueue;await state.queue;
+        const agent=state.agent;
+        if(agent&&(state.pendingDecisions.length||state.pendingOverflow.length)){
+          const pending=[...state.pendingOverflow,...state.pendingDecisions];
+          const decisions=pending.slice();
+          let ok=false;
+          try{ok=await queue(state,agent,{schema:'work-evidence.pending-decisions.v1',sessionId:id,
+            at:new Date().toISOString(),step:0,decisions});}catch{ok=false;}
+          if(ok){const ids=new Set(decisions.map(item=>item?.id));
+            state.pendingOverflow=state.pendingOverflow.filter(item=>!ids.has(item?.id));
+            state.pendingDecisions=state.pendingDecisions.filter(item=>!ids.has(item?.id));}
+        }
+      }));
+      // The map is cleared only after every state either persisted or was given its
+      // chance: a failed append keeps its decisions on the state object, and clearing the
+      // map here is what discards them. States that still hold unpersisted records are
+      // kept so a later dispose attempt can retry them.
+      const remaining=[...states.entries()].filter(([,state])=>state.pendingOverflow.length||state.pendingDecisions.length);
+      if(!remaining.length)states.clear();}};
 }

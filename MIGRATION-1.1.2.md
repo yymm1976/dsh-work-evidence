@@ -10,7 +10,11 @@
 | 0.2.2-rc.1 | 使用历史兼容接口。 | 不支持；开启后明确返回不可用。 |
 | 0.2.2-rc.2 | 支持命名子会话目录、PTC 及原生文件服务。 | 仅在已识别的原生工具、官方本地或沙箱文件服务中可用。 |
 
-归档功能需要 `fflate`，可安装在插件包内，也可由宿主提供。Java 语法编辑仍需原有 Python 环境和 OPS。未开启原生条件编辑时，`verified_exec` 沿用 OPS 路径。
+归档功能需要 `fflate`，可安装在插件包内，也可由宿主提供。
+
+**1.1.2 之后的 OPS 删除。** `opsAdapters`、`fastEditEnabled` 和 `fastedit_java` 已删除；写入这两个键的旧工作区文件仍能加载，但它们被当作退役设置强制为 `false`，不会启用任何行为。OPS 独有的 `ops_*` 读写/搜索分类、OPS 错误建议注入、OPS 经济学计数器、`ops_bash` Shell 偏好，以及 `work-evidence-ops` 消息均不再存在。剩余的 `memberParsing` 仍使用 `source-members-bridge.py`，其 Python 依赖见 `requirements-source-members.txt`（原 `requirements-fastedit.txt` 的同一组版本）。
+
+`verified_exec` 现在只有一个编辑后端：原生条件写入，且需显式设置 `nativeVerifiedEdits:true`。该后端固定要求宿主 0.2.2-rc.2 的原生 tools/文件服务组合；在 0.2.1-rc.4 或 0.2.2-rc.1 上调用返回 `reason:"cas-file-tools-unavailable"`、`missing:["rc2-native-conditional-write"]`、`effectState:"none"`，不写入任何文件。注意工具发布与后端可执行性不是同一条件：`nativeVerifiedEdits:true` 时工具面仍会发布 `verified_exec`（同步组装阶段无法等待宿主版本探测），`/work-evidence feature nativeVerifiedEdits` 会报 `rc2-native-conditional-write-unavailable`。它不会退回未带版本条件的普通写入，因为那会让 `verified_exec` 变成未验证写入。
 
 ## 加载与配置
 
@@ -21,7 +25,7 @@
 
 以下新增设置均默认为 `false`。现有工作区缺少这些键时采用该值。
 
-- `nativeVerifiedEdits`：原生条件编辑。
+- `nativeVerifiedEdits`：原生条件编辑（`verified_exec` 的唯一后端）。
 - `fileProfiling`：文本和 CSV 概况。
 - `structuredJson`：JSON 和 JSONL 选择。
 - `hostNodeFallback`：缺少 Node 时按受限条件复用宿主运行时。

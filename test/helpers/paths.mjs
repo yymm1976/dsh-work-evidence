@@ -31,4 +31,5 @@ export const pythonFileAvailable=value=>{
   return Boolean(name)&&path.isAbsolute(name)&&fs.existsSync(name);
 };
 export const ACP_ENTRY=path.join(DSH_PROFILE,'node_modules','billion-context-dsh','dist','index.js');
-export const OPS_ROOT=path.join(DSH_PROFILE,'node_modules','dsh-ops','lib','components');
+// OPS_ROOT was removed with the dsh-ops adapters: no remaining test mounts the
+// optional `dsh-ops` component tree (see OPS-ADAPTERS-OPT-IN.md).

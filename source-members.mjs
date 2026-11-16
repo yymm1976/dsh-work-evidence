@@ -112,13 +112,21 @@ function limitationFor({hasMore, lineTextTruncated, canIncreaseText, prefixOmitt
 }
 
 function perMemberArguments(base, name) {
+  // Archive mode selects by locator: adding member/members alongside the member range
+  // fails the mode/field validator, so the selectors only apply to source mode. Handled
+  // here so every caller is covered — patching individual call sites left two of them
+  // emitting an unusable argument set. The caller merges the member's own range into the
+  // result, so an archive retry still asks for the range the member occupied.
+  if (base?.mode === 'archive' || base?.archive) return {...base};
   if (Array.isArray(base.members)) return {...base, members: [name]};
   return {...base, member: name};
 }
 
 function parserSettings(options) {
   const config = options.config && typeof options.config === 'object' ? options.config : {};
-  const enabled = options.fastEditEnabled ?? options.enabled ?? config.fastEditEnabled ?? true;
+  // Source-member parsing is a read-only feature. It must not inherit the Java
+  // edit switch: disabling edits should not turn member parsing into a deopt.
+  const enabled = options.memberParsing ?? options.enabled ?? config.memberParsing ?? true;
   const memberParsing = options.memberParsing ?? config.memberParsing ?? true;
   const python = options.python
     || options.fastEditPython
@@ -300,6 +308,9 @@ function exactMatchRecord({
     canIncreaseText,
     prefixOmitted: start > match.lineStart,
   });
+  // Archive mode selects by locator, not by member name: adding `member`/`members`
+  // alongside `offset` fails the mode/field validator, so the selectors are only
+  // attached for source mode.
   const currentArguments = {
     ...perMemberArguments(retrieveArguments, name),
     offset: start,
@@ -347,7 +358,7 @@ function exactMatchRecord({
   };
 }
 
-function ambiguousRecord(name, matches) {
+function ambiguousRecord(name, matches, mode = 'source') {
   return {
     member: name,
     memberState: 'ambiguous',
@@ -364,7 +375,11 @@ function ambiguousRecord(name, matches) {
       rangeComplete: false,
     })),
     contentLimitation: 'member-name-ambiguous',
-    nextFactNeeded: 'Disambiguate the overload by passing offset within one candidate range, or inspect fastedit_java candidate metadata first; no overload was selected.',
+    nextFactNeeded: mode === 'archive'
+      // Archive reads reject offset together with member/members, so an offset
+      // retry would fail validation. Point at the locator that archive accepts.
+      ? 'Disambiguate the overload without member: read the candidate range with mode archive, archive, entry, offset and limit; no overload was selected.'
+      : 'Disambiguate the overload by passing offset within one candidate range; no overload was selected.',
   };
 }
 
@@ -429,13 +444,22 @@ function textWindowRecord({
     : scanComplete
       ? 'not-found-in-text-window'
       : 'not-found-before-scan-limit';
+  const archiveStart = retrieveArguments?.mode === 'archive' && matches[0]?.lines?.[0]?.line;
   const currentArguments = {
     ...perMemberArguments(retrieveArguments, name),
-    offset,
+    // Archive retrieval needs an explicit offset. A selected text window can sit far
+    // below the caller's original offset (usually line 1); retry from its first row.
+    ...(archiveStart ? {offset: archiveStart} : {offset}),
     limit,
     lineTextLimit,
   };
   const nextLineTextLimit = Math.max(0, ...matches.map(match => match.nextLineTextLimit || 0));
+  // A selector-free archive retry reads one range, so it must target the match that
+  // actually needs more text; using the first match's offset leaves the truncated one
+  // unread.
+  const truncatedMatch = matches.find(match => match.lineTextTruncated && match.nextLineTextLimit);
+  const retryOffset = retrieveArguments?.mode === 'archive' && truncatedMatch
+    ? truncatedMatch.lines?.[0]?.line ?? truncatedMatch.line : undefined;
   const lineTextMaximumReached = matches.some(match =>
     match.lineTextTruncated && !match.nextLineTextLimit);
   return {
@@ -449,7 +473,7 @@ function textWindowRecord({
     fallbackReason,
     ...(nextLineTextLimit ? {nextRetrieval: {
       tool: 'project_evidence',
-      arguments: {...currentArguments, lineTextLimit: nextLineTextLimit},
+      arguments: {...currentArguments, ...(retryOffset ? {offset: retryOffset} : {}), lineTextLimit: nextLineTextLimit},
     }} : {}),
     retrieveCurrent: {tool: 'project_evidence', arguments: currentArguments},
   };
@@ -562,6 +586,10 @@ function lexicalJavaRecord({
 
   const currentArguments = {
     ...perMemberArguments(retrieveArguments, name),
+    // Archive retrieval needs an explicit offset. The base offset is the caller's
+    // original window, which for a named member is line 1; a lexical match must
+    // re-fetch at its own lineStart or the retry returns the file prefix.
+    ...(retrieveArguments?.mode === 'archive' && matches.length ? {offset: matches[0].lineStart} : {}),
     limit,
     lineTextLimit,
   };
@@ -571,11 +599,15 @@ function lexicalJavaRecord({
     return Math.max(0, ...selected.map(line => line.length));
   }));
   const canIncreaseText = nextLineTextLimit > lineTextLimit && nextLineTextLimit <= MAX_LINE_TEXT_LIMIT;
+  // Without selectors the retry reads one range, so a line-text increase must target
+  // the truncated member rather than the first one.
+  const lexicalTruncated = retrieveArguments?.mode === 'archive' && canIncreaseText
+    ? matches.find(match => match.lineTextTruncated) : undefined;
   const lineTextMaximumReached = matches.some(match => match.lineTextMaximumReached);
   const next = lineTextMaximumReached
     ? null
     : canIncreaseText
-      ? {...currentArguments,lineTextLimit: nextLineTextLimit}
+      ? {...currentArguments, ...(lexicalTruncated ? {offset: lexicalTruncated.lineStart} : {}), lineTextLimit: nextLineTextLimit}
       : nextMatch?.hasMore
         ? {...currentArguments,offset: nextMatch.nextOffset}
         : null;
@@ -599,6 +631,11 @@ function lexicalJavaRecord({
 function sourceRetrieval(args, requested) {
   return {
     ...(args.query ? {query: args.query} : {}),
+    // An archive member cannot be re-fetched by class name alone: the archive path and
+    // the exact entry are what identify it, so they travel with every retrieval
+    // instruction instead of leaving the caller with an unusable argument set.
+    ...(args.archive ? {archive: args.archive} : {}),
+    ...(args.entry ? {entry: args.entry} : {}),
     ...(requested.plural ? {members: requested.names} : {member: requested.names[0]}),
   };
 }
@@ -622,10 +659,18 @@ export async function sourceMemberSource({
   const limit = checkedMemberLimit(args.limit);
   const lineTextLimit = checkedLineTextLimit(args.lineTextLimit);
   const parseSource = sourceText ?? lines.join('\n');
-  const retrieveBase = {
-    mode: 'source',
-    ...sourceRetrieval(args, requested),
-  };
+  // An archive member is fetched in archive mode with its locator; a workspace source is
+  // fetched in source mode by class name. Returning `mode:'source'` for an archive member
+  // made every retrieval instruction fail the mode/field validator.
+  const retrieveBase = args.archive
+    ? {mode: 'archive', archive: args.archive, ...(args.entry ? {entry: args.entry} : {}), offset: args.offset ?? 1, limit}
+    : {mode: 'source', ...sourceRetrieval(args, requested)};
+  // A plural archive request replays the selector, not a fixed range: publishing the
+  // caller's offset as the top-level replay returns the entry prefix instead of the
+  // requested members.
+  const replayBase = args.archive && requested.plural
+    ? {mode: 'archive', archive: args.archive, ...(args.entry ? {entry: args.entry} : {}), members: requested.names, limit, lineTextLimit}
+    : retrieveBase;
   const base = {
     state: 'observed',
     path: displayPath,
@@ -677,7 +722,7 @@ export async function sourceMemberSource({
       const lineSelected = Number.isInteger(args.offset)
         ? result.matches.filter(match => args.offset >= match.lineStart && args.offset <= match.lineEnd)
         : [];
-      if (result.total > 1 && lineSelected.length !== 1) return ambiguousRecord(name, result.matches);
+      if (result.total > 1 && lineSelected.length !== 1) return ambiguousRecord(name, result.matches, args.mode);
       return exactMatchRecord({
         name,
         match: lineSelected[0] || result.matches[0],
@@ -740,7 +785,7 @@ export async function sourceMemberSource({
     return {
       ...base,
       members: records,
-      retrieveCurrent: {tool: 'project_evidence', arguments: retrieveBase},
+      retrieveCurrent: {tool: 'project_evidence', arguments: replayBase},
       note: 'Members remain an array for an array request. Each match.complete covers only that declaration; parsed range completeness is separate from related callers, constants, and runtime behavior.',
     };
   }

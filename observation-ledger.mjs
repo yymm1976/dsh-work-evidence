@@ -1,10 +1,14 @@
 import {createHash,randomUUID} from 'node:crypto';
+import fs from 'node:fs';
 import path from 'node:path';
 import {parseResult,resultHasProblem,resultReference} from './visible-results.mjs';
 
-const READ_TOOLS=new Set(['read','ops_read_files','ops_inspect_local_file','project_evidence','fastedit_java']);
-const WRITE_TOOLS=new Set(['edit','write','str_replace_editor','ops_edit_file','ops_write_file']);
-const SEARCH_TOOLS=new Set(['grep','ops_grep','glob','ops_glob']);
+const READ_TOOLS=new Set(['read','project_evidence']);
+// verified_exec applies edits through the native conditional-write backend, so it
+// reports file entries instead of one file_path. Leaving it out of this set would
+// keep an earlier observation of the same file looking current after a write.
+const WRITE_TOOLS=new Set(['edit','write','str_replace_editor','verified_exec']);
+const SEARCH_TOOLS=new Set(['grep','glob']);
 const MAX_OBSERVATIONS=256;
 const MAX_BODY_CHARS=131072;
 const MAX_PENDING=512;
@@ -181,8 +185,14 @@ export function renderedReads(reads,outer){
 }
 
 function isSuccessfulWrite(name,result){
-  if(!WRITE_TOOLS.has(name)||result?.isError)return false;
-  return true;
+  if(!WRITE_TOOLS.has(name))return false;
+  // verified_exec applies files conditionally and can be interrupted after an
+  // apply while the wrapper still throws, so its result arrives as an error with no
+  // value.files. Treat it as a possible write anyway: an unchanged file would only
+  // cost a redundant re-read, while missing the write keeps pre-edit content
+  // looking current.
+  if(name==='verified_exec')return true;
+  return !result?.isError;
 }
 
 function mutationPathsFromValue(name,args,value){
@@ -191,10 +201,12 @@ function mutationPathsFromValue(name,args,value){
     if(value?.status==='partial'&&Array.isArray(value?.data?.items)){
       for(const item of value.data.items)if(item.status==='completed'&&typeof item.path==='string')out.push(item.path);
     }else if(!resultHasProblem(value))for(const item of pathsFromArguments(args))out.push(item);
-  }
-  if(name==='ops_batch'&&Array.isArray(value?.data?.items)){
-    for(const item of value.data.items){
-      if(item?.status==='completed'&&typeof item.path==='string')out.push(item.path);
+    // verified_exec changes files named in args.edits and reports them under
+    // value.files; neither shape carries a top-level file_path.
+    if(name==='verified_exec'){
+      if(Array.isArray(args?.edits))for(const edit of args.edits)if(typeof edit?.file==='string')out.push(edit.file);
+      if(Array.isArray(value?.files))for(const file of value.files)
+        if(['applied','partial','unknown'].includes(file?.effectState)&&typeof file?.path==='string')out.push(file.path);
     }
   }
   return [...new Set(out)];
@@ -259,11 +271,19 @@ export function createObservationLedger(ctx,runtime,nativeFiles=null){
     const state=stateFor(agent);
     const file=relativePath(state.root,rawPath);
     if(!file)return;
+    // A window path is the read result's realpath, so the write side must resolve the
+    // same way or a write through a symlink alias never invalidates it.
+    let writeKey=file.key;
+    try{
+      const real=fs.realpathSync.native(file.full),relative=path.relative(state.root,real);
+      if(relative!=='..'&&!relative.startsWith('..'+path.sep)&&!path.isAbsolute(relative))
+        writeKey=fileKey(relative.replaceAll('\\','/')+(file.display.includes('!/')?file.display.slice(file.display.indexOf('!/')):''));
+    }catch{/* not on disk: keep the lexical key */}
     const changed=[];
     for(const observation of state.observations){
       let touched=false;
       for(const window of observation.windows){
-        if(!window.stale&&(window.pathKey===file.key||window.pathKey?.startsWith(file.key+'!/'))){
+        if(!window.stale&&(window.pathKey===writeKey||window.pathKey===file.key||window.pathKey?.startsWith(file.key+'!/'))){
           window.stale=true;window.staleCause=WRITE_TOOLS.has(tool)?'known-write':'source-change';touched=true;
         }
       }
@@ -282,7 +302,11 @@ export function createObservationLedger(ctx,runtime,nativeFiles=null){
 
   function markMutation(agent,{name,args,value,seq=null}){
     const state=stateFor(agent);
-    for(const raw of mutationPathsFromValue(name,args,value))markStale(agent,raw,seq,name);
+    const paths=mutationPathsFromValue(name,args,value);
+    // A monotonic count lets a nested read tell whether a write happened after it
+    // was taken, even when the outer result is registered later.
+    if(paths.length)state.mutationCount=(state.mutationCount??0)+1;
+    for(const raw of paths)markStale(agent,raw,seq,name);
   }
 
   function rememberNested(agent,exec,result){
@@ -290,9 +314,18 @@ export function createObservationLedger(ctx,runtime,nativeFiles=null){
     state.root??=runtime.get(agent).root||null;
     if(!root)return;
     const list=state.nested.get(root)??[];
-    const entry={callId:exec.callId,name:exec.name,arguments:exec.arguments??{},value:result.value,meta:result.meta,content:textBlocks(result.content),isError:!!result.isError};
+    // The mutation count is captured when the dispatch is registered, not when its result
+    // arrives: a read issued before a write but completing after it would otherwise carry
+    // the post-write count and pass the superseded-read filter.
+    const dispatchedAt=Number.isSafeInteger(exec.mutationCountAtDispatch)?exec.mutationCountAtDispatch:(state.mutationCount??0);
+    const entry={callId:exec.callId,name:exec.name,arguments:exec.arguments??{},value:result.value,meta:result.meta,content:textBlocks(result.content),isError:!!result.isError,
+      mutationCountAtRead:dispatchedAt};
     const prior=list.findIndex(item=>item.callId===exec.callId);
-    if(prior>=0)list[prior]=entry;else list.push(entry);
+    // A re-recorded call keeps the mutation count it was first read at. Overwriting it
+    // with the current count would make a read taken before a write look post-write,
+    // because the superseded-read filter compares against this value.
+    if(prior>=0)list[prior]={...entry,mutationCountAtRead:list[prior].mutationCountAtRead??entry.mutationCountAtRead};
+    else list.push(entry);
     state.nested.set(root,list.slice(-32));
     if(state.nested.size>MAX_PENDING)state.nested.delete(state.nested.keys().next().value);
     if(isSuccessfulWrite(exec.name,result))markMutation(agent,{name:exec.name,args:exec.arguments,value:result.value,seq:null});
@@ -305,11 +338,24 @@ export function createObservationLedger(ctx,runtime,nativeFiles=null){
     for(let index=candidates.length-1;index>=0;index--){
       const observation=candidates[index];
       for(const prior of observation.windows){
-        if(prior.stale||prior.referenceApplied||prior.pathKey!==window.pathKey||prior.start>window.start||prior.end<window.end)continue;
+        if(prior.stale||prior.referenceApplied||prior.pathKey!==window.pathKey)continue;
+        // A receipt may only answer the SAME window. It exists to remove a duplicate body,
+        // and a duplicate is the same rows; a narrower or wider request is a new question.
+        //
+        // Allowing a containing prior window made the receipt a closure: F2-C step 235
+        // receipted 843-897 and 1016-1070, the model then reasoned "we can read 853-875
+        // and 1030-1046 (small) to avoid ledger receipt?" and step 236's narrower reads
+        // were answered with the same obs#54 receipt for both. After that no read of any
+        // part of those ranges could return the body, so the only remaining route was
+        // work_recall — a recovery the model had to guess it needed.
+        //
+        // Equal range AND equal text: the range alone would let an edited file reuse a
+        // receipt for its pre-edit rows when the revision is not reported.
+        if(prior.start!==window.start||prior.end!==window.end)continue;
         if(window.revision&&prior.revision&&window.revision!==prior.revision)continue;
         if(window.stat&&prior.stat&&window.stat!==prior.stat)continue;
-        const rows=prior.text.split('\n').slice(window.start-prior.start,window.end-prior.start+1).join('\n');
-        if(rows===window.text)return observation;
+        if(prior.text!==window.text)continue;
+        return observation;
       }
     }
     return null;
@@ -320,10 +366,22 @@ export function createObservationLedger(ctx,runtime,nativeFiles=null){
     for(const window of windows){
       const prior=priorById.get(window);
       if(!prior)return null;
-      lines.push(`obs#${prior.ordinal} seq=${prior.seq} ${window.tool} path=${window.path} range=${window.start}-${window.end} revision=${window.revision??prior.revision??'observed'} state=fresh visible=yes shape=line/text`);
+      // `visible=yes` described where the body is reachable, and F2-C read it as "the body
+      // is in your hands now". Step 233's own thinking is the proof: "Need actual code
+      // 682-710 visible from earlier; receipt says unchanged; I recall." It then hand-wrote
+      // an edit from memory, dropped the lifecycle_token re-check, and 092 failed.
+      //
+      // So the field names the two different facts separately:
+      //   delivered=no  — this range was NOT sent this turn.
+      //   lookup=work_recall kind=output seq=N — how to actually get the rows.
+      // The instruction line says the same thing in words, because a field name alone was
+      // already misread once.
+      lines.push(`obs#${prior.ordinal} seq=${prior.seq} ${window.tool} path=${window.path} range=${window.start}-${window.end} revision=${window.revision??prior.revision??'observed'} state=fresh delivered=no lookup="work_recall kind=output seq=${prior.seq}" shape=line/text`);
     }
     const text='[work-evidence ledger receipt]\n'+lines.join('\n')+
-      '\nThe listed content is unchanged and its original body remains visible in this request; the receipt replaces only this duplicate model-visible body.';
+      '\nThese rows were delivered earlier in this session and are NOT included in this response. '+
+      'To see them again, call work_recall with the seq above. Do not edit or reason about these lines from memory: '+
+      're-read them first, because an edit needs the exact current text.';
     return text.length<=MAX_RECEIPT_CHARS?text:null;
   }
 
@@ -335,7 +393,43 @@ export function createObservationLedger(ctx,runtime,nativeFiles=null){
     const root=await refreshRoot(agent);
     if(!root)return skip('no-workspace-root');
     let source,projection=parseResult(textBlocks(result.content));
-    const nested=state.nested.get(exec.callId)??[],{reads,projected:batch}=nestedReadValues(nested);
+    const nested=state.nested.get(exec.callId)??[],{reads:rawReads,projected:rawBatch}=nestedReadValues(nested);
+    // Drop any nested read taken before a write in the same root call: its body
+    // predates the mutation, so accepting it would present pre-edit content as
+    // current. The remaining reads keep the original projection rule.
+    // Keep only reads taken at or after the latest mutation in this call.
+    const latestMutation=state.mutationCount??0;
+    const reads=rawReads.filter(read=>(read.mutationCountAtRead??0)>=latestMutation)||rawReads;
+    const keptAll=reads.length===rawReads.length;
+    const batch=keptAll?rawBatch:null;
+    // A dropped read still sits inside the outer JSON projection, and reading windows
+    // out of that object would re-admit the pre-write body. The projection is left
+    // untouched — it is the model's own result — but the dropped paths are carried to
+    // the window step, which skips them. Keys are resolved the same way the window
+    // paths are, because the read argument can be relative while the result path is an
+    // absolute realpath; comparing the raw forms would never match.
+    // A window path is the result's absolute realpath, so a read through a symlink
+    // would carry the alias key while the window carries the target key. Resolving
+    // through the filesystem first makes both sides agree; a path that does not exist
+    // falls back to the lexical key, which is what the argument path can still be.
+    const realKeys=new Map();
+    const resolveRealKey=value=>{
+      if(realKeys.has(value))return realKeys.get(value);
+      const lexical=relativePath(root,value);
+      let key=lexical?lexical.key:null;
+      if(lexical?.full){
+        try{const real=fs.realpathSync.native(lexical.full),relative=path.relative(root,real);
+          if(relative!=='..'&&!relative.startsWith('..'+path.sep)&&!path.isAbsolute(relative)){
+            // An archive member's realpath is the archive file; the `!/entry` suffix is
+            // what distinguishes members, so resolve the archive path but keep the entry.
+            const suffix=lexical.display.includes('!/')?lexical.display.slice(lexical.display.indexOf('!/')):'';
+            key=fileKey(relative.replaceAll('\\','/')+suffix);
+          }}catch{/* keep the lexical key */}
+      }
+      realKeys.set(value,key);
+      return key;
+    };
+    const pathKeyOf=resolveRealKey;
     if(batch&&sameJson(textBlocks(result.content),batch)){
       source={name:reads[0].name,arguments:{files:reads.map(read=>read.arguments)},value:batch};
     }else if(exec.name==='run_code'&&(source=renderedReads(reads,textBlocks(result.content)))){
@@ -350,7 +444,34 @@ export function createObservationLedger(ctx,runtime,nativeFiles=null){
       if(!sameJson(textBlocks(result.content),reads[0].value))return skip('outer-projection-mismatch');
       return skip('not-read-wrapper');
     }
-    const windows=collectReadWindows(projection??source.value,pathsFromArguments(source.arguments)[0]??null);
+    const allWindows=collectReadWindows(projection??source.value,pathsFromArguments(source.arguments)[0]??null);
+    // Drop the windows whose read was superseded by a later write in the same call.
+    // The filter is per window, not per path: the same file can be read before the write
+    // (superseded) and again after it (valid), and dropping every window of that path
+    // would lose the post-write observation.
+    //
+    // The identity covers the range AND a hash of the whole text. A prefix is not
+    // enough: a change after the first characters leaves the prefix equal, which would
+    // let the superseded window validate itself as the kept one.
+    const windowSignature=window=>{
+      const key=pathKeyOf(window.path);
+      if(!key)return null;
+      const text=String(window.text??'');
+      return `${key}\u0000${window.start??0}\u0000${window.end??0}\u0000${hashOf(text)}`;
+    };
+    const keptSignatures=new Set(reads.flatMap(read=>readWindowsFromDispatch(read).map(windowSignature).filter(Boolean)));
+    const droppedSignatures=new Set(keptAll?[]:rawReads
+      .filter(read=>!reads.includes(read))
+      .flatMap(read=>readWindowsFromDispatch(read).map(windowSignature).filter(Boolean)));
+    const windows=allWindows.filter(window=>{
+      const signature=windowSignature(window);
+      // With reads dropped, a window is only admissible when a retained read produced
+      // exactly that window. A window that matches no retained read came from the
+      // projection's copy of a superseded body and would be registered as current.
+      if(!keptAll)return Boolean(signature)&&keptSignatures.has(signature);
+      if(!signature||!droppedSignatures.has(signature))return true;
+      return keptSignatures.has(signature);
+    });
     if(!windows.length)return skip('no-line-windows');
     for(const window of windows){
       const file=relativePath(root,window.path);if(!file)return skip('path-outside-workspace');
@@ -462,13 +583,26 @@ export function createObservationLedger(ctx,runtime,nativeFiles=null){
     if(ledgerOn&&!result.isError)recordSearchResult(exec.agent,exec.name,exec.arguments,result.value,exec.rootCallId||exec.callId);
     if(Object.hasOwn(decision,'content')||Object.hasOwn(decision,'value'))return decision;
     let prepared;
+    // Capture both sides of the direct read: a write completed before this post-execute
+    // hook may already have made its body historical, and a later write before delivery
+    // must still invalidate it. Nested reads use the same dispatch invariant.
+    const mutationCountAtDispatch=Number.isSafeInteger(exec.mutationCountAtDispatch)?exec.mutationCountAtDispatch:(state.mutationCount??0);
+    const mutationCountAtPrepare=state.mutationCount??0;
     if(ledgerOn)try{prepared=await prepareVisibleResult(exec.agent,exec,result);}catch(error){addProblem(state,'receipt-prepare: '+error.message);}
     if(prepared){
-      state.pending.set(exec.callId,{...prepared,receiptApplied:!!prepared.receipt,at:Date.now()});
+      // A receipt may only claim the referenced body is current if no mutation
+      // happened after dispatch, before preparation, or between preparation and
+      // delivery. Otherwise the original result is delivered and the observation is
+      // recorded as historical for later reads.
+      const receiptCurrent=Boolean(prepared.receipt)&&mutationCountAtDispatch===mutationCountAtPrepare&&
+        (state.mutationCount??0)===mutationCountAtPrepare;
+      state.pending.set(exec.callId,{...prepared,mutationCountAtDispatch,mutationCountAtPrepare,
+        receiptApplied:receiptCurrent,at:Date.now()});
       if(state.pending.size>MAX_PENDING)state.pending.delete(state.pending.keys().next().value);
+      const content=receiptCurrent?[{type:'text',text:prepared.receipt}]:result.content;
+      return content!==result.content?{...decision,content}:decision;
     }
-    const content=prepared?.receipt?[{type:'text',text:prepared.receipt}]:result.content;
-    return content!==result.content?{...decision,content}:decision;
+    return decision;
   }
 
   function addObservation(agent,event){
@@ -491,8 +625,15 @@ export function createObservationLedger(ctx,runtime,nativeFiles=null){
       revision:pending.windows[0].revision??null,windows:pending.windows.map(({source,...window})=>window),
       hash:pending.bodyHash,chars:pending.original.length,hasBody:pending.windows.some(window=>!window.referenceApplied),
       canonicalIds:[...new Set([...pending.priorById.values()].map(item=>item.id))],
-      visible:true,stale:false,observedAt:new Date().toISOString(),
+      // A write at any point after dispatch makes the delivered body historical:
+      // post-execute preparation does not prove the direct read preceded that write.
+      visible:true,stale:(state.mutationCount??0)!==(pending.mutationCountAtPrepare??0)||(pending.mutationCountAtPrepare??0)!==(pending.mutationCountAtDispatch??0),observedAt:new Date().toISOString(),
     };
+    // Consumers read the window flag, not the observation flag: bestCanonical()
+    // skips a prior only when its window is stale, and metrics() counts the
+    // observation as visible when any window is not stale. A stale observation whose
+    // windows still claim freshness would therefore be reused as a current body.
+    if(observation.stale)for(const window of observation.windows){window.stale=true;window.staleCause='known-write';}
     if(pending.receiptApplied){
       runtime.effects?.rewrite(agent,{feature:'receipt',seq:event.seq,retainedSeqs:[...new Set([...pending.priorById.values()].map(item=>item.seq))],afterMessage:event.data.message,beforeMessages:[{...event.data.message,content:[{type:'text',text:pending.original}]}]});
       runtime.effects?.decide(agent,'receipt','applied','duplicate-visible-body',{seq:event.seq,charsSaved:pending.original.length-shownText.length});
@@ -560,7 +701,7 @@ export function createObservationLedger(ctx,runtime,nativeFiles=null){
     }
     if(event.type==='tool/ptc-dispatch'){
       const data=event.data??{};
-      if(WRITE_TOOLS.has(data.name)&&!data.isError)markMutation(agent,{name:data.name,args:data.arguments,value:data.content,seq:event.seq});
+      if(isSuccessfulWrite(data.name,data))markMutation(agent,{name:data.name,args:data.arguments,value:data.content,seq:event.seq});
       return;
     }
     if(event.type==='assistant/message'){
@@ -685,6 +826,16 @@ export function createObservationLedger(ctx,runtime,nativeFiles=null){
   }
 
   function observe(){
+    ctx.on('tools/execute',async(exec,next)=>{
+      // A read issued before a write can complete after it. The mutation count is
+      // stamped on the call here, at dispatch, so rememberNested can record what the
+      // read could actually have observed rather than what had happened by the time its
+      // result arrived.
+      if(exec?.agent&&READ_TOOLS.has(exec.name)&&!Number.isSafeInteger(exec.mutationCountAtDispatch)){
+        try{exec.mutationCountAtDispatch=stateFor(exec.agent).mutationCount??0;}catch{}
+      }
+      return next();
+    });
     ctx.on('tools/post-execute',postExecute);
     // Result observers still receive the tool's structured value and metadata.
     // They run before the outer PTC result is prepared for model projection.
@@ -695,5 +846,5 @@ export function createObservationLedger(ctx,runtime,nativeFiles=null){
     ctx.on('agent/disposed',({agent})=>ledgers.delete(agent.session.id));
   }
 
-  return {observe,maintenance,metrics,detail,clear};
+  return {observe,maintenance,metrics,detail,clear,mutationCount:agent=>stateFor(agent).mutationCount??0};
 }

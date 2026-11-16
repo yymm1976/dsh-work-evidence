@@ -21,7 +21,7 @@ test('status stays readable while disabled but cannot enable or rewrite workspac
 
 test('the session gate hides management tools and restores them without touching native tools',async()=>{
   const seen=[];
-  const host=await startHost({workspace:{toolSurface:'full'},script:(options,call)=>{
+  const host=await startHost({workspace:{toolSurface:'full',nativeVerifiedEdits:true},script:(options,call)=>{
     seen.push({call,names:(options.tools??[]).map(item=>item.name)});
     if(call===1)return [text('就绪。')];
     if(call===2)return [tool('work_status',{})];
@@ -33,7 +33,7 @@ test('the session gate hides management tools and restores them without touching
     const agent=await host.createAgent('max');
     await host.send(agent,'先说明已就绪');
     const enabled=seen.find(item=>item.call===1).names;
-    const management=['project_evidence','work_report','work_state','work_probe','evidence_index','candidate_select','ptc_patterns','ptc_fastpath','verified_exec','fastedit_java','work_compute','work_exec'];
+    const management=['project_evidence','work_report','work_state','work_probe','evidence_index','candidate_select','ptc_patterns','ptc_fastpath','verified_exec','work_compute','work_exec'];
     for(const name of management)assert.ok(enabled.includes(name),`enabled surface keeps ${name}`);
     assert.ok(enabled.includes('read')&&enabled.includes('pwsh'));
     await host.command(agent,'off');

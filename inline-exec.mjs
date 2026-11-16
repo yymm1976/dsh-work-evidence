@@ -360,8 +360,55 @@ function resolveIndexedScript(input,calls,resultExecutables,resultHostRuntimes,e
     ...(shellSource?{shellSource,nativeArguments:shellSource.effectiveArguments??shellSource.nativeArguments}:{})};
 }
 
-export const INLINE_ENV_KEYS=Object.freeze(['DSH_WORK_EVIDENCE_STDIN_ID',...Array.from({length:3},(_,index)=>'DSH_WORK_EVIDENCE_STDIN_'+index)]);
+// The source travels as environment values. The per-variable ceiling is real and documented
+// (32,767 characters including the terminating NUL), but the "whole block is about 32 KiB"
+// figure that used to be here was wrong, and review caught the arithmetic: nine chunks of
+// 32,766 characters is 294,894 bytes, far above 32 KiB.
+//
+// Measured on this host: spawnSync with N x 1 KiB variables succeeded at every size tried —
+// 32 KiB, 290 KiB, 512 KiB, 1 MiB, 2 MiB. The block limit is therefore not what constrains
+// this path; the per-variable limit is. The chunk count follows that limit, and no
+// total-size check is needed on win32.
+const STDIN_CHUNKS=process.platform==='win32'?9:3;
+// POSIX caps a single exec argument at 128 KiB. A host that publishes only pwsh on
+// POSIX still passes the program through `pwsh -Command`, so the encoded text has
+// to fit one argument.
+const LOCAL_ARGUMENT_LIMIT=128*1024;
+// Windows caps a whole command line near 32,767 characters; leave room for the
+// wrapping shell and quoting rather than using the exact maximum.
+const WINDOWS_COMMAND_LIMIT=30000;
+export const INLINE_ENV_KEYS=Object.freeze(['DSH_WORK_EVIDENCE_STDIN_ID',...Array.from({length:STDIN_CHUNKS},(_,index)=>'DSH_WORK_EVIDENCE_STDIN_'+index)]);
 const validTransferId=value=>typeof value==='string'&&/^[A-Za-z0-9_-]{1,128}$/u.test(value);
+
+/** The native shells `work_exec` can transport a program through. */
+export const NATIVE_SHELLS=Object.freeze(['pwsh','bash']);
+
+/** The shell a platform prefers, used to name what an unavailable report looked for. */
+export function preferredShell(platform=process.platform){return platform==='win32'?'pwsh':'bash';}
+
+/**
+ * Select the native shell from the shells the host actually publishes.
+ *
+ * The platform only orders the preference; it never decides the result. A
+ * host that publishes nothing yields null, so callers report the shell that
+ * was looked for rather than a platform guess. On Windows pwsh stays first
+ * (PowerShell 7 or the 5.1 fallback the executor already accepts); on POSIX
+ * bash stays first. A Windows host that publishes only bash therefore reaches
+ * bash instead of an unavailable pwsh.
+ *
+ * @param isAvailable - reports whether the host publishes the named shell.
+ * @param platform - the platform whose preference order applies.
+ * @returns the first published shell, or null when neither is published.
+ */
+export function selectShell(isAvailable,platform=process.platform){
+  for(const candidate of platform==='win32'?['pwsh','bash']:['bash','pwsh']){
+    let present=false;
+    try{present=Boolean(isAvailable(candidate));}catch{present=false;}
+    if(present)return candidate;
+  }
+  return null;
+}
+
 /** Ask the native shell about its own executor, including local functions on Bash. */
 export function nodeAvailabilityCommand(shell,marker){
   if(!validTransferId(marker))throw new Error('Node availability needs an exact marker');
@@ -383,14 +430,21 @@ function validateInlineInput(input){
   return executable;
 }
 
-/** Keep each environment string below Linux's per-string exec limit, including UTF-8 and NUL bytes. */
+/** Keep each environment string below the platform's per-string exec limit, including UTF-8 and NUL bytes.
+ *  On win32 the spawn goes through CreateProcess, which caps one variable at 32,767 characters;
+ *  the environment block itself was measured to accept at least 2 MiB here, so the per-variable
+ *  limit is what sets the chunk count. The Linux path can carry much larger execve strings. */
 export function inlineEnvironment(input,transferId){
   validateInlineInput(input);
   if(!validTransferId(transferId))throw new Error('bash transport requires a valid transfer ID');
   const bytes=Buffer.from(input.code.replaceAll('\\','\\\\').replaceAll('\0','\\x00'),'utf8');
+  // The number of usable chunks is set by the PER-VARIABLE limit, not by a block cap:
+  // measured here, a 2 MiB environment spawned fine. 32,767 is the documented variable
+  // limit *including* the terminating NUL, so a chunk holds at most 32,766 characters.
+  const perVariable=process.platform==='win32'?32766:96000;
   const values={[INLINE_ENV_KEYS[0]]:transferId};let offset=0;
   for(const key of INLINE_ENV_KEYS.slice(1)){
-    let end=Math.min(offset+96000,bytes.length);
+    let end=Math.min(offset+perVariable,bytes.length);
     while(end<bytes.length&&(bytes[end]&0xc0)===0x80)end--;
     values[key]=bytes.subarray(offset,end).toString('utf8');offset=end;
   }
@@ -422,7 +476,14 @@ builtin printf '%b' "${content}" | (
   if(shell!=='pwsh')throw new Error('shell must be pwsh or bash');
   const args=input.nativeArguments?.join(' ')??(input.runtime==='python'?'-B -X utf8 -':'--input-type='+(input.format??'module')+' -');
   const encoded=Buffer.from(input.code,'utf8').toString('base64');
-  return `$ErrorActionPreference = 'Stop'
+  // The pwsh transport carries the program inside the command text, so the limit that
+  // applies is the host's command-line limit — and it covers the whole command, the
+  // wrapper plus the program, not the program alone. POSIX caps one argument at
+  // 128 KiB; Windows caps the entire command line near 32,767 characters. Report the
+  // oversize before launch rather than failing with E2BIG or a truncated command,
+  // which reads as an infrastructure fault.
+  const commandLimit=process.platform==='win32'?WINDOWS_COMMAND_LIMIT:LOCAL_ARGUMENT_LIMIT;
+  const command=`$ErrorActionPreference = 'Stop'
 [Console]::OutputEncoding = [Text.UTF8Encoding]::new($false)
 $workExecInfo = [Diagnostics.ProcessStartInfo]::new()
 $workExecInfo.FileName = ${quote(executable)}
@@ -453,4 +514,22 @@ try {
   $workExecProcess.Dispose()
 }
 exit $workExecExit`;
+  // The whole rendered command is what the host passes as one argument, so the limit is
+  // checked against the finished text rather than an estimated wrapper size: an
+  // undercount here would let an over-limit command through to a launch failure.
+  // The limit is compared in the unit the platform enforces, and the two platforms differ:
+  //   - CreateProcess caps the command line in CHARACTERS, so a path with non-ASCII letters
+  //     must count its code points, not its UTF-8 bytes. Comparing bytes rejected commands
+  //     that would have launched.
+  //   - POSIX caps an argv element in BYTES *including the terminating NUL*, so a command of
+  //     exactly MAX_ARG_STRLEN bytes is one byte over and fails with E2BIG. The POSIX branch
+  //     therefore rejects at >=, the Windows branch at >.
+  // The error names the unit for the same reason: "unit limit" told an operator nothing.
+  const onWindows=process.platform==='win32';
+  const measured=onWindows?command.length:Buffer.byteLength(command,'utf8');
+  const unit=onWindows?'characters':'bytes';
+  if(onWindows?measured>commandLimit:measured>=commandLimit){
+    throw new Error(`work_exec source is too large for the pwsh transport on this host (${measured} ${unit} of command against a ${commandLimit}-${unit} limit); use the bash transport or a smaller program`);
+  }
+  return command;
 }

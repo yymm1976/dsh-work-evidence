@@ -3,7 +3,7 @@ import {eventLog,isUserRequestMessage,textOf} from './runtime.mjs';
 
 const SOURCE='work-evidence-final-json';
 const PROCESS_FIELDS=['exitCode','stdout','stderr'];
-const SHELL_TOOLS=new Set(['pwsh','bash','ops_bash']);
+const SHELL_TOOLS=new Set(['pwsh','bash']);
 const MAX_REPAIRS=2;
 const messageOf=event=>event?.data?.message??event?.data;
 const STRICT_JSON_OUTPUT=/(?:只|仅)(?:能|需)?(?:返回|输出)|\b(?:(?:return|output)\s+only|only\s+(?:return|output))\b/iu;

@@ -168,16 +168,14 @@ test('possible writes after judgment evidence invalidate overlapping and unresol
   }
 });
 
-test('pending read-only Java operations do not invalidate judgment scopes',()=>{
-  for(const operation of ['read_entity','find_entity']){
-    const sample=fixture();
-    sample.review.scopePaths=['src/Parser.java'];
-    sample.add('tool/call',{callId:'pending-java',name:'fastedit_java',arguments:{file:'src/Parser.java',operation,symbol:'Parser.parse'}});
-    sample.assessment.throughSeq=sample.events.at(-1).seq;
-    const result=audit(sample),row=result.judgmentReviews.items[0];
-    assert.equal(row.status,'superseded',operation);assert.equal(row.reasons,undefined);
-    assert.equal(result.events.toolCalls.at(-1).resultSeq,null);
-  }
+test('a pending native read does not invalidate judgment scopes',()=>{
+  const sample=fixture();
+  sample.review.scopePaths=['src/Parser.java'];
+  sample.add('tool/call',{callId:'pending-read',name:'read',arguments:{file_path:'src/Parser.java'}});
+  sample.assessment.throughSeq=sample.events.at(-1).seq;
+  const result=audit(sample),row=result.judgmentReviews.items[0];
+  assert.equal(row.status,'superseded');assert.equal(row.reasons,undefined);
+  assert.equal(result.events.toolCalls.at(-1).resultSeq,null);
 });
 
 test('nested tool counters, appended events and damaged sources remain explicit unknowns',()=>{

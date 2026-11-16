@@ -79,7 +79,10 @@ test('full tool surface and default reference work together and each setting clo
     await host.command(agent,'feature toolSurface compact');
     view=await host.command(agent,'features');
     assert.equal(view.tools.find(item=>item.name==='work_status').exposed,false);
-    assert.equal(view.tools.find(item=>item.name==='project_evidence').exposed,false);
+    // evidenceViews is on and project_evidence is its only entry point, so the
+    // compact surface keeps it reachable; hiding it would leave the switch on
+    // with no way to use it. Only a read-only/minimal task hides it.
+    assert.equal(view.tools.find(item=>item.name==='project_evidence').exposed,true);
     assert.equal(view.features.find(item=>item.key==='toolSurface').effect.lastReason,'compact-surface');
     await host.command(agent,'feature toolSurface full');
     view=await host.command(agent,'features');
@@ -128,6 +131,50 @@ test('memberParsing records an attempted parser failure as failed',async()=>{
   assert.equal(observed.results[0].sources[0].parser.fallbackReason,'tree-sitter-bridge-failed');
   const effect=observed.features.find(item=>item.key==='memberParsing').effect;
   assert.equal(effect.lastStatus,'failed');assert.equal(effect.failed,1);assert.equal(effect.notApplicable,0);
+});
+
+test('an archive lexical fallback re-fetches a unique member at its own line',async()=>{
+  // Without the parser the record is built lexically. The archive retry used the
+  // caller's base offset (1), so a member found at line 6 re-fetched lines 1-10 and
+  // never showed the member it claimed to retrieve.
+  const observed=await run({memberParsing:false},[[tool('project_evidence',
+    {mode:'archive',archive:'src-sources.jar',entry:'demo/Calc.java',member:'sub'})]],
+    async cwd=>{await fs.writeFile(path.join(cwd,'src-sources.jar'),buildZip([{name:'demo/Calc.java',data:JAVA}]));});
+  const source=observed.results[0].sources[0];
+  assert.equal(source.parser.mode,'lexical');
+  assert.equal(source.matches.length,1);
+  assert.equal(source.retrieveCurrent.arguments.mode,'archive');
+  assert.equal(source.retrieveCurrent.arguments.entry,'demo/Calc.java');
+  assert.equal(source.retrieveCurrent.arguments.offset,source.matches[0].lineStart,
+    'a retry must start at the matched member, not the archive entry prefix');
+});
+
+test('an archive text-window fallback re-fetches at the selected window',async()=>{
+  const text=['header',...Array.from({length:18},(_,i)=>`filler ${i}`),'target marker','tail'].join('\n');
+  const observed=await run({memberParsing:false},[[tool('project_evidence',
+    {mode:'archive',archive:'src-sources.jar',entry:'demo/notes.txt',member:'target'})]],
+    async cwd=>{await fs.writeFile(path.join(cwd,'src-sources.jar'),buildZip([{name:'demo/notes.txt',data:text}]));});
+  const source=observed.results[0].sources[0];
+  assert.equal(source.parser.mode,'text-window');
+  assert.ok(source.matches.length>=1);
+  const windowStart=source.matches[0].lines[0].line;
+  assert.ok(windowStart>1);
+  assert.equal(source.retrieveCurrent.arguments.offset,windowStart,
+    'an archive text-window retry must start at the selected window');
+});
+
+test('a plural archive request replays the member selector, not the entry prefix',async()=>{
+  const observed=await run({memberParsing:false},[[tool('project_evidence',
+    {mode:'archive',archive:'src-sources.jar',entry:'demo/Calc.java',members:['add','sub'],lineTextLimit:80})]],
+    async cwd=>{await fs.writeFile(path.join(cwd,'src-sources.jar'),buildZip([{name:'demo/Calc.java',data:JAVA}]));});
+  const source=observed.results[0].sources[0];
+  assert.deepEqual(source.members.map(item=>item.member),['add','sub']);
+  assert.equal(source.retrieveCurrent.arguments.mode,'archive');
+  assert.deepEqual(source.retrieveCurrent.arguments.members,['add','sub'],
+    'the top-level archive replay must not fall back to a fixed range');
+  assert.equal(source.retrieveCurrent.arguments.offset,undefined);
+  assert.equal(source.retrieveCurrent.arguments.lineTextLimit,80,
+    'the replay keeps the requested line budget instead of the default');
 });
 
 test('mavenSourceBinding requires coordinates and selects a matching sources jar',async()=>{

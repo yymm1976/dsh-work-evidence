@@ -4,6 +4,22 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import {createEffectObserver} from '../effect-observer.mjs';
+import realFs from 'node:fs/promises';
+
+// A read-only mode only blocks writes when the process lacks CAP_DAC_OVERRIDE, so a
+// root container can still append after chmod(0o444). Detect the capability instead
+// of assuming the permission model, and skip only the cases that need it.
+async function readOnlyBlocksWrites(){
+  const dir=await fs.mkdtemp(path.join(os.tmpdir(),'we-chmod-'));
+  try{
+    const file=path.join(dir,'probe.txt');
+    await fs.writeFile(file,'a','utf8');
+    await fs.chmod(file,0o444);
+    try{await fs.appendFile(file,'b');return false;}catch{return true;}
+  }finally{await fs.rm(dir,{recursive:true,force:true});}
+}
+const chmodBlocks=await readOnlyBlocksWrites();
+
 
 const SESSION='we-effects-session';
 const COMPLETE={inputTokens:1000,cacheReadTokens:0,cacheWriteTokens:0,outputTokens:100,totalTokens:1100};
@@ -41,7 +57,7 @@ test('a missing trailing newline is repaired so later rows keep their own line',
   }finally{await remove(created.telemetryDir);}
 });
 
-test('a failed trailing-newline write is recorded and does not block later requests',async()=>{
+test('a failed trailing-newline write is recorded and does not block later requests',{skip:!chmodBlocks?'read-only mode does not block writes here (CAP_DAC_OVERRIDE)' : false},async()=>{
   const created=await start();
   const file=path.join(created.telemetryDir,SESSION+'.observability.jsonl');
   try{
@@ -139,6 +155,98 @@ test('a failed append after a failed newline repair keeps the next row on its ow
     await created.effects.flush(created.agent);
     assert.deepEqual((await stored(created.telemetryDir)).map(item=>item.requestId),['restored-row','late-row']);
   }finally{await fs.chmod(file,0o664);await remove(created.telemetryDir);}
+});
+
+test('a partial failed append is isolated before the next persistent row',async()=>{
+  const created=await start();
+  const file=path.join(created.telemetryDir,SESSION+'.observability.jsonl');
+  const original=realFs.appendFile;
+  let injected=false;
+  realFs.appendFile=async(...args)=>{
+    if(!injected&&args[0]===file){
+      injected=true;
+      const text=String(args[1]);
+      await original(file,text.slice(0,Math.floor(text.length/2)),'utf8');
+      throw new Error('injected partial append');
+    }
+    return original(...args);
+  };
+  try{
+    await fs.writeFile(file,JSON.stringify(row('chinese-row',COMPLETE,{note:'中文字符'}))+'\n','utf8');
+    await created.effects.load(created.agent);
+    await created.effects.finish(created.agent,row('partial-row'));
+    await created.effects.flush(created.agent);
+    await created.effects.finish(created.agent,row('surviving-row'));
+    await created.effects.flush(created.agent);
+    assert.deepEqual((await stored(created.telemetryDir)).map(item=>item.requestId),['chinese-row','surviving-row'],
+      'a non-ASCII row before the partial tail survives the byte-offset truncation');
+    const restored=await start({telemetryDir:created.telemetryDir});
+    await restored.effects.load(restored.agent);
+    assert.equal(restored.effects.snapshot(restored.agent).requests.count,2);
+  }finally{realFs.appendFile=original;await remove(created.telemetryDir);}
+});
+
+test('a failed boundary repair is retried before the next row is appended',async()=>{
+  // A complete unterminated row, then a partial append joined to it, then a repair that
+  // also fails. A bare newline before the next row would seal the join and lose the
+  // complete row, so the repair must run again once storage recovers.
+  const created=await start();
+  const file=path.join(created.telemetryDir,SESSION+'.observability.jsonl');
+  const append=realFs.appendFile,truncate=realFs.truncate;
+  let appended=false,repairFailed=false;
+  realFs.appendFile=async(...args)=>{
+    if(!appended&&args[0]===file){
+      appended=true;
+      const text=String(args[1]);
+      await append(file,text.slice(0,Math.floor(text.length/2)),'utf8');
+      throw new Error('injected partial append');
+    }
+    return append(...args);
+  };
+  realFs.truncate=async(...args)=>{
+    if(!repairFailed&&args[0]===file){repairFailed=true;throw new Error('injected repair failure');}
+    return truncate(...args);
+  };
+  try{
+    await fs.writeFile(file,JSON.stringify(row('unterminated-row',COMPLETE,{note:'中文字符'})),'utf8');
+    await created.effects.finish(created.agent,row('partial-row'));
+    await created.effects.flush(created.agent);
+    assert.equal(repairFailed,true,'the first repair was attempted and failed');
+    await created.effects.finish(created.agent,row('surviving-row'));
+    await created.effects.flush(created.agent);
+    assert.deepEqual((await stored(created.telemetryDir)).map(item=>item.requestId),['unterminated-row','surviving-row'],
+      'the repair is retried rather than sealed with a newline after the fragment');
+  }finally{realFs.appendFile=append;realFs.truncate=truncate;await remove(created.telemetryDir);}
+});
+
+test('a complete row without a newline survives a following partial append',async()=>{
+  const created=await start();
+  const file=path.join(created.telemetryDir,SESSION+'.observability.jsonl');
+  const original=realFs.appendFile;
+  let injected=false;
+  realFs.appendFile=async(...args)=>{
+    if(!injected&&args[0]===file){
+      injected=true;
+      const text=String(args[1]);
+      await original(file,text.slice(0,Math.floor(text.length/2)),'utf8');
+      throw new Error('injected partial append');
+    }
+    return original(...args);
+  };
+  try{
+    await fs.writeFile(file,JSON.stringify(row('unterminated-row',COMPLETE,{note:'中文字符'})),'utf8');
+    // No load here: load would repair the missing newline first and the partial-append
+    // precondition would not exist.
+    await created.effects.finish(created.agent,row('partial-row'));
+    await created.effects.flush(created.agent);
+    await created.effects.finish(created.agent,row('surviving-row'));
+    await created.effects.flush(created.agent);
+    assert.deepEqual((await stored(created.telemetryDir)).map(item=>item.requestId),['unterminated-row','surviving-row'],
+      'a complete unterminated row is retained and the partial fragment is removed');
+    const restored=await start({telemetryDir:created.telemetryDir});
+    await restored.effects.load(restored.agent);
+    assert.equal(restored.effects.snapshot(restored.agent).requests.count,2);
+  }finally{realFs.appendFile=original;await remove(created.telemetryDir);}
 });
 
 test('an inconsistent reported total stays incomplete in memory, on disk and after a restore',async()=>{
@@ -278,4 +386,84 @@ test('restored feature names cannot mutate shared prototypes', async () => {
   } finally {
     await remove(created.telemetryDir);
   }
+});
+
+test('a small saving against a larger overhead keeps every balance field lossless',async()=>{
+  // Deliver a real row: with no request the totals are all zero, ratioPercent is omitted,
+  // and the assertions below could never see the failing input. savedTokens=-5 against
+  // spentTokens=2000 makes the ratio round to -0, which the host rejects as non-lossless.
+  const created=await start();
+  try{
+    await created.effects.load(created.agent);
+    await created.effects.finish(created.agent,row('balance-negzero',COMPLETE,{
+      effects:{directTokensEstimate:-2005,directChars:-10,instructionTokensEstimate:1000,systemTokensEstimate:2,messageTokensEstimate:3,
+        schemaTokensEstimate:1000,byFeature:{},reconstructionMisses:0,coverage:'test',method:'test',causalTaskSaving:false}}));
+    await created.effects.flush(created.agent);
+    const totals=created.effects.snapshot(created.agent).totals;
+    // Gross saving recovers the pre-overhead value, then spentTokens is subtracted.
+    assert.equal(totals.balance.savedTokensEstimate,-5);
+    assert.equal(totals.balance.spentTokensEstimate,2000);
+    for(const value of [totals.directTokensEstimate,totals.balance.savedTokensEstimate,
+      totals.balance.spentTokensEstimate,totals.balance.netTokensEstimate]){
+      assert.ok(!Object.is(value,-0),'balance fields must not be negative zero');
+    }
+    assert.ok(!Object.is(totals.balance.ratioPercent,-0),'a -0 ratio is normalised to 0');
+    assert.equal(totals.balance.ratioPercent,0);
+    const snap=created.effects.snapshot(created.agent);
+    assert.equal(JSON.stringify(JSON.parse(JSON.stringify(snap))),JSON.stringify(snap));
+  }finally{await remove(created.telemetryDir);}
+});
+
+test('a restored older decision does not become the reported latest one',async()=>{
+  const created=await start();
+  try{
+    // Write the newer decision first, then an older one, which is the order a
+    // retried overflow append can produce after a later row already landed.
+    const file=path.join(created.telemetryDir,SESSION+'.observability.jsonl');
+    const pending=(decisions)=>({schema:'work-evidence.pending-decisions.v1',sessionId:SESSION,
+      at:'2026-11-02T00:00:00.000Z',step:5,decisions});
+    const newer={id:'newer',at:'2026-11-02T00:00:02.000Z',step:5,seq:9,feature:'retainedCompute',status:'applied',reason:'second'};
+    const older={id:'older',at:'2026-11-02T00:00:01.000Z',step:4,seq:3,feature:'retainedCompute',status:'deferred',reason:'first'};
+    await fs.writeFile(file,[JSON.stringify(pending([newer])),JSON.stringify(pending([older]))].join('\n')+'\n','utf8');
+    await created.effects.load(created.agent);
+    const feature=created.effects.snapshot(created.agent).features.retainedCompute;
+    assert.equal(feature.decisions,2,'both restored decisions are counted');
+    assert.equal(feature.lastReason,'second','the newest decision is still reported as the latest');
+    assert.equal(feature.lastSeq,9);
+    const window=created.effects.snapshot(created.agent).decisions.map(item=>item.seq);
+    assert.deepEqual(window,[3,9],'the rolling window stays in sequence order, got '+JSON.stringify(window));
+  }finally{await remove(created.telemetryDir);}
+});
+
+test('a caller source-event seq does not overwrite the decision sequence',async()=>{
+  // decide() is called with {seq,...} from the prune path, where that seq names the pruned
+  // RESULT, not the decision. Spreading it after the generated seq made the two meanings
+  // share a field: with source events 100 and 20, the live feature reported 20 as latest
+  // while a restored log picked 100, because restore compares decision.seq.
+  const built=await start();
+  try{
+    built.effects.decide(built.agent,'contextPrune','applied','first',{seq:100});
+    built.effects.decide(built.agent,'contextPrune','deferred','second',{seq:20});
+    const decisions=built.effects.snapshot(built.agent).decisions.filter(item=>item.feature==='contextPrune');
+    // Decision identities are monotone; the source events are not.
+    assert.deepEqual(decisions.map(item=>item.seq),[1,2],'decision seq stays the generated one');
+    assert.deepEqual(decisions.map(item=>item.sourceSeq),[100,20],'and the source event is preserved separately');
+    const feature=built.effects.snapshot(built.agent).features.contextPrune;
+    assert.equal(feature.lastReason,'second','the last decision is the one emitted last');
+  }finally{await remove(built.telemetryDir);}
+});
+
+test('a caller detail reason does not overwrite the decision reason',()=>{
+  // reviewOutcomes passes the review object as details, and that object carries its own
+  // `reason`. Spreading it over the generated reason made the live feature tally
+  // 'projection-outcome' while a restored log tallied the review's reason.
+  const built=void 0;
+  return start().then(async created=>{
+    try{
+      created.effects.decide(created.agent,'projection','applied','projection-outcome',{reason:'review-implausible',plausible:false});
+      const [decision]=created.effects.snapshot(created.agent).decisions;
+      assert.equal(decision.reason,'projection-outcome','the generated reason wins');
+      assert.equal(decision.detailReason,'review-implausible','and the caller reason is kept separately');
+    }finally{await remove(created.telemetryDir);}
+  });
 });

@@ -16,9 +16,58 @@ export const REVIEW_ACCEPTANCE_RULES=`Each kind must be exactly one of requireme
 const messageOf=event=>event?.data?.message??event?.data;
 const pending=agent=>(agent.inbox?.nextStep?.length??0)>0||(agent.inbox?.nextTurn?.length??0)>0;
 const feedback=event=>event.type==='user/message'&&messageOf(event)?.source?.kind===SOURCE;
-const FILE_READS=new Set(['read','ops_inspect_local_file','ops_read_files']);
-const FILE_WRITES=new Set(['write','edit','ops_write_file','ops_edit_file']);
-const filePaths=call=>call.name==='ops_read_files'?(call.args.files??[]).map(item=>item.path):[call.args.file_path??call.args.path];
+const FILE_READS=new Set(['read']);
+// verified_exec is a write everywhere else in this package (trajectory-audit,
+// task-flow, observation-ledger); leaving it out here meant an applied conditional
+// edit could be absent from the review payload when no reread followed it.
+const FILE_WRITES=new Set(['write','edit','verified_exec']);
+// Per-file effect states from a verified_exec result, keyed by resolved path. A mixed
+// result can apply one file and leave another at `none` under a top-level `applied`.
+// The normaliser is passed in because the caller's fileKey resolves against the
+// workspace root; the state lookup and the edit lookup must use the same key.
+const perFileEffortStates=(value,normalize)=>{
+  const states=new Map();
+  if(!Array.isArray(value?.files))return states;
+  for(const file of value.files){
+    const target=typeof file?.path==='string'?file.path:typeof file?.file==='string'?file.file:null;
+    if(target&&typeof file?.effectState==='string')states.set(normalize(target),file.effectState);
+  }
+  return states;
+};
+// verified_exec names its targets inside edits[], under `file` in the supplied
+// mutation shape and `path`/`file_path` in the older one; all three are accepted so
+// an applied conditional edit can match its artifact.
+//
+// The per-file effect state applies HERE, not only in reserveChange: every consumer of
+// this helper (the sql-join, the read filter, the insertion test, the change-history
+// passes) would otherwise treat a file the call did not change as a target. `call`
+// carries the states recorded by fileCall.
+const filePaths=call=>{
+  const args=call?.args??{};
+  const states=call?.editStates,normalizer=call?.stateKey??(value=>value);
+  // An edit target is a request, not proof of application. The producer's files[]
+  // establishes the identity of each result entry; matching only by resolved target
+  // string lets an aliased or unlisted target inherit another file's applied state.
+  const stateOf=edit=>{
+    if(!edit||typeof edit!=='object')return undefined;
+    const target=edit.file??edit.path??edit.file_path;
+    if(call?.resultFiles?.length){
+      const result=call.resultFiles.find(file=>file.target===target)??call.resultFiles.find(file=>normalizer(file.target)===normalizer(target));
+      // null marks a target the producer's identity list did not match, so it cannot
+      // inherit another file's state. undefined is reserved for no identity at all.
+      return result?.effectState??null;
+    }
+    if(states?.size)return states.get(normalizer(target))??null;
+    // An older producer reports only the top-level state and no per-file identities.
+    return call?.effectState;
+  };
+  // Without any producer identity (scopeReviewSources re-parses a stored call), a
+  // potential target is retained conservatively; once identities exist, an unmatched
+  // target is not an applied edit.
+  const applied=edit=>{const state=stateOf(edit);return state===undefined||['applied','partial','unknown'].includes(state);};
+  const edited=Array.isArray(args.edits)?args.edits.filter(applied).map(edit=>edit?.file??edit?.path??edit?.file_path).filter(Boolean):[];
+  return [...edited,args.file_path??args.path].filter(Boolean);
+};
 
 export function scopeReviewSources(payload,root,configured='auto'){
   const files=[...new Set(payload.observed.artifacts.map(item=>item.path))];
@@ -36,20 +85,24 @@ export function scopeReviewSources(payload,root,configured='auto'){
     ...payload.observed.executions.flatMap(item=>[item.completionObservation?.seq,item.completionObservation?.registrationSeq]),
     ...[...payload.observed.executions,...payload.observed.unresolvedErrors,...payload.observed.pendingJobEvents,
       ...artifacts.filter(item=>key(item.path)===selectedKey||['partial','unknown'].includes(item.effectState))].map(item=>item.seq)]);
+  const storedCall=item=>{
+    try{return JSON.parse(item.data);}catch{
+      const match=/^Tool: (\w+)\nArguments: (.+)(?:\n|$)/u.exec(item.data);
+      if(!match)return null;
+      try{return {tool:match[1],arguments:JSON.parse(match[2])};}catch{return null;}
+    }
+  };
   const belongs=item=>{
     if(critical.has(item.seq))return true;
     if(item.sourceFiles?.some(file=>typeof file==='string'&&key(file)===selectedKey))return true;
-    let value;try{value=JSON.parse(item.data);}catch{
-      const match=/^Tool: (\w+)\nArguments: (.+)(?:\n|$)/u.exec(item.data);
-      if(match)try{value={tool:match[1],arguments:JSON.parse(match[2])};}catch{}
-    }
+    const value=storedCall(item);
     return (FILE_READS.has(value?.tool)||FILE_WRITES.has(value?.tool))&&
       filePaths({name:value.tool,args:value.arguments??{}}).some(file=>typeof file==='string'&&key(file)===selectedKey);
   };
   const checkArtifacts=artifacts.filter(item=>/(?:^|[\\/])(?:tests?|__tests__)(?:[\\/]|$)|(?:^|[\\/])(?:test|check)[_-][^\\/]+\.(?:[cm]?js|tsx?|py)$|\.(?:test|spec)\.[^\\/]+$/iu.test(item.path));
   const belongsToCheck=item=>{
     if(item.sourceFiles?.some(file=>typeof file==='string'&&checkArtifacts.some(artifact=>key(artifact.path)===key(file))))return true;
-    let value;try{value=JSON.parse(item.data);}catch{return false;}
+    const value=storedCall(item);
     return FILE_WRITES.has(value?.tool)&&filePaths({name:value.tool,args:value.arguments??{}})
       .some(file=>typeof file==='string'&&checkArtifacts.some(artifact=>key(artifact.path)===key(file)));
   };
@@ -202,22 +255,42 @@ function payloadFor(current,review,root){
         item.data?.turn===data.turn&&item.data?.step===data.step);
       if(!original)return null;call={name:original.data.name,args:argsOf(original.data.arguments)};content=messageOf(event)?.content;
     }
-    if(call.name.startsWith('ops_')){
-      if(call.args.dryRun===true)return null;
-      const text=textOf({content});let value;try{value=JSON.parse(text);}catch{}
-      if(value){
-        const failed=node=>node?.error||node?.isError===true||node?.success===false||node?.ok===false||node?.failed||
-          ['failed','error','cancelled','aborted','unavailable','blocked','unknown'].includes(node?.status);
-        // A successful read page may be incomplete for the whole file. Preserve
-        // its original continuation and coverage flags; writes still need completion.
-        const page=FILE_READS.has(call.name)&&value.status==='partial'&&value.data?.failed===0&&
-          Array.isArray(value.data.items)&&value.data.items.length>0&&value.data.items.every(item=>item&&typeof item==='object'&&!failed(item));
-        if(failed(value)||failed(value.data)||value.status!=='completed'&&!page)return null;
+    // A conditional edit can report a deopt with no error marker, in which case the
+    // file did not change. Counting it as a superseding write would drop an earlier
+    // read of the same path from the fallback evidence for no reason.
+    if(call.name==='verified_exec'){
+      let value;try{value=JSON.parse((content??[]).map(block=>block.text??'').join(''));}catch{value=null}
+      const states=[value?.effectState,...(Array.isArray(value?.files)?value.files.map(file=>file?.effectState):[])].filter(Boolean);
+      if(states.length&&!states.some(state=>['applied','partial','unknown'].includes(state)))return null;
+      // Unparseable/truncated content provides no producer identity at all. Leave the
+      // fields undefined so filePaths and appliedVerifiedEdits keep their conservative
+      // no-identity fallback instead of treating every edit as unapplied.
+      if(value&&typeof value==='object'){
+        // A mixed result applies some files and not others; keep the per-file states so
+        // the change-history pass can skip the files that did not take the change.
+        call.effectState=typeof value.effectState==='string'?value.effectState:null;
+        call.editStates=perFileEffortStates(value,fileKey);
+        call.resultFiles=Array.isArray(value.files)?value.files.map(file=>({
+          target:typeof file?.path==='string'?file.path:typeof file?.file==='string'?file.file:null,
+          effectState:typeof file?.effectState==='string'?file.effectState:null,
+        })).filter(file=>file.target&&file.effectState):[];
+        // filePaths() must key its state lookup the same way the states were keyed.
+        call.stateKey=fileKey;
       }
-      else if(FILE_WRITES.has(call.name)&&!text.startsWith(call.name.slice(4)+': completed;')&&!text.startsWith(call.name.slice(4)+': completed\n'))return null;
     }
     return call;
   };
+  const appliedVerifiedEdits=call=>(call?.args?.edits??[]).filter(edit=>{
+    const target=edit?.file??edit?.path??edit?.file_path;
+    if(!target)return false;
+    const result=call.resultFiles?.find(file=>file.target===target)??call.resultFiles?.find(file=>fileKey(file.target)===fileKey(target));
+    // When the producer reports no per-file identity, its top-level applied state is
+    // the only available evidence. Once files[] exists, an unmatched edit is unknown
+    // and must not borrow an applied state from a different alias.
+    const state=call.resultFiles?.length?(result?.effectState??null)
+      :call.editStates?.size?call.editStates.get(fileKey(target)):call.effectState;
+    return state===undefined||['applied','partial','unknown'].includes(state);
+  });
   const requestSections=requestSourceSections(events,request,assistant,root,fileCall);
   const requestSourceData=new Map();
   for(const item of requestSections){
@@ -240,6 +313,9 @@ function payloadFor(current,review,root){
   // Keep bounded successful native changes in sequence; an overwrite supersedes earlier text.
   // These are observed edits, never a claim that a complete current file was reconstructed.
   const sourceChanges=new Map();let changeAllowance=18000;
+  // Target paths per change record, so the evidence row can carry them at row level
+  // where the large-payload filter reads them.
+  const changeTargets=new Map();
   const sourceBudgets=new Map();
   for(const artifact of reviewArtifacts.filter(item=>checkArtifacts.includes(item))){
     const key=fileKey(artifact.path);if(key)sourceBudgets.set(key,3000);
@@ -249,17 +325,60 @@ function payloadFor(current,review,root){
     const files=filePaths(call).map(fileKey).filter(Boolean);if(!files.length)return false;
     const available=Math.min(14000,changeAllowance),parts=files.map(file=>({file,budget:Math.min(available,sourceBudgets.get(file)??available)}));
     const dataBudget=Math.min(...parts.map(part=>part.budget));
-    if(dataBudget<200)return false;
+    if(dataBudget<200&&call.name!=='verified_exec')return false;
     const callArgs=call.args??{};
-    const values=call.name==='ops_edit_file'?(callArgs.edits??[]).map(item=>({newText:item.newText,oldText:item.oldText})):
-      [{newText:['write','ops_write_file'].includes(call.name)?callArgs.content:callArgs.new_string,oldText:callArgs.old_string}];
+    // A verified edit carries its changes per file inside edits[], so a call without
+    // the plain content/new_string fields is joined into one bounded body here
+    // rather than being dropped from the payload.
+    if(call.name==='verified_exec'&&Array.isArray(callArgs.edits)){
+      // A mixed result can report one file applied and another `none` while the
+      // top-level state still says applied. Only the edits whose own file took the
+      // change belong in the history, or an unapplied file is described as changed.
+      const applied=appliedVerifiedEdits(call);
+      if(!applied.length)return false;
+      // Each target has its own budget: a small check-file allowance must not reject
+      // an otherwise eligible implementation body. Each selected piece is charged against a
+      // RUNNING remainder, not against the stored number: two edits to the same file both
+      // read the same stored budget, so two 2,500-character pieces each passed a
+      // 3,000-character budget and the later `set` overwrote the earlier deduction. The
+      // remainder is committed only after the call-level size check passes, so a rejected
+      // call leaves the budgets untouched.
+      const pieces=[],remaining=new Map();
+      for(const edit of applied){
+        const target=edit?.file??edit?.path??edit?.file_path??'';
+        const targetKey=fileKey(target);
+        const budget=remaining.get(targetKey)??sourceBudgets.get(targetKey)??available;
+        const before=typeof edit?.old_text==='string'?edit.old_text:'';
+        // The producer selects the body by mode, so this must too: a `create` writes
+        // `content` and ignores `new_text`, while `replace_exact` writes `new_text`. A create
+        // that carries both would otherwise be described by text that was never written.
+        const after=edit?.mode==='create'
+          ?(typeof edit?.content==='string'?edit.content:'')
+          :typeof edit?.new_text==='string'?edit.new_text
+            :typeof edit?.content==='string'?edit.content:'';
+        const piece=`--- ${target}\n${before}${before&&after?'\n=>\n':''}${after}`;
+        if(piece.length>budget)continue;
+        remaining.set(targetKey,budget-piece.length);
+        pieces.push({file:targetKey,target,piece,budget});
+      }
+      if(!pieces.length)return false;
+      const joined=pieces.map(item=>item.piece).join('\n\n');
+      // The target paths travel with the record: scopeReviewSources associates evidence
+      // with the selected source or a retained check file through sourceFiles, and
+      // without them a filtered verified-edit change is dropped from a large payload.
+      const targets=[...new Set(pieces.map(item=>item.target))];
+      const data=JSON.stringify({tool:'verified_exec',summary:callArgs.summary??null,patch:joined,sourceFiles:targets,
+        sourceState:'successful-historical-change; later observations take precedence; current file not reconstructed'});
+      if(data.length>Math.min(available,changeAllowance))return false;
+      changeAllowance-=data.length;
+      for(const item of pieces)sourceBudgets.set(item.file,remaining.get(item.file));
+      sourceChanges.set(event.seq,data);changeTargets.set(event.seq,targets);seqs.add(event.seq);return true;
+    }
+    const values=[{newText:call.name==='write'?callArgs.content:callArgs.new_string,oldText:callArgs.old_string}];
     if(values.some(value=>typeof value.newText!=='string'))return false;
     let changeArgs;
-    if(call.name==='ops_edit_file'){
-      if(!Array.isArray(callArgs.edits)||callArgs.edits.some(item=>typeof item.oldText!=='string'||typeof item.newText!=='string'))return false;
-      changeArgs={...callArgs,edits:callArgs.edits.map(({oldText,newText})=>({newText,...(oldText.length<=2000?{oldText}:{omittedOldTextChars:oldText.length})}))};
-    }else{
-      const {content,new_string,old_string,...location}=callArgs,write=['write','ops_write_file'].includes(call.name);
+    {
+      const {content,new_string,old_string,...location}=callArgs,write=call.name==='write';
       const after=write?content:new_string,before=typeof old_string==='string'&&old_string.length<=2000?old_string:undefined;
       if(after.length>dataBudget)return false;
       changeArgs={...location,...(write?{content:after}:{new_string:after,
@@ -270,7 +389,7 @@ function payloadFor(current,review,root){
     if(data.length>dataBudget)return false;
     changeAllowance-=data.length;
     for(const part of parts)sourceBudgets.set(part.file,part.budget-data.length);
-    sourceChanges.set(event.seq,data);seqs.add(event.seq);return true;
+    sourceChanges.set(event.seq,data);changeTargets.set(event.seq,filePaths(call));seqs.add(event.seq);return true;
   };
   const prioritizedArtifacts=[...reviewArtifacts.filter(item=>checkArtifacts.includes(item)),
     ...reviewArtifacts.filter(item=>!checkArtifacts.includes(item))];
@@ -278,9 +397,18 @@ function payloadFor(current,review,root){
     const key=fileKey(artifact.path);if(!key)continue;
     let changes=events.filter(event=>event.seq>request.seq&&event.seq<=artifact.seq).map(event=>({event,call:fileCall(event)}))
       .filter(({call})=>FILE_WRITES.has(call?.name)&&filePaths(call).some(file=>fileKey(file)===key));
-    const overwrite=changes.findLastIndex(({call})=>['write','ops_write_file'].includes(call.name));
+    // A verified_exec create inserts the implementation just as a write does, so it
+    // belongs in the prioritized pass too. The create must target THIS artifact: one
+    // call can replace a line in A and create B, and treating the call as an insertion
+    // for both would trim A's earlier full write and leave only a fragment. A
+    // replace_exact edit may also carry `content`, which the producer ignores, so only
+    // an explicit create mode counts as a full overwrite.
+    const inserts=(call,forKey)=>call?.name==='write'
+      ||(call?.name==='verified_exec'&&appliedVerifiedEdits(call).some(edit=>edit?.mode==='create'
+        &&typeof edit?.content==='string'&&fileKey(edit?.file??edit?.path??edit?.file_path??'')===forKey));
+    const overwrite=changes.findLastIndex(({call})=>inserts(call,key));
     if(overwrite>=0)changes=changes.slice(overwrite);
-    for(const {event,call}of changes.filter(({call})=>checkArtifacts.includes(artifact)||['write','ops_write_file'].includes(call.name))){
+    for(const {event,call}of changes.filter(({call})=>checkArtifacts.includes(artifact)||inserts(call,key))){
       if(sourceChanges.has(event.seq))continue;
       reserveChange(event);
     }
@@ -333,8 +461,15 @@ function payloadFor(current,review,root){
     const limit=sourceReads.has(seq)?Math.min(12000,2000+sourceAllowance):2000;
     if(sourceReads.has(seq))sourceAllowance-=Math.max(0,Math.min(data.length,limit)-2000);
     if(!sourceChanges.has(seq)&&!requestSourceData.has(seq)&&data.length>limit){const head=Math.floor(limit*.7);data=data.slice(0,head)+' [middle truncated] '+data.slice(-(limit-head));}
-    evidence.push({seq,type:event.type,data,...(processProjection?{projection:'verified-process-facts'}:{}),...(requestSourceData.has(seq)?{sourceFiles:[requestSourceData.get(seq).path]}:
-      sourceReads.has(seq)?{sourceFiles:filePaths(fileCall(event))}:{})});
+    // The row-level sourceFiles is what belongs()/belongsToCheck() read when the
+    // payload is large enough to filter; a joined verified-edit record carries its
+    // targets here as well, or the filtered record cannot be associated with the
+    // source or check file it changed.
+    const rowFiles=requestSourceData.has(seq)?[requestSourceData.get(seq).path]
+      :sourceReads.has(seq)?filePaths(fileCall(event))
+      :changeTargets.get(seq)??null;
+    evidence.push({seq,type:event.type,data,...(processProjection?{projection:'verified-process-facts'}:{}),
+      ...(rowFiles?{sourceFiles:rowFiles}:{})});
   }
   return {priorRequests,requestSources:requestSections.map(({data,...item})=>item),request:{seq:request.seq,text:requestText},answer:{seq:assistant.seq,text:answer},
     observed:{mutation:review.mutation,artifacts:reviewArtifacts,executions,
