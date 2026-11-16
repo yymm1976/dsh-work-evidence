@@ -1,4 +1,5 @@
 import {createHash,randomUUID} from 'node:crypto';
+import fs from 'node:fs';
 import path from 'node:path';
 import {parseResult,resultHasProblem,resultReference} from './visible-results.mjs';
 
@@ -366,10 +367,23 @@ export function createObservationLedger(ctx,runtime,nativeFiles=null){
     // the window step, which skips them. Keys are resolved the same way the window
     // paths are, because the read argument can be relative while the result path is an
     // absolute realpath; comparing the raw forms would never match.
-    const pathKeyOf=value=>{
-      const resolved=relativePath(root,value);
-      return resolved?resolved.key:null;
+    // A window path is the result's absolute realpath, so a read through a symlink
+    // would carry the alias key while the window carries the target key. Resolving
+    // through the filesystem first makes both sides agree; a path that does not exist
+    // falls back to the lexical key, which is what the argument path can still be.
+    const realKeys=new Map();
+    const resolveRealKey=value=>{
+      if(realKeys.has(value))return realKeys.get(value);
+      const lexical=relativePath(root,value);
+      let key=lexical?lexical.key:null;
+      if(lexical?.full){
+        try{const real=fs.realpathSync.native(lexical.full),relative=path.relative(root,real);
+          if(relative!=='..'&&!relative.startsWith('..'+path.sep)&&!path.isAbsolute(relative))key=fileKey(relative.replaceAll('\\','/'));}catch{/* keep the lexical key */}
+      }
+      realKeys.set(value,key);
+      return key;
     };
+    const pathKeyOf=resolveRealKey;
     if(batch&&sameJson(textBlocks(result.content),batch)){
       source={name:reads[0].name,arguments:{files:reads.map(read=>read.arguments)},value:batch};
     }else if(exec.name==='run_code'&&(source=renderedReads(reads,textBlocks(result.content)))){
