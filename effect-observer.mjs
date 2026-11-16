@@ -133,6 +133,9 @@ export function createEffectObserver(ctx,runtime){
     // Boundary inspection and repair stay in this same queue, so a later row cannot
     // overtake recovery and turn a partial append into a corrupt persistent ledger.
     state.queue=state.queue.catch(()=>{}).then(async()=>{await fs.mkdir(dir,{recursive:true});
+      // A repair that failed last time left the boundary unknown. Retry the repair before
+      // appending: a bare newline would only seal the fragment and lose the joined row.
+      if(state.needsLeadingNewline.has(kind))await repairAppendBoundary(state,file,kind);
       await fs.appendFile(file,(state.needsLeadingNewline.has(kind)?'\n':'')+JSON.stringify(row)+'\n','utf8');
       state.needsLeadingNewline.delete(kind);return true;}).catch(async error=>{
       state.writeErrors.push(String(error.message).slice(0,240));state.writeErrors=state.writeErrors.slice(-8);

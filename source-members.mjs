@@ -669,7 +669,7 @@ export async function sourceMemberSource({
   // caller's offset as the top-level replay returns the entry prefix instead of the
   // requested members.
   const replayBase = args.archive && requested.plural
-    ? {mode: 'archive', archive: args.archive, ...(args.entry ? {entry: args.entry} : {}), members: requested.names, limit}
+    ? {mode: 'archive', archive: args.archive, ...(args.entry ? {entry: args.entry} : {}), members: requested.names, limit, lineTextLimit}
     : retrieveBase;
   const base = {
     state: 'observed',

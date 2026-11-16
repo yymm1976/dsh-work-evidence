@@ -378,7 +378,9 @@ export function createContextEconomics(ctx,runtime){
     // following real drop still counts; an unchanged effort clears it so the next change
     // is treated as new.
     if(!effortChanged)state.countedEffortTransition=null;
-    const weights=options.messages.map(messageTokens),envelopeTokens=textTokens(JSON.stringify({tools:options.tools??[],system:options.system??null}));
+    const weights=options.messages.map(messageTokens),systemTokens=textTokens(typeof options.system==='string'?options.system:JSON.stringify(options.system??null)),
+      toolSchemaTokens=textTokens(JSON.stringify(options.tools??[])),
+      envelopeTokens=textTokens(JSON.stringify({tools:options.tools??[],system:options.system??null}));
     // A failed or aborted attempt carries no observable prompt/cache usage, so it
     // must not replace the last usable observation. Otherwise the next economics
     // decision reads a zero prompt as "nothing was cached". A partly reported
@@ -392,12 +394,12 @@ export function createContextEconomics(ctx,runtime){
     // response omitted output usage and therefore cannot become the exposure baseline.
     if(total>0&&!record.failureCode&&!record.aborted&&finishAccepted)
       state.latestPrompt={provider:options.provider,model:options.model,reasoningEffort:options.reasoningEffort,
-        usage,usageComplete,weights,envelopeTokens,at:record.at};
+        usage,usageComplete,weights,systemTokens,toolSchemaTokens,envelopeTokens,at:record.at};
     const usableForExposure=total>0&&!record.failureCode&&!record.aborted&&usageComplete&&finishAccepted;
     if(usableForExposure)state.last={provider:options.provider,model:options.model,reasoningEffort:options.reasoningEffort,usage,usageComplete,
       generation:record.generation,alignmentSafe:textProjection(options.messages),
       envelope,keys:options.messages.map(modelKey),ids:options.messages.map(message=>message.id),weights,
-      envelopeTokens,
+      systemTokens,toolSchemaTokens,envelopeTokens,
       factor:Math.max(0.25,Math.min(8,total/Math.max(1,weights.reduce((sum,value)=>sum+value,0)+envelopeTokens))),
       finishReason:record.finishReason,at:record.at};
     else state.lastUnusable={reason:record.failureCode?'failed-attempt':record.aborted?'aborted':
@@ -421,14 +423,19 @@ export function createContextEconomics(ctx,runtime){
     const projected=runtime.projectedMessages?.(agent);
     let tokens,method;
     if(projected){
-      const requestHeader=agent.session.requestHeader(),envelope=textTokens(JSON.stringify({tools:requestHeader?.tools??[],system:null})),
-        current=projected.reduce((sum,message)=>sum+messageTokens(message),0)+envelope;
+      const requestHeader=agent.session.requestHeader(),messagesTokens=projected.reduce((sum,message)=>sum+messageTokens(message),0),
+        // The observed row measured its own system and schema text; the current envelope
+        // must use the same additive basis, or the subtraction silently drops the system
+        // prompt and reports far less pressure than the request actually carries.
+        system=observed?.systemTokens??0,
+        tools=observed?.toolSchemaTokens??textTokens(JSON.stringify(requestHeader?.tools??[])),
+        current=messagesTokens+system+tools;
       if(reported!==null&&observed){
         // The growth since the observed request is measured against THAT request's own
         // footprint. Using an older baseline would count the same growth twice when the
         // newer prompt already includes it. Only the calibration factor from `last` is
         // reused, because an incomplete observation has no usable output total.
-        const previous=(observed.weights??[]).reduce((sum,value)=>sum+value,0)+(observed.envelopeTokens??0);
+        const previous=(observed.weights??[]).reduce((sum,value)=>sum+value,0)+system+tools;
         const factor=last?.factor??observed.factor??1;
         tokens=Math.max(0,reported+(current-previous)*factor);
       }else tokens=Math.max(reported??0,current);

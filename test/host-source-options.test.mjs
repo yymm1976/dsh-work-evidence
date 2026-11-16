@@ -165,7 +165,7 @@ test('an archive text-window fallback re-fetches at the selected window',async()
 
 test('a plural archive request replays the member selector, not the entry prefix',async()=>{
   const observed=await run({memberParsing:false},[[tool('project_evidence',
-    {mode:'archive',archive:'src-sources.jar',entry:'demo/Calc.java',members:['add','sub']})]],
+    {mode:'archive',archive:'src-sources.jar',entry:'demo/Calc.java',members:['add','sub'],lineTextLimit:80})]],
     async cwd=>{await fs.writeFile(path.join(cwd,'src-sources.jar'),buildZip([{name:'demo/Calc.java',data:JAVA}]));});
   const source=observed.results[0].sources[0];
   assert.deepEqual(source.members.map(item=>item.member),['add','sub']);
@@ -173,6 +173,8 @@ test('a plural archive request replays the member selector, not the entry prefix
   assert.deepEqual(source.retrieveCurrent.arguments.members,['add','sub'],
     'the top-level archive replay must not fall back to a fixed range');
   assert.equal(source.retrieveCurrent.arguments.offset,undefined);
+  assert.equal(source.retrieveCurrent.arguments.lineTextLimit,80,
+    'the replay keeps the requested line budget instead of the default');
 });
 
 test('mavenSourceBinding requires coordinates and selects a matching sources jar',async()=>{

@@ -21,6 +21,7 @@
   "files": [
     "scripts/check-syntax.mjs",
     "index.mjs",
+    "task-intent.mjs",
     "tool-execution.mjs",
     "ultra-effort.mjs",
     "native-reasoning-replay.mjs",

@@ -107,6 +107,21 @@ test('capacity pressure subtracts the footprint of the observation it counts',()
   assert.ok(pressure.tokens<=7000,JSON.stringify({tokens:pressure.tokens}));
   assert.equal(pressure.emergency,false);
 });
+test('capacity pressure keeps the system footprint it measured',()=>{
+  const state={step:0,config:{projectionPricing:[],projectionHorizonSteps:16}};
+  const messages=[{id:'u',role:'user',content:[{type:'text',text:'short request'}]}];
+  const agent={session:{id:'sysenv',surface:{nodes:[]},requestHeader:()=>({config:{provider:'p',model:'m'}}),
+    requestContext:()=>({contextWindow:10000})}};
+  const economics=createContextEconomics({tokenMeter:{measure:()=>({totalTokens:0})}},
+    {get:()=>state,projectedMessages:()=>messages});
+  // The observed request carried a system prompt that the projected view does not
+  // return. Subtracting only the message weights would drop it from the count.
+  const system='s'.repeat(3000);
+  economics.requestFinished(agent,{provider:'p',model:'m',messages,system},
+    {usage:{inputTokens:4000,cacheReadTokens:0,cacheWriteTokens:0,outputTokens:100,totalTokens:4100},settled:true,finishReason:'stop'});
+  const pressure=economics.pressure(agent);
+  assert.ok(pressure.tokens>=3900,JSON.stringify({tokens:pressure.tokens}));
+});
 test('capacity pressure never borrows another route observation',()=>{
   const state={step:0,config:{projectionPricing:[],projectionHorizonSteps:16}};
   const messages=[{id:'u',role:'user',content:[{type:'text',text:'short request'}]}];

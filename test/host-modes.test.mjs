@@ -135,6 +135,19 @@ test('idiomatic and list denials keep their real meaning',async()=>{
   }finally{await host.close();}
 });
 
+test('a noun that looks like a write verb keeps an explicit read-only task read-only',async()=>{
+  const host=await startHost({toolMode:'ptc',extraMounts:[['dsh-ptc-runtime-node']],script:answer});
+  try{
+    const agent=await host.createAgent('max');
+    for(const request of ['Read-only: explain the patch in src/a.js.','Read-only: summarize the update to README.md.',
+      "Please don't modify files. Explain the fix in src/a.js."]){
+      await host.send(agent,request);
+      assert.doesNotMatch(systemOf(host.requests.at(-1)),/\bwork_exec: \{/u,request);
+    }
+    await host.send(agent,'Fix the function in src/a.js and explain the change.');
+    assert.match(systemOf(host.requests.at(-1)),/\bwork_exec: \{/u,'a verb used as a verb stays a write request');
+  }finally{await host.close();}
+});
 test('a write before a denial in the same clause keeps the task writable',async()=>{
   const host=await startHost({toolMode:'ptc',extraMounts:[['dsh-ptc-runtime-node']],script:answer});
   try{

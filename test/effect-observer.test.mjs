@@ -186,6 +186,39 @@ test('a partial failed append is isolated before the next persistent row',async(
   }finally{realFs.appendFile=original;await remove(created.telemetryDir);}
 });
 
+test('a failed boundary repair is retried before the next row is appended',async()=>{
+  // A complete unterminated row, then a partial append joined to it, then a repair that
+  // also fails. A bare newline before the next row would seal the join and lose the
+  // complete row, so the repair must run again once storage recovers.
+  const created=await start();
+  const file=path.join(created.telemetryDir,SESSION+'.observability.jsonl');
+  const append=realFs.appendFile,truncate=realFs.truncate;
+  let appended=false,repairFailed=false;
+  realFs.appendFile=async(...args)=>{
+    if(!appended&&args[0]===file){
+      appended=true;
+      const text=String(args[1]);
+      await append(file,text.slice(0,Math.floor(text.length/2)),'utf8');
+      throw new Error('injected partial append');
+    }
+    return append(...args);
+  };
+  realFs.truncate=async(...args)=>{
+    if(!repairFailed&&args[0]===file){repairFailed=true;throw new Error('injected repair failure');}
+    return truncate(...args);
+  };
+  try{
+    await fs.writeFile(file,JSON.stringify(row('unterminated-row',COMPLETE,{note:'中文字符'})),'utf8');
+    await created.effects.finish(created.agent,row('partial-row'));
+    await created.effects.flush(created.agent);
+    assert.equal(repairFailed,true,'the first repair was attempted and failed');
+    await created.effects.finish(created.agent,row('surviving-row'));
+    await created.effects.flush(created.agent);
+    assert.deepEqual((await stored(created.telemetryDir)).map(item=>item.requestId),['unterminated-row','surviving-row'],
+      'the repair is retried rather than sealed with a newline after the fragment');
+  }finally{realFs.appendFile=append;realFs.truncate=truncate;await remove(created.telemetryDir);}
+});
+
 test('a complete row without a newline survives a following partial append',async()=>{
   const created=await start();
   const file=path.join(created.telemetryDir,SESSION+'.observability.jsonl');
