@@ -409,17 +409,19 @@ export function createContextEconomics(ctx,runtime){
   }
   function pressure(agent,routeContext=null,maxTokens=null){
     const context=routeContext??agent.session.requestContext(),limit=context?.contextWindow;
-    const state=get(agent),last=state.last,currentRoute=agent.session.requestHeader()?.config;
-    // Prefer the newest measured prompt for this route even when its output usage was
-    // missing; the exposure baseline below still comes from a complete `last` row.
-    const latestPrompt=state.latestPrompt&&sameObservedRoute(state.latestPrompt,currentRoute)?state.latestPrompt:null;
+    const state=get(agent),header=agent.session.requestHeader()?.config;
+    // Only an observation from this exact route and effort may inform this route's
+    // pressure: another route's prompt count includes a different model's tokenization
+    // and would report a false emergency here.
+    const latestPrompt=state.latestPrompt&&sameObservedRoute(state.latestPrompt,header)?state.latestPrompt:null;
+    const last=state.last&&sameObservedRoute(state.last,header)?state.last:null;
     const observed=latestPrompt??last,reported=promptTokens(observed?.usage);
     let measured=null;
     try{const measurement=(ctx.get?ctx.get('tokenMeter'):ctx.tokenMeter)?.measure(agent.session);measured=measurement?.totalTokens??measurement?.projectedTokens??null;}catch{}
     const projected=runtime.projectedMessages?.(agent);
     let tokens,method;
     if(projected){
-      const header=agent.session.requestHeader(),envelope=textTokens(JSON.stringify({tools:header?.tools??[],system:null})),
+      const requestHeader=agent.session.requestHeader(),envelope=textTokens(JSON.stringify({tools:requestHeader?.tools??[],system:null})),
         current=projected.reduce((sum,message)=>sum+messageTokens(message),0)+envelope;
       if(reported!==null&&observed){
         // The growth since the observed request is measured against THAT request's own

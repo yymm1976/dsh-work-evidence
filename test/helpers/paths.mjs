@@ -32,4 +32,4 @@ export const pythonFileAvailable=value=>{
 };
 export const ACP_ENTRY=path.join(DSH_PROFILE,'node_modules','billion-context-dsh','dist','index.js');
 // OPS_ROOT was removed with the dsh-ops adapters: no remaining test mounts the
-// optional `dsh-ops` component tree (see OPS-REMOVAL.md).
+// optional `dsh-ops` component tree (see OPS-ADAPTERS-OPT-IN.md).

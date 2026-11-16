@@ -384,7 +384,7 @@ export function apply(ctx,config={}){
     const clauses=[];
     for(const raw of request.split(/[。；;\n，,]|\.(?=\s+[A-Z])/u)){
       const previous=clauses.at(-1);
-      const continues=/^\s*(?:or|nor|and|以及|或者|或是|或|和)\b/iu.test(raw)&&previous!==undefined;
+      const continues=/^\s*(?:or\b|nor\b|and\b|以及|或者|或是|或|和)/iu.test(raw)&&previous!==undefined;
       // A segment whose predecessor named a verb but no target is part of that verb
       // list, not a new decision: "do not modify, create, or delete src/a.js".
       const incomplete=previous!==undefined&&writeVerb.test(previous)&&!writeRequest.test(previous)&&!upperCaseTarget.test(previous);

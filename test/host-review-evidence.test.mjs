@@ -127,6 +127,6 @@ test('review retains every bounded artifact and focused scope counts retained un
 // drove review through ops_write_file / ops_edit_file / ops_read_files. Those
 // tools were part of the dsh-ops adapter surface, and the OPS-only observation,
 // pagination and source-excerpt branches they exercised were deleted with the
-// adapters (see OPS-REMOVAL.md). The equivalent behaviour is still covered on the
+// adapters (see OPS-ADAPTERS-OPT-IN.md). The equivalent behaviour is still covered on the
 // native path by the earlier cases in this file plus test/quality-review.test.mjs
 // and test/native-cas.test.mjs; do not re-add an OPS-only variant.

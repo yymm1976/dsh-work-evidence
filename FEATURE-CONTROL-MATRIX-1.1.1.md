@@ -7,7 +7,7 @@
 | `enabled` | 成熟默认开启 | 工作区总开关；会话可覆盖 | `host-control-state.test.mjs` 验证启停和清理 | `README.md`、`MIGRATION-1.1.1.md` |
 | `aggressiveMode` | 成熟默认开启 | 模式选择；关闭时保留基础路径。旧工作区 `mode:"default"` 且未显式设置时强制关闭 | `host-modes.test.mjs` 验证模式切换 | `README.md` |
 | `selfIndex` | 成熟默认开启 | 源码索引；依赖本地读取 | `host-candidates.test.mjs` 验证索引入口 | `README.md` |
-| `fastEditEnabled` | **已删除** | OPS CAS 与 `fastedit_java` 一并移除；键按退役设置强制为 `false`，不再有 Java 实体编辑入口 | `runtime-config.test.mjs` 验证退役加载；`verified_exec` 覆盖原生精确多文件修改 | `OPS-REMOVAL.md`、`MIGRATION-1.1.2.md` |
+| `fastEditEnabled` | **已删除** | OPS CAS 与 `fastedit_java` 一并移除；键按退役设置强制为 `false`，不再有 Java 实体编辑入口 | `runtime-config.test.mjs` 验证退役加载；`verified_exec` 覆盖原生精确多文件修改 | `OPS-ADAPTERS-OPT-IN.md`、`MIGRATION-1.1.2.md` |
 | `stateLedger` | 成熟默认开启 | 账本基础能力 | `host-state.test.mjs` 验证记录与释放 | `README.md` |
 | `stateInform` | 成熟默认开启 | 依赖 `stateLedger` | `host-state.test.mjs` 验证适用状态 | `README.md` |
 | `completionNotice` | 成熟显式开启 | 默认关闭；只在仍有可执行事项时启用 | `host-features.test.mjs`、`host-delivery-combinations.test.mjs` 验证不增加默认请求 | `README.md` |

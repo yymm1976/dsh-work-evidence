@@ -124,6 +124,9 @@ test('idiomatic and list denials keep their real meaning',async()=>{
   const host=await startHost({toolMode:'ptc',extraMounts:[['dsh-ptc-runtime-node']],script:answer});
   try{
     const agent=await host.createAgent('max');
+    await host.send(agent,'Read-only: 不要修改 src/a.js，或者创建 src/b.js');
+    assert.doesNotMatch(systemOf(host.requests.at(-1)),/\bwork_exec: \{/u,
+      'a Chinese list conjunction without a word boundary still inherits the denial');
     await host.send(agent,"Don't forget to update docs/a.md.");
     assert.match(systemOf(host.requests.at(-1)),/\bwork_exec: \{/u,'forget is not a denied write');
     await host.send(agent,'Read-only: do not modify, create, or delete src/a.js.');

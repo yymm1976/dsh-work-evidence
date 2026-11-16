@@ -271,11 +271,19 @@ export function createObservationLedger(ctx,runtime,nativeFiles=null){
     const state=stateFor(agent);
     const file=relativePath(state.root,rawPath);
     if(!file)return;
+    // A window path is the read result's realpath, so the write side must resolve the
+    // same way or a write through a symlink alias never invalidates it.
+    let writeKey=file.key;
+    try{
+      const real=fs.realpathSync.native(file.full),relative=path.relative(state.root,real);
+      if(relative!=='..'&&!relative.startsWith('..'+path.sep)&&!path.isAbsolute(relative))
+        writeKey=fileKey(relative.replaceAll('\\','/')+(file.display.includes('!/')?file.display.slice(file.display.indexOf('!/')):''));
+    }catch{/* not on disk: keep the lexical key */}
     const changed=[];
     for(const observation of state.observations){
       let touched=false;
       for(const window of observation.windows){
-        if(!window.stale&&(window.pathKey===file.key||window.pathKey?.startsWith(file.key+'!/'))){
+        if(!window.stale&&(window.pathKey===writeKey||window.pathKey===file.key||window.pathKey?.startsWith(file.key+'!/'))){
           window.stale=true;window.staleCause=WRITE_TOOLS.has(tool)?'known-write':'source-change';touched=true;
         }
       }

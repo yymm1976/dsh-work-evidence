@@ -107,6 +107,24 @@ test('capacity pressure subtracts the footprint of the observation it counts',()
   assert.ok(pressure.tokens<=7000,JSON.stringify({tokens:pressure.tokens}));
   assert.equal(pressure.emergency,false);
 });
+test('capacity pressure never borrows another route observation',()=>{
+  const state={step:0,config:{projectionPricing:[],projectionHorizonSteps:16}};
+  const messages=[{id:'u',role:'user',content:[{type:'text',text:'short request'}]}];
+  let route={provider:'p',model:'m',reasoningEffort:'max'};
+  const agent={session:{id:'route-bound',surface:{nodes:[]},requestHeader:()=>({config:route}),
+    requestContext:()=>({contextWindow:10000})}};
+  const economics=createContextEconomics({tokenMeter:{measure:()=>({totalTokens:0})}},
+    {get:()=>state,projectedMessages:()=>messages});
+  economics.requestFinished(agent,{provider:'p',model:'m',reasoningEffort:'max',messages},
+    {usage:{inputTokens:4500,cacheReadTokens:0,cacheWriteTokens:0,outputTokens:100,totalTokens:4600},settled:true,finishReason:'stop'});
+  economics.requestFinished(agent,{provider:'p',model:'other',reasoningEffort:'max',messages},
+    {usage:{inputTokens:9500,cacheReadTokens:0,cacheWriteTokens:0,outputTokens:100,totalTokens:9600},settled:true,finishReason:'stop'});
+  // Back on the first route: the other route’s 9500 must not read as this route’s prompt.
+  route={provider:'p',model:'m',reasoningEffort:'max'};
+  const pressure=economics.pressure(agent);
+  assert.ok(pressure.tokens<=5000,JSON.stringify({tokens:pressure.tokens}));
+  assert.equal(pressure.emergency,false);
+});
 test('capacity pressure uses the optional service getter when direct property access requires inject',()=>{
   const {agent}=harness(),state={config:{projectionPricing:[],projectionHorizonSteps:16}};
   const ctx={get:name=>name==='tokenMeter'?{measure:()=>({totalTokens:9500})}:undefined,
