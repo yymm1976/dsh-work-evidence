@@ -359,10 +359,10 @@ export function apply(ctx,config={}){
     });
   });
   const isReadOnlyRequest=request=>{
-    const readOnly=/(?:只读|read[- ]only)|(?:不得|不要|禁止|不允许|不可|do not|don't|never).{0,24}(?:修改|创建|写入|编辑|删除|modify|create|write|edit|delete)/iu.test(request);
+    const readOnly=/(?:只读|read[- ]only)|(?:不得|不要|禁止|不允许|不可|do not|don't|never|must not|mustn't|may not|mayn't|should not|shouldn't|shall not|shan't|cannot|can't).{0,24}(?:修改|创建|写入|编辑|删除|modify|create|write|edit|delete)/iu.test(request);
     if(!readOnly)return false;
     const writeVerb=/(?:修改|修复|实现|编写|重构|创建|编辑|写入|增加|删除|替换|重写|改|modify|fix|implement|write|edit|create|delete|replace)/iu;
-    const deniedWrite=/(?:不得|不要|禁止|不允许|不可|无需|不必|do not|don't|never)/iu;
+    const deniedWrite=/(?:不得|不要|禁止|不允许|不可|无需|不必|do not|don't|never|must not|mustn't|may not|mayn't|should not|shouldn't|shall not|shan't|cannot|can't)/iu;
     // An allowance word must be its own token: in "src/can-edit.js" the `can` is part
     // of a filename, not permission to write, and reading it as permission turned an
     // explicit denial into a writable task.

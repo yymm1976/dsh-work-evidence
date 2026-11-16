@@ -386,7 +386,12 @@ export function createObservationLedger(ctx,runtime,nativeFiles=null){
       let key=lexical?lexical.key:null;
       if(lexical?.full){
         try{const real=fs.realpathSync.native(lexical.full),relative=path.relative(root,real);
-          if(relative!=='..'&&!relative.startsWith('..'+path.sep)&&!path.isAbsolute(relative))key=fileKey(relative.replaceAll('\\','/'));}catch{/* keep the lexical key */}
+          if(relative!=='..'&&!relative.startsWith('..'+path.sep)&&!path.isAbsolute(relative)){
+            // An archive member's realpath is the archive file; the `!/entry` suffix is
+            // what distinguishes members, so resolve the archive path but keep the entry.
+            const suffix=lexical.display.includes('!/')?lexical.display.slice(lexical.display.indexOf('!/')):'';
+            key=fileKey(relative.replaceAll('\\','/')+suffix);
+          }}catch{/* keep the lexical key */}
       }
       realKeys.set(value,key);
       return key;

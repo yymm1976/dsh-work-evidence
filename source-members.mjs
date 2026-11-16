@@ -577,6 +577,10 @@ function lexicalJavaRecord({
 
   const currentArguments = {
     ...perMemberArguments(retrieveArguments, name),
+    // Archive retrieval needs an explicit offset. The base offset is the caller's
+    // original window, which for a named member is line 1; a unique lexical match must
+    // re-fetch at its own lineStart or the retry returns the file prefix.
+    ...(retrieveArguments?.mode === 'archive' && matches.length === 1 ? {offset: matches[0].lineStart} : {}),
     limit,
     lineTextLimit,
   };

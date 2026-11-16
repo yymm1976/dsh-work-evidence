@@ -133,6 +133,22 @@ test('memberParsing records an attempted parser failure as failed',async()=>{
   assert.equal(effect.lastStatus,'failed');assert.equal(effect.failed,1);assert.equal(effect.notApplicable,0);
 });
 
+test('an archive lexical fallback re-fetches a unique member at its own line',async()=>{
+  // Without the parser the record is built lexically. The archive retry used the
+  // caller's base offset (1), so a member found at line 6 re-fetched lines 1-10 and
+  // never showed the member it claimed to retrieve.
+  const observed=await run({memberParsing:false},[[tool('project_evidence',
+    {mode:'archive',archive:'src-sources.jar',entry:'demo/Calc.java',member:'sub'})]],
+    async cwd=>{await fs.writeFile(path.join(cwd,'src-sources.jar'),buildZip([{name:'demo/Calc.java',data:JAVA}]));});
+  const source=observed.results[0].sources[0];
+  assert.equal(source.parser.mode,'lexical');
+  assert.equal(source.matches.length,1);
+  assert.equal(source.retrieveCurrent.arguments.mode,'archive');
+  assert.equal(source.retrieveCurrent.arguments.entry,'demo/Calc.java');
+  assert.equal(source.retrieveCurrent.arguments.offset,source.matches[0].lineStart,
+    'a retry must start at the matched member, not the archive entry prefix');
+});
+
 test('mavenSourceBinding requires coordinates and selects a matching sources jar',async()=>{
   const steps=[[tool('project_evidence',{mode:'source',query:'demo.Calc'})]];
   async function setup(cwd){

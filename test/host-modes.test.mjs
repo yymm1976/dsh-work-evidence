@@ -100,6 +100,19 @@ test('an English denial is scoped to its own sentence',async()=>{
   }finally{await host.close();}
 });
 
+test('a modal denial still marks the task read-only',async()=>{
+  const host=await startHost({toolMode:'ptc',extraMounts:[['dsh-ptc-runtime-node']],script:answer});
+  try{
+    const agent=await host.createAgent('max');
+    await host.send(agent,'Read-only: you must not modify src/a.js.');
+    assert.doesNotMatch(systemOf(host.requests.at(-1)),/\bwork_exec: \{/u,
+      'must not is a denial, not a write request');
+    await host.send(agent,'You may not delete src/a.js.');
+    assert.doesNotMatch(systemOf(host.requests.at(-1)),/\bwork_exec: \{/u,
+      'may not is a denial');
+  }finally{await host.close();}
+});
+
 test('a denial in a later English clause does not cancel the requested write',async()=>{
   const host=await startHost({toolMode:'ptc',extraMounts:[['dsh-ptc-runtime-node']],script:answer});
   try{

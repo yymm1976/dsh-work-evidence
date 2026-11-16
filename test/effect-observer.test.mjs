@@ -172,16 +172,17 @@ test('a partial failed append is isolated before the next persistent row',async(
     return original(...args);
   };
   try{
+    await fs.writeFile(file,JSON.stringify(row('chinese-row',COMPLETE,{note:'中文字符'}))+'\n','utf8');
     await created.effects.load(created.agent);
     await created.effects.finish(created.agent,row('partial-row'));
     await created.effects.flush(created.agent);
     await created.effects.finish(created.agent,row('surviving-row'));
     await created.effects.flush(created.agent);
-    assert.deepEqual((await stored(created.telemetryDir)).map(item=>item.requestId),['surviving-row'],
-      'the failed JSON prefix is not concatenated with the next row');
+    assert.deepEqual((await stored(created.telemetryDir)).map(item=>item.requestId),['chinese-row','surviving-row'],
+      'a non-ASCII row before the partial tail survives the byte-offset truncation');
     const restored=await start({telemetryDir:created.telemetryDir});
     await restored.effects.load(restored.agent);
-    assert.equal(restored.effects.snapshot(restored.agent).requests.count,1);
+    assert.equal(restored.effects.snapshot(restored.agent).requests.count,2);
   }finally{realFs.appendFile=original;await remove(created.telemetryDir);}
 });
 

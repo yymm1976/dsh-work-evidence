@@ -90,8 +90,10 @@ export function createEffectObserver(ctx,runtime){
     // marker for the next attempt.
     state.needsLeadingNewline.add(kind);
     let raw;
-    try{raw=await fs.readFile(file,'utf8');}catch{return;}
-    const boundary=raw.lastIndexOf('\n')+1,tail=raw.slice(boundary);
+    try{raw=await fs.readFile(file);}catch{return;}
+    // truncate() takes a byte offset, so the last newline must be located in the
+    // buffer: a string index is short whenever a retained row holds non-ASCII text.
+    const boundary=raw.lastIndexOf(0x0a)+1,tail=raw.subarray(boundary).toString('utf8');
     if(!tail){state.needsLeadingNewline.delete(kind);return;}
     let complete=false;
     try{JSON.parse(tail);complete=true;}catch{}

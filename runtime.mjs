@@ -338,14 +338,13 @@ export function createRuntime(ctx,call,initial={}){
   }
   // A tool record can carry the filesystem's realpath while the workspace root can be
   // reached through a symlink or junction, so the lexical resolution alone would key the
-  // two differently. Both sides resolve the realpath first and fall back to the lexical
-  // form for a path that does not exist yet; the cache keeps this off the hot path.
-  const realRootCache=new Map();
+  // two differently. Both sides resolve the realpath and fall back to the lexical form
+  // for a path that does not exist yet. The mapping is read fresh on every call: a
+  // session can outlive a symlink retarget, and a cached target would keep attributing
+  // observations and mutations to the old file.
   const realKeyOf=full=>{
-    if(realRootCache.has(full))return realRootCache.get(full);
     let key=process.platform==='win32'?full.toLowerCase():full;
     try{const real=realpathSync.native(full);key=process.platform==='win32'?real.toLowerCase():real;}catch{/* not on disk: keep the lexical key */}
-    realRootCache.set(full,key);
     return key;
   };
   function ledgerPath(s,value){
