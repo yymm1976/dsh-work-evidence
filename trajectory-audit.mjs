@@ -17,6 +17,9 @@ const READ=new Set(['read','project_evidence']);
 // still work. `ops_read_files` is listed explicitly: READ does not carry it, and an
 // earlier comment here claimed it did.
 const STATIC_RESULTS=new Set([...READ,'glob','grep','ops_grep','ops_glob','ops_read_files']);
+// W2 is the read-specific label; a saved history can carry the retired read tool, so
+// the label check accepts it as a read even though no live path treats it as one.
+const HISTORICAL_READS=new Set([...READ,'ops_read_files']);
 // The live surface registers only `write`/`edit`/`verified_exec` now.
 // `str_replace_editor` and the two ops_* names stay accepted because this audit
 // reads saved histories, including sessions produced while the OPS adapters
@@ -796,7 +799,7 @@ export function auditDshSession(input,{sourceId=null,annotations=[],pricing=[],p
     const key=stable([call.userSeq,call.name,call.arguments]),prior=seen.get(key);
     if(STATIC_RESULTS.has(call.name)&&prior&&call.outcome==='succeeded'&&prior.outcome==='succeeded'&&call.mutationEpoch===prior.mutationEpoch&&
       call.resultText===prior.resultText&&!call.outputIncomplete&&!prior.outputIncomplete)
-      add(READ.has(call.name)?['W2','W5']:['W5'],call,prior,'identical-successful-call-and-recorded-text');
+      add(HISTORICAL_READS.has(call.name)?['W2','W5']:['W5'],call,prior,'identical-successful-call-and-recorded-text');
     seen.set(key,call);
     if(call.outcome==='failed'){
       const signature=call.resultText.split(/\r?\n/u).find(line=>line.trim())?.slice(0,240)??'';

@@ -370,9 +370,12 @@ export function createObservationLedger(ctx,runtime,nativeFiles=null){
       const resolved=relativePath(root,value);
       return resolved?resolved.key:null;
     };
+    // Every target of a dropped read is kept, not just the first: one call can read
+    // several files, and a superseded read whose second file was dropped would leave
+    // that window in place.
     const droppedPaths=new Set(keptAll?[]:rawReads
       .filter(read=>!reads.includes(read))
-      .map(read=>pathsFromArguments(read.arguments)[0])
+      .flatMap(read=>pathsFromArguments(read.arguments))
       .filter(Boolean)
       .map(pathKeyOf)
       .filter(Boolean));

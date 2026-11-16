@@ -354,27 +354,22 @@ export function createContextEconomics(ctx,runtime){
       state.cacheResetCount++;state.uncachedInputAtReset+=usage.inputTokens;
       if(changed&&price){const extra=Math.max(0,Math.min(usage.inputTokens-resetPrevious.inputTokens,resetPrevious.cacheReadTokens-usage.cacheReadTokens));
         state.resetTaxByCurrency[price.currency]=(state.resetTaxByCurrency[price.currency]??0)+extra*Math.max(0,price.input-price.cacheRead)/1e6;}
-      // The retained baseline skips failed attempts, so a retry compares against the
-      // same baseline and would count one transition twice. Dedupe only an adjacent
-      // repeat of the same transition: the key is rewritten on every observed effort
-      // change, counted or not, so a change that saw no drop cannot leave the key
-      // sitting on an earlier pair and swallow a later independent transition.
-      // `previous` can be null here — the reset branch only needs resetPrevious, which
-      // a failed first attempt can populate while the baseline stays unset. Effort
-      // attribution needs the baseline, so it is guarded rather than dereferenced.
-      if(previous){
+      if(previous&&effortChanged){
         const transitionKey=JSON.stringify([effortKey(previous.reasoningEffort),effortKey(options.reasoningEffort)]);
-        const repeatedTransition=state.countedEffortTransition===transitionKey;
-        if(effortChanged){
-          if(!repeatedTransition){
-            state.cacheResetAfterEffortChange++;
-            if(price){const extra=Math.max(0,Math.min(usage.inputTokens-previous.usage.inputTokens,previous.usage.cacheReadTokens-usage.cacheReadTokens));
-              state.effortResetExposureByCurrency[price.currency]=(state.effortResetExposureByCurrency[price.currency]??0)+extra*Math.max(0,price.input-price.cacheRead)/1e6;}
-          }
+        if(state.countedEffortTransition!==transitionKey){
+          state.cacheResetAfterEffortChange++;
+          if(price){const extra=Math.max(0,Math.min(usage.inputTokens-previous.usage.inputTokens,previous.usage.cacheReadTokens-usage.cacheReadTokens));
+            state.effortResetExposureByCurrency[price.currency]=(state.effortResetExposureByCurrency[price.currency]??0)+extra*Math.max(0,price.input-price.cacheRead)/1e6;}
           state.countedEffortTransition=transitionKey;
-        }else state.countedEffortTransition=null;
+        }
       }
     }
+    // The dedupe key follows every observed effort change, not only the ones that saw a
+    // cache drop. Leaving it on an earlier pair would let a later independent
+    // same-direction transition be suppressed; clearing it on an unchanged effort means
+    // the next transition is treated as new.
+    if(previous&&effortChanged)state.countedEffortTransition=JSON.stringify([effortKey(previous.reasoningEffort),effortKey(options.reasoningEffort)]);
+    else if(previous&&!effortChanged)state.countedEffortTransition=null;
     const weights=options.messages.map(messageTokens),envelopeTokens=textTokens(JSON.stringify({tools:options.tools??[],system:options.system??null}));
     // A failed or aborted attempt carries no observable prompt/cache usage, so it
     // must not replace the last usable observation. Otherwise the next economics

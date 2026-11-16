@@ -536,7 +536,10 @@ export function createRuntime(ctx,call,initial={}){
     if(ownRewrite)s.lastHistoryRewriteSeq=Math.max(s.lastHistoryRewriteSeq??-1,event.seq);
     if(event.type==='turn/start'){s.turn=d.turn;s.active=false;s.reportedCurrentTurn=false;s.writes=[];s.automaticEvidence.clear();s.autoAttemptsThisTurn=0;s.pendingFailure=null;s.pendingLookupFact=null;s.pendingStateNotice=null;}
     if(event.type==='step/start')s.step++;
-    if(event.type==='tool/call'){s.calls.set(d.callId,{name:d.name,arguments:argsOf(d.arguments)});if(['pwsh','bash'].includes(d.name))s.commandRoots.set(d.callId,{tool:d.name,command:argsOf(d.arguments).command||''});}
+    // The step the call was issued at is recorded with it: a result can arrive in a
+    // later step than the one that dispatched it, and only the issue step shows
+    // whether a read predates a write that was armed in between.
+    if(event.type==='tool/call'){s.calls.set(d.callId,{name:d.name,arguments:argsOf(d.arguments),issuedStep:s.step});if(['pwsh','bash'].includes(d.name))s.commandRoots.set(d.callId,{tool:d.name,command:argsOf(d.arguments).command||''});}
     if(['tool/ptc-dispatch-start','tool/code-dispatch-start'].includes(event.type)&&['pwsh','bash'].includes(d.name))s.commandRoots.set(d.rootCallId,{tool:d.name,command:argsOf(d.arguments).command||''});
     if(s.commandRoots.size>256)s.commandRoots.delete(s.commandRoots.keys().next().value);
     if(event.type==='tool/ptc-dispatch'||event.type==='tool/code-dispatch'){
@@ -600,8 +603,13 @@ export function createRuntime(ctx,call,initial={}){
         const readRevision=revisionPattern.test(String(result.value?.version||result.value?.revision||''))
           ?String(result.value.version||result.value.revision):null;
         const revisionAgrees=!pending?.revision||!readRevision||pending.revision===readRevision;
-        const issuedAfterOrAt=pending?Number(s.step)>=Number(pending.atStep):true;
-        if(target&&revisionAgrees&&issuedAfterOrAt)s.pendingRevisit.delete(target.key);
+        // Compare the step the read was ISSUED at, not the step its result arrived in:
+        // a read dispatched before the write finishes after it, and only the issue step
+        // shows the ordering. Without that figure the ordering is unproven and the
+        // obligation stands rather than being discharged on a guess.
+        const issuedAt=Number.isInteger(exec.issuedStep)?exec.issuedStep:null;
+        const orderingProven=issuedAt!==null&&pending?issuedAt>=Number(pending.atStep):issuedAt===null;
+        if(target&&revisionAgrees&&orderingProven)s.pendingRevisit.delete(target.key);
       }
       recordObservation(s,exec,result,seq,{file:args.file_path,lineStart:args.offset||1,lineEnd:Number.isInteger(args.limit)?(args.offset||1)+args.limit-1:null});
     }
@@ -638,11 +646,11 @@ export function createRuntime(ctx,call,initial={}){
         if(!requested)continue;
         if(omittedKeys.has(requested.key))continue;
         // Delivery must be recorded for this exact file. A suffix match would let
-        // `ba.txt` stand in for `a.txt`; a record set with no entry for this file
-        // means nothing was delivered for it.
-        const covered=deliveredKeys.has(requested.key)||emptyKeys.has(requested.key);
-        if(!covered&&(deliveredKeys.size||emptyKeys.size))continue;
-        s.pendingRevisit.delete(requested.key);
+        // `ba.txt` stand in for `a.txt`. An empty window (offset past EOF) and an
+        // unavailable record land in neither set, so they leave the obligation in
+        // place instead of clearing it — the previous fallback cleared any file when
+        // the record sets were empty, which is exactly the no-delivery case.
+        if(deliveredKeys.has(requested.key)||emptyKeys.has(requested.key))s.pendingRevisit.delete(requested.key);
       }
     }
     if(['grep','glob'].includes(exec.name)){
