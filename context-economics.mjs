@@ -305,6 +305,9 @@ export function createContextEconomics(ctx,runtime){
       state.costByCurrency[price.currency]=(state.costByCurrency[price.currency]??0)+(usage.inputTokens*price.input+(usage.cacheReadTokens??0)*price.cacheRead+
         usage.cacheWriteTokens*(price.cacheWrite??0)+usage.outputTokens*price.output)/1e6;
       state.pricedRequests++;
+      // An operator has to be able to tell a published family rate from an exact route
+      // setting: only the latter is a real charge, and the summary labelled both the same.
+      if(price.publishedRate===true)state.publishedRateUsed=true;
     }else if(price){const reason=!billingComplete?'incomplete-request-billing':!cacheWritePriced?'cache-write-price-unavailable':'missing-usage-fields';state.skips[reason]=(state.skips[reason]??0)+1;}
     if(requestKind!=='main')return;
     state.mainFinished++;

@@ -449,3 +449,23 @@ test('the revisit charge is priced as uncached input, not as a cache read',()=>{
   assert.ok(delta>=0.0089,'the delta is input-priced: got ' + delta.toFixed(5));
   assert.ok(delta<0.0091,'and not larger: got ' + delta.toFixed(5));
 });
+
+test('the cost basis distinguishes a published family rate from an exact route row',()=>{
+  // The summary labelled both the same. Only an exact route row is a real charge, so an
+  // operator reading "configured-reference-prices" for a published card was misled. Both
+  // directions are asserted: a flag that is always true would be as wrong as one that is
+  // always false.
+  const basisFor=(pricing,model)=>{
+    const state={step:0,config:{projectionPricing:pricing,projectionHorizonSteps:16}};
+    const agent={session:{id:'basis',surface:{nodes:[]},requestHeader:()=>({config:{provider:'p',model}}),requestContext:()=>({contextWindow:10000})}};
+    const economics=createContextEconomics({tokenMeter:{measure:()=>({totalTokens:9000})}},{get:()=>state});
+    const options={provider:'p',model,messages:[{id:'u',role:'user',content:[{type:'text',text:'r'}]}]};
+    economics.requestFinished(agent,options,{usage:{inputTokens:1000,cacheReadTokens:500,cacheWriteTokens:0,outputTokens:100,totalTokens:1600},
+      settled:true,finishReason:'stop',usageComplete:true,usageConsistent:true});
+    return economics.summary(agent).costObservation.basis;
+  };
+  assert.equal(basisFor([{provider:'p',model:'m',currency:'USD',input:.15,cacheRead:.003,output:.6}],'m'),
+    'configured-reference-prices','an exact route row is a configured reference price');
+  assert.equal(basisFor([],'deepseek-v4.1-flash'),
+    'published-family-rate','the shipped card is a published family rate');
+});
