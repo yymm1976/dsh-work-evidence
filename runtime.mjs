@@ -722,7 +722,7 @@ export function createRuntime(ctx,call,initial={}){
             // The declaration must bind the name: keyword then name, allowing modifiers
             // and an annotation between them (Java), and `export`/`default`/`async` in JS.
             return new RegExp('(?:^|[;{}\\s])(?:export\\s+)?(?:default\\s+)?(?:async\\s+)?(?:public\\s+|private\\s+|protected\\s+|static\\s+|final\\s+|abstract\\s+|synchronized\\s+)?(?:def|func|fn|fun|function|class|interface|struct|type|enum|const|let|var|val)\\s+'+escaped+'(?![\\w$])','u').test(text)
-              ||new RegExp('(?:^|[;{}\\s])(?:public|private|protected|static|final|abstract|synchronized|native|transient|volatile)[\\w\\s<>\\[\\],.?]*\\s+'+escaped+'\\s*\\(','u').test(text);
+              ||new RegExp('(?:^|[;{}\\s])(?:public|private|protected|static|final|abstract|synchronized|native|transient|volatile)[\\w\\s<>\\[\\],.?@()]*\\s+'+escaped+'\\s*\\(','u').test(text);
           };
           const sites=new Map();
           for(const match of items){

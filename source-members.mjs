@@ -311,7 +311,7 @@ function exactMatchRecord({
   // alongside `offset` fails the mode/field validator, so the selectors are only
   // attached for source mode.
   const currentArguments = {
-    ...(retrieveArguments?.mode === 'archive' ? {} : perMemberArguments(retrieveArguments, name)),
+    ...perMemberArguments(retrieveArguments, name),
     offset: start,
     limit,
     lineTextLimit,
@@ -444,7 +444,7 @@ function textWindowRecord({
       ? 'not-found-in-text-window'
       : 'not-found-before-scan-limit';
   const currentArguments = {
-    ...(retrieveArguments?.mode === 'archive' ? {} : perMemberArguments(retrieveArguments, name)),
+    ...perMemberArguments(retrieveArguments, name),
     offset,
     limit,
     lineTextLimit,

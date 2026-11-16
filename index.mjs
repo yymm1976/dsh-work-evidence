@@ -392,10 +392,13 @@ export function apply(ctx,config={}){
       const denialAt=sentence.search(deniedWrite);
       if(denialAt<0)return true;
       const after=sentence.slice(denialAt);
+      // The clause after the denial must permit, not deny again: "but do not modify a.js"
+      // also matches an allowance word followed by a write verb, and both clauses deny.
       const allowanceAt=after.search(allowedAfterDenial);
       if(allowanceAt<0)return false;
-      // The allowance clause itself must not start before the denial it is meant to lift.
-      return after.slice(allowanceAt).length<after.length;
+      const allowanceClause=after.slice(allowanceAt);
+      if(deniedWrite.test(allowanceClause))return false;
+      return true;
     });
   };
   const surfaceModeForRequest=request=>{
