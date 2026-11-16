@@ -372,8 +372,11 @@ export function apply(ctx,config={}){
     // The ALL-CAPS variant is a separate case-sensitive pattern: the main one is /iu,
     // where [A-Z] would also match lowercase words like "edits". Its English verbs are
     // spelled as explicit letter classes because without the /i flag a plain `create`
-    // would miss the sentence-initial "Create README".
-    const upperCaseTarget=/(?:^|[，,、：:\s])(?:[^。；;\n]{0,8})?(?:(?:修改|修复|实现|编写|重构|创建|编辑|写入|增加|删除|替换|重写|改(?!动|变))|[Mm]odify|[Ff]ix|[Ii]mplement|[Ww]rite|[Ee]dit|[Cc]reate|[Dd]elete|[Rr]eplace)\b[^。；;\n]{0,16}[A-Z][A-Z0-9_-]{1,30}\b/u;
+    // would miss the sentence-initial "Create README". The \b belongs on the English
+    // alternatives only: a CJK verb is a non-word character, so a trailing \b would
+    // only match when an ASCII letter follows immediately, and Chinese text normally
+    // puts a space before an ASCII name ("创建 README").
+    const upperCaseTarget=/(?:^|[，,、：:\s])(?:[^。；;\n]{0,8})?(?:(?:修改|修复|实现|编写|重构|创建|编辑|写入|增加|删除|替换|重写|改(?!动|变))|[Mm]odify\b|[Ff]ix\b|[Ii]mplement\b|[Ww]rite\b|[Ee]dit\b|[Cc]reate\b|[Dd]elete\b|[Rr]eplace\b)[^。；;\n]{0,16}[A-Z][A-Z0-9_-]{1,30}\b/u;
     // Split on sentence ends in both scripts. A period ends a sentence only when a
     // space and a capital follow, so "src/a.js" and "v1.2" stay intact. Without the
     // English form, "Do not modify a.js. Create b.js." stayed one sentence and the

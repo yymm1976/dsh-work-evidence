@@ -402,11 +402,16 @@ export function createObservationLedger(ctx,runtime,nativeFiles=null){
     // Drop the windows whose read was superseded by a later write in the same call.
     // The filter is per window, not per path: the same file can be read before the write
     // (superseded) and again after it (valid), and dropping every window of that path
-    // would lose the post-write observation. A window is dropped only when its text came
-    // from a dropped read and no kept read produced the same text.
+    // would lose the post-write observation.
+    //
+    // The identity covers the range AND a hash of the whole text. A prefix is not
+    // enough: a change after the first characters leaves the prefix equal, which would
+    // let the superseded window validate itself as the kept one.
     const windowSignature=window=>{
       const key=pathKeyOf(window.path);
-      return key?`${key}\u0000${String(window.text??'').slice(0,512)}`:null;
+      if(!key)return null;
+      const text=String(window.text??'');
+      return `${key}\u0000${window.start??0}\u0000${window.end??0}\u0000${hashOf(text)}`;
     };
     const keptSignatures=new Set(reads.flatMap(read=>readWindowsFromDispatch(read).map(windowSignature).filter(Boolean)));
     const droppedSignatures=new Set(keptAll?[]:rawReads
@@ -414,6 +419,10 @@ export function createObservationLedger(ctx,runtime,nativeFiles=null){
       .flatMap(read=>readWindowsFromDispatch(read).map(windowSignature).filter(Boolean)));
     const windows=allWindows.filter(window=>{
       const signature=windowSignature(window);
+      // With reads dropped, a window is only admissible when a retained read produced
+      // exactly that window. A window that matches no retained read came from the
+      // projection's copy of a superseded body and would be registered as current.
+      if(!keptAll)return Boolean(signature)&&keptSignatures.has(signature);
       if(!signature||!droppedSignatures.has(signature))return true;
       return keptSignatures.has(signature);
     });

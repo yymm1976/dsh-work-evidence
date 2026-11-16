@@ -302,8 +302,11 @@ function exactMatchRecord({
     canIncreaseText,
     prefixOmitted: start > match.lineStart,
   });
+  // Archive mode selects by locator, not by member name: adding `member`/`members`
+  // alongside `offset` fails the mode/field validator, so the selectors are only
+  // attached for source mode.
   const currentArguments = {
-    ...perMemberArguments(retrieveArguments, name),
+    ...(retrieveArguments?.mode === 'archive' ? {} : perMemberArguments(retrieveArguments, name)),
     offset: start,
     limit,
     lineTextLimit,
@@ -436,7 +439,7 @@ function textWindowRecord({
       ? 'not-found-in-text-window'
       : 'not-found-before-scan-limit';
   const currentArguments = {
-    ...perMemberArguments(retrieveArguments, name),
+    ...(retrieveArguments?.mode === 'archive' ? {} : perMemberArguments(retrieveArguments, name)),
     offset,
     limit,
     lineTextLimit,
@@ -633,10 +636,12 @@ export async function sourceMemberSource({
   const limit = checkedMemberLimit(args.limit);
   const lineTextLimit = checkedLineTextLimit(args.lineTextLimit);
   const parseSource = sourceText ?? lines.join('\n');
-  const retrieveBase = {
-    mode: 'source',
-    ...sourceRetrieval(args, requested),
-  };
+  // An archive member is fetched in archive mode with its locator; a workspace source is
+  // fetched in source mode by class name. Returning `mode:'source'` for an archive member
+  // made every retrieval instruction fail the mode/field validator.
+  const retrieveBase = args.archive
+    ? {mode: 'archive', archive: args.archive, ...(args.entry ? {entry: args.entry} : {}), offset: args.offset ?? 1, limit}
+    : {mode: 'source', ...sourceRetrieval(args, requested)};
   const base = {
     state: 'observed',
     path: displayPath,

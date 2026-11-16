@@ -544,7 +544,13 @@ export function createRuntime(ctx,call,initial={}){
     if(s.commandRoots.size>256)s.commandRoots.delete(s.commandRoots.keys().next().value);
     if(event.type==='tool/ptc-dispatch'||event.type==='tool/code-dispatch'){
       s.metrics.ptcResults++;
-      observe(agent,{name:d.name,arguments:argsOf(d.arguments),callId:d.subCallId,rootCallId:d.rootCallId},
+      // A nested dispatch carries no issue step of its own, and the completion event's
+      // step is not a substitute: an older read can finish after a newer write. The step
+      // recorded here is the one the dispatch-start event arrived in, which is the
+      // closest observable point to the issue, and it is what the obligation check
+      // compares against.
+      const issuedStep=Number.isInteger(s.step)?s.step:null;
+      observe(agent,{name:d.name,arguments:argsOf(d.arguments),callId:d.subCallId,rootCallId:d.rootCallId,issuedStep},
         {isError:!!d.isError,error:d.error?{info:d.error,message:textOf(d)}:undefined,content:d.content,value:parseValue(d)},event.seq);
     }else if(event.type==='tool/result'&&event.surfaceOp?.op!=='replace'){
       const id=d.message?.source?.callId,c=s.calls.get(id);
