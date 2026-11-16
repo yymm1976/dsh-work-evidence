@@ -27,7 +27,11 @@
  */
 
 const VERB_ZH='修改|修复|实现|编写|重构|创建|编辑|写入|增加|更新|添加|新增|更改|移除|删除|替换|重写|修补|重命名|改';
-const VERB_EN='modify|fix|implement|write|edit|create|delete|replace|update|add|change|refactor|remove|rename|patch';
+// 重写 (rewrite) is in the Chinese list, so `rewrite` must be in the English one: the clause
+// scan and the target-free implementation route have to agree about what a verb is, or
+// "Do not modify README.md. Rewrite the parser." passes the implementation gate and then
+// finds no verb to judge in the clause scan.
+const VERB_EN='modify|fix|implement|write|rewrite|edit|create|delete|replace|update|add|change|refactor|remove|rename|patch';
 // 不可 is deliberately absent: it is far more often part of an adjective (不可用, 不可靠,
 // 不可避免) than a denial, and including it classified "执行程序并保留真实不可用结果" as
 // read-only. 不能被/不可修改 are covered by 不能 plus the verb scan.
@@ -108,7 +112,13 @@ function sentenceIsWritable(prose,raw=prose){
     if(idiomPattern.test(governed))return true;
     // An allowance only counts when it is followed by a write request. "but review the
     // update" names a noun, not a request, so the denial still holds.
-    if(allowancePattern.test(governed)&&writeRequestIn(`${governedRaw}${raw.slice(verb.at)}`))return true;
+    // An allowance only counts when it is followed by a write request. The request test here
+    // must accept the SAME two forms the sentence gate accepts — a target, or a target-free
+    // implementation verb — or "Do not run tests, but implement pagination." is a request at
+    // the gate and a non-request here, and the denial wins. That asymmetry is the same defect
+    // two earlier rounds found between hasWriteRequest and hasCapsTarget.
+    const allowedText=`${governedRaw}${raw.slice(verb.at)}`;
+    if(allowancePattern.test(governed)&&(writeRequestIn(allowedText)||sentenceImplements(allowedText)))return true;
     // `instead` is an allowance that trails the verb, so scanning only the text before it
     // misses the one construction that names the replacement explicitly:
     //   "Do not modify src/a.js, create src/b.js instead."

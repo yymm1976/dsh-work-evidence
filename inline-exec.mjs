@@ -521,11 +521,14 @@ exit $workExecExit`;
   //   - CreateProcess caps the command line in CHARACTERS, so a path with non-ASCII letters
   //     must count its code points, not its UTF-8 bytes. Comparing bytes rejected commands
   //     that would have launched.
-  //   - POSIX caps an argv element in BYTES.
+  //   - POSIX caps an argv element in BYTES *including the terminating NUL*, so a command of
+  //     exactly MAX_ARG_STRLEN bytes is one byte over and fails with E2BIG. The POSIX branch
+  //     therefore rejects at >=, the Windows branch at >.
   // The error names the unit for the same reason: "unit limit" told an operator nothing.
-  const measured=process.platform==='win32'?command.length:Buffer.byteLength(command,'utf8');
-  const unit=process.platform==='win32'?'characters':'bytes';
-  if(measured>commandLimit){
+  const onWindows=process.platform==='win32';
+  const measured=onWindows?command.length:Buffer.byteLength(command,'utf8');
+  const unit=onWindows?'characters':'bytes';
+  if(onWindows?measured>commandLimit:measured>=commandLimit){
     throw new Error(`work_exec source is too large for the pwsh transport on this host (${measured} ${unit} of command against a ${commandLimit}-${unit} limit); use the bash transport or a smaller program`);
   }
   return command;

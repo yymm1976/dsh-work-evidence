@@ -452,3 +452,18 @@ test('a caller source-event seq does not overwrite the decision sequence',async(
     assert.equal(feature.lastReason,'second','the last decision is the one emitted last');
   }finally{await remove(built.telemetryDir);}
 });
+
+test('a caller detail reason does not overwrite the decision reason',()=>{
+  // reviewOutcomes passes the review object as details, and that object carries its own
+  // `reason`. Spreading it over the generated reason made the live feature tally
+  // 'projection-outcome' while a restored log tallied the review's reason.
+  const built=void 0;
+  return start().then(async created=>{
+    try{
+      created.effects.decide(created.agent,'projection','applied','projection-outcome',{reason:'review-implausible',plausible:false});
+      const [decision]=created.effects.snapshot(created.agent).decisions;
+      assert.equal(decision.reason,'projection-outcome','the generated reason wins');
+      assert.equal(decision.detailReason,'review-implausible','and the caller reason is kept separately');
+    }finally{await remove(created.telemetryDir);}
+  });
+});

@@ -65,9 +65,15 @@ export function createEffectObserver(ctx,runtime){
     // the pruned result's sequence. With decisions about source events 100 and 20, the live
     // feature reported 20 as latest while a restored decision log picked 100, because the two
     // read the same field for different meanings. The source event travels in its own field.
-    const {seq:sourceSeq=null,economics:decisionEconomics,...rest}=details;
+    // `details` may carry its own `reason` — reviewOutcomes passes the review object, which
+    // has one. Spreading it over the generated `reason` made the live feature count
+    // "projection-outcome" while a restored log counted the review's reason, so the same
+    // history produced two different tallies. The generated reason wins; the caller's is kept
+    // under `detailReason` when both are present and differ.
+    const {seq:sourceSeq=null,economics:decisionEconomics,reason:detailReason,...rest}=details;
     const decision={id:randomUUID(),at,step,seq,feature:name,status,reason,...rest,
-      ...(sourceSeq===null?{}:{sourceSeq}),...(decisionEconomics===undefined?{}:{economics:decisionEconomics})};
+      ...(sourceSeq===null?{}:{sourceSeq}),...(decisionEconomics===undefined?{}:{economics:decisionEconomics}),
+      ...(detailReason===undefined||detailReason===reason?{}:{detailReason})};
     state.decisions.push(decision);state.pendingDecisions.push(decision);
     if(state.pendingDecisions.length>256){
       const overflow=state.pendingDecisions.splice(0,state.pendingDecisions.length-256);

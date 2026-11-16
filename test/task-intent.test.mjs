@@ -103,3 +103,15 @@ test('task intent: a filename that contains the marker is not a read-only instru
   // `scripts/read-only.sh` is a path, not a permission statement.
   assert.equal(isReadOnlyTaskRequest('Run scripts/read-only.sh and report the output.'),false);
 });
+
+test('task intent: an allowance accepts a target-free implementation request',()=>{
+  // Both Majors from the round-44 review. The allowance branch used to call only the
+  // target-requiring test, so "but implement pagination" was a request at the sentence gate
+  // and a non-request here — the denial won and the edit tools were hidden.
+  assert.equal(isReadOnlyTaskRequest('Do not run tests, but implement pagination.'),false);
+  assert.equal(isReadOnlyTaskRequest('Do not implement pagination.'),true);
+  // And `rewrite` had to join the shared verb list, or the sentence gate accepted it via the
+  // implementation route and the clause scan then found no verb to judge.
+  assert.equal(isReadOnlyTaskRequest('Do not modify README.md. Rewrite the parser.'),false);
+  assert.equal(isReadOnlyTaskRequest('Do not rewrite the parser.'),true);
+});
