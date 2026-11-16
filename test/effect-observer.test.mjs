@@ -4,6 +4,7 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import {createEffectObserver} from '../effect-observer.mjs';
+import realFs from 'node:fs/promises';
 
 // A read-only mode only blocks writes when the process lacks CAP_DAC_OVERRIDE, so a
 // root container can still append after chmod(0o444). Detect the capability instead
@@ -154,6 +155,34 @@ test('a failed append after a failed newline repair keeps the next row on its ow
     await created.effects.flush(created.agent);
     assert.deepEqual((await stored(created.telemetryDir)).map(item=>item.requestId),['restored-row','late-row']);
   }finally{await fs.chmod(file,0o664);await remove(created.telemetryDir);}
+});
+
+test('a partial failed append is isolated before the next persistent row',async()=>{
+  const created=await start();
+  const file=path.join(created.telemetryDir,SESSION+'.observability.jsonl');
+  const original=realFs.appendFile;
+  let injected=false;
+  realFs.appendFile=async(...args)=>{
+    if(!injected&&args[0]===file){
+      injected=true;
+      const text=String(args[1]);
+      await original(file,text.slice(0,Math.floor(text.length/2)),'utf8');
+      throw new Error('injected partial append');
+    }
+    return original(...args);
+  };
+  try{
+    await created.effects.load(created.agent);
+    await created.effects.finish(created.agent,row('partial-row'));
+    await created.effects.flush(created.agent);
+    await created.effects.finish(created.agent,row('surviving-row'));
+    await created.effects.flush(created.agent);
+    assert.deepEqual((await stored(created.telemetryDir)).map(item=>item.requestId),['surviving-row'],
+      'the failed JSON prefix is not concatenated with the next row');
+    const restored=await start({telemetryDir:created.telemetryDir});
+    await restored.effects.load(restored.agent);
+    assert.equal(restored.effects.snapshot(restored.agent).requests.count,1);
+  }finally{realFs.appendFile=original;await remove(created.telemetryDir);}
 });
 
 test('an inconsistent reported total stays incomplete in memory, on disk and after a restore',async()=>{

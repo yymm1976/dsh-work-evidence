@@ -100,6 +100,25 @@ test('an English denial is scoped to its own sentence',async()=>{
   }finally{await host.close();}
 });
 
+test('a denial in a later English clause does not cancel the requested write',async()=>{
+  const host=await startHost({toolMode:'ptc',extraMounts:[['dsh-ptc-runtime-node']],script:answer});
+  try{
+    const agent=await host.createAgent('max');
+    await host.send(agent,'Modify src/a.js, but do not delete src/b.js.');
+    assert.match(systemOf(host.requests.at(-1)),/\bwork_exec: \{/u,
+      'the first clause authorizes a modification; the second forbids only deletion');
+    await host.send(agent,'Do not modify src/a.js, but create src/b.js.');
+    assert.match(systemOf(host.requests.at(-1)),/\bwork_exec: \{/u,
+      'an explicit allowance after a denial remains writable');
+    await host.send(agent,'Read src/a.js, but do not modify src/b.js.');
+    assert.doesNotMatch(systemOf(host.requests.at(-1)),/\bwork_exec: \{/u,
+      'a read followed by a denied modification stays read-only');
+    await host.send(agent,'修改 src/a.js，但不要删除 src/b.js。');
+    assert.match(systemOf(host.requests.at(-1)),/\bwork_exec: \{/u,
+      'a Chinese conjunction without a space still scopes the denial to its own clause');
+  }finally{await host.close();}
+});
+
 test('describing an edit inside a read-only request does not make it writable',async()=>{
   // "edits" is the object of "review": the sentence asks for a read. Matching the
   // bare verb made this request writable, keeping work_exec and verified_exec

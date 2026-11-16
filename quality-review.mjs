@@ -44,20 +44,27 @@ const perFileEffortStates=(value,normalize)=>{
 // carries the states recorded by fileCall.
 const filePaths=call=>{
   const args=call?.args??{};
-  // The key used for the state lookup is the caller's fileKey when the call carries one;
-  // otherwise the raw target is compared, which is still exact per edit entry.
-  const stateOf=target=>{
-    const states=call?.editStates;
-    if(!states||!target)return undefined;
-    const normalizer=call?.stateKey??(value=>value);
-    return states.get(normalizer(target));
+  const states=call?.editStates,normalizer=call?.stateKey??(value=>value);
+  // An edit target is a request, not proof of application. The producer's files[]
+  // establishes the identity of each result entry; matching only by resolved target
+  // string lets an aliased or unlisted target inherit another file's applied state.
+  const stateOf=edit=>{
+    if(!edit||typeof edit!=='object')return undefined;
+    const target=edit.file??edit.path??edit.file_path;
+    if(call?.resultFiles?.length){
+      const result=call.resultFiles.find(file=>file.target===target||normalizer(file.target)===normalizer(target));
+      // null marks a target the producer's identity list did not match, so it cannot
+      // inherit another file's state. undefined is reserved for no identity at all.
+      return result?.effectState??null;
+    }
+    if(states?.size)return states.get(normalizer(target))??null;
+    // An older producer reports only the top-level state and no per-file identities.
+    return call?.effectState;
   };
-  const applied=edit=>{
-    const target=edit?.file??edit?.path??edit?.file_path;
-    if(!target)return false;
-    const state=stateOf(target);
-    return !state||['applied','partial','unknown'].includes(state);
-  };
+  // Without any producer identity (scopeReviewSources re-parses a stored call), a
+  // potential target is retained conservatively; once identities exist, an unmatched
+  // target is not an applied edit.
+  const applied=edit=>{const state=stateOf(edit);return state===undefined||['applied','partial','unknown'].includes(state);};
   const edited=Array.isArray(args.edits)?args.edits.filter(applied).map(edit=>edit?.file??edit?.path??edit?.file_path).filter(Boolean):[];
   return [...edited,args.file_path??args.path].filter(Boolean);
 };
@@ -253,13 +260,28 @@ function payloadFor(current,review,root){
       if(states.length&&!states.some(state=>['applied','partial','unknown'].includes(state)))return null;
       // A mixed result applies some files and not others; keep the per-file states so
       // the change-history pass can skip the files that did not take the change.
+      call.effectState=typeof value?.effectState==='string'?value.effectState:null;
       call.editStates=perFileEffortStates(value,fileKey);
+      call.resultFiles=Array.isArray(value?.files)?value.files.map(file=>({
+        target:typeof file?.path==='string'?file.path:typeof file?.file==='string'?file.file:null,
+        effectState:typeof file?.effectState==='string'?file.effectState:null,
+      })).filter(file=>file.target&&file.effectState):[];
       // filePaths() must key its state lookup the same way the states were keyed.
       call.stateKey=fileKey;
     }
     return call;
   };
-  const verifiedEditStates=call=>call?.editStates??new Map();
+  const appliedVerifiedEdits=call=>(call?.args?.edits??[]).filter(edit=>{
+    const target=edit?.file??edit?.path??edit?.file_path;
+    if(!target)return false;
+    const result=call.resultFiles?.find(file=>file.target===target||fileKey(file.target)===fileKey(target));
+    // When the producer reports no per-file identity, its top-level applied state is
+    // the only available evidence. Once files[] exists, an unmatched edit is unknown
+    // and must not borrow an applied state from a different alias.
+    const state=call.resultFiles?.length?result?.effectState
+      :call.editStates?.size?call.editStates.get(fileKey(target)):call.effectState;
+    return ['applied','partial','unknown'].includes(state);
+  });
   const requestSections=requestSourceSections(events,request,assistant,root,fileCall);
   const requestSourceData=new Map();
   for(const item of requestSections){
@@ -303,12 +325,7 @@ function payloadFor(current,review,root){
       // A mixed result can report one file applied and another `none` while the
       // top-level state still says applied. Only the edits whose own file took the
       // change belong in the history, or an unapplied file is described as changed.
-      const states=verifiedEditStates(call);
-      const applied=callArgs.edits.filter(edit=>{
-        const target=fileKey(edit?.file??edit?.path??edit?.file_path??'');
-        const state=states.get(target);
-        return !state||['applied','partial','unknown'].includes(state);
-      });
+      const applied=appliedVerifiedEdits(call);
       if(!applied.length)return false;
       const joined=applied.map(edit=>{
         const target=edit?.file??edit?.path??edit?.file_path??'';
@@ -358,7 +375,7 @@ function payloadFor(current,review,root){
     // call can replace a line in A and create B, and treating the call as an insertion
     // for both would trim A's earlier full write and leave only a fragment.
     const inserts=(call,forKey)=>call?.name==='write'
-      ||(call?.name==='verified_exec'&&(call.args?.edits??[]).some(edit=>typeof edit?.content==='string'
+      ||(call?.name==='verified_exec'&&appliedVerifiedEdits(call).some(edit=>typeof edit?.content==='string'
         &&fileKey(edit?.file??edit?.path??edit?.file_path??'')===forKey));
     const overwrite=changes.findLastIndex(({call})=>inserts(call,key));
     if(overwrite>=0)changes=changes.slice(overwrite);

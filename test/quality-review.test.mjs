@@ -412,6 +412,25 @@ test('an unreadable state record is only recovered by reading it again',async()=
   }finally{await h.close();}
 });
 
+test('an unmatched verified-edit alias cannot inherit another file\'s applied state',async()=>{
+  let payload;const artifacts=[],h=await harness({artifacts,review:value=>{payload=value;return {issues:[]};}});
+  try{
+    h.request('审阅 alias.mjs 与 actual.mjs 的源码。');
+    const result=h.event('tool/ptc-dispatch',{subCallId:'edit-alias',rootCallId:'outer',name:'verified_exec',isError:false,
+      arguments:{summary:'two targets',edits:[
+        {file:'alias.mjs',content:'UNMATCHED_ALIAS_BODY'},
+        {file:'./actual.mjs',old_text:'return value',new_text:'return actual()'}]},
+      content:[{type:'text',text:JSON.stringify({effectState:'applied',files:[
+        {path:'actual.mjs',effectState:'applied'},{path:'other.mjs',effectState:'none'}]})}]});
+    artifacts.push({seq:result.seq,path:'alias.mjs',tool:'verified_exec',effectState:'unknown'});
+    artifacts.push({seq:result.seq,path:'actual.mjs',tool:'verified_exec',effectState:'applied'});
+    h.answer('已审阅。');await h.run();
+    const joined=payload.evidence.filter(item=>item.seq===result.seq).map(item=>item.data).join('\n');
+    assert.ok(joined.includes('return actual()'),'the producer\'s actual applied file remains');
+    assert.ok(!joined.includes('UNMATCHED_ALIAS_BODY'),'an unmatched edit target is not an applied change');
+  }finally{await h.close();}
+});
+
 test('a verified edit supplies its per-file change body and skips a file that did not apply',async()=>{
   // A verified_exec call reports its changes inside edits[], not in content/new_string,
   // and a mixed result can apply one file while leaving another at effectState none.

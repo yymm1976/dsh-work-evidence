@@ -82,17 +82,36 @@ export function createEffectObserver(ctx,runtime){
     if(saving<8){decide(agent,name,'not-applicable','no-local-token-benefit',{tokensEstimate:saving});return false;}
     return true;
   }
+  async function repairAppendBoundary(state,file,kind){
+    // appendFile is not transactional: a rejected append can leave a JSON prefix at EOF.
+    // The next newline alone cannot repair that prefix, so retain complete rows and remove
+    // only the unparseable tail before any later append. A complete unterminated row only
+    // needs its newline; if that repair also fails, keep the conservative leading-newline
+    // marker for the next attempt.
+    state.needsLeadingNewline.add(kind);
+    let raw;
+    try{raw=await fs.readFile(file,'utf8');}catch{return;}
+    const boundary=raw.lastIndexOf('\n')+1,tail=raw.slice(boundary);
+    if(!tail){state.needsLeadingNewline.delete(kind);return;}
+    let complete=false;
+    try{JSON.parse(tail);complete=true;}catch{}
+    try{
+      if(complete)await fs.appendFile(file,'\n','utf8');
+      else await fs.truncate(file,boundary);
+      state.needsLeadingNewline.delete(kind);
+    }catch{}
+  }
   function queue(state,agent,row,kind='observability'){
     const dir=storageFor(agent);if(!dir){state.writeErrors.push('Observability storage outside the workspace is unavailable');state.writeErrors=state.writeErrors.slice(-8);return Promise.resolve(false);}
     if(!/^[-a-zA-Z0-9_][-.a-zA-Z0-9_]{0,127}$/.test(agent.session.id)){state.writeErrors.push('Invalid session ID for observability record');return Promise.resolve(false);}
     const file=path.join(dir,agent.session.id+'.'+kind+'.jsonl');
-    // After a failed trailing-newline repair the file is known to end mid-line, so the next
-    // append for that file starts with its own newline instead of merging two rows.
+    // Boundary inspection and repair stay in this same queue, so a later row cannot
+    // overtake recovery and turn a partial append into a corrupt persistent ledger.
     state.queue=state.queue.catch(()=>{}).then(async()=>{await fs.mkdir(dir,{recursive:true});
       await fs.appendFile(file,(state.needsLeadingNewline.has(kind)?'\n':'')+JSON.stringify(row)+'\n','utf8');
-      // Clear the marker only once a row actually landed: an append that failed wrote nothing,
-      // so the file still ends mid-line and the following row must keep its own leading newline.
-      state.needsLeadingNewline.delete(kind);return true;}).catch(error=>{state.writeErrors.push(String(error.message).slice(0,240));state.writeErrors=state.writeErrors.slice(-8);return false;});
+      state.needsLeadingNewline.delete(kind);return true;}).catch(async error=>{
+      state.writeErrors.push(String(error.message).slice(0,240));state.writeErrors=state.writeErrors.slice(-8);
+      await repairAppendBoundary(state,file,kind);return false;});
     return state.queue;
   }
   function persistOverflow(state,agent){

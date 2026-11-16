@@ -545,14 +545,14 @@ export function createObservationLedger(ctx,runtime,nativeFiles=null){
     if(ledgerOn&&!result.isError)recordSearchResult(exec.agent,exec.name,exec.arguments,result.value,exec.rootCallId||exec.callId);
     if(Object.hasOwn(decision,'content')||Object.hasOwn(decision,'value'))return decision;
     let prepared;
-    // The mutation count is read before preparation, not at registration: preparing
-    // awaits file fingerprints, and a write completing during that await would
-    // otherwise leave the entry registered as current although its body predates the
-    // write. addObservation compares against this recorded count.
+    // Capture both sides of the direct read: a write completed before this post-execute
+    // hook may already have made its body historical, and a later write before delivery
+    // must still invalidate it. Nested reads use the same dispatch invariant.
+    const mutationCountAtDispatch=Number.isSafeInteger(exec.mutationCountAtDispatch)?exec.mutationCountAtDispatch:(state.mutationCount??0);
     const mutationCountAtPrepare=state.mutationCount??0;
     if(ledgerOn)try{prepared=await prepareVisibleResult(exec.agent,exec,result);}catch(error){addProblem(state,'receipt-prepare: '+error.message);}
     if(prepared){
-      state.pending.set(exec.callId,{...prepared,mutationCountAtPrepare,receiptApplied:!!prepared.receipt,at:Date.now()});
+      state.pending.set(exec.callId,{...prepared,mutationCountAtDispatch,mutationCountAtPrepare,receiptApplied:!!prepared.receipt,at:Date.now()});
       if(state.pending.size>MAX_PENDING)state.pending.delete(state.pending.keys().next().value);
     }
     const content=prepared?.receipt?[{type:'text',text:prepared.receipt}]:result.content;
@@ -579,10 +579,9 @@ export function createObservationLedger(ctx,runtime,nativeFiles=null){
       revision:pending.windows[0].revision??null,windows:pending.windows.map(({source,...window})=>window),
       hash:pending.bodyHash,chars:pending.original.length,hasBody:pending.windows.some(window=>!window.referenceApplied),
       canonicalIds:[...new Set([...pending.priorById.values()].map(item=>item.id))],
-      // A write that landed after the read was taken (and even after preparation
-      // began) makes this body historical, not current. Only a mutation count that
-      // still matches the one recorded before preparation leaves it fresh.
-      visible:true,stale:(state.mutationCount??0)!==(pending.mutationCountAtPrepare??0),observedAt:new Date().toISOString(),
+      // A write at any point after dispatch makes the delivered body historical:
+      // post-execute preparation does not prove the direct read preceded that write.
+      visible:true,stale:(state.mutationCount??0)!==(pending.mutationCountAtPrepare??0)||(pending.mutationCountAtPrepare??0)!==(pending.mutationCountAtDispatch??0),observedAt:new Date().toISOString(),
     };
     // Consumers read the window flag, not the observation flag: bestCanonical()
     // skips a prior only when its window is stale, and metrics() counts the
@@ -801,5 +800,5 @@ export function createObservationLedger(ctx,runtime,nativeFiles=null){
     ctx.on('agent/disposed',({agent})=>ledgers.delete(agent.session.id));
   }
 
-  return {observe,maintenance,metrics,detail,clear};
+  return {observe,maintenance,metrics,detail,clear,mutationCount:agent=>stateFor(agent).mutationCount??0};
 }

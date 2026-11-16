@@ -192,6 +192,14 @@ export function apply(ctx,config={}){
   const evidenceViews=createEvidenceViews(ctx,runtime);
   const contextWindow=createContextWindow(ctx,runtime);contextWindow.observe();
   const observationLedger=createObservationLedger(ctx,runtime,nativeFiles);observationLedger.observe();
+  ctx.on('tools/execute',async(exec,next)=>{
+    // Capture before any tool can complete. Ledger hooks that later await routing or
+    // receipts must not accidentally read a later mutation as this read's dispatch state.
+    if(exec?.agent&&['read','project_evidence'].includes(exec.name)&&!Number.isSafeInteger(exec.mutationCountAtDispatch)){
+      try{exec.mutationCountAtDispatch=observationLedger.mutationCount(exec.agent);}catch{}
+    }
+    return next();
+  },{prepend:true});
   const historyCoordinator=createHistoryCoordinator(runtime,contextWindow,contextEconomics);runtime.historyCoordinator=historyCoordinator;
   const clearPluginState=agent=>{observationLedger.clear(agent);contextWindow.clear(agent);finalJson.clear(agent);handoffDelivery.clear(agent);};
   const routeRead=createReadRouting(ctx,runtime,call,nativeFiles);
@@ -377,28 +385,31 @@ export function apply(ctx,config={}){
     // only match when an ASCII letter follows immediately, and Chinese text normally
     // puts a space before an ASCII name ("创建 README").
     const upperCaseTarget=/(?:^|[，,、：:\s])(?:[^。；;\n]{0,8})?(?:(?:修改|修复|实现|编写|重构|创建|编辑|写入|增加|删除|替换|重写|改(?!动|变))|[Mm]odify\b|[Ff]ix\b|[Ii]mplement\b|[Ww]rite\b|[Ee]dit\b|[Cc]reate\b|[Dd]elete\b|[Rr]eplace\b)[^。；;\n]{0,16}[A-Z][A-Z0-9_-]{1,30}\b/u;
-    // Split on sentence ends in both scripts. A period ends a sentence only when a
-    // space and a capital follow, so "src/a.js" and "v1.2" stay intact. Without the
-    // English form, "Do not modify a.js. Create b.js." stayed one sentence and the
-    // first denial suppressed the second request, making a writable task read-only.
-    const sentences=request.split(/[。；;\n]|\.(?=\s+[A-Z])/u);
-    return !sentences.some(sentence=>{
-      if(!writeVerb.test(sentence))return false;
-      if(!writeRequest.test(sentence)&&!upperCaseTarget.test(sentence))return false;
-      if(!deniedWrite.test(sentence))return true;
-      // The allowance must come AFTER the denial and must itself be a write clause. A
-      // read permission that precedes a denied write ("you can read a.js, but do not
-      // modify b.js") would otherwise match and turn the denial into permission.
-      const denialAt=sentence.search(deniedWrite);
-      if(denialAt<0)return true;
-      const after=sentence.slice(denialAt);
-      // The clause after the denial must permit, not deny again: "but do not modify a.js"
-      // also matches an allowance word followed by a write verb, and both clauses deny.
-      const allowanceAt=after.search(allowedAfterDenial);
+    // A denial governs only its own coordinate clause. Splitting just on sentence ends
+    // made "Modify a.js, but do not delete b.js" look wholly denied; splitting on every
+    // comma would instead detach the target from "Do not modify src/a.js". Keep comma
+    // boundaries only where a following conjunction introduces a new write decision.
+    const clauses=[];
+    for(const sentence of request.split(/[。；;\n]|\.(?=\s+[A-Z])/u)){
+      let start=0;
+      for(const match of sentence.matchAll(/(?:^|[，,])\s*(?:但(?:是)?|不过|然而|而是|instead|however|but)(?=\s|[\u4e00-\u9fff])/giu)){
+        // Keep the comma in the prefix, not in the new clause; at the sentence start
+        // the match itself is the boundary. Chinese permits no space after the
+        // conjunction, so only English requires a following separator.
+        const comma=/^[，,]/u.test(match[0])?match.index+1:match.index;
+        clauses.push(sentence.slice(start,comma));start=match.index+match[0].length;
+      }
+      clauses.push(sentence.slice(start));
+    }
+    return !clauses.some(clause=>{
+      if(!writeVerb.test(clause))return false;
+      if(!writeRequest.test(clause)&&!upperCaseTarget.test(clause))return false;
+      if(!deniedWrite.test(clause))return true;
+      // An allowance must follow the denial and must itself be a write clause. A
+      // repeated denial is not permission ("but do not modify a.js").
+      const denialAt=clause.search(deniedWrite),after=clause.slice(denialAt),allowanceAt=after.search(allowedAfterDenial);
       if(allowanceAt<0)return false;
-      const allowanceClause=after.slice(allowanceAt);
-      if(deniedWrite.test(allowanceClause))return false;
-      return true;
+      return !deniedWrite.test(after.slice(allowanceAt));
     });
   };
   const surfaceModeForRequest=request=>{
