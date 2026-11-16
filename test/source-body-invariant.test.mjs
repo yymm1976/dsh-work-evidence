@@ -88,3 +88,36 @@ test('an unrelated named path does not disable source recognition',()=>{
   assert.equal(planContextPrune(message,[],{seq:13,thresholdChars:8000,headChars:4096,tailChars:1024,
     retainSource:file=>SOURCE_BODY_PATH.test(file??'')}),null,'the unmarked source body is retained');
 });
+
+test('a native read of a non-source path is cut for a log and kept for source',()=>{
+  // The reads branch takes its path from the read dispatch, so `retainSource` (which decides
+  // by PATH) answers "cut" for build.log. The body then has to decide. Without this case the
+  // branch is untested: a host-level assertion about a .log either went through the flat
+  // branch or was already refused upstream, so forcing the detector false changed nothing.
+  const dispatch = bodyLines => {
+    const text = `<path>build.log</path>\n<type>file</type>\n<content>\n` +
+      bodyLines.map((line, index) => `${index + 1}: ${line}`).join('\n') + '\n</content>';
+    return {
+      name: 'read', arguments: {file_path: 'build.log'}, isError: false, meta: {},
+      value: {path: 'build.log', lines: bodyLines.map((line, index) => ({line: index + 1, text: line}))},
+      content: [{type: 'text', text}],
+    };
+  };
+  const options = {seq: 9, thresholdChars: 8000, headChars: 4096, tailChars: 1024, retainSource: () => false};
+  // The message body must be the SAME text the dispatch renders, or renderedReads refuses to
+  // map its windows and the null plan has nothing to do with source detection.
+  const plan = bodyLines => {
+    const read = dispatch(bodyLines);
+    return planContextPrune({role: 'tool', content: read.content}, [read], options);
+  };
+
+  const sourceBody = Array.from({length: 300}, (_, index) =>
+    `    value_${String(index).padStart(3, '0')} = compute_value(${index}, options=self._options)`);
+  assert.equal(plan(sourceBody), null, 'assignment-only source behind a non-source name is not reduced');
+
+  const logBody = Array.from({length: 300}, (_, index) =>
+    `build step ${index} completed in ${index}ms`);
+  const logPlan = plan(logBody);
+  assert.ok(logPlan, 'a real log behind the same name is still reduced');
+  assert.ok(logPlan.charsAfter < logPlan.charsBefore);
+});

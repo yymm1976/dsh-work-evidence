@@ -60,7 +60,36 @@ export function isSourceBody(text){
   // A named non-source path does not make an unmarked source body a log, and a named source
   // path anywhere in a compound result keeps the whole result. Only the absence of any
   // source path leaves the body itself as the remaining evidence.
-  return looksLikeSourceBody(body);
+  if(looksLikeSourceBody(body))return true;
+  // A shell result is a serialized envelope: the source sits in `stdout.text` as a JSON
+  // string, where every newline is the two characters `\` and `n`. Both detectors look for
+  // shapes at LINE STARTS and count assignment rows split on real newlines, so a whole file
+  // inside an envelope reads as one long line and matches neither. Measured on a 300-line
+  // assignment body: the envelope is false, the decoded body is true — and the receipt
+  // branch would then cut its middle to head+tail.
+  //
+  // Only when the raw form did not match, and only for text that actually contains escaped
+  // newlines, so an ordinary body pays nothing for this.
+  if(!body.includes('\\n'))return false;
+  try{return looksLikeSourceBody(decodeEscapedNewlines(body));}catch{return false;}
+}
+
+/**
+ * Turn the `\n` sequences inside a serialized envelope back into real newlines.
+ *
+ * Deliberately narrow: it unescapes newlines, tabs and quotes only, because the goal is to
+ * let the line-start detectors see lines, not to reconstruct the JSON value. A body that is
+ * not an envelope has no `\\n` and never reaches this.
+ */
+export function decodeEscapedNewlines(text){
+  return String(text??'').replace(/\\r\\n|\\n|\\r|\\t|\\"|\\'/gu,sequence=>{
+    switch(sequence){
+      case '\\n':case '\\r\\n':case '\\r':return '\n';
+      case '\\t':return '\t';
+      case '\\"':return '\"';
+      default:return '\'';
+    }
+  });
 }
 
 /**
@@ -242,6 +271,12 @@ function applyOperations(text,operations){
   return after+text.slice(cursor);
 }
 
+/** Strip a native read's `N: ` line prefix so the rows can be classified as content. */
+const LINE_NUMBER_PREFIX=/^\s*\d+: ?/u;
+export function stripLineNumbers(text){
+  return String(text??'').split('\n').map(line=>line.replace(LINE_NUMBER_PREFIX,'')).join('\n');
+}
+
 /** Old output only. A native read window is the smallest independently pruned unit. */
 export function planContextPrune(message,reads,options){
   if(!prunableMessage(message))return null;
@@ -280,8 +315,17 @@ export function planContextPrune(message,reads,options){
       if(start<cursor||end>lines.length)return null;
       const from=offsets[start],to=offsets[end],body=original.slice(from,to);
       after+=original.slice(offsets[cursor],from);
-      const replacement=options.retainSource?.(window.path)?null:excerpt(body,{...options,offset:from,sourcePath:window.path});
-      after+=replacement??body;
+      // `retainSource` decides by PATH, and a path that is not a source file (a `.log`, a
+      // file with no extension) still gets no protection. The body itself is the remaining
+      // evidence: a native read of `build.log` can return assignment-only source, and
+      // reducing that to head+tail hides exactly the middle a repair needs.
+      //
+      // The line numbers have to come off first. A native read renders `N: <row>`, and
+      // `ASSIGNMENT_LINE` anchors on `^\s*<identifier>\s*=`, so every one of those rows
+      // fails the test and a real source body reads as a log. Stripping the prefix is what
+      // makes the same body get the same answer here as in the flat branch.
+      const kept=options.retainSource?.(window.path)||looksLikeSourceBody(stripLineNumbers(body));
+      const replacement=kept?null:excerpt(body,{...options,offset:from,sourcePath:window.path});      after+=replacement??body;
       if(replacement)ranges.push({path:window.path,offset:from,end:to,startLine:window.lines[0]?.number,endLine:window.lines.at(-1)?.number});
       cursor=end;
     }

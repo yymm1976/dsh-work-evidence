@@ -38,7 +38,11 @@ const IDIOM='forget|hesitate|fail|neglect|忘记|忘了|犹豫';
 // A marker that turns a preceding denial into permission.
 const ALLOWANCE='但|但是|不过|然而|而是|反而|只|仅|需要|允许|可以|请|必须|应当|instead|however|but|should|must|can|may|only';
 // A target: a path-like word, an extensionless name, or a Chinese code noun.
-const TARGET='[\\w./\\\\-]+\\.[a-z0-9]{1,8}|[\\w-]*\\/[\\w.-]+|文件|代码|函数|方法|类|模块|程序|脚本|实现|逻辑|配置|file|code|function|method|class|module|program|script|config|anything|everything|任何|一切';
+// Test artifacts belong here too: "Add regression tests" is a write request whose object is
+// the suite, and without these the denied first sentence of a two-clause task decides the
+// whole request and hides the edit tools. Adding them to the ONE target definition (rather
+// than to a second predicate) is what keeps the request test and the allowance test agreeing.
+const TARGET='[\\w./\\\\-]+\\.[a-z0-9]{1,8}|[\\w-]*\\/[\\w.-]+|文件|代码|函数|方法|类|模块|程序|脚本|实现|逻辑|配置|测试|用例|单测|回归|文件|file|code|function|method|class|module|program|script|config|test|tests|spec|specs|suite|fixture|anything|everything|任何|一切';
 // An ALL-CAPS identifier (README, MAKEFILE) is a target too. It is matched separately
 // because a case-insensitive verb pattern cannot also be case-sensitive about its object.
 const CAPS_TARGET=/[A-Z][A-Z0-9_-]{1,30}(?![A-Za-z0-9_])/u;

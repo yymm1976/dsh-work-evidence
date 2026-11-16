@@ -52,7 +52,7 @@ const filePaths=call=>{
     if(!edit||typeof edit!=='object')return undefined;
     const target=edit.file??edit.path??edit.file_path;
     if(call?.resultFiles?.length){
-      const result=call.resultFiles.find(file=>file.target===target||normalizer(file.target)===normalizer(target));
+      const result=call.resultFiles.find(file=>file.target===target)??call.resultFiles.find(file=>normalizer(file.target)===normalizer(target));
       // null marks a target the producer's identity list did not match, so it cannot
       // inherit another file's state. undefined is reserved for no identity at all.
       return result?.effectState??null;
@@ -283,7 +283,7 @@ function payloadFor(current,review,root){
   const appliedVerifiedEdits=call=>(call?.args?.edits??[]).filter(edit=>{
     const target=edit?.file??edit?.path??edit?.file_path;
     if(!target)return false;
-    const result=call.resultFiles?.find(file=>file.target===target||fileKey(file.target)===fileKey(target));
+    const result=call.resultFiles?.find(file=>file.target===target)??call.resultFiles?.find(file=>fileKey(file.target)===fileKey(target));
     // When the producer reports no per-file identity, its top-level applied state is
     // the only available evidence. Once files[] exists, an unmatched edit is unknown
     // and must not borrow an applied state from a different alias.

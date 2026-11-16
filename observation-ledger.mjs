@@ -338,11 +338,24 @@ export function createObservationLedger(ctx,runtime,nativeFiles=null){
     for(let index=candidates.length-1;index>=0;index--){
       const observation=candidates[index];
       for(const prior of observation.windows){
-        if(prior.stale||prior.referenceApplied||prior.pathKey!==window.pathKey||prior.start>window.start||prior.end<window.end)continue;
+        if(prior.stale||prior.referenceApplied||prior.pathKey!==window.pathKey)continue;
+        // A receipt may only answer the SAME window. It exists to remove a duplicate body,
+        // and a duplicate is the same rows; a narrower or wider request is a new question.
+        //
+        // Allowing a containing prior window made the receipt a closure: F2-C step 235
+        // receipted 843-897 and 1016-1070, the model then reasoned "we can read 853-875
+        // and 1030-1046 (small) to avoid ledger receipt?" and step 236's narrower reads
+        // were answered with the same obs#54 receipt for both. After that no read of any
+        // part of those ranges could return the body, so the only remaining route was
+        // work_recall — a recovery the model had to guess it needed.
+        //
+        // Equal range AND equal text: the range alone would let an edited file reuse a
+        // receipt for its pre-edit rows when the revision is not reported.
+        if(prior.start!==window.start||prior.end!==window.end)continue;
         if(window.revision&&prior.revision&&window.revision!==prior.revision)continue;
         if(window.stat&&prior.stat&&window.stat!==prior.stat)continue;
-        const rows=prior.text.split('\n').slice(window.start-prior.start,window.end-prior.start+1).join('\n');
-        if(rows===window.text)return observation;
+        if(prior.text!==window.text)continue;
+        return observation;
       }
     }
     return null;
@@ -353,10 +366,22 @@ export function createObservationLedger(ctx,runtime,nativeFiles=null){
     for(const window of windows){
       const prior=priorById.get(window);
       if(!prior)return null;
-      lines.push(`obs#${prior.ordinal} seq=${prior.seq} ${window.tool} path=${window.path} range=${window.start}-${window.end} revision=${window.revision??prior.revision??'observed'} state=fresh visible=yes shape=line/text`);
+      // `visible=yes` described where the body is reachable, and F2-C read it as "the body
+      // is in your hands now". Step 233's own thinking is the proof: "Need actual code
+      // 682-710 visible from earlier; receipt says unchanged; I recall." It then hand-wrote
+      // an edit from memory, dropped the lifecycle_token re-check, and 092 failed.
+      //
+      // So the field names the two different facts separately:
+      //   delivered=no  — this range was NOT sent this turn.
+      //   lookup=work_recall kind=output seq=N — how to actually get the rows.
+      // The instruction line says the same thing in words, because a field name alone was
+      // already misread once.
+      lines.push(`obs#${prior.ordinal} seq=${prior.seq} ${window.tool} path=${window.path} range=${window.start}-${window.end} revision=${window.revision??prior.revision??'observed'} state=fresh delivered=no lookup="work_recall kind=output seq=${prior.seq}" shape=line/text`);
     }
     const text='[work-evidence ledger receipt]\n'+lines.join('\n')+
-      '\nThe listed content is unchanged and its original body remains visible in this request; the receipt replaces only this duplicate model-visible body.';
+      '\nThese rows were delivered earlier in this session and are NOT included in this response. '+
+      'To see them again, call work_recall with the seq above. Do not edit or reason about these lines from memory: '+
+      're-read them first, because an edit needs the exact current text.';
     return text.length<=MAX_RECEIPT_CHARS?text:null;
   }
 

@@ -91,7 +91,13 @@ export function createEffectObserver(ctx,runtime){
     state.needsLeadingNewline.add(kind);
     let raw;
     // A missing file has a clean boundary: the first append creates it.
-    try{raw=await fs.readFile(file);}catch(error){return error?.code==='ENOENT';}
+    try{raw=await fs.readFile(file);}catch(error){
+      // A missing file has a clean boundary: the first append creates it, so the marker
+      // this call set must be cleared or the next append reports a repair failure that
+      // never happened and prepends a newline to an empty file.
+      if(error?.code==='ENOENT'){state.needsLeadingNewline.delete(kind);return true;}
+      return false;
+    }
     // truncate() takes a byte offset, so the last newline must be located in the
     // buffer: a string index is short whenever a retained row holds non-ASCII text.
     const boundary=raw.lastIndexOf(0x0a)+1,tail=raw.subarray(boundary).toString('utf8');

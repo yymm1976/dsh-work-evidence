@@ -101,7 +101,7 @@ export function createContextEconomics(ctx,runtime){
   const get=agent=>{
     let state=states.get(agent.session.id);
     if(!state){state={last:null,latestPrompt:null,previousAttempt:null,lastSuccessfulMain:null,mainHistory:[],mainAttempts:[],decisions:[],skips:{},requests:0,reportedPromptTokens:0,reportedMainPromptTokens:0,mainPromptRequests:0,reportedOutputTokens:0,
-      missingUsage:0,missingCacheUsage:0,pricedRequests:0,costByCurrency:Object.create(null),auxiliaryRequests:0,compactionRequests:0,mainFinished:0,
+      missingUsage:0,missingCacheUsage:0,pricedRequests:0,publishedRateUsed:false,costByCurrency:Object.create(null),auxiliaryRequests:0,compactionRequests:0,mainFinished:0,
       surfaceChanges:0,cacheResetCount:0,uncachedInputAtReset:0,resetTaxByCurrency:Object.create(null),
       effortChanges:0,cacheResetAfterEffortChange:0,effortResetExposureByCurrency:Object.create(null),
       pendingReviews:[],reviewedOutcomes:[],
@@ -220,7 +220,7 @@ export function createContextEconomics(ctx,runtime){
         // forecaster measured 50 prunes saving 832,846 chars while the model re-read
         // 737,310 chars of the same middle. Charge that observed revisit rate so a
         // rewrite whose own subject is still being read is refused on its own numbers.
-        const revisitCost=Math.max(0,revisitCostTokens)*Math.min(price.input,price.cacheRead)/1e6;
+        const revisitCost=Math.max(0,revisitCostTokens)*Math.max(0,price.input)/1e6;
         refillCost+=revisitCost;
         const perStep=savedTokens*Math.min(price.input,price.cacheRead)/1e6;
         futureSaving=perStep*remainingSteps;
@@ -486,7 +486,7 @@ export function createContextEconomics(ctx,runtime){
       missingUsageRequests:state.missingUsage,missingCacheUsageRequests:state.missingCacheUsage,pricedRequests:state.pricedRequests,
       lastUnusableAttempt:state.lastUnusable??null,
       reportedCost:currencies.length===1&&state.pricedRequests===state.requests?state.costByCurrency[currencies[0]]:null,knownReportedCost:currencies.length===1?state.costByCurrency[currencies[0]]:null,costComplete:state.pricedRequests===state.requests,costByCurrency:{...state.costByCurrency},
-      costObservation:{basis:'configured-reference-prices',actualCharge:null,allowanceConsumption:null,budgetEnforcement:'none'},
+      costObservation:{basis:state.publishedRateUsed?'published-family-rate':'configured-reference-prices',actualCharge:null,allowanceConsumption:null,budgetEnforcement:'none'},
       currency:currencies.length===1?currencies[0]:null,skips:{...state.skips},recentDecisions:state.decisions.slice(-6),
       projectionReviews:state.reviewedOutcomes.slice(-6),pendingProjectionReviews:state.pendingReviews.length,
       note:'Observed usage and configured-price cost are totals, not causal savings; forecast decisions predict reuse and do not prove a global cost optimum.'};

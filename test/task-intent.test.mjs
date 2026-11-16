@@ -66,6 +66,12 @@ const CASES = [
   // place and not in the other. A single predicate has to answer both.
   ['Do not modify src/a.js. Please create the README.', false, 'an article before an all-caps target does not hide it'],
   ['Do not run tests, but create README.', false, 'an allowance accepts the same targets as the request test'],
+  // Round-41: a test artifact is a write target. Without it the denied first clause of a
+  // two-clause task decides the whole request and hides the edit tools.
+  ['Do not modify src/a.js. Add regression tests.', false, 'a test suite is a write target'],
+  ['Do not modify src/a.js. Write a test for the fix.', false, 'a singular test is a write target too'],
+  ['Read-only: do not add tests.', true, 'the denial still governs when the verb is denied'],
+  ['Do not write tests for src/a.js.', true, 'the denial still holds at the verb itself'],
 ];
 
 for (const [request, expected, why] of CASES) {

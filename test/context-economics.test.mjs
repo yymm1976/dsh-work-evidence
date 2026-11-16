@@ -426,3 +426,26 @@ test('the reset tax compares the two attempts the drop is measured between',()=>
   assert.equal(summary.resetTaxByCurrency.CNY??0,afterFailure,
     'a transition that changed no envelope must not add reset tax');
 });
+
+test('the revisit charge is priced as uncached input, not as a cache read',()=>{
+  // A re-read of a pruned middle arrives as NEW input. Pricing it at
+  // min(input,cacheRead) used the cache rate — 50x cheaper on the published card
+  // (input 1 vs cacheRead 0.02) — so the gate approved rewrites its own re-read cost should
+  // refuse. Measured by the delta the visit term adds to the refill estimate.
+  const {agent,economics,finish,state,options}=harness();
+  state.config.projectionPricing=[{provider:'p',model:'m',currency:'USD',input:.15,cacheRead:.003,cacheWrite:.15,output:.6}];
+  options.tools=[];options.system='system';
+  const system={id:'system',role:'system',content:[{type:'text',text:'rules'}]},user={id:'user',role:'user',content:[{type:'text',text:'request'}]};
+  const body={id:'read-result',role:'tool',content:[{type:'text',text:'x'.repeat(20000)}]};
+  options.messages=[system,user,body];
+  finish(false,{inputTokens:100,cacheReadTokens:18000,cacheWriteTokens:0,outputTokens:20,totalTokens:18120});
+  const pointer={...body,content:[{type:'text',text:'[work-evidence source event:10]'}]};
+  const assess=tokens=>economics.assess(agent,{messages:options.messages,proposedMessages:[system,user,pointer],
+    tools:[],system:'system',...(tokens?{revisitCostTokens:tokens}:{})});
+  const plain=assess(0),revisited=assess(60000);
+  const delta=revisited.refillCostEstimate-plain.refillCostEstimate;
+  // 60,000 tokens at the input rate (.15/M) is 0.009; at the cache rate (.003/M) it is
+  // 0.00018. The charge must be the former.
+  assert.ok(delta>=0.0089,'the delta is input-priced: got ' + delta.toFixed(5));
+  assert.ok(delta<0.0091,'and not larger: got ' + delta.toFixed(5));
+});
