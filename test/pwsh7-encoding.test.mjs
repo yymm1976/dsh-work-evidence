@@ -77,6 +77,11 @@ test('a Windows PowerShell 5.1 reader is what corrupts the same bytes',{skip:has
   // this file's premise needs re-checking against a real arm.
   const legacy=path.join(process.env.SystemRoot??'C:/Windows','System32','WindowsPowerShell','v1.0','powershell.exe');
   if(!existsSync(legacy))return;
+  // 5.1 decodes with the ANSI code page, which is 65001 on a UTF-8-configured host. There the
+  // corruption premise does not apply and the assertion below would fail on a machine that is
+  // configured differently, not on a regression. Skip instead of asserting a false negative.
+  const ansiCodePage=execFileSync(legacy,['-NoProfile','-Command','[Text.Encoding]::Default.CodePage'],{encoding:'utf8'}).trim();
+  if(ansiCodePage==='65001')return;
   const dir=mkdtempSync(path.join(os.tmpdir(),'pwsh-utf8-legacy-'));
   try{
     const file=path.join(dir,'prompt.txt');

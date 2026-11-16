@@ -76,6 +76,11 @@ const CASES = [
   ['Do not modify src/a.js, create src/b.js instead.', false, 'a trailing instead allows the replacement'],
   ['Do not modify src/a.js instead.', true, 'a trailing instead with no replacement is still a denial'],
   ['Read-only: do not modify src/a.js; explain it instead.', true, 'explaining is not a write request'],
+  // Round-43 Major: an implementation verb states the request by itself. Requiring a named
+  // artifact made the second clause invisible and hid the edit tools from real work.
+  ['Do not modify README.md. Implement pagination.', false, 'an implementation verb needs no named target'],
+  ['Do not implement pagination.', true, 'the same verb is still denied when the denial governs it'],
+  ['Do not rewrite the parser.', true, 'rewrite is an implementation verb and its denial decides'],
 ];
 
 for (const [request, expected, why] of CASES) {

@@ -337,13 +337,17 @@ function payloadFor(current,review,root){
       const applied=appliedVerifiedEdits(call);
       if(!applied.length)return false;
       // Each target has its own budget: a small check-file allowance must not reject
-      // an otherwise eligible implementation body. Serialize per edit, then charge the
-      // selected piece to its own file; the total record still has to fit the call.
-      const pieces=[];
+      // an otherwise eligible implementation body. Each selected piece is charged against a
+      // RUNNING remainder, not against the stored number: two edits to the same file both
+      // read the same stored budget, so two 2,500-character pieces each passed a
+      // 3,000-character budget and the later `set` overwrote the earlier deduction. The
+      // remainder is committed only after the call-level size check passes, so a rejected
+      // call leaves the budgets untouched.
+      const pieces=[],remaining=new Map();
       for(const edit of applied){
         const target=edit?.file??edit?.path??edit?.file_path??'';
         const targetKey=fileKey(target);
-        const budget=sourceBudgets.get(targetKey)??available;
+        const budget=remaining.get(targetKey)??sourceBudgets.get(targetKey)??available;
         const before=typeof edit?.old_text==='string'?edit.old_text:'';
         // The producer selects the body by mode, so this must too: a `create` writes
         // `content` and ignores `new_text`, while `replace_exact` writes `new_text`. A create
@@ -354,6 +358,7 @@ function payloadFor(current,review,root){
             :typeof edit?.content==='string'?edit.content:'';
         const piece=`--- ${target}\n${before}${before&&after?'\n=>\n':''}${after}`;
         if(piece.length>budget)continue;
+        remaining.set(targetKey,budget-piece.length);
         pieces.push({file:targetKey,target,piece,budget});
       }
       if(!pieces.length)return false;
@@ -366,7 +371,7 @@ function payloadFor(current,review,root){
         sourceState:'successful-historical-change; later observations take precedence; current file not reconstructed'});
       if(data.length>Math.min(available,changeAllowance))return false;
       changeAllowance-=data.length;
-      for(const item of pieces)sourceBudgets.set(item.file,item.budget-item.piece.length);
+      for(const item of pieces)sourceBudgets.set(item.file,remaining.get(item.file));
       sourceChanges.set(event.seq,data);changeTargets.set(event.seq,targets);seqs.add(event.seq);return true;
     }
     const values=[{newText:call.name==='write'?callArgs.content:callArgs.new_string,oldText:callArgs.old_string}];

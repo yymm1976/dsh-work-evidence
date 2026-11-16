@@ -171,6 +171,21 @@ function sentenceNamesTarget(sentence){
   return writeRequestIn(sentence);
 }
 
+// An implementation verb IS the request. "Implement pagination" names an outcome, not an
+// artifact, and requiring a file target made `Do not modify README.md. Implement pagination.`
+// read-only — the denied first sentence decided the whole task and the edit tools were
+// hidden from real work. These verbs are only in this list because they cannot be used as a
+// noun describing an existing thing, which is why `add` is absent: "the add operation" and
+// "add logging" are the same word.
+const IMPLEMENT_ZH='实现|重构|重写|修补';
+const IMPLEMENT_EN='implement|refactor|rewrite';
+const implementProbe=new RegExp(`(?:${IMPLEMENT_ZH})|${enWord(IMPLEMENT_EN)}`,'iu');
+// "Do not implement pagination." has no target either, so this cannot bypass the denial:
+// the clause scan below must still find the verb affirmative.
+function sentenceImplements(sentence){
+  return implementProbe.test(sentence);
+}
+
 export function isReadOnlyTaskRequest(request){
   const text=String(request??'');
   const prose=stripPaths(text);
@@ -185,8 +200,17 @@ export function isReadOnlyTaskRequest(request){
   for(const sentence of text.split(SENTENCE_BOUNDARY)){
     if(!sentence.trim())continue;
     const sentenceProse=stripPaths(sentence);
-    if(!verbProbe.test(sentenceProse))continue;
-    if(!sentenceNamesTarget(sentence))continue;
+    // The gate must accept every verb the sentence scan considers. `verbProbe` covers the
+    // write verbs; `implementProbe` covers the implementation verbs that need no target, and
+    // `rewrite` is in the second list but not the first (VERB_EN has `write`, and its
+    // lookarounds correctly refuse to match inside `rewrite`). Checking only verbProbe here
+    // made `Do not rewrite the parser.` skip the clause scan entirely.
+    if(!verbProbe.test(sentenceProse)&&!sentenceImplements(sentenceProse))continue;
+    // A target is required, OR the verb is one that states the request by itself. Both
+    // routes then go through the same clause scan, so a denial still decides either way:
+    // "Do not implement pagination." is read-only because the verb is denied, not because it
+    // lacks a target.
+    if(!sentenceNamesTarget(sentence)&&!sentenceImplements(sentence))continue;
     sawRequest=true;
     // This sentence does name a write. If any sentence names one affirmatively, the task is
     // writable; otherwise it is denied here and the remaining sentences are still checked.

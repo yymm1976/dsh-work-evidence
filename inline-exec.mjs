@@ -517,9 +517,16 @@ exit $workExecExit`;
   // The whole rendered command is what the host passes as one argument, so the limit is
   // checked against the finished text rather than an estimated wrapper size: an
   // undercount here would let an over-limit command through to a launch failure.
-  const commandBytes=Buffer.byteLength(command,'utf8');
-  if(commandBytes>commandLimit){
-    throw new Error(`work_exec source is too large for the pwsh transport on this host (${commandBytes} characters of command against a ${commandLimit}-unit limit); use the bash transport or a smaller program`);
+  // The limit is compared in the unit the platform enforces, and the two platforms differ:
+  //   - CreateProcess caps the command line in CHARACTERS, so a path with non-ASCII letters
+  //     must count its code points, not its UTF-8 bytes. Comparing bytes rejected commands
+  //     that would have launched.
+  //   - POSIX caps an argv element in BYTES.
+  // The error names the unit for the same reason: "unit limit" told an operator nothing.
+  const measured=process.platform==='win32'?command.length:Buffer.byteLength(command,'utf8');
+  const unit=process.platform==='win32'?'characters':'bytes';
+  if(measured>commandLimit){
+    throw new Error(`work_exec source is too large for the pwsh transport on this host (${measured} ${unit} of command against a ${commandLimit}-${unit} limit); use the bash transport or a smaller program`);
   }
   return command;
 }

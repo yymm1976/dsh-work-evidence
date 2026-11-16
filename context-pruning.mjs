@@ -298,17 +298,21 @@ export function planContextPrune(message,reads,options){
     // read superseded this copy, and refusing here on "it is source" alone would make a
     // superseded body permanently unprunable — the exact case pruning exists for.
     if(named.some(file=>options.retainSource(file)))return null;
-    // With NO named path the body itself is the remaining evidence: `bash cat src/widget.py`
-    // returns a file with no markup, and a result can name an unrelated `run.log` next to an
-    // unmarked source body. The content check runs only here, because a named path already
-    // answered the question — `retainSource` knows about supersession, and a body a later
-    // read replaced must stay prunable. Asking the content rule again for a named body would
-    // overrule that and make a superseded source body permanently unprunable.
+    // The body itself is the remaining evidence in two cases: no path at all (`bash cat`
+    // returns a file with no markup), and paths that are all NON-source names (`run.log` next
+    // to an unmarked source body). The second case used to fall through to the excerpt
+    // because the check was gated on `!named.length`, so a result naming only `run.log` lost
+    // the middle of real source.
+    //
+    // It still does not run when a SOURCE path is named: `retainSource` already answered for
+    // that path, including supersession, and overruling it would make a superseded source
+    // body permanently unprunable.
     //
     // The check includes the escaped-envelope form: a shell result carries its text in
     // `stdout.text` with newlines escaped, so the line-start detectors see one long line and
     // a whole source file reads as a log.
-    if(!named.length&&(isSourceBody(original)||looksLikeSourceBody(original)))return null;
+    const onlyNonSourceNames=named.every(file=>!isSourceBodyPath(file));
+    if(onlyNonSourceNames&&(isSourceBody(original)||looksLikeSourceBody(original)))return null;
   }
   let content,ranges=[],dedupStats=[];
   if(reads.length){
@@ -333,7 +337,15 @@ export function planContextPrune(message,reads,options){
       // `ASSIGNMENT_LINE` anchors on `^\s*<identifier>\s*=`, so every one of those rows
       // fails the test and a real source body reads as a log. Stripping the prefix is what
       // makes the same body get the same answer here as in the flat branch.
-      const kept=options.retainSource?.(window.path)||looksLikeSourceBody(stripLineNumbers(body));
+      // `retainSource` owns the decision for a path it RECOGNISES as source: it returns true
+      // for a live body and false when a later complete read superseded it, and that
+      // supersession is the case pruning exists for. Asking the content rule again for such a
+      // path overrules it and makes a superseded source body permanently unprunable.
+      //
+      // The content check therefore applies only where the path cannot answer: a `.log` or an
+      // extensionless name whose body is really source.
+      const kept=options.retainSource?.(window.path)||
+        (!isSourceBodyPath(window.path)&&looksLikeSourceBody(stripLineNumbers(body)));
       const replacement=kept?null:excerpt(body,{...options,offset:from,sourcePath:window.path});      after+=replacement??body;
       if(replacement)ranges.push({path:window.path,offset:from,end:to,startLine:window.lines[0]?.number,endLine:window.lines.at(-1)?.number});
       cursor=end;
