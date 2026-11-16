@@ -197,7 +197,7 @@ export function apply(ctx,config={}){
   const clearPluginState=agent=>{observationLedger.clear(agent);contextWindow.clear(agent);finalJson.clear(agent);handoffDelivery.clear(agent);
     // These caches answer "does this session still need this body", so they describe the
     // ledger that was just cleared and must not outlive it.
-    editedSources.delete(agent.session.id);supersededReads.delete(agent.session.id);contextRetainedSources.delete(agent.session.id);};
+    editedSources.delete(agent.session.id);supersededReads.delete(agent.session.id);readCountsCache.delete(agent.session.id);contextRetainedSources.delete(agent.session.id);};
   const routeRead=createReadRouting(ctx,runtime,call,nativeFiles);
   const index=createSelfIndex(ctx,runtime,call),candidates=createCandidates(ctx,runtime,call),
     ptcPatterns=createPtcPatterns(ctx,runtime),ptcFastpath=createPtcFastpath(ctx,runtime,call),
@@ -205,7 +205,7 @@ export function apply(ctx,config={}){
     fileProfiler=createFileProfiler(ctx,runtime),structuredJson=createStructuredJson(ctx,runtime);
   // Keep general workflow guidance fixed; dynamic notices carry observed facts.
   ctx.systemPrompt.section({name:'work-evidence:task-flow',order:750,interpolate:false,text:''});
-  const contextPruning=new Set(),pendingContextPrunes=new Map(),preserveContextResults=new Set(),contextReadCalls=new Map(),contextRetainedSources=new Map(),editedSources=new Map(),supersededReads=new Map();
+  const contextPruning=new Set(),pendingContextPrunes=new Map(),preserveContextResults=new Set(),contextReadCalls=new Map(),contextRetainedSources=new Map(),editedSources=new Map(),supersededReads=new Map(),readCountsCache=new Map();
   const preserveContextResult=(sessionId,callId)=>{
     if(typeof callId!=='string'||!callId)return;
     preserveContextResults.add(sessionId+':'+callId);
@@ -274,6 +274,41 @@ export function apply(ctx,config={}){
       supersededReads.set(id,latest);
     }
     return supersededReads.get(id);
+  };
+  // How much of the region a rewrite would hide has this session already re-read? A file
+  // whose rows were read twice is exactly the file whose hidden middle comes back, so its
+  // size is charged as a revisit cost. Read counts are per source key and monotone.
+  const revisitTokens=(agent,ranges)=>{
+    if(!ranges.length)return 0;
+    const counts=readCountsFor(agent);
+    let tokens=0;
+    for(const range of ranges){
+      const key=sourceKey(agent,range.path??'');
+      const rows=(range.end??0)-(range.offset??0);
+      if(!key||rows<=0)continue;
+      // Only the excess over the first read is a revisit; one read is the minimum any
+      // deep task needs and charging it would refuse every prune.
+      const extra=Math.max(0,(counts.get(key)??0)-1);
+      if(extra)tokens+=Math.ceil(rows/3.5)*extra;
+    }
+    return tokens;
+  };
+  const readCountsFor=agent=>{
+    const id=agent.session.id;
+    if(!readCountsCache.has(id)){
+      const counts=new Map();
+      for(const event of eventLog(agent.session)){
+        if(event.type!=='tool/call')continue;
+        const data=event.data??{};
+        if(data.name!=='read')continue;
+        const target=argsOf(data.arguments).file_path;
+        if(typeof target!=='string')continue;
+        const key=sourceKey(agent,target);
+        counts.set(key,(counts.get(key)??0)+1);
+      }
+      readCountsCache.set(id,counts);
+    }
+    return readCountsCache.get(id);
   };
   function retainedSources(agent){
     if(!contextRetainedSources.has(agent.session.id)){
@@ -379,6 +414,10 @@ export function apply(ctx,config={}){
             savedChars:result.charsBefore-result.charsAfter,changedSeq:seq,
             savedTokensEstimate:Math.max(0,messageTokens(original)-messageTokens({...original,content:result.content})),
             emergency:contextEconomics.pressure(agent).emergency,
+            // Rows of this result that the session has already re-read are a measured
+            // cost of hiding its middle, so they enter the forecast instead of being
+            // discovered after the fact.
+            revisitCostTokens:revisitTokens(agent,result.ranges??[]),
           }),'contextPrune');
           effects.decide(agent,'contextPrune',economics.allowed?'approved':'deferred',economics.reason,{seq,economics});
           if(!economics.allowed)continue;
@@ -716,7 +755,7 @@ export function apply(ctx,config={}){
     const messages=[...await maintenance(payload),...taskFlow.beforeStep(payload.agent,decision.messages,locations)];
     return messages.length?{...decision,messages:[...decision.messages,...messages]}:decision;
   },{prepend:true});
-  ctx.on('agent/disposed',({agent})=>disposal.agentDisposed(agent.session.id,async()=>{await Promise.allSettled([...pendingSaves]);try{toolSurfaceDisposers.get(agent.session.id)?.dispose?.();}catch{}toolSurfaceDisposers.delete(agent.session.id);contextPruning.delete(agent.session.id);pendingContextPrunes.delete(agent.session.id);contextRetainedSources.delete(agent.session.id);editedSources.delete(agent.session.id);supersededReads.delete(agent.session.id);for(const key of contextReadCalls.keys())if(key.startsWith(agent.session.id+':'))contextReadCalls.delete(key);for(const key of preserveContextResults)if(key.startsWith(agent.session.id+':'))preserveContextResults.delete(key);try{await retainedCompute.disposeAgent(agent);}catch(error){runtime.problem(state(agent),'retained-compute-cleanup',error.message);}await effects.disposeAgent(agent);historyCoordinator.disposeAgent(agent);workingSet.disposeAgent(agent);historyHygiene.disposeAgent(agent);contextEconomics.clear(agent);taskFlow.disposeAgent(agent);executionEvidence.disposeAgent(agent);runtime.dispose(agent.session.id);}));
+  ctx.on('agent/disposed',({agent})=>disposal.agentDisposed(agent.session.id,async()=>{await Promise.allSettled([...pendingSaves]);try{toolSurfaceDisposers.get(agent.session.id)?.dispose?.();}catch{}toolSurfaceDisposers.delete(agent.session.id);contextPruning.delete(agent.session.id);pendingContextPrunes.delete(agent.session.id);contextRetainedSources.delete(agent.session.id);editedSources.delete(agent.session.id);supersededReads.delete(agent.session.id);readCountsCache.delete(agent.session.id);for(const key of contextReadCalls.keys())if(key.startsWith(agent.session.id+':'))contextReadCalls.delete(key);for(const key of preserveContextResults)if(key.startsWith(agent.session.id+':'))preserveContextResults.delete(key);try{await retainedCompute.disposeAgent(agent);}catch(error){runtime.problem(state(agent),'retained-compute-cleanup',error.message);}await effects.disposeAgent(agent);historyCoordinator.disposeAgent(agent);workingSet.disposeAgent(agent);historyHygiene.disposeAgent(agent);contextEconomics.clear(agent);taskFlow.disposeAgent(agent);executionEvidence.disposeAgent(agent);runtime.dispose(agent.session.id);}));
   async function saveInterruption(agent,{turn,step,provider,reason,signal,observed}){
     const sessionId=agent.session.id,s=state(agent);
     if(!observed.active||s.notedTurn>=turn||s.savingTurn===turn||!/^[-a-zA-Z0-9_][-.a-zA-Z0-9_]{0,127}$/.test(sessionId))return;

@@ -115,7 +115,7 @@ export function createContextEconomics(ctx,runtime){
     return configured??publishedPrice(route);
   }
   function assess(agent,{messages,proposedMessages,savedChars=0,savedTokensEstimate=null,changedSeq=null,changedMessageId=null,route=null,tools,system,emergency=false,horizon,
-    auxiliaryUsage=null,auxiliaryMargin=1.5}={}){
+    auxiliaryUsage=null,auxiliaryMargin=1.5,revisitCostTokens=0}={}){
     const state=get(agent),config=runtime.get(agent).config;
     route??=agent.session.requestHeader()?.config??{};
     const old=state.last,price=pricing(agent,route),same=old&&sameObservedRoute(old,route);
@@ -212,6 +212,12 @@ export function createContextEconomics(ctx,runtime){
       else if(price.input===0&&price.cacheRead===0&&(price.cacheWrite??0)===0&&auxiliaryCost===0){allowed=true;reason='zero-priced-route';refillCost=0;futureSaving=0;breakEvenSteps=0;}
       else{
         refillCost=cachedSuffixTokens*Math.max(0,Math.max(price.input,price.cacheWrite??price.input)-price.cacheRead)/1e6;
+        // A rewrite of a body the session keeps re-reading is not a one-off refill: the
+        // forecaster measured 50 prunes saving 832,846 chars while the model re-read
+        // 737,310 chars of the same middle. Charge that observed revisit rate so a
+        // rewrite whose own subject is still being read is refused on its own numbers.
+        const revisitCost=Math.max(0,revisitCostTokens)*Math.min(price.input,price.cacheRead)/1e6;
+        refillCost+=revisitCost;
         const perStep=savedTokens*Math.min(price.input,price.cacheRead)/1e6;
         futureSaving=perStep*remainingSteps;
         const required=refillCost*1.25+auxiliaryCost*auxiliaryMargin;
@@ -225,6 +231,7 @@ export function createContextEconomics(ctx,runtime){
       oldSuffixTokensEstimate:oldSuffixTokens,
       cachedExposureMethod:exposureMethod+'; prior misses may populate cache; not a cache-position measurement',
       horizonSteps:remainingSteps,refillCostEstimate:refillCost,futureSavingEstimate:futureSaving,breakEvenStepsEstimate:breakEvenSteps,
+      revisitCostTokensEstimate:Math.max(0,revisitCostTokens),
       auxiliaryCostEstimate:auxiliaryCost,auxiliaryMargin:auxiliaryUsage?auxiliaryMargin:null,
       currency:price?.currency??null,
       pricingSource:!price?'unavailable':price.publishedRate===true?'published-family-rate':'explicit-exact-route-setting',

@@ -140,6 +140,22 @@ test('capacity pressure never borrows another route observation',()=>{
   assert.ok(pressure.tokens<=5000,JSON.stringify({tokens:pressure.tokens}));
   assert.equal(pressure.emergency,false);
 });
+test('a rewrite of a repeatedly read body is charged its own revisit cost',()=>{
+  const {agent,economics,finish,state,options}=harness();
+  state.config.projectionPricing=[{provider:'p',model:'m',currency:'USD',input:.15,cacheRead:.003,cacheWrite:.15,output:.6}];
+  options.tools=[];options.system='system';
+  const system={id:'system',role:'system',content:[{type:'text',text:'rules'}]},user={id:'user',role:'user',content:[{type:'text',text:'request'}]};
+  const body={id:'read-result',role:'tool',content:[{type:'text',text:'x'.repeat(20000)}]};
+  options.messages=[system,user,body];
+  finish(false,{inputTokens:100,cacheReadTokens:18000,cacheWriteTokens:0,outputTokens:20,totalTokens:18120});
+  const pointer={...body,content:[{type:'text',text:'[work-evidence source event:10]'}]};
+  const plain=economics.assess(agent,{messages:options.messages,proposedMessages:[system,user,pointer],tools:[],system:'system'});
+  const revisited=economics.assess(agent,{messages:options.messages,proposedMessages:[system,user,pointer],tools:[],system:'system',revisitCostTokens:60000});
+  assert.equal(plain.revisitCostTokensEstimate,0);
+  assert.equal(revisited.revisitCostTokensEstimate,60000);
+  assert.ok(revisited.refillCostEstimate>plain.refillCostEstimate,'the revisit cost enters the refill estimate');
+  assert.ok(revisited.breakEvenStepsEstimate>=plain.breakEvenStepsEstimate,'a revisited body needs at least as many steps to pay back');
+});
 test('capacity pressure uses the optional service getter when direct property access requires inject',()=>{
   const {agent}=harness(),state={config:{projectionPricing:[],projectionHorizonSteps:16}};
   const ctx={get:name=>name==='tokenMeter'?{measure:()=>({totalTokens:9500})}:undefined,
