@@ -26,13 +26,21 @@ const SOURCE_SHAPE=[
   /^\s*[\w$.]+\s*\([^)]*\)\s*\{\s*$/mu,
   /^\s*#\s*(?:include|define|ifndef|pragma)\b/mu,
 ];
+// A body can be source that none of the shapes above describe: a generated module of
+// nothing but assignments. Density of `name = value` lines is the signal there.
+const ASSIGNMENT_LINE=/^\s*[A-Za-z_$][\w$.\[\]'"]*\s*=\s*\S/u;
 /** Does this body look like source code regardless of where it came from? */
 export function looksLikeSourceBody(text){
   const body=String(text??'');
   if(body.length<2000)return false;
   let hits=0;
   for(const pattern of SOURCE_SHAPE)if(pattern.test(body))hits++;
-  return hits>=2;
+  if(hits>=2)return true;
+  // Fall back to assignment density: at least half of the non-empty lines assign.
+  const lines=body.split(/\r?\n/u).filter(line=>line.trim());
+  if(lines.length<40)return false;
+  const assignments=lines.filter(line=>ASSIGNMENT_LINE.test(line)).length;
+  return assignments/lines.length>=0.5;
 }
 
 /**
@@ -228,10 +236,11 @@ export function planContextPrune(message,reads,options){
   if(!reads.length&&options.retainSource){
     const named=[...original.matchAll(/<path>([^<]+)<\/path>/gu)].map(match=>match[1]);
     if(named.some(file=>options.retainSource(file)))return null;
-    // A body with no <path> can still be source: `bash cat src/widget.py` returns the file
-    // with no markup at all. In that case there is no path to ask about, so the body itself
-    // is the only evidence, and a source-shaped body is retained.
-    if(!named.length&&looksLikeSourceBody(original))return null;
+    // A body can still be source the named paths do not describe: `bash cat src/widget.py`
+    // returns the file with no markup, and a result can name an unrelated `run.log` next to
+    // an unmarked source body. The body itself is then the remaining evidence, so the
+    // recognition applies whenever no named path required retention.
+    if(looksLikeSourceBody(original))return null;
   }
   let content,ranges=[],dedupStats=[];
   if(reads.length){

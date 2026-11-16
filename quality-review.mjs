@@ -345,9 +345,13 @@ function payloadFor(current,review,root){
         const targetKey=fileKey(target);
         const budget=sourceBudgets.get(targetKey)??available;
         const before=typeof edit?.old_text==='string'?edit.old_text:'';
-        // A `create` edit carries its body in `content`, not `new_text`.
-        const after=typeof edit?.new_text==='string'?edit.new_text
-          :typeof edit?.content==='string'?edit.content:'';
+        // The producer selects the body by mode, so this must too: a `create` writes
+        // `content` and ignores `new_text`, while `replace_exact` writes `new_text`. A create
+        // that carries both would otherwise be described by text that was never written.
+        const after=edit?.mode==='create'
+          ?(typeof edit?.content==='string'?edit.content:'')
+          :typeof edit?.new_text==='string'?edit.new_text
+            :typeof edit?.content==='string'?edit.content:'';
         const piece=`--- ${target}\n${before}${before&&after?'\n=>\n':''}${after}`;
         if(piece.length>budget)continue;
         pieces.push({file:targetKey,target,piece,budget});

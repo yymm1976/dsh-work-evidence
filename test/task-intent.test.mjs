@@ -68,3 +68,18 @@ for (const [request, expected, why] of CASES) {
     assert.equal(isReadOnlyTaskRequest(request), expected, request);
   });
 }
+
+test('task intent: a target described at length still counts',()=>{
+  // The target sits 40+ characters after the verb; a fixed character limit dropped it and
+  // let the denied first sentence decide the whole task.
+  assert.equal(isReadOnlyTaskRequest('Do not modify src/a.js; fix the failing authentication regression in src/b.js.'),false);
+});
+
+test('task intent: a capitalized verb with an extensionless target still counts',()=>{
+  assert.equal(isReadOnlyTaskRequest('Do not modify src/a.js. Create README.'),false);
+});
+
+test('task intent: a filename that contains the marker is not a read-only instruction',()=>{
+  // `scripts/read-only.sh` is a path, not a permission statement.
+  assert.equal(isReadOnlyTaskRequest('Run scripts/read-only.sh and report the output.'),false);
+});

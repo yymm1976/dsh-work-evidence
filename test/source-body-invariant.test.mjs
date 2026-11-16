@@ -67,3 +67,24 @@ test('a source-shaped body is recognised from its content alone',()=>{
   assert.equal(looksLikeSourceBody(['def run():','    return 1','','class A:','    pass',''].join('\n').repeat(60)),true);
   assert.equal(looksLikeSourceBody(Array.from({length:200},(_,i)=>`log line ${i}`).join('\n')),false);
 });
+
+test('an assignment-only source body is recognised without any statement shape',()=>{
+  // A generated module of nothing but assignments matches none of the statement shapes.
+  // `bash cat generated.py` returns it with no <path>, so retention can only use the body.
+  const body=Array.from({length:600},(_,i)=>`value_${i} = ${i}`).join('\n');
+  assert.equal(looksLikeSourceBody(body),true,'assignment density marks a source body');
+  const message={role:'tool',content:[{type:'text',text:body}]};
+  assert.equal(planContextPrune(message,[],{seq:12,thresholdChars:8000,headChars:4096,tailChars:1024,
+    retainSource:()=>false}),null,'the assignment-only body is retained');
+});
+
+test('an unrelated named path does not disable source recognition',()=>{
+  // A flat result can name a log and carry an unmarked source body after it. Retention of
+  // the log is not requested, so the body itself must decide.
+  const source=Array.from({length:400},(_,i)=>`value_${i} = ${i}`).join('\n');
+  const text=`<path>run.log</path>\nsome log line\n${source}`;
+  assert.equal(looksLikeSourceBody(text),true);
+  const message={role:'tool',content:[{type:'text',text}]};
+  assert.equal(planContextPrune(message,[],{seq:13,thresholdChars:8000,headChars:4096,tailChars:1024,
+    retainSource:file=>SOURCE_BODY_PATH.test(file??'')}),null,'the unmarked source body is retained');
+});

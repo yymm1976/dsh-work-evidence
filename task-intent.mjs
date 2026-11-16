@@ -107,33 +107,45 @@ function sentenceIsWritable(prose,raw=prose){
 }
 
 /** Does this sentence name a write verb followed by a target? */
-function sentenceNamesTarget(sentence){
-  // The target test runs on the ORIGINAL sentence: stripPaths replaces paths with spaces,
-  // so testing the prose would erase exactly the target it is looking for.
-  const targetPattern=new RegExp(`(?:(?:${VERB_ZH})|(?:${enWord(VERB_EN)}))[^。！？；;\\n]{0,32}(?:${TARGET})`,'iu');
-  if(targetPattern.test(sentence))return true;
-  // An ALL-CAPS name is a target even without an extension: "create README".
-  const capsPattern=new RegExp(`(?:(?:${VERB_ZH})|(?<![A-Za-z0-9_])(?:${VERB_EN})(?![A-Za-z0-9_]))[^。！？；;\\n]{0,32}[A-Z][A-Z0-9_-]{1,30}(?![A-Za-z0-9_])`,'u');
-  return capsPattern.test(sentence);
-}
+// One definition of "this text asks for a change": a write verb followed by a target within
+// the same sentence. The gap is bounded by the sentence, not by a fixed character count: a
+// target described as "the failing authentication regression in src/b.js" is 40+ characters
+// after the verb and is still that verb's object. The verb side is case-insensitive so a
+// sentence-initial "Create" counts; only the ALL-CAPS filename itself is case-sensitive.
+const VERB_THEN_TARGET=new RegExp(`(?:(?:${VERB_ZH})|(?:${enWord(VERB_EN)}))[^。！？；;\\n]*?(?:${TARGET})`,'iu');
+const VERB_THEN_CAPS=new RegExp(`(?:(?:${VERB_ZH})|(?:${enWord(VERB_EN)}))[^。！？；;\\n]*?[A-Z][A-Z0-9_-]{1,30}(?![A-Za-z0-9_])`,'iu');
+const CAPS_TARGET=/[A-Z][A-Z0-9_-]{1,30}(?![A-Za-z0-9_])/u;
 
-/** Does `text` contain an affirmative write request? */
+/** Does `text` name a write verb with a target in the same sentence? */
 function hasWriteRequest(text){
   const raw=String(text??'');
-  // The target test is on the raw text (stripPaths would erase the path), while the
-  // noun guard is on the stripped text (a path must not look like a determiner phrase).
-  const targetPattern=new RegExp(`(?:(?:${VERB_ZH})|(?:${enWord(VERB_EN)}))[^。！？；;\\n]{0,32}(?:${TARGET})`,'iu');
-  if(targetPattern.test(raw))return true;
-  const capsPattern=new RegExp(`(?:(?:${VERB_ZH})|(?<![A-Za-z0-9_])(?:${VERB_EN})(?![A-Za-z0-9_]))[^。！？；;\\n]{0,32}[A-Z][A-Z0-9_-]{1,30}(?![A-Za-z0-9_])`,'u');
-  return capsPattern.test(raw);
+  // Run on the raw text: stripPaths would erase the path that is the target.
+  return VERB_THEN_TARGET.test(raw);
+}
+
+/** Does `text` name a write verb with an ALL-CAPS (extensionless) target? */
+function hasCapsTarget(text){
+  const raw=String(text??'');
+  if(!VERB_THEN_CAPS.test(raw))return false;
+  // The caps pattern above is /iu, so it would accept a lowercase word as the "target";
+  // require an actual ALL-CAPS token after the verb.
+  const verb=VERB_THEN_CAPS.exec(raw);
+  return Boolean(verb&&CAPS_TARGET.test(verb[0]));
+}
+
+/** Does this sentence name a write verb followed by a target? */
+function sentenceNamesTarget(sentence){
+  return hasWriteRequest(sentence)||hasCapsTarget(sentence);
 }
 
 export function isReadOnlyTaskRequest(request){
   const text=String(request??'');
   const prose=stripPaths(text);
+  // Both marker checks read the path-stripped prose: a filename such as
+  // `scripts/read-only.sh` contains the marker but states nothing about permission.
+  const markerPresent=readOnlyMarker.test(prose);
   // The gate is only an optimisation: it must not be able to decide the answer on its own.
-  const denialPresent=new RegExp(DENIAL_ANY,'iu').test(prose);
-  if(!readOnlyMarker.test(text)&&!denialPresent)return false;
+  if(!markerPresent&&!new RegExp(DENIAL_ANY,'iu').test(prose))return false;
   // A sentence with a verb but no target states no request ("review the edits in src/a.js"
   // is a read). A sentence with a verb and a target is a request; it decides the answer.
   let sawRequest=false;
@@ -151,6 +163,6 @@ export function isReadOnlyTaskRequest(request){
   // No tracked write verb with a target. A denial alone does not make the task read-only:
   // "don't use old/node.exe; use the new one to run the program" is a task whose verb
   // (运行/run) is outside this classifier's vocabulary, and hiding the edit tools from it is
-  // the harmful direction. Only an explicit read-only marker decides in that case.
-  return readOnlyMarker.test(text);
+  // the harmful direction. Only an explicit read-only instruction decides in that case.
+  return markerPresent;
 }

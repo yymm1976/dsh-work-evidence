@@ -205,7 +205,7 @@ export function apply(ctx,config={}){
     fileProfiler=createFileProfiler(ctx,runtime),structuredJson=createStructuredJson(ctx,runtime);
   // Keep general workflow guidance fixed; dynamic notices carry observed facts.
   ctx.systemPrompt.section({name:'work-evidence:task-flow',order:750,interpolate:false,text:''});
-  const contextPruning=new Set(),pendingContextPrunes=new Map(),preserveContextResults=new Set(),contextReadCalls=new Map(),contextRetainedSources=new Map(),editedSources=new Map(),supersededCache=new Map(),readCountsCache=new Map(),bodyHashCache=new Map();
+  const contextPruning=new Set(),pendingContextPrunes=new Map(),preserveContextResults=new Set(),contextReadCalls=new Map(),contextRetainedSources=new Map(),editedSources=new Map(),supersededCache=new Map(),readCountsCache=new Map();
   const preserveContextResult=(sessionId,callId)=>{
     if(typeof callId!=='string'||!callId)return;
     preserveContextResults.add(sessionId+':'+callId);
@@ -289,22 +289,17 @@ export function apply(ctx,config={}){
   // A whole-result prune has no path, so identify the file by the body it delivered: the
   // session's own read events are the only record of which path produced this text. The
   // match is exact on a hash, so a similar file cannot be charged for another's re-reads.
+  // Nothing is cached: a hash of a large body is cheap next to the read that produced it,
+  // while a map keyed by body text would retain every disposed session's bodies.
+  const bodyTextOf=content=>(content??[]).filter(block=>block?.type==='text').map(block=>block.text??'').join('');
   const sourceKeyForBody=(agent,body)=>{
-    const hash=bodyHashCache.get(body)??(()=>{
-      const value=createHash('sha256').update(String(body)).digest('hex');
-      bodyHashCache.set(body,value);return value;
-    })();
+    const hash=createHash('sha256').update(String(body)).digest('hex');
     for(const event of eventLog(agent.session)){
       if(event.type!=='tool/result'||event.surfaceOp?.op==='replace')continue;
-      const message=event.data?.message;
-      const text=(message?.content??[]).filter(block=>block?.type==='text').map(block=>block.text??'').join('');
+      const text=bodyTextOf(event.data?.message?.content);
       const named=/<path>([^<]+)<\/path>/u.exec(text)?.[1];
       if(!named)continue;
-      const eventHash=bodyHashCache.get(text)??(()=>{
-        const value=createHash('sha256').update(text).digest('hex');
-        bodyHashCache.set(text,value);return value;
-      })();
-      if(eventHash===hash)return sourceKey(agent,named);
+      if(createHash('sha256').update(text).digest('hex')===hash)return sourceKey(agent,named);
     }
     return null;
   };
@@ -455,8 +450,9 @@ export function apply(ctx,config={}){
             emergency:contextEconomics.pressure(agent).emergency,
             // Rows of this result that the session has already re-read are a measured
             // cost of hiding its middle, so they enter the forecast instead of being
-            // discovered after the fact.
-            revisitCostTokens:revisitTokens(agent,result.ranges??[],original),
+            // discovered after the fact. The body lookup needs the delivered text, not the
+            // message object: hashing the object yields "[object Object]" and never matches.
+            revisitCostTokens:revisitTokens(agent,result.ranges??[],bodyTextOf(original.content)),
           }),'contextPrune');
           effects.decide(agent,'contextPrune',economics.allowed?'approved':'deferred',economics.reason,{seq,economics});
           if(!economics.allowed)continue;

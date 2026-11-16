@@ -476,3 +476,20 @@ test('a verified edit supplies its per-file change body and skips a file that di
     assert.ok(!joined.includes('MARKER_CREATED'),'the file that did not apply is not described as changed');
   }finally{await h.close();}
 });
+
+test('a create edit with both body fields is described by the content that was written',async()=>{
+  // verified_exec writes `content` for a create and ignores `new_text`. Serializing
+  // new_text would label text that was never written as a successful change.
+  let payload;const artifacts=[],h=await harness({artifacts,review:value=>{payload=value;return {issues:[]};}});
+  try{
+    h.request('创建 created.mjs。');
+    const result=h.event('tool/ptc-dispatch',{subCallId:'edit-create',rootCallId:'outer',name:'verified_exec',isError:false,
+      arguments:{summary:'create',edits:[{file:'created.mjs',mode:'create',content:'ACTUAL_BODY',new_text:'UNUSED_NEW_TEXT'}]},
+      content:[{type:'text',text:JSON.stringify({effectState:'applied',files:[{path:'created.mjs',effectState:'applied'}]})}]});
+    artifacts.push({seq:result.seq,path:'created.mjs',tool:'verified_exec',effectState:'applied'});
+    h.answer('已创建。');await h.run();
+    const joined=payload.evidence.filter(item=>item.seq===result.seq).map(item=>item.data).join('\n');
+    assert.ok(joined.includes('ACTUAL_BODY'),'the written content is in the payload');
+    assert.ok(!joined.includes('UNUSED_NEW_TEXT'),'the ignored new_text is not');
+  }finally{await h.close();}
+});
