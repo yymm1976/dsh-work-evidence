@@ -370,15 +370,6 @@ export function createObservationLedger(ctx,runtime,nativeFiles=null){
       const resolved=relativePath(root,value);
       return resolved?resolved.key:null;
     };
-    // Every target of a dropped read is kept, not just the first: one call can read
-    // several files, and a superseded read whose second file was dropped would leave
-    // that window in place.
-    const droppedPaths=new Set(keptAll?[]:rawReads
-      .filter(read=>!reads.includes(read))
-      .flatMap(read=>pathsFromArguments(read.arguments))
-      .filter(Boolean)
-      .map(pathKeyOf)
-      .filter(Boolean));
     if(batch&&sameJson(textBlocks(result.content),batch)){
       source={name:reads[0].name,arguments:{files:reads.map(read=>read.arguments)},value:batch};
     }else if(exec.name==='run_code'&&(source=renderedReads(reads,textBlocks(result.content)))){
@@ -395,15 +386,23 @@ export function createObservationLedger(ctx,runtime,nativeFiles=null){
     }
     const allWindows=collectReadWindows(projection??source.value,pathsFromArguments(source.arguments)[0]??null);
     // Drop the windows whose read was superseded by a later write in the same call.
-    // The comparison resolves each window path the same way the dropped set was built;
-    // the window path is the result's absolute realpath while the read argument was
-    // relative, so raw string equality would keep the pre-write window.
-    const windows=droppedPaths.size
-      ?allWindows.filter(window=>{
-        const key=pathKeyOf(window.path);
-        return !key||!droppedPaths.has(key);
-      })
-      :allWindows;
+    // The filter is per window, not per path: the same file can be read before the write
+    // (superseded) and again after it (valid), and dropping every window of that path
+    // would lose the post-write observation. A window is dropped only when its text came
+    // from a dropped read and no kept read produced the same text.
+    const windowSignature=window=>{
+      const key=pathKeyOf(window.path);
+      return key?`${key}\u0000${String(window.text??'').slice(0,512)}`:null;
+    };
+    const keptSignatures=new Set(reads.flatMap(read=>readWindowsFromDispatch(read).map(windowSignature).filter(Boolean)));
+    const droppedSignatures=new Set(keptAll?[]:rawReads
+      .filter(read=>!reads.includes(read))
+      .flatMap(read=>readWindowsFromDispatch(read).map(windowSignature).filter(Boolean)));
+    const windows=allWindows.filter(window=>{
+      const signature=windowSignature(window);
+      if(!signature||!droppedSignatures.has(signature))return true;
+      return keptSignatures.has(signature);
+    });
     if(!windows.length)return skip('no-line-windows');
     for(const window of windows){
       const file=relativePath(root,window.path);if(!file)return skip('path-outside-workspace');

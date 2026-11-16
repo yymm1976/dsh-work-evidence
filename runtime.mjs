@@ -597,18 +597,15 @@ export function createRuntime(ctx,call,initial={}){
         // A read can start before a write and finish after it, so its body can predate
         // the write it appears to confirm. The native read result carries no revision
         // (the version lives on the fs event), so ordering is decided by when the call
-        // was issued: an obligation armed for a later step cannot be discharged by a
-        // read that began earlier. A revision match, when both sides report one, is
-        // still the strongest evidence.
+        // was issued. A missing issue step is unproven ordering, not proof: it leaves
+        // the obligation standing, which is the conservative direction.
         const readRevision=revisionPattern.test(String(result.value?.version||result.value?.revision||''))
           ?String(result.value.version||result.value.revision):null;
         const revisionAgrees=!pending?.revision||!readRevision||pending.revision===readRevision;
-        // Compare the step the read was ISSUED at, not the step its result arrived in:
-        // a read dispatched before the write finishes after it, and only the issue step
-        // shows the ordering. Without that figure the ordering is unproven and the
-        // obligation stands rather than being discharged on a guess.
         const issuedAt=Number.isInteger(exec.issuedStep)?exec.issuedStep:null;
-        const orderingProven=issuedAt!==null&&pending?issuedAt>=Number(pending.atStep):issuedAt===null;
+        // Strictly after: a read issued in the same step as the write may have run
+        // before it, so only a later step proves the body is post-write.
+        const orderingProven=issuedAt!==null&&pending?issuedAt>Number(pending.atStep):false;
         if(target&&revisionAgrees&&orderingProven)s.pendingRevisit.delete(target.key);
       }
       recordObservation(s,exec,result,seq,{file:args.file_path,lineStart:args.offset||1,lineEnd:Number.isInteger(args.limit)?(args.offset||1)+args.limit-1:null});

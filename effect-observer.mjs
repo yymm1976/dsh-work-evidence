@@ -372,8 +372,24 @@ export function createEffectObserver(ctx,runtime){
         if(!written)return;
         state.pendingDecisions.splice(0,decisions.length);
       }
+      // The overflowed decisions are the same kind of unpersisted record: if their
+      // append failed and the queue is still non-empty, keep the state rather than
+      // deleting it and dropping them with it.
+      if(state.pendingOverflow.length)return;
       nativeAttempts.delete(agent);states.delete(agent.session.id);
     },async dispose(){
       for(const stop of [unsubscribe,unsubscribeStreams])if(typeof stop==='function')stop();
-      await Promise.allSettled([...states.values()].map(async state=>{await state.overflowQueue;await state.queue;}));states.clear();}};
+      // An unload with live sessions must not discard records that never reached disk.
+      // Every state is flushed first; only then is the memory released.
+      await Promise.allSettled([...states.entries()].map(async([id,state])=>{
+        await state.overflowQueue;await state.queue;
+        if(state.pendingDecisions.length||state.pendingOverflow.length){
+          const pending=[...state.pendingOverflow,...state.pendingDecisions];
+          state.pendingOverflow=[];state.pendingDecisions=[];
+          const agent={session:{id}};
+          try{await queue(state,agent,{schema:'work-evidence.pending-decisions.v1',sessionId:id,
+            at:new Date().toISOString(),step:0,decisions:pending});}catch{}
+        }
+      }));
+      states.clear();}};
 }

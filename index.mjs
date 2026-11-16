@@ -369,7 +369,11 @@ export function apply(ctx,config={}){
     // "the edits" is a description. It has to be a separate pattern because the main
     // one is /iu, where [A-Z] would also match lowercase words like "edits".
     const writeRequest=/(?:^|[，,、：:\s])(?:[^。；;\n]{0,8})?(?:(?:修改|修复|实现|编写|重构|创建|编辑|写入|增加|删除|替换|重写|改(?!动|变))|(?:modify|fix|implement|write|edit|create|delete|replace)\b)[^。；;\n]{0,16}(?:[\w./\\-]+\.[a-z0-9]{1,8}\b|[\w-]*\/[\w.-]+|文件|代码|函数|方法|类|模块|程序|脚本|实现|逻辑|配置|file|code|function|method|class|module|program|script|config)/iu;
-    const upperCaseTarget=/(?:^|[，,、：:\s])(?:[^。；;\n]{0,8})?(?:(?:修改|修复|实现|编写|重构|创建|编辑|写入|增加|删除|替换|重写|改(?!动|变))|(?:modify|fix|implement|write|edit|create|delete|replace)\b)[^。；;\n]{0,16}[A-Z][A-Z0-9_-]{1,30}\b/u;
+    // The ALL-CAPS variant is a separate case-sensitive pattern: the main one is /iu,
+    // where [A-Z] would also match lowercase words like "edits". Its English verbs are
+    // spelled as explicit letter classes because without the /i flag a plain `create`
+    // would miss the sentence-initial "Create README".
+    const upperCaseTarget=/(?:^|[，,、：:\s])(?:[^。；;\n]{0,8})?(?:(?:修改|修复|实现|编写|重构|创建|编辑|写入|增加|删除|替换|重写|改(?!动|变))|[Mm]odify|[Ff]ix|[Ii]mplement|[Ww]rite|[Ee]dit|[Cc]reate|[Dd]elete|[Rr]eplace)\b[^。；;\n]{0,16}[A-Z][A-Z0-9_-]{1,30}\b/u;
     // Split on sentence ends in both scripts. A period ends a sentence only when a
     // space and a capital follow, so "src/a.js" and "v1.2" stay intact. Without the
     // English form, "Do not modify a.js. Create b.js." stayed one sentence and the
@@ -576,6 +580,11 @@ export function apply(ctx,config={}){
     await runtime.init(exec.agent,exec.signal);
     await effects.load(exec.agent);
     if(!runtime.isEnabled(exec.agent))return next();
+    // The step the read was issued at is stamped here, on the live exec object, because
+    // this is the only place that sees the call before it runs. A read dispatched before
+    // a write can finish after it, and the obligation check needs the issue step to tell
+    // the two apart; without it the ordering is unproven.
+    if(exec&&typeof exec==='object'&&!Number.isInteger(exec.issuedStep))try{exec.issuedStep=runtime.get(exec.agent)?.step??null;}catch{}
     if(!nested.has(exec.callId)&&state(exec.agent).config.readArgumentRecovery){
       const correctedArguments=correctedReadArguments(exec.name,exec.arguments);
       if(correctedArguments){

@@ -372,8 +372,6 @@ const LOCAL_ARGUMENT_LIMIT=128*1024;
 // Windows caps a whole command line near 32,767 characters; leave room for the
 // wrapping shell and quoting rather than using the exact maximum.
 const WINDOWS_COMMAND_LIMIT=30000;
-// The fixed part of the pwsh wrapper: the text around the encoded program.
-const INLINE_PWSH_OVERHEAD=900;
 export const INLINE_ENV_KEYS=Object.freeze(['DSH_WORK_EVIDENCE_STDIN_ID',...Array.from({length:STDIN_CHUNKS},(_,index)=>'DSH_WORK_EVIDENCE_STDIN_'+index)]);
 const validTransferId=value=>typeof value==='string'&&/^[A-Za-z0-9_-]{1,128}$/u.test(value);
 
@@ -480,13 +478,7 @@ builtin printf '%b' "${content}" | (
   // oversize before launch rather than failing with E2BIG or a truncated command,
   // which reads as an infrastructure fault.
   const commandLimit=process.platform==='win32'?WINDOWS_COMMAND_LIMIT:LOCAL_ARGUMENT_LIMIT;
-  const fixedOverhead=INLINE_PWSH_OVERHEAD+Buffer.byteLength(args,'utf8')+Buffer.byteLength(String(executable),'utf8')
-    +Buffer.byteLength(String(root),'utf8');
-  const encodedBytes=Buffer.byteLength(encoded,'utf8');
-  if(encodedBytes+fixedOverhead>commandLimit){
-    throw new Error(`work_exec source is too large for the pwsh transport on this host (${encodedBytes} bytes of encoded program plus ${fixedOverhead} bytes of wrapper against a ${commandLimit}-unit command limit); use the bash transport or a smaller program`);
-  }
-  return `$ErrorActionPreference = 'Stop'
+  const command=`$ErrorActionPreference = 'Stop'
 [Console]::OutputEncoding = [Text.UTF8Encoding]::new($false)
 $workExecInfo = [Diagnostics.ProcessStartInfo]::new()
 $workExecInfo.FileName = ${quote(executable)}
@@ -517,4 +509,12 @@ try {
   $workExecProcess.Dispose()
 }
 exit $workExecExit`;
+  // The whole rendered command is what the host passes as one argument, so the limit is
+  // checked against the finished text rather than an estimated wrapper size: an
+  // undercount here would let an over-limit command through to a launch failure.
+  const commandBytes=Buffer.byteLength(command,'utf8');
+  if(commandBytes>commandLimit){
+    throw new Error(`work_exec source is too large for the pwsh transport on this host (${commandBytes} characters of command against a ${commandLimit}-unit limit); use the bash transport or a smaller program`);
+  }
+  return command;
 }
