@@ -72,6 +72,10 @@ const CASES = [
   ['Do not modify src/a.js. Write a test for the fix.', false, 'a singular test is a write target too'],
   ['Read-only: do not add tests.', true, 'the denial still governs when the verb is denied'],
   ['Do not write tests for src/a.js.', true, 'the denial still holds at the verb itself'],
+  // Round-42: a trailing `instead` is an allowance for the replacement, not for the denied verb.
+  ['Do not modify src/a.js, create src/b.js instead.', false, 'a trailing instead allows the replacement'],
+  ['Do not modify src/a.js instead.', true, 'a trailing instead with no replacement is still a denial'],
+  ['Read-only: do not modify src/a.js; explain it instead.', true, 'explaining is not a write request'],
 ];
 
 for (const [request, expected, why] of CASES) {

@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {SOURCE_BODY_PATH,isSourceBodyPath,looksLikeSourceBody,planContextPrune} from '../context-pruning.mjs';
+import {SOURCE_BODY_PATH,isSourceBodyPath,looksLikeSourceBody,planContextPrune,stripLineNumbers} from '../context-pruning.mjs';
 
 // The F2-C failure was a source body cut to head+tail. Two entry points can reduce a body
 // (the live prune path and the stage-checkpoint builder), so the "is this source code"
@@ -50,12 +50,24 @@ test('a flat result naming a retained path is not reduced even when another path
 test('a source body with no <path> markup is still retained',()=>{
   // `bash cat src/widget.py` returns a whole file with no markup at all. With no path to
   // ask about, the body itself is the evidence; a source-shaped body must not be cut.
+  //
+  // The body must clear `thresholdChars`, or planContextPrune returns before it ever calls
+  // the detector and the assertion holds with content recognition disabled. The first
+  // version of this fixture was 5,869 characters against an 8,000 threshold: measured,
+  // `retainSource:()=>false` returned null on it, which means the planner was comparing
+  // lengths and never asking the question this test claims to pin.
   const body=['import os','','class Widget:','    def render(self):','        return os.path.basename(__file__)','',
-    ...Array.from({length:300},(_,i)=>`    value_${i} = ${i}`)].join('\n');
+    ...Array.from({length:400},(_,i)=>`    value_${String(i).padStart(3,'0')} = compute_value(${i}, options=self._options)`)].join('\n');
+  assert.ok(body.length>=8000,'the fixture clears thresholdChars: ' + body.length);
+  const options={seq:11,thresholdChars:8000,headChars:4096,tailChars:1024,retainSource:footer=>isSourceBodyPath(footer??'')};
+  // The control that makes this a real question: a non-source body of the same size must
+  // still shrink, so the refusal below is content recognition rather than the length gate.
+  const log=Array.from({length:400},(_,i)=>`build step ${i} completed in ${i}ms`).join('\n');
+  assert.ok(log.length>=8000,'the control clears thresholdChars');
+  assert.ok(planContextPrune({role:'tool',content:[{type:'text',text:log}]},[],options),
+    'a log of the same size is still prunable');
   const message={role:'tool',content:[{type:'text',text:body}]};
-  const plan=planContextPrune(message,[],{seq:11,thresholdChars:8000,headChars:4096,tailChars:1024,
-    retainSource:footer=>isSourceBodyPath(footer)});
-  assert.equal(plan,null,'a metadata-free source body is retained');
+  assert.equal(planContextPrune(message,[],options),null,'a metadata-free source body is retained');
 });
 
 test('extensionless build files count as source',()=>{
@@ -72,6 +84,10 @@ test('an assignment-only source body is recognised without any statement shape',
   // A generated module of nothing but assignments matches none of the statement shapes.
   // `bash cat generated.py` returns it with no <path>, so retention can only use the body.
   const body=Array.from({length:600},(_,i)=>`value_${i} = ${i}`).join('\n');
+  // Asserted, not assumed: at 9,379 characters this fixture clears thresholdChars, but a
+  // shorter row format would quietly drop it under the gate and turn the plan assertion
+  // below into a length check.
+  assert.ok(body.length>=8000,'the fixture clears thresholdChars: ' + body.length);
   assert.equal(looksLikeSourceBody(body),true,'assignment density marks a source body');
   const message={role:'tool',content:[{type:'text',text:body}]};
   assert.equal(planContextPrune(message,[],{seq:12,thresholdChars:8000,headChars:4096,tailChars:1024,
@@ -120,4 +136,31 @@ test('a native read of a non-source path is cut for a log and kept for source',(
   const logPlan = plan(logBody);
   assert.ok(logPlan, 'a real log behind the same name is still reduced');
   assert.ok(logPlan.charsAfter < logPlan.charsBefore);
+});
+
+test('every line-number prefix renderedReads accepts is stripped before classification',()=>{
+  // renderedReads accepts `N: `, `N | ` and `N\t`. Handling only the colon form made a
+  // run_code result rendered with a pipe pass window matching and then fail source
+  // recognition, sending a real source body down the prune path.
+  assert.equal(stripLineNumbers('1: value = 1'),'value = 1');
+  assert.equal(stripLineNumbers('1 | value = 1'),'value = 1');
+  assert.equal(stripLineNumbers('1\tvalue = 1'),'value = 1');
+  assert.equal(stripLineNumbers('  12: x = 1'),'x = 1');
+  // A row that merely starts with a number is untouched when there is no prefix separator.
+  assert.equal(stripLineNumbers('1234 = count'),'1234 = count');
+});
+
+test('a serialized shell envelope carrying source is not pruned in the flat branch',()=>{
+  // A shell result puts its text in `stdout.text` with the newlines escaped, so both
+  // detectors see one long line and a whole source file reads as a log. The control below
+  // (a log in the same envelope) proves the refusal is the content rule and not the shape.
+  const source=Array.from({length:300},(_,i)=>
+    `    value_${String(i).padStart(3,'0')} = compute_value(${i}, options=self._options)`).join('\n');
+  const envelope=body=>JSON.stringify({stdout:{text:body},stderr:{text:''}});
+  const options={seq:9,thresholdChars:8000,headChars:4096,tailChars:1024,retainSource:()=>false};
+  const plan=body=>planContextPrune({role:'tool',content:[{type:'text',text:envelope(body)}]},[],options);
+  assert.ok(envelope(source).length>=8000,'the fixture clears thresholdChars');
+  assert.equal(plan(source),null,'escaped source is retained');
+  const log=Array.from({length:400},(_,i)=>`build step ${i} completed in ${i}ms`).join('\n');
+  assert.ok(plan(log),'a log in the same envelope is still reduced');
 });

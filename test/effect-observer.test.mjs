@@ -434,3 +434,21 @@ test('a restored older decision does not become the reported latest one',async()
     assert.deepEqual(window,[3,9],'the rolling window stays in sequence order, got '+JSON.stringify(window));
   }finally{await remove(created.telemetryDir);}
 });
+
+test('a caller source-event seq does not overwrite the decision sequence',async()=>{
+  // decide() is called with {seq,...} from the prune path, where that seq names the pruned
+  // RESULT, not the decision. Spreading it after the generated seq made the two meanings
+  // share a field: with source events 100 and 20, the live feature reported 20 as latest
+  // while a restored log picked 100, because restore compares decision.seq.
+  const built=await start();
+  try{
+    built.effects.decide(built.agent,'contextPrune','applied','first',{seq:100});
+    built.effects.decide(built.agent,'contextPrune','deferred','second',{seq:20});
+    const decisions=built.effects.snapshot(built.agent).decisions.filter(item=>item.feature==='contextPrune');
+    // Decision identities are monotone; the source events are not.
+    assert.deepEqual(decisions.map(item=>item.seq),[1,2],'decision seq stays the generated one');
+    assert.deepEqual(decisions.map(item=>item.sourceSeq),[100,20],'and the source event is preserved separately');
+    const feature=built.effects.snapshot(built.agent).features.contextPrune;
+    assert.equal(feature.lastReason,'second','the last decision is the one emitted last');
+  }finally{await remove(built.telemetryDir);}
+});

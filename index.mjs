@@ -305,7 +305,12 @@ export function apply(ctx,config={}){
     const bodyKey=body?sourceKeyForBody(agent,body):null;
     let tokens=0;
     for(const range of ranges){
-      const key=bodyKey??(range.path?sourceKey(agent,range.path):null);
+      // A range that names its own path is authoritative. The whole-result body key is a
+      // fallback for a flat prune, where the range has no path: a compound result can name
+      // `a.log` first and carry a `b.log` window, and charging that window to `a.log` makes
+      // the estimate zero whenever a.log was read once — approving a prune whose real
+      // revisit cost is positive.
+      const key=(range.path?sourceKey(agent,range.path):null)??bodyKey;
       const rows=(range.end??0)-(range.offset??0);
       if(!key||rows<=0)continue;
       // Only the excess over the first read is a revisit; one read is the minimum any
@@ -779,7 +784,15 @@ export function apply(ctx,config={}){
     let decision=await next();if(decision.kind==='enter')decision=historyCoordinator.beforeStep(payload,decision,generation);
     if(decision.kind!=='enter')return decision;
     const locations=await taskFlow.startupPaths(payload.agent,decision.messages,payload.signal);
-    const messages=[...await maintenance(payload),...taskFlow.beforeStep(payload.agent,decision.messages,locations)];
+    // Both surfaces must use the SAME set of notices. The PTC branch above drains
+    // `queuedMessages` and never calls maintenance; the native branch used to call
+    // maintenance and never drain the queue. `maintenance` consumes a pending obligation
+    // when it produces a notice, so the tool-execute hook queued one, this call produced a
+    // second, and stateNotices read 2 for a single user-visible reminder. Draining first and
+    // calling maintenance once gives one emission on either surface.
+    const s=state(payload.agent),queued=s.queuedMessages??[];
+    s.queuedMessages=[];
+    const messages=[...queued,...await maintenance(payload),...taskFlow.beforeStep(payload.agent,decision.messages,locations)];
     return messages.length?{...decision,messages:[...decision.messages,...messages]}:decision;
   },{prepend:true});
   ctx.on('agent/disposed',({agent})=>disposal.agentDisposed(agent.session.id,async()=>{await Promise.allSettled([...pendingSaves]);try{toolSurfaceDisposers.get(agent.session.id)?.dispose?.();}catch{}toolSurfaceDisposers.delete(agent.session.id);contextPruning.delete(agent.session.id);pendingContextPrunes.delete(agent.session.id);contextRetainedSources.delete(agent.session.id);editedSources.delete(agent.session.id);supersededCache.delete(agent.session.id);readCountsCache.delete(agent.session.id);for(const key of contextReadCalls.keys())if(key.startsWith(agent.session.id+':'))contextReadCalls.delete(key);for(const key of preserveContextResults)if(key.startsWith(agent.session.id+':'))preserveContextResults.delete(key);try{await retainedCompute.disposeAgent(agent);}catch(error){runtime.problem(state(agent),'retained-compute-cleanup',error.message);}await effects.disposeAgent(agent);historyCoordinator.disposeAgent(agent);workingSet.disposeAgent(agent);historyHygiene.disposeAgent(agent);contextEconomics.clear(agent);taskFlow.disposeAgent(agent);executionEvidence.disposeAgent(agent);runtime.dispose(agent.session.id);}));

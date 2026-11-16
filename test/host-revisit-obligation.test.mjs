@@ -44,13 +44,28 @@ test('a written file that is never read back gets one reminder that names it',as
     await send('继续。');
     await send('继续。');
     await send('继续。');
-    assert.equal((await command('detail')).state.counts.mutations,1,'the write is recorded');
+    const detail=(await command('detail')).state;
+    assert.equal(detail.counts.mutations,1,'the write is recorded');
+    // Count EMISSIONS, not occurrences in the transcript. `body()` joins every captured
+    // request, and a notice injected at step k is carried in the history of every later
+    // request, so one delivery appears several times and a transcript count would fail for
+    // a plugin that behaves correctly.
+    //
+    // TWO notices are emitted here, and both are correct:
+    //   step 4 — the write staled the three glob observations, so the "工程状态已失效"
+    //            notice reports what it invalidated;
+    //   step 7 — the revisit obligation for a.txt is overdue, so the "改动后未复核" reminder
+    //            fires naming the file.
+    // The test's title is about the SECOND one. Asserting a total of 1 conflated the two and
+    // would have forced the stale-state notice to be suppressed to pass, which is a
+    // capability loss, not a fix.
+    assert.equal(detail.counts.stateNotices,2,'the stale-state notice and the revisit reminder are emitted');
     // The whole transcript contains a.txt in the user request and in the write arguments,
-    // so a bare `body().includes('a.txt')` would pass even if the reminder omitted the
-    // file. Anchor on the reminder text and count the reminder, which the title claims.
+    // so a bare includes() would pass even if the reminder omitted the file. Anchor on the
+    // reminder text itself.
     const text=body();
     const reminders=[...text.matchAll(new RegExp(REMINDER,'gu'))];
-    assert.equal(reminders.length,1,'exactly one reminder is delivered');
+    assert.equal(reminders.length,1,'the revisit reminder appears exactly once in the transcript');
     const from=reminders[0].index;
     const clause=text.slice(from,from+240);
     assert.match(clause,/a\.txt/u,'the reminder itself names the changed file');

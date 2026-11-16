@@ -469,3 +469,22 @@ test('the cost basis distinguishes a published family rate from an exact route r
   assert.equal(basisFor([],'deepseek-v4.1-flash'),
     'published-family-rate','the shipped card is a published family rate');
 });
+
+test('an incomplete usage observation cannot leave the reset comparison point behind',()=>{
+  // A drop counted from an incomplete attempt must also ADVANCE the comparison point, or a
+  // complete retry with the same counts counts the same drop again. The old guard required
+  // a positive `total`, but an attempt reporting inputTokens and cacheReadTokens without a
+  // totalTokens has total===null, so `previousMeasured` stayed at the pre-drop attempt while
+  // the reset branch still accepted the drop.
+  const {agent,economics,state,options}=harness();
+  state.config.projectionPricing=[{provider:'p',model:'m',currency:'USD',input:1,cacheRead:.02,output:4}];
+  economics.requestFinished(agent,options,{usage:{inputTokens:1000,cacheReadTokens:5000,cacheWriteTokens:0,outputTokens:100},
+    settled:true,finishReason:'stop',usageComplete:true,usageConsistent:false});
+  // The drop, reported without a total: total===null.
+  economics.requestFinished(agent,options,{usage:{inputTokens:6000,cacheReadTokens:0},
+    settled:true,finishReason:'stop',usageComplete:false,usageConsistent:false});
+  // The complete retry reports the same counts; it is not a second drop.
+  economics.requestFinished(agent,options,{usage:{inputTokens:6000,cacheReadTokens:0,cacheWriteTokens:0,outputTokens:100,totalTokens:6100},
+    settled:true,finishReason:'stop',usageComplete:true,usageConsistent:true});
+  assert.equal(economics.summary(agent).cacheResetCount,1,'one observed drop is one reset');
+});

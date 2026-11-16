@@ -352,12 +352,20 @@ export function createContextEconomics(ctx,runtime){
     // Captured before this attempt replaces it: the reset check below compares with
     // the previous measured attempt, not with the one being recorded now.
     const resetPrevious=state.previousMeasured;
-    // A failed attempt still observed its own usage, so it becomes the next
-    // comparison point: the drop it saw is a real drop, and the retry that follows
-    // must not report the same transition again. Only an attempt that reported no
-    // usage at all is skipped, because a zero there is absent evidence.
-    if(usage&&total>0){state.previousMeasured={provider:options.provider,model:options.model,reasoningEffort:options.reasoningEffort,
-      envelope,cacheReadTokens:usage.cacheReadTokens,inputTokens:usage.inputTokens};}
+    // A failed attempt still observed its own usage, so it becomes the next comparison
+    // point: the drop it saw is a real drop, and the retry that follows must not report
+    // the same transition again.
+    //
+    // The comparison point therefore needs the SAME fields the reset branch reads, or the
+    // two disagree about what a measurement is. An attempt reporting inputTokens=6000 and
+    // cacheReadTokens=0 but no totalTokens has `total===null`, so the old guard left
+    // `previousMeasured` untouched while the reset branch still accepted it — the drop was
+    // counted, the comparison point was not advanced, and the complete retry with the same
+    // counts counted the same drop again. Both sides now require a reported cache-read
+    // count and a positive prompt size.
+    if(usage&&finite(usage.cacheReadTokens)&&(total>0||usage.inputTokens>0)){
+      state.previousMeasured={provider:options.provider,model:options.model,reasoningEffort:options.reasoningEffort,
+        envelope,cacheReadTokens:usage.cacheReadTokens,inputTokens:usage.inputTokens};}
     const previous=previousBaseline,same=previous&&sameRoute(previous,options);
     const effortChanged=same&&effortKey(previous.reasoningEffort)!==effortKey(options.reasoningEffort);
     // An incomplete observation can leave cacheReadTokens null. `null < x*.5` is

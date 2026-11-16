@@ -109,6 +109,18 @@ function sentenceIsWritable(prose,raw=prose){
     // An allowance only counts when it is followed by a write request. "but review the
     // update" names a noun, not a request, so the denial still holds.
     if(allowancePattern.test(governed)&&writeRequestIn(`${governedRaw}${raw.slice(verb.at)}`))return true;
+    // `instead` is an allowance that trails the verb, so scanning only the text before it
+    // misses the one construction that names the replacement explicitly:
+    //   "Do not modify src/a.js, create src/b.js instead."
+    // What must be a write request is the text between the DENIAL and the `instead`: the verb
+    // this loop is looking at is the one the denial already governs, so including it would
+    // make every "do not X instead" an allowance. "Do not modify src/a.js instead." therefore
+    // stays a denial (no write request between the denial and `instead`), while
+    // "Do not modify a.js, create b.js instead" is a request for b.js.
+    const tail=raw.slice(verb.at);
+    const clause=tail.split(SENTENCE_BOUNDARY)[0]??'';
+    const trailing=/(?:^|[^A-Za-z0-9_-])instead(?![A-Za-z0-9_-])/iu.exec(clause);
+    if(trailing&&writeRequestIn(clause.slice(0,trailing.index).replace(new RegExp(`^(?:${VERB_ZH}|${enWord(VERB_EN)})`,'iu'),'')))return true;
   }
   return false;
 }

@@ -60,7 +60,15 @@ export function createEffectObserver(ctx,runtime){
   function decide(agent,name,status,reason,details={}){
     const state=get(agent),item=feature(state,name),at=new Date().toISOString(),step=runtime.get(agent).step,seq=++state.decisionSeq;
     item.decisions++;item[status==='not-applicable'?'notApplicable':status]=(item[status==='not-applicable'?'notApplicable':status]??0)+1;item.lastStatus=status;item.lastReason=reason;item.lastAt=at;item.lastStep=step;item.lastSeq=seq;item.reasons[reason]=(item.reasons[reason]??0)+1;
-    const decision={id:randomUUID(),at,step,seq,feature:name,status,reason,...details};state.decisions.push(decision);state.pendingDecisions.push(decision);
+    // `details` is spread for the payload but must not overwrite the generated identity.
+    // Callers pass `{seq,...}` where that `seq` names a SOURCE event — the prune path passes
+    // the pruned result's sequence. With decisions about source events 100 and 20, the live
+    // feature reported 20 as latest while a restored decision log picked 100, because the two
+    // read the same field for different meanings. The source event travels in its own field.
+    const {seq:sourceSeq=null,economics:decisionEconomics,...rest}=details;
+    const decision={id:randomUUID(),at,step,seq,feature:name,status,reason,...rest,
+      ...(sourceSeq===null?{}:{sourceSeq}),...(decisionEconomics===undefined?{}:{economics:decisionEconomics})};
+    state.decisions.push(decision);state.pendingDecisions.push(decision);
     if(state.pendingDecisions.length>256){
       const overflow=state.pendingDecisions.splice(0,state.pendingDecisions.length-256);
       state.pendingOverflow.push(...overflow);

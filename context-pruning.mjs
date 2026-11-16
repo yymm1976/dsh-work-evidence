@@ -271,8 +271,12 @@ function applyOperations(text,operations){
   return after+text.slice(cursor);
 }
 
-/** Strip a native read's `N: ` line prefix so the rows can be classified as content. */
-const LINE_NUMBER_PREFIX=/^\s*\d+: ?/u;
+/** Strip a native read's line-number prefix so the rows can be classified as content. */
+// `renderedReads` accepts `N: `, `N | ` and `N\t` as line-number prefixes, so all three have
+// to come off here. Handling only the colon form made `run_code` output rendered with a pipe
+// pass window matching and then fail source recognition, which sends a real source body down
+// the prune path.
+const LINE_NUMBER_PREFIX=/^\s*\d+(?::| \| |\t)\s?/u;
 export function stripLineNumbers(text){
   return String(text??'').split('\n').map(line=>line.replace(LINE_NUMBER_PREFIX,'')).join('\n');
 }
@@ -294,12 +298,17 @@ export function planContextPrune(message,reads,options){
     // read superseded this copy, and refusing here on "it is source" alone would make a
     // superseded body permanently unprunable — the exact case pruning exists for.
     if(named.some(file=>options.retainSource(file)))return null;
-    // A body can still be source the named paths do not describe: `bash cat src/widget.py`
-    // returns the file with no markup, and a result can name an unrelated `run.log` next to
-    // an unmarked source body. The body itself is then the remaining evidence, so the
-    // recognition is NOT gated on `named.length` — that gate is what let
-    // `<path>run.log</path>` beside an unmarked source body switch the detector off.
-    if(looksLikeSourceBody(original))return null;
+    // With NO named path the body itself is the remaining evidence: `bash cat src/widget.py`
+    // returns a file with no markup, and a result can name an unrelated `run.log` next to an
+    // unmarked source body. The content check runs only here, because a named path already
+    // answered the question — `retainSource` knows about supersession, and a body a later
+    // read replaced must stay prunable. Asking the content rule again for a named body would
+    // overrule that and make a superseded source body permanently unprunable.
+    //
+    // The check includes the escaped-envelope form: a shell result carries its text in
+    // `stdout.text` with newlines escaped, so the line-start detectors see one long line and
+    // a whole source file reads as a log.
+    if(!named.length&&(isSourceBody(original)||looksLikeSourceBody(original)))return null;
   }
   let content,ranges=[],dedupStats=[];
   if(reads.length){

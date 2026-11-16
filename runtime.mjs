@@ -437,11 +437,17 @@ export function createRuntime(ctx,call,initial={}){
     // ledger: it survives while the ledger is consulted and is cleared with it.
     const revisit=s.pendingRevisit?[...s.pendingRevisit.values()].map(item=>({file:item.display,atStep:item.atStep,mutations:item.mutations})):[];
     if(!detail)return {counts:{observations:observations.length,searches:searches.length,mutations:mutations.length,
-      staleObservations:observations.filter(item=>item.stale).length,staleSearches:searches.filter(item=>item.stale).length,revisitObligations:revisit.length},
+      staleObservations:observations.filter(item=>item.stale).length,staleSearches:searches.filter(item=>item.stale).length,revisitObligations:revisit.length,
+      // Emissions, not appearances. A notice injected at one step is carried in the history
+      // of every later request, so counting occurrences in a captured transcript reports a
+      // correct single delivery as many. This counter existed in s.metrics and was never
+      // exposed here, which meant the only way to check "one reminder" was the transcript.
+      stateNotices:s.metrics.stateNotices},
       recentObservations:observations.slice(-8),recentSearches:searches.slice(-5),recentMutations:mutations.slice(-8),
       pendingNotice:!!s.pendingStateNotice};
     return {counts:{observations:observations.length,searches:searches.length,mutations:mutations.length,
-      returnedObservations:Math.min(24,observations.length),returnedSearches:Math.min(16,searches.length),returnedMutations:Math.min(12,mutations.length)},
+      returnedObservations:Math.min(24,observations.length),returnedSearches:Math.min(16,searches.length),returnedMutations:Math.min(12,mutations.length),
+      stateNotices:s.metrics.stateNotices},
       observations:observations.slice(-24),searches:searches.slice(-16),mutations:mutations.slice(-12),revisitObligations:revisit};
   }
   function consumeStateNotice(s){
@@ -470,6 +476,7 @@ export function createRuntime(ctx,call,initial={}){
         at:new Date().toISOString(),narrowSearch:{pattern,scope}};
     }
     if(!s.pendingStateNotice)return null;
+
     const notice=s.pendingStateNotice;s.pendingStateNotice=null;
     if(notice.revisitOnly){
       // Emitting the reminder discharges the obligation for these files; a later

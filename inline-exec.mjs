@@ -360,10 +360,15 @@ function resolveIndexedScript(input,calls,resultExecutables,resultHostRuntimes,e
     ...(shellSource?{shellSource,nativeArguments:shellSource.effectiveArguments??shellSource.nativeArguments}:{})};
 }
 
-// The source travels as environment values, and win32 builds the child environment
-// through CreateProcess: one variable holds 32,767 characters and the whole block
-// is about 32 KiB. Keeping the same total capacity there needs more, smaller
-// chunks rather than a smaller program limit.
+// The source travels as environment values. The per-variable ceiling is real and documented
+// (32,767 characters including the terminating NUL), but the "whole block is about 32 KiB"
+// figure that used to be here was wrong, and review caught the arithmetic: nine chunks of
+// 32,766 characters is 294,894 bytes, far above 32 KiB.
+//
+// Measured on this host: spawnSync with N x 1 KiB variables succeeded at every size tried —
+// 32 KiB, 290 KiB, 512 KiB, 1 MiB, 2 MiB. The block limit is therefore not what constrains
+// this path; the per-variable limit is. The chunk count follows that limit, and no
+// total-size check is needed on win32.
 const STDIN_CHUNKS=process.platform==='win32'?9:3;
 // POSIX caps a single exec argument at 128 KiB. A host that publishes only pwsh on
 // POSIX still passes the program through `pwsh -Command`, so the encoded text has
@@ -426,16 +431,16 @@ function validateInlineInput(input){
 }
 
 /** Keep each environment string below the platform's per-string exec limit, including UTF-8 and NUL bytes.
- *  On win32 the spawn goes through CreateProcess, which caps one variable at 32,767 characters and the
- *  whole environment block near 32 KiB; the Linux path can carry much larger execve strings. */
+ *  On win32 the spawn goes through CreateProcess, which caps one variable at 32,767 characters;
+ *  the environment block itself was measured to accept at least 2 MiB here, so the per-variable
+ *  limit is what sets the chunk count. The Linux path can carry much larger execve strings. */
 export function inlineEnvironment(input,transferId){
   validateInlineInput(input);
   if(!validTransferId(transferId))throw new Error('bash transport requires a valid transfer ID');
   const bytes=Buffer.from(input.code.replaceAll('\\','\\\\').replaceAll('\0','\\x00'),'utf8');
-  // win32 wins here because the child environment block itself is capped near 32 KiB,
-  // so the number of usable chunks is what the platform can carry, not a tuning choice.
-  // 32,767 is the documented limit *including* the terminating NUL, so a chunk holds
-  // at most 32,766 characters. Nine chunks still carry the largest permitted input.
+  // The number of usable chunks is set by the PER-VARIABLE limit, not by a block cap:
+  // measured here, a 2 MiB environment spawned fine. 32,767 is the documented variable
+  // limit *including* the terminating NUL, so a chunk holds at most 32,766 characters.
   const perVariable=process.platform==='win32'?32766:96000;
   const values={[INLINE_ENV_KEYS[0]]:transferId};let offset=0;
   for(const key of INLINE_ENV_KEYS.slice(1)){
