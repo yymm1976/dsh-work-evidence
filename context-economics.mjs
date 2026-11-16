@@ -128,9 +128,10 @@ export function createContextEconomics(ctx,runtime){
     // That made historyHygiene decide 919 times and apply zero times.
     //
     // Estimate the remainder from the session's own length so far: a run that has
-    // already issued this many requests plausibly issues about as many again. The
-    // estimate stays a forecast, so it is capped at the configured ceiling; an
-    // explicit caller horizon still wins, and a costly refill is still refused.
+    // already issued this many requests plausibly issues about as many again.
+    // `projectionHorizonSteps` is the FLOOR here, not a cap — the estimate grows past
+    // it with the session and is bounded only by the 64-step ceiling. An explicit
+    // caller horizon still wins, and a costly refill is still refused.
     const declaredHorizon=horizon??config.projectionHorizonSteps;
     const remainingSteps=horizon!==undefined
       ?Math.max(1,Math.min(64,horizon))

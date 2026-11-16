@@ -369,6 +369,11 @@ const STDIN_CHUNKS=process.platform==='win32'?9:3;
 // POSIX still passes the program through `pwsh -Command`, so the encoded text has
 // to fit one argument.
 const LOCAL_ARGUMENT_LIMIT=128*1024;
+// Windows caps a whole command line near 32,767 characters; leave room for the
+// wrapping shell and quoting rather than using the exact maximum.
+const WINDOWS_COMMAND_LIMIT=30000;
+// The fixed part of the pwsh wrapper: the text around the encoded program.
+const INLINE_PWSH_OVERHEAD=900;
 export const INLINE_ENV_KEYS=Object.freeze(['DSH_WORK_EVIDENCE_STDIN_ID',...Array.from({length:STDIN_CHUNKS},(_,index)=>'DSH_WORK_EVIDENCE_STDIN_'+index)]);
 const validTransferId=value=>typeof value==='string'&&/^[A-Za-z0-9_-]{1,128}$/u.test(value);
 
@@ -468,12 +473,18 @@ builtin printf '%b' "${content}" | (
   if(shell!=='pwsh')throw new Error('shell must be pwsh or bash');
   const args=input.nativeArguments?.join(' ')??(input.runtime==='python'?'-B -X utf8 -':'--input-type='+(input.format??'module')+' -');
   const encoded=Buffer.from(input.code,'utf8').toString('base64');
-  // The pwsh transport carries the program inside the command text, and a host that
-  // publishes only pwsh on POSIX still goes through `pwsh -Command`, where one
-  // argument string is limited to 128 KiB. Report that as a size limit before the
-  // launch fails with E2BIG, which would look like an infrastructure fault.
-  if(process.platform!=='win32'&&Buffer.byteLength(encoded,'utf8')>LOCAL_ARGUMENT_LIMIT){
-    throw new Error(`work_exec source is too large for the pwsh transport on this host (${Buffer.byteLength(encoded,'utf8')} bytes of encoded program against a ${LOCAL_ARGUMENT_LIMIT}-byte argument limit); use the bash transport or a smaller program`);
+  // The pwsh transport carries the program inside the command text, so the limit that
+  // applies is the host's command-line limit — and it covers the whole command, the
+  // wrapper plus the program, not the program alone. POSIX caps one argument at
+  // 128 KiB; Windows caps the entire command line near 32,767 characters. Report the
+  // oversize before launch rather than failing with E2BIG or a truncated command,
+  // which reads as an infrastructure fault.
+  const commandLimit=process.platform==='win32'?WINDOWS_COMMAND_LIMIT:LOCAL_ARGUMENT_LIMIT;
+  const fixedOverhead=INLINE_PWSH_OVERHEAD+Buffer.byteLength(args,'utf8')+Buffer.byteLength(String(executable),'utf8')
+    +Buffer.byteLength(String(root),'utf8');
+  const encodedBytes=Buffer.byteLength(encoded,'utf8');
+  if(encodedBytes+fixedOverhead>commandLimit){
+    throw new Error(`work_exec source is too large for the pwsh transport on this host (${encodedBytes} bytes of encoded program plus ${fixedOverhead} bytes of wrapper against a ${commandLimit}-unit command limit); use the bash transport or a smaller program`);
   }
   return `$ErrorActionPreference = 'Stop'
 [Console]::OutputEncoding = [Text.UTF8Encoding]::new($false)

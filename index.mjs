@@ -364,16 +364,19 @@ export function apply(ctx,config={}){
     // verbs are therefore matched in base form only (\b so "edits"/"edited" do not
     // qualify), and a Chinese or English verb must be followed by a target rather
     // than merely appear. A target can be an extensionless name such as `README`,
-    // which is why the last alternative accepts a capitalised or path-qualified
-    // word: "create README" is a request, "the edits" is a description.
-    const writeRequest=/(?:^|[，,、：:\s])(?:[^。；;\n]{0,8})?(?:(?:修改|修复|实现|编写|重构|创建|编辑|写入|增加|删除|替换|重写|改(?!动|变))|(?:modify|fix|implement|write|edit|create|delete|replace)\b)[^。；;\n]{0,16}(?:[\w./\\-]+\.[a-z0-9]{1,8}\b|[\w-]*\/[\w.-]+|[A-Z][A-Z0-9_-]{1,30}\b|文件|代码|函数|方法|类|模块|程序|脚本|实现|逻辑|配置|file|code|function|method|class|module|program|script|config)/iu;
+    // which is why the target list accepts a path-qualified word, and a separate
+    // case-sensitive test accepts an ALL-CAPS name: "create README" is a request,
+    // "the edits" is a description. It has to be a separate pattern because the main
+    // one is /iu, where [A-Z] would also match lowercase words like "edits".
+    const writeRequest=/(?:^|[，,、：:\s])(?:[^。；;\n]{0,8})?(?:(?:修改|修复|实现|编写|重构|创建|编辑|写入|增加|删除|替换|重写|改(?!动|变))|(?:modify|fix|implement|write|edit|create|delete|replace)\b)[^。；;\n]{0,16}(?:[\w./\\-]+\.[a-z0-9]{1,8}\b|[\w-]*\/[\w.-]+|文件|代码|函数|方法|类|模块|程序|脚本|实现|逻辑|配置|file|code|function|method|class|module|program|script|config)/iu;
+    const upperCaseTarget=/(?:^|[，,、：:\s])(?:[^。；;\n]{0,8})?(?:(?:修改|修复|实现|编写|重构|创建|编辑|写入|增加|删除|替换|重写|改(?!动|变))|(?:modify|fix|implement|write|edit|create|delete|replace)\b)[^。；;\n]{0,16}[A-Z][A-Z0-9_-]{1,30}\b/u;
     // Split on sentence ends in both scripts. A period ends a sentence only when a
     // space and a capital follow, so "src/a.js" and "v1.2" stay intact. Without the
     // English form, "Do not modify a.js. Create b.js." stayed one sentence and the
     // first denial suppressed the second request, making a writable task read-only.
     const sentences=request.split(/[。；;\n]|\.(?=\s+[A-Z])/u);
     return !sentences.some(sentence=>
-      writeVerb.test(sentence)&&writeRequest.test(sentence)&&(!deniedWrite.test(sentence)||allowedAfterDenial.test(sentence)));
+      writeVerb.test(sentence)&&(writeRequest.test(sentence)||upperCaseTarget.test(sentence))&&(!deniedWrite.test(sentence)||allowedAfterDenial.test(sentence)));
   };
   const surfaceModeForRequest=request=>{
     if(!isReadOnlyRequest(request))return 'writable';

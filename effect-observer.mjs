@@ -147,6 +147,10 @@ export function createEffectObserver(ctx,runtime){
     }
     const nativeAttempt=native&&!native.requestId?{attemptId:native.attemptId,turn:native.turn,step:native.step}:null;
     if(nativeAttempt)native.requestId=requestId;
+    // The decisions are copied, not taken: the row is only known to be persisted once
+    // the append resolved, and a failed append must leave them available for the
+    // cleanup flush instead of losing everything recorded for this request.
+    const rowDecisions=main?state.pendingDecisions.slice():[];
     return {schema:'work-evidence.request-effects.v1',sessionId:agent.session.id,requestId,nativeAttempt,at:new Date().toISOString(),provider:options.provider,model:options.model,reasoningEffort:options.reasoningEffort??null,requestKind,auxiliary:requestKind==='auxiliary',
       projectionObservation,
       usage:null,usageChunks:0,usageAggregation:'last-non-null-adapter-value-per-field',settled:false,failureCode:null,finishReason:null,
@@ -156,7 +160,7 @@ export function createEffectObserver(ctx,runtime){
         coverage:'Recorded body changes, recognizable guidance and top-level plugin schemas; host-generated PTC SDK/prelude overhead is not reconstructed',
         method:'same-trajectory message reconstruction; local text-density estimate; provider tokenization not observed',causalTaskSaving:false},
       localRequestTokensEstimate:tokens(options.messages)+textTokens(JSON.stringify({system:options.system??null,tools:options.tools??[]})),
-      decisions:main?state.pendingDecisions.splice(0):[],sourceSeq:agent.session.seq,step:runtime.get(agent).step};
+      decisions:rowDecisions,sourceSeq:agent.session.seq,step:runtime.get(agent).step};
   }
   async function start(agent,row){
     row.startRecorded=await queue(get(agent),agent,{schema:'work-evidence.request-start.v1',sessionId:agent.session.id,
@@ -223,7 +227,20 @@ export function createEffectObserver(ctx,runtime){
     if(index<0)state.decisions.push(restored);else state.decisions.splice(index,0,restored);
     if(state.decisions.length>64)state.decisions.shift();
   }
-  function finish(agent,row){const state=get(agent);normalizeRow(row);accumulate(state,row);queue(state,agent,row);runtime.get(agent).dirty=true;}
+  function finish(agent,row){
+    const state=get(agent);normalizeRow(row);accumulate(state,row);
+    // The row carries a copy of the pending decisions, so they are only removed once
+    // the append succeeded. A failed append keeps them for the cleanup flush and for a
+    // later retry instead of dropping everything recorded for this request.
+    const carried=row.decisions??[];
+    queue(state,agent,row).then(ok=>{
+      if(ok&&carried.length){
+        const ids=new Set(carried.map(item=>item?.id));
+        state.pendingDecisions=state.pendingDecisions.filter(item=>!ids.has(item?.id));
+      }
+    }).catch(()=>{});
+    runtime.get(agent).dirty=true;
+  }
   async function load(agent){
     const state=get(agent);if(state.loaded)return;if(state.loading)return state.loading.catch(()=>{});
     const dir=storageFor(agent);if(!dir)return;

@@ -605,6 +605,11 @@ function lexicalJavaRecord({
 function sourceRetrieval(args, requested) {
   return {
     ...(args.query ? {query: args.query} : {}),
+    // An archive member cannot be re-fetched by class name alone: the archive path and
+    // the exact entry are what identify it, so they travel with every retrieval
+    // instruction instead of leaving the caller with an unusable argument set.
+    ...(args.archive ? {archive: args.archive} : {}),
+    ...(args.entry ? {entry: args.entry} : {}),
     ...(requested.plural ? {members: requested.names} : {member: requested.names[0]}),
   };
 }

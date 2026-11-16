@@ -145,3 +145,16 @@ test('an allowance word inside a filename is not permission to write',async()=>{
       'a real allowance clause in another sentence still permits the write');
   }finally{await host.close();}
 });
+
+test('a lowercase word after a write verb is not a target but an ALL-CAPS name is',async()=>{
+  // The target list is /iu, so an [A-Z] alternative there also matched lowercase
+  // words. "review the edits" must stay a read while "create README" is a request.
+  const host=await startHost({toolMode:'ptc',extraMounts:[['dsh-ptc-runtime-node']],script:answer});
+  try{
+    const agent=await host.createAgent('max');
+    await host.send(agent,'Read-only: review the edits in src/a.js.');
+    assert.doesNotMatch(systemOf(host.requests.at(-1)),/\bwork_exec: \{/u,'lowercase "edits" is not a target');
+    await host.send(agent,'Do not modify src/a.js; create README.');
+    assert.match(systemOf(host.requests.at(-1)),/\bwork_exec: \{/u,'an ALL-CAPS name is a target');
+  }finally{await host.close();}
+});
