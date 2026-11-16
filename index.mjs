@@ -194,7 +194,10 @@ export function apply(ctx,config={}){
   const contextWindow=createContextWindow(ctx,runtime);contextWindow.observe();
   const observationLedger=createObservationLedger(ctx,runtime,nativeFiles);observationLedger.observe();
   const historyCoordinator=createHistoryCoordinator(runtime,contextWindow,contextEconomics);runtime.historyCoordinator=historyCoordinator;
-  const clearPluginState=agent=>{observationLedger.clear(agent);contextWindow.clear(agent);finalJson.clear(agent);handoffDelivery.clear(agent);};
+  const clearPluginState=agent=>{observationLedger.clear(agent);contextWindow.clear(agent);finalJson.clear(agent);handoffDelivery.clear(agent);
+    // These caches answer "does this session still need this body", so they describe the
+    // ledger that was just cleared and must not outlive it.
+    editedSources.delete(agent.session.id);supersededReads.delete(agent.session.id);contextRetainedSources.delete(agent.session.id);};
   const routeRead=createReadRouting(ctx,runtime,call,nativeFiles);
   const index=createSelfIndex(ctx,runtime,call),candidates=createCandidates(ctx,runtime,call),
     ptcPatterns=createPtcPatterns(ctx,runtime),ptcFastpath=createPtcFastpath(ctx,runtime,call),
@@ -202,7 +205,7 @@ export function apply(ctx,config={}){
     fileProfiler=createFileProfiler(ctx,runtime),structuredJson=createStructuredJson(ctx,runtime);
   // Keep general workflow guidance fixed; dynamic notices carry observed facts.
   ctx.systemPrompt.section({name:'work-evidence:task-flow',order:750,interpolate:false,text:''});
-  const contextPruning=new Set(),pendingContextPrunes=new Map(),preserveContextResults=new Set(),contextReadCalls=new Map(),contextRetainedSources=new Map();
+  const contextPruning=new Set(),pendingContextPrunes=new Map(),preserveContextResults=new Set(),contextReadCalls=new Map(),contextRetainedSources=new Map(),editedSources=new Map(),supersededReads=new Map();
   const preserveContextResult=(sessionId,callId)=>{
     if(typeof callId!=='string'||!callId)return;
     preserveContextResults.add(sessionId+':'+callId);
@@ -219,6 +222,59 @@ export function apply(ctx,config={}){
     }
     contextRetainedSources.set(agent.session.id,retained);
   }
+  // A file the model has edited is a working target: the middle of its body is exactly
+  // where the next change goes, and the F2-C evidence shows that pruning it forces a
+  // re-read (116 re-reads, 737,310 chars against 832,846 chars saved). The same holds
+  // for a path that was read repeatedly, which is the observable sign of an unfinished
+  // investigation. Both facts are per-session and only grow, so the check is monotone.
+  const editedSourceKeys=agent=>{
+    const id=agent.session.id;
+    if(!editedSources.has(id)){
+      const keys=new Set();
+      for(const event of eventLog(agent.session)){
+        if(!['tool/call','tool/ptc-dispatch','tool/code-dispatch'].includes(event.type))continue;
+        const data=event.data??{};
+        if(!['edit','write','verified_exec'].includes(data.name))continue;
+        const args=argsOf(data.arguments);
+        if(typeof args.file_path==='string')keys.add(sourceKey(agent,args.file_path));
+        if(typeof args.path==='string')keys.add(sourceKey(agent,args.path));
+        for(const edit of Array.isArray(args.edits)?args.edits:[])
+          if(typeof edit?.file==='string')keys.add(sourceKey(agent,edit.file));
+        for(const file of Array.isArray(args.files)?args.files:[])
+          if(typeof file?.path==='string')keys.add(sourceKey(agent,file.path));
+      }
+      editedSources.set(id,keys);
+    }
+    return editedSources.get(id);
+  };
+  // F2-C pruned 49 source-file bodies and then the model re-read 737,310 characters of
+  // exactly the dropped middle (against 832,846 saved), so a source body was never a
+  // redundant copy there. The defensible rule is narrower: a source file's body may be
+  // pruned only when a later complete read of the same path has already superseded it.
+  // Non-source blobs (listings, logs, generated data) keep the old behaviour.
+  const SOURCE_BODY=/\.(?:py|pyi|js|jsx|mjs|cjs|ts|tsx|java|go|rs|c|cc|cpp|cxx|h|hpp|rb|php|cs|kt|swift|scala|m|mm|pl|lua|sql|json|jsonc|json5|yaml|yml|toml|ini|cfg|conf|md|mdx|rst|adoc|html|htm|css|scss|sass|less|vue|svelte|astro|sh|bash|zsh|ps1|psm1|bat|cmd|gradle|xml|proto|graphql|gql|tf|hcl)$/iu;
+  const isSourceBodyPath=file=>typeof file==='string'&&SOURCE_BODY.test(file);
+  const supersededSourceKeys=agent=>{
+    const id=agent.session.id;
+    if(!supersededReads.has(id)){
+      // For every source path, remember the newest seq whose read was complete. A body
+      // recorded before that seq is a duplicate of one the model already has.
+      const latest=new Map();
+      for(const event of eventLog(agent.session)){
+        if(event.type!=='tool/result'||event.surfaceOp?.op==='replace')continue;
+        const message=event.data?.message;
+        if(!message||message.isError)continue;
+        const text=(message.content??[]).filter(block=>block?.type==='text').map(block=>block.text??'').join('');
+        const pathMatch=/<path>([^<]+)<\/path>/.exec(text);
+        if(!pathMatch)continue;
+        const complete=/\(End of file - total \d+ lines\)|<content complete="true"/.test(text);
+        if(!complete)continue;
+        latest.set(sourceKey(agent,pathMatch[1]),event.seq);
+      }
+      supersededReads.set(id,latest);
+    }
+    return supersededReads.get(id);
+  };
   function retainedSources(agent){
     if(!contextRetainedSources.has(agent.session.id)){
       contextRetainedSources.set(agent.session.id,new Set());
@@ -301,10 +357,19 @@ export function apply(ctx,config={}){
             preserveContextResults.has(session.id+':'+(originalEvent.data.message.source?.callId??originalEvent.data.message.toolCallId)))continue;
           const original=session.deriveEventMessage(originalEvent);
           const focus=new Set((taskFlow.phase(agent).focus??[]).map(file=>sourceKey(agent,file)));
+          const worked=editedSourceKeys(agent),superseded=supersededSourceKeys(agent);
           const result=planContextPrune(original,item.reads,{
             seq,thresholdChars:s.config.contextPruneMinChars,
             headChars:s.config.contextPruneHeadChars,tailChars:s.config.contextPruneTailChars,
-            retainSource:file=>retainedSources(agent).has(sourceKey(agent,file))||historyHygiene.retainsSource(agent,file)||focus.has(sourceKey(agent,file)),
+            // A source body is the working object of a repair task, and F2-C shows the
+            // re-read it triggers costs nearly the whole saving. Keep it unless a later
+            // complete read of the same path already supersedes this copy.
+            retainSource:file=>{
+              const key=sourceKey(agent,file);
+              if(retainedSources(agent).has(key)||historyHygiene.retainsSource(agent,file)||focus.has(key)||worked.has(key))return true;
+              if(isSourceBodyPath(file)&&!(Number.isInteger(superseded.get(key))&&superseded.get(key)>seq))return true;
+              return false;
+            },
           });
           if(!result){effects.decide(agent,'contextPrune','not-applicable','no-safe-source-reduction',{seq});continue;}
           if(!canRecall(agent)){
@@ -651,7 +716,7 @@ export function apply(ctx,config={}){
     const messages=[...await maintenance(payload),...taskFlow.beforeStep(payload.agent,decision.messages,locations)];
     return messages.length?{...decision,messages:[...decision.messages,...messages]}:decision;
   },{prepend:true});
-  ctx.on('agent/disposed',({agent})=>disposal.agentDisposed(agent.session.id,async()=>{await Promise.allSettled([...pendingSaves]);try{toolSurfaceDisposers.get(agent.session.id)?.dispose?.();}catch{}toolSurfaceDisposers.delete(agent.session.id);contextPruning.delete(agent.session.id);pendingContextPrunes.delete(agent.session.id);contextRetainedSources.delete(agent.session.id);for(const key of contextReadCalls.keys())if(key.startsWith(agent.session.id+':'))contextReadCalls.delete(key);for(const key of preserveContextResults)if(key.startsWith(agent.session.id+':'))preserveContextResults.delete(key);try{await retainedCompute.disposeAgent(agent);}catch(error){runtime.problem(state(agent),'retained-compute-cleanup',error.message);}await effects.disposeAgent(agent);historyCoordinator.disposeAgent(agent);workingSet.disposeAgent(agent);historyHygiene.disposeAgent(agent);contextEconomics.clear(agent);taskFlow.disposeAgent(agent);executionEvidence.disposeAgent(agent);runtime.dispose(agent.session.id);}));
+  ctx.on('agent/disposed',({agent})=>disposal.agentDisposed(agent.session.id,async()=>{await Promise.allSettled([...pendingSaves]);try{toolSurfaceDisposers.get(agent.session.id)?.dispose?.();}catch{}toolSurfaceDisposers.delete(agent.session.id);contextPruning.delete(agent.session.id);pendingContextPrunes.delete(agent.session.id);contextRetainedSources.delete(agent.session.id);editedSources.delete(agent.session.id);supersededReads.delete(agent.session.id);for(const key of contextReadCalls.keys())if(key.startsWith(agent.session.id+':'))contextReadCalls.delete(key);for(const key of preserveContextResults)if(key.startsWith(agent.session.id+':'))preserveContextResults.delete(key);try{await retainedCompute.disposeAgent(agent);}catch(error){runtime.problem(state(agent),'retained-compute-cleanup',error.message);}await effects.disposeAgent(agent);historyCoordinator.disposeAgent(agent);workingSet.disposeAgent(agent);historyHygiene.disposeAgent(agent);contextEconomics.clear(agent);taskFlow.disposeAgent(agent);executionEvidence.disposeAgent(agent);runtime.dispose(agent.session.id);}));
   async function saveInterruption(agent,{turn,step,provider,reason,signal,observed}){
     const sessionId=agent.session.id,s=state(agent);
     if(!observed.active||s.notedTurn>=turn||s.savingTurn===turn||!/^[-a-zA-Z0-9_][-.a-zA-Z0-9_]{0,127}$/.test(sessionId))return;

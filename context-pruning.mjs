@@ -166,6 +166,13 @@ export function planContextPrune(message,reads,options){
   const original=resultText(message.content);
   if(contentReferences(original).hasReferences)return null;
   if(count(original)<=options.thresholdChars)return null;
+  // A whole-result reduction has no per-window path, but the result itself names one.
+  // Without this check the retention rule applied only to the nested-read branch, which
+  // is why a complete source body could still be cut to head+tail in the flat branch.
+  if(!reads.length&&options.retainSource){
+    const named=/<path>([^<]+)<\/path>/u.exec(original)?.[1];
+    if(named&&options.retainSource(named))return null;
+  }
   let content,ranges=[],dedupStats=[];
   if(reads.length){
     // Never cut an unidentified compound output across file boundaries.
