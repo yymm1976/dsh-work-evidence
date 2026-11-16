@@ -88,7 +88,59 @@ const nounPrefix=/(?:^|\s)(?:a|an|the|this|that|these|those|its|their|his|her|ou
 const CJK_NOUN_PREFIX=/(?:的|之|此|该|这|那|本|其|各|每|某|所有|全部)\s*$/u;
 const readOnlyMarker=/(?:只读|read[- ]only)/iu;
 // Sentence boundaries. A period splits only before a capital so "src/a.js" survives.
+// Sentence boundaries. A period splits only before a capital so "src/a.js" survives.
+//
+// A COMMA is also a boundary, because `Do not touch the config, update src/a.js.` is one
+// clause forbidding one thing and requesting another. Leaving the comma inside the sentence
+// let the denial govern `update` too, the task classified read-only, and the host really did
+// strip work_exec from the tool schema — the most damaging defect an adversarial review found.
+//
+// But a comma is ALSO how a verb list continues: `do not modify, create, or delete src/a.js`
+// must keep its denial on every verb. The two are distinguished by what follows the comma:
+// a bare verb (or a conjunction then a verb) continues the list, while anything with its own
+// object starts a new clause. `splitSentences` applies that rule; the regex alone cannot.
 const SENTENCE_BOUNDARY=/[。！？；;\n]|[.!?](?!\s*[a-z0-9])/u;
+const COMMA=/[，,]/u;
+/** Is the text after a comma a bare verb list continuation rather than a new clause? */
+// A continuation is a SHORT verb sequence: `create,` / `or delete src/a.js` where the verb has
+// no object before the next comma. `update src/a.js` carries its own object and is therefore a
+// new clause even though it starts with a verb — that distinction is the whole rule, and
+// testing only "starts with a verb" made `Do not touch the config, update src/a.js.` read-only
+// again, which is the defect this split exists to fix.
+function continuesVerbList(tail){
+  const verb=new RegExp(`^\\s*(?:or|and|nor|或者|或|以及|和)?\\s*${VERB_ANY}`,'iu').exec(tail);
+  if(!verb)return false;
+  const conjunction=/^\s*(?:or|and|nor|或者|或|以及|和)\s*/iu.test(tail);
+  const rest=tail.slice(verb[0].length);
+  // An explicit conjunction makes it a coordinate list: `do not modify, create, or delete` and
+  // `不要修改，或者创建` both keep the denial on every verb, whatever object each carries.
+  if(conjunction)return true;
+  // Without a conjunction the verb must be bare — followed by the next comma or another verb —
+  // or it carries its own object and starts a new clause:
+  // `Do not touch the config, update src/a.js.` is one denial and one request.
+  return /^\s*[，,]/.test(rest)||new RegExp(`^\\s*(?:or|and|nor|或者|或|以及|和)?\\s*${VERB_ANY}`,'iu').test(rest);
+}
+
+/** Split into clauses, keeping a verb list inside one clause. */
+export function splitSentences(text){
+  const raw=String(text??'');
+  const out=[];
+  // First split on real boundaries; then split each piece on commas that start a new clause.
+  for(const piece of raw.split(SENTENCE_BOUNDARY)){
+    if(!piece.trim())continue;
+    let current=piece;
+    for(;;){
+      const match=COMMA.exec(current);
+      if(!match)break;
+      const head=current.slice(0,match.index),tail=current.slice(match.index+1);
+      if(continuesVerbList(tail)){current=head+'，'+tail;break;}
+      if(head.trim())out.push(head);
+      current=tail;
+    }
+    if(current.trim())out.push(current);
+  }
+  return out;
+}
 // Path-like tokens, removed before denial matching so "src/never.js" cannot decide a clause.
 const PATH_TOKEN=/(?:[\w.\\/-]*[\\/][\w.\\/-]+|[\w-]+\.[a-z0-9]{1,8}\b)/giu;
 
@@ -236,7 +288,7 @@ export function isReadOnlyTaskRequest(request){
   // A sentence with a verb but no target states no request ("review the edits in src/a.js"
   // is a read). A sentence with a verb and a target is a request; it decides the answer.
   let sawRequest=false;
-  for(const sentence of text.split(SENTENCE_BOUNDARY)){
+  for(const sentence of splitSentences(text)){
     if(!sentence.trim())continue;
     const sentenceProse=stripPaths(sentence);
     // The gate must accept every verb the sentence scan considers. `verbProbe` covers the

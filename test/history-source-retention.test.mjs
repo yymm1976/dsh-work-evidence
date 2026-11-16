@@ -14,8 +14,11 @@ import {looksLikeSourceBody} from '../context-pruning.mjs';
 // source is a fact every caller inherits; a projection-level assertion passes whether or not
 // the rule exists, which is how the previous version of this file passed on pre-fix code.
 
+// 700 rows, not 400: TOOL_MIN_CHARS is 12,000 and the 400-row version was 7,869 characters,
+// so toolOutputDigest returned at its length check before it ever reached the source guard and
+// the assertion held with the guard removed. An adversarial review caught this.
 const sourceBody=()=>['import os','','class Widget:','    def render(self):','        return os.path.basename(__file__)','',
-  ...Array.from({length:400},(_,i)=>`    value_${i} = ${i}`)].join('\n');
+  ...Array.from({length:700},(_,i)=>`    value_${i} = ${i}`)].join('\n');
 
 // A passing `node --test` run that also printed the file it was testing. The TAP totals are
 // real, so the test-receipt branch finds everything it needs; the body is source, so it must
@@ -40,6 +43,10 @@ test('the test receipt still summarises a real check log',()=>{
 
 test('the generic tool receipt refuses a source body printed by a shell command',()=>{
   const text=sourceBody();
+  // TOOL_MIN_CHARS is 12,000. A 400-row fixture was 7,869 characters, so toolOutputDigest
+  // returned at the length check before it ever reached the source guard and the assertion
+  // held with the guard removed.
+  assert.ok(text.length>=12000,'the fixture clears TOOL_MIN_CHARS: '+text.length);
   assert.equal(looksLikeSourceBody(text),true,'the fixture is source-shaped');
   assert.equal(toolOutputDigest('pwsh',text,{seq:9,command:'cat src/widget.py'}),null,'source is never digested');
 });

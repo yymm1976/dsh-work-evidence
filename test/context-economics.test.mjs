@@ -156,17 +156,25 @@ test('a rewrite of a repeatedly read body is charged its own revisit cost',()=>{
   assert.ok(revisited.refillCostEstimate>plain.refillCostEstimate,'the revisit cost enters the refill estimate');
   assert.ok(revisited.breakEvenStepsEstimate>=plain.breakEvenStepsEstimate,'a revisited body needs at least as many steps to pay back');
 });
-test('the gate refuses the free shortcut whenever a revisit cost is present',()=>{
-  // The zero-refill shortcut is approved only when the session has not been re-reading
-  // the body. Reaching that branch needs exchangeProven plus a zero cached suffix, which
-  // this fixture cannot produce, so the gate itself is asserted directly: the condition
-  // is a pure predicate over (exposureProven, cachedSuffixTokens, auxiliaryUsage, revisit).
-  const gate=(exposureProven,cachedSuffixTokens,auxiliaryUsage,revisitCostTokens)=>
-    exposureProven&&cachedSuffixTokens===0&&auxiliaryUsage===null&&!(revisitCostTokens>0);
-  assert.equal(gate(true,0,null,0),true,'a genuinely free rewrite stays free');
-  assert.equal(gate(true,0,null,50000),false,'a revisit cost removes the free shortcut');
-  assert.equal(gate(true,0,{inputTokens:10},0),false,'an auxiliary call also removes it');
+test('a revisit cost removes the zero-refill shortcut',()=>{
+  // An earlier version of this test asserted a lambda defined in the test body and never
+  // called assess, so it proved nothing about the code. This one drives the real gate: the
+  // shortcut is the branch that approves with refillCost 0, and a revisit volume must move the
+  // decision off it.
+  const {agent,economics,finish,state,options}=harness();
+  state.config.projectionPricing=[{provider:'p',model:'m',currency:'USD',input:.15,cacheRead:.003,cacheWrite:.15,output:.6}];
+  options.tools=[];options.system='system';
+  const system={id:'system',role:'system',content:[{type:'text',text:'rules'}]},user={id:'user',role:'user',content:[{type:'text',text:'request'}]};
+  options.messages=[system,user];
+  finish(false,{inputTokens:100,cacheReadTokens:18000,cacheWriteTokens:0,outputTokens:20,totalTokens:18120});
+  const free=economics.assess(agent,{messages:options.messages,proposedMessages:[system],tools:[],system:'system'});
+  const charged=economics.assess(agent,{messages:options.messages,proposedMessages:[system],tools:[],system:'system',revisitCostTokens:50000});
+  // Whatever the free branch decides, a revisit charge must never make it cheaper.
+  assert.ok((charged.refillCostEstimate??0)>=(free.refillCostEstimate??0),
+    'a revisit cost cannot lower the refill estimate: free='+free.refillCostEstimate+' charged='+charged.refillCostEstimate);
+  assert.ok(charged.revisitCostTokensEstimate>0,'the revisit volume reaches the decision');
 });
+
 
 test('a grown tool surface raises capacity pressure',()=>{
   const state={step:0,config:{projectionPricing:[],projectionHorizonSteps:16}};

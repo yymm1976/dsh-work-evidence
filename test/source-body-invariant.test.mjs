@@ -97,8 +97,12 @@ test('an assignment-only source body is recognised without any statement shape',
 test('an unrelated named path does not disable source recognition',()=>{
   // A flat result can name a log and carry an unmarked source body after it. Retention of
   // the log is not requested, so the body itself must decide.
-  const source=Array.from({length:400},(_,i)=>`value_${i} = ${i}`).join('\n');
+  // 600 rows, not 400: the 400-row version was 6,214 characters against thresholdChars:8000,
+  // so planContextPrune returned at the length gate and the assertion held with content
+  // detection disabled. An adversarial review caught it.
+  const source=Array.from({length:600},(_,i)=>`value_${i} = ${i}`).join('\n');
   const text=`<path>run.log</path>\nsome log line\n${source}`;
+  assert.ok(text.length>=8000,'the fixture clears thresholdChars: '+text.length);
   assert.equal(looksLikeSourceBody(text),true);
   const message={role:'tool',content:[{type:'text',text}]};
   assert.equal(planContextPrune(message,[],{seq:13,thresholdChars:8000,headChars:4096,tailChars:1024,
@@ -190,4 +194,34 @@ test('a rendered line-number prefix cannot hide a source body from the classifie
   assert.equal(isSourceBody(logText),false,'a prefixed log is not source');
   assert.ok(planContextPrune({role:'tool',content:[{type:'text',text:logText}]},[],options),
     'and it is still reduced');
+});
+
+test('a mid-file window with no statement shape is still source',()=>{
+  // Found by adversarial review. A window that starts inside a function has no def/class/
+  // import line, and three ordinary shapes matched zero of the seven patterns and zero
+  // assignments, so 10-20 K characters of real Python were classified as logs:
+  //   method calls only / if-else blocks / dict literals
+  // The signal is deep consistent indentation AND code punctuation at line ends; either one
+  // alone has a false positive, which the negative controls below pin.
+  const shapes={
+    'method calls':Array.from({length:300},(_,i)=>`        self._helper_${i}(payload, retry=True)`),
+    'if-else':Array.from({length:300},(_,i)=>`        if value_${i} is not None:\n            return value_${i}`),
+    'dict literals':Array.from({length:300},(_,i)=>`        "key_${i}": compute_${i}(),`),
+  };
+  for(const [label,rows] of Object.entries(shapes)){
+    const text=rows.join('\n');
+    assert.ok(text.length>=8000,`the ${label} fixture clears thresholdChars`);
+    assert.equal(looksLikeSourceBody(text),true,`${label} is source`);
+  }
+  // Negative controls: indented text that is NOT code must stay a log.
+  const logs={
+    'indented log':Array.from({length:400},(_,i)=>`    [info] event ${i}: done`),
+    'indented yaml':Array.from({length:400},(_,i)=>`    key_${i}: value_${i}`),
+    'indented prose':Array.from({length:200},(_,i)=>`        This sentence explains step ${i}.`),
+  };
+  for(const [label,rows] of Object.entries(logs)){
+    const text=rows.join('\n');
+    assert.ok(text.length>=2000,`the ${label} fixture clears the minimum length`);
+    assert.equal(looksLikeSourceBody(text),false,`${label} stays a log`);
+  }
 });

@@ -29,6 +29,17 @@ const SOURCE_SHAPE=[
 // A body can be source that none of the shapes above describe: a generated module of
 // nothing but assignments. Density of `name = value` lines is the signal there.
 const ASSIGNMENT_LINE=/^\s*[A-Za-z_$][\w$.\[\]'"]*\s*=\s*\S/u;
+// A MID-FILE window is the case the shape list misses entirely. A window that starts inside a
+// function has no `def`/`class`/`import` line, and an adversarial review found three ordinary
+// shapes that matched zero of the seven patterns and zero assignments:
+//   method calls only   `        self._helper_12(payload, retry=True)`
+//   if/else blocks      `        if value_7 is not None:` / `            return value_7`
+//   dict literals       `        "key_7": compute_7(),`
+// All three are 10-20 K characters of real Python and were classified as logs, so their
+// middles were prunable. Code has two signals logs do not: deep, consistent indentation, and
+// a high density of code punctuation at line ends.
+const CODE_INDENT=/^(?: {4,}|\t+)\S/u;
+const CODE_PUNCTUATION=/[;:,)}\]>]$/u;
 /** Does this body look like source code regardless of where it came from? */
 export function looksLikeSourceBody(text){
   const body=String(text??'');
@@ -40,7 +51,13 @@ export function looksLikeSourceBody(text){
   const lines=body.split(/\r?\n/u).filter(line=>line.trim());
   if(lines.length<40)return false;
   const assignments=lines.filter(line=>ASSIGNMENT_LINE.test(line)).length;
-  return assignments/lines.length>=0.5;
+  if(assignments/lines.length>=0.5)return true;
+  // The mid-file window. Two independent signals must agree, because either one alone has a
+  // false positive: a wrapped prose paragraph can be deeply indented, and a log line can end
+  // in `:`. Requiring both keeps ticket logs and listings out.
+  const indented=lines.filter(line=>CODE_INDENT.test(line)).length;
+  const punctuated=lines.filter(line=>CODE_PUNCTUATION.test(line.trim())).length;
+  return indented/lines.length>=0.5&&punctuated/lines.length>=0.5;
 }
 
 /**

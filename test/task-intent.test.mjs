@@ -149,3 +149,15 @@ test('task intent: a named execution tool survives a denied write',()=>{
   // An explicit read-only marker still wins over an execution tool mention.
   assert.equal(isReadOnlyTaskRequest('Read-only: do not modify src/a.js. Use work_exec to run the tests.'),true);
 });
+
+test('task intent: a comma clause with its own object starts a new decision',()=>{
+  // Found by adversarial review and the most damaging defect of the session: with the comma
+  // inside the sentence, the denial governed the second clause too, the task classified
+  // read-only, and the host really did strip work_exec from the tool schema.
+  assert.equal(isReadOnlyTaskRequest('Do not touch the config, update src/a.js.'),false);
+  assert.equal(isReadOnlyTaskRequest('不要动配置，修改 src/a.js。'),false);
+  // A comma list WITHOUT a conjunction still inherits the denial, because each verb is bare.
+  assert.equal(isReadOnlyTaskRequest('Read-only: do not modify, create, or delete src/a.js.'),true);
+  // A comma list WITH an explicit conjunction is coordinate: the denial covers every verb.
+  assert.equal(isReadOnlyTaskRequest('Read-only: 不要修改 src/a.js，或者创建 src/b.js'),true);
+});
