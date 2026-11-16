@@ -333,14 +333,15 @@ function payloadFor(current,review,root){
     let changes=events.filter(event=>event.seq>request.seq&&event.seq<=artifact.seq).map(event=>({event,call:fileCall(event)}))
       .filter(({call})=>FILE_WRITES.has(call?.name)&&filePaths(call).some(file=>fileKey(file)===key));
     // A verified_exec create inserts the implementation just as a write does, so it
-    // belongs in the prioritized pass too; only the file-writing `write` trimmed the
-    // history after it. Without this the create was dropped and a later small edit
-    // survived alone, leaving the review with no implementation body.
-    const inserts=call=>call?.name==='write'
-      ||(call?.name==='verified_exec'&&(call.args?.edits??[]).some(edit=>typeof edit?.content==='string'));
-    const overwrite=changes.findLastIndex(({call})=>inserts(call));
+    // belongs in the prioritized pass too. The create must target THIS artifact: one
+    // call can replace a line in A and create B, and treating the call as an insertion
+    // for both would trim A's earlier full write and leave only a fragment.
+    const inserts=(call,forKey)=>call?.name==='write'
+      ||(call?.name==='verified_exec'&&(call.args?.edits??[]).some(edit=>typeof edit?.content==='string'
+        &&fileKey(edit?.file??edit?.path??edit?.file_path??'')===forKey));
+    const overwrite=changes.findLastIndex(({call})=>inserts(call,key));
     if(overwrite>=0)changes=changes.slice(overwrite);
-    for(const {event,call}of changes.filter(({call})=>checkArtifacts.includes(artifact)||inserts(call))){
+    for(const {event,call}of changes.filter(({call})=>checkArtifacts.includes(artifact)||inserts(call,key))){
       if(sourceChanges.has(event.seq))continue;
       reserveChange(event);
     }

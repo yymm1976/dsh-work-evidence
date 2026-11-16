@@ -344,11 +344,16 @@ export function createEffectObserver(ctx,runtime){
         }
       }
       // Decisions recorded after the last main request was assembled have no request row
-      // to carry them. Persist them before the in-memory state is dropped.
+      // to carry them. Persist them before the in-memory state is dropped — but only
+      // discard them once the append succeeded, and only then delete the state; a
+      // failed write leaves both in place so nothing recorded after the last request is
+      // lost silently.
       if(state.pendingDecisions.length){
-        const decisions=state.pendingDecisions.splice(0);
-        await queue(state,agent,{schema:'work-evidence.pending-decisions.v1',sessionId:agent.session.id,
+        const decisions=state.pendingDecisions.slice();
+        const written=await queue(state,agent,{schema:'work-evidence.pending-decisions.v1',sessionId:agent.session.id,
           at:new Date().toISOString(),step:runtime.get(agent).step,decisions});
+        if(!written)return;
+        state.pendingDecisions.splice(0,decisions.length);
       }
       nativeAttempts.delete(agent);states.delete(agent.session.id);
     },async dispose(){

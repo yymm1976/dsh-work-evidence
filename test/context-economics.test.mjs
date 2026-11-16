@@ -265,3 +265,16 @@ test('an error and its successful retry count one cache drop, not two',()=>{
   assert.equal(summary.cacheResetCount,1,'one drop is one reset');
   assert.equal(summary.uncachedInputAtReset,6000,'and the uncached input is counted once');
 });
+
+test('a failed first attempt with usage cannot crash the retry on a missing baseline',()=>{
+  const {agent,economics,finish,options}=harness();
+  // A failed first attempt reports positive usage, so resetPrevious exists while
+  // state.last stays null (the baseline only takes successful attempts). The retry
+  // then reaches the reset branch and used to dereference previous.reasoningEffort.
+  economics.requestFinished(agent,options,{usage:{inputTokens:1000,cacheReadTokens:5000,cacheWriteTokens:0,outputTokens:100,totalTokens:6100},
+    settled:true,finishReason:'error',failureCode:'SERVER',usageConsistent:true,usageComplete:true});
+  assert.doesNotThrow(()=>finish(false,{inputTokens:6000,cacheReadTokens:0,cacheWriteTokens:0,outputTokens:100,totalTokens:6100}),
+    'the retry must not throw on a null baseline');
+  // The drop is still counted: the reset only needs the previous measured attempt.
+  assert.equal(economics.summary(agent).cacheResetCount,1);
+});
