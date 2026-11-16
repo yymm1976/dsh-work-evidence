@@ -55,7 +55,7 @@ export function createEffectObserver(ctx,runtime){
   const states=new Map();
   const nativeAttempts=new WeakMap();
   const storageFor=agent=>{const s=runtime.get(agent);return s.telemetryDir===undefined?s.dir:s.telemetryDir;};
-  const get=agent=>{let state=states.get(agent.session.id);if(!state){state={features:Object.create(null),effects:new Map(),decisions:[],pendingDecisions:[],pendingOverflow:[],decisionSeq:0,overflowWriting:false,overflowQueue:Promise.resolve(),recentRequests:[],requests:0,mainRequests:0,auxiliaryRequests:0,compactionRequests:0,completeUsageRequests:0,missingUsage:0,unknownConsumption:0,reported:{inputTokens:0,cacheReadTokens:0,cacheWriteTokens:0,outputTokens:0,totalTokens:0},rawReported:{inputTokens:0,cacheReadTokens:0,cacheWriteTokens:0,outputTokens:0,totalTokens:0},totals:{directTokensEstimate:0,directChars:0,instructionTokensEstimate:0,systemTokensEstimate:0,messageTokensEstimate:0,toolSchemaTokensEstimate:0,requestReconstructionMisses:0},queue:Promise.resolve(),writeErrors:[],effectBytes:0,loaded:false,snippets:new Map(),needsLeadingNewline:new Set()};states.set(agent.session.id,state);}return state;};
+  const get=agent=>{let state=states.get(agent.session.id);if(!state){state={agent,features:Object.create(null),effects:new Map(),decisions:[],pendingDecisions:[],pendingOverflow:[],decisionSeq:0,overflowWriting:false,overflowQueue:Promise.resolve(),recentRequests:[],requests:0,mainRequests:0,auxiliaryRequests:0,compactionRequests:0,completeUsageRequests:0,missingUsage:0,unknownConsumption:0,reported:{inputTokens:0,cacheReadTokens:0,cacheWriteTokens:0,outputTokens:0,totalTokens:0},rawReported:{inputTokens:0,cacheReadTokens:0,cacheWriteTokens:0,outputTokens:0,totalTokens:0},totals:{directTokensEstimate:0,directChars:0,instructionTokensEstimate:0,systemTokensEstimate:0,messageTokensEstimate:0,toolSchemaTokensEstimate:0,requestReconstructionMisses:0},queue:Promise.resolve(),writeErrors:[],effectBytes:0,loaded:false,snippets:new Map(),needsLeadingNewline:new Set()};states.set(agent.session.id,state);}return state;};
   function feature(state,name){return state.features[name]??=( {decisions:0,applied:0,deferred:0,notApplicable:0,unavailable:0,failed:0,requestsAffected:0,directTokensEstimate:0,directChars:0,reasons:Object.create(null)} );}
   function decide(agent,name,status,reason,details={}){
     const state=get(agent),item=feature(state,name),at=new Date().toISOString(),step=runtime.get(agent).step,seq=++state.decisionSeq;
@@ -380,15 +380,21 @@ export function createEffectObserver(ctx,runtime){
     },async dispose(){
       for(const stop of [unsubscribe,unsubscribeStreams])if(typeof stop==='function')stop();
       // An unload with live sessions must not discard records that never reached disk.
-      // Every state is flushed first; only then is the memory released.
+      // The flush uses the state's own agent, not a synthetic one: storageFor() resolves
+      // the telemetry directory through runtime.get(agent), so a fabricated agent has no
+      // directory and queue() would silently fail, losing exactly what this keeps.
       await Promise.allSettled([...states.entries()].map(async([id,state])=>{
         await state.overflowQueue;await state.queue;
-        if(state.pendingDecisions.length||state.pendingOverflow.length){
+        const agent=state.agent;
+        if(agent&&(state.pendingDecisions.length||state.pendingOverflow.length)){
           const pending=[...state.pendingOverflow,...state.pendingDecisions];
-          state.pendingOverflow=[];state.pendingDecisions=[];
-          const agent={session:{id}};
-          try{await queue(state,agent,{schema:'work-evidence.pending-decisions.v1',sessionId:id,
-            at:new Date().toISOString(),step:0,decisions:pending});}catch{}
+          const decisions=pending.slice();
+          let ok=false;
+          try{ok=await queue(state,agent,{schema:'work-evidence.pending-decisions.v1',sessionId:id,
+            at:new Date().toISOString(),step:0,decisions});}catch{ok=false;}
+          if(ok){const ids=new Set(decisions.map(item=>item?.id));
+            state.pendingOverflow=state.pendingOverflow.filter(item=>!ids.has(item?.id));
+            state.pendingDecisions=state.pendingDecisions.filter(item=>!ids.has(item?.id));}
         }
       }));
       states.clear();}};

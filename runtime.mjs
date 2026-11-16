@@ -334,11 +334,31 @@ export function createRuntime(ctx,call,initial={}){
     // receipt must not hide that error (including failed batch items).
     return {status:value?.status||value?.data?.status||null,data:data&&typeof data==='object'?data:{},error:value?.error||value?.data?.error||null};
   }
+  // A tool record can carry the filesystem's realpath while the workspace root can be
+  // reached through a symlink or junction, so the lexical resolution alone would key the
+  // two differently. Both sides resolve the realpath first and fall back to the lexical
+  // form for a path that does not exist yet; the cache keeps this off the hot path.
+  const realRootCache=new Map();
+  const realKeyOf=full=>{
+    if(realRootCache.has(full))return realRootCache.get(full);
+    let key=process.platform==='win32'?full.toLowerCase():full;
+    try{const real=fs.realpathSync.native(full);key=process.platform==='win32'?real.toLowerCase():real;}catch{/* not on disk: keep the lexical key */}
+    realRootCache.set(full,key);
+    return key;
+  };
   function ledgerPath(s,value){
     if(typeof value!=='string'||!value.trim()||!s.root)return null;
-    const full=path.resolve(s.root,value),relative=path.relative(s.root,full);
-    if(relative==='..'||relative.startsWith('..'+path.sep)||path.isAbsolute(relative))return null;
-    return {full,display:relative.replaceAll('\\','/')||'.',key:process.platform==='win32'?full.toLowerCase():full};
+    const full=path.resolve(s.root,value);
+    // The containment check uses the realpath of the root as well, so a record that
+    // arrives through a symlinked root is still recognised as inside the workspace.
+    const realRoot=realKeyOf(path.resolve(s.root)),key=realKeyOf(full);
+    const relativeToReal=path.relative(realRoot,key);
+    if(relativeToReal==='..'||relativeToReal.startsWith('..'+path.sep)||path.isAbsolute(relativeToReal)){
+      const lexical=path.relative(s.root,full);
+      if(lexical==='..'||lexical.startsWith('..'+path.sep)||path.isAbsolute(lexical))return null;
+      return {full,display:lexical.replaceAll('\\','/')||'.',key};
+    }
+    return {full,display:relativeToReal.replaceAll('\\','/')||'.',key};
   }
   function boundedPush(list,value,max){list.push(value);if(list.length>max)list.splice(0,list.length-max);}
   function markStateStale(s,files=[]){
@@ -653,7 +673,14 @@ export function createRuntime(ctx,call,initial={}){
         // unavailable record land in neither set, so they leave the obligation in
         // place instead of clearing it — the previous fallback cleared any file when
         // the record sets were empty, which is exactly the no-delivery case.
-        if(deliveredKeys.has(requested.key)||emptyKeys.has(requested.key))s.pendingRevisit.delete(requested.key);
+        if(!deliveredKeys.has(requested.key)&&!emptyKeys.has(requested.key))continue;
+        // The same ordering rule the native read branch applies: a read dispatched
+        // before the write can return after it, and coverage alone would let that body
+        // discharge the obligation it predates.
+        const pending=s.pendingRevisit.get(requested.key);
+        const issuedAt=Number.isInteger(exec.issuedStep)?exec.issuedStep:null;
+        if(pending&&(issuedAt===null||issuedAt<=Number(pending.atStep)))continue;
+        s.pendingRevisit.delete(requested.key);
       }
     }
     if(['grep','glob'].includes(exec.name)){
