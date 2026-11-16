@@ -47,6 +47,22 @@ export function looksLikeSourceBody(text){
   let hits=0;
   for(const pattern of SOURCE_SHAPE)if(pattern.test(body))hits++;
   if(hits>=2)return true;
+  // Configuration is source too, and a COMPACT document defeats every line-based rule below:
+  // one 13,390-character line with no indentation and no assignments. This check has to come
+  // before the line-count gate, because that gate rejects a one-line body outright.
+  //
+  // A shell result is ALSO valid JSON — its envelope is `{stdout:{text},stderr:{text}}` — so a
+  // bare parse would classify every shell output as configuration and disable the receipt
+  // branch. The transport envelope is excluded by its own keys.
+  const trimmed=body.trim();
+  if((trimmed.startsWith('{')&&trimmed.endsWith('}'))||(trimmed.startsWith('[')&&trimmed.endsWith(']'))){
+    try{
+      const parsed=JSON.parse(trimmed);
+      const transport=parsed&&typeof parsed==='object'&&!Array.isArray(parsed)&&
+        ('stdout' in parsed||'stderr' in parsed)&&!('scripts' in parsed)&&!('dependencies' in parsed);
+      if(!transport)return true;
+    }catch{/* not a JSON document */}
+  }
   // Fall back to assignment density: at least half of the non-empty lines assign.
   const lines=body.split(/\r?\n/u).filter(line=>line.trim());
   if(lines.length<40)return false;
@@ -57,7 +73,8 @@ export function looksLikeSourceBody(text){
   // in `:`. Requiring both keeps ticket logs and listings out.
   const indented=lines.filter(line=>CODE_INDENT.test(line)).length;
   const punctuated=lines.filter(line=>CODE_PUNCTUATION.test(line.trim())).length;
-  return indented/lines.length>=0.5&&punctuated/lines.length>=0.5;
+  if(indented/lines.length>=0.5&&punctuated/lines.length>=0.5)return true;
+  return false;
 }
 
 /**
@@ -78,6 +95,10 @@ export function isSourceBody(text){
   // path anywhere in a compound result keeps the whole result. Only the absence of any
   // source path leaves the body itself as the remaining evidence.
   if(looksLikeSourceBody(body))return true;
+  // A read result wraps the document in `<path>`/`<content>` markup, so the JSON check inside
+  // looksLikeSourceBody never sees a `{` at the start. Ask once on the unwrapped text.
+  const content=/<content>\n?([\s\S]*?)\n?<\/content>/u.exec(body)?.[1];
+  if(content&&looksLikeSourceBody(content))return true;
   // A native read or `run_code` renders `N: row`, `N | row` or `N\trow`, and every shape
   // detector anchors on a line start, so a real source body with rendered line numbers reads
   // as a log. Measured: a 400-line Python module behind `.txt` markup and `N | ` prefixes was

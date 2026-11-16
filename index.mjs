@@ -271,17 +271,26 @@ export function apply(ctx,config={}){
           const message=event.data?.message;
           if(!message||message.isError)continue;
           const text=(message.content??[]).filter(block=>block?.type==='text').map(block=>block.text??'').join('');
-          const pathMatch=/<path>([^<]+)<\/path>/.exec(text);
-          if(!pathMatch)continue;
-          // The end-of-file marker only says this window reached the end; a tail read
-          // with offset 900 prints it too. Treating that as a complete body would let a
-          // tail supersede the full read and then lose the middle. Line 1 must be present,
-          // unless the producer states completeness explicitly.
-          const eofMarker=/\(End of file - total \d+ lines\)/.test(text);
-          const startsAtLineOne=/(?:^|\n)1: /.test(text);
-          const complete=(eofMarker&&startsAtLineOne)||/<content complete="true"/.test(text);
-          if(!complete)continue;
-          latest.set(sourceKey(agent,pathMatch[1]),event.seq);
+          // Each window is judged on ITS OWN text. A compound result can print a tail window
+          // for a.mjs and then a complete b.mjs window; taking the first `<path>` and then
+          // scanning the whole text for markers credited a.mjs with b.mjs's line 1 and EOF
+          // marker, so an incomplete a.mjs body looked superseded and its earlier full read
+          // became prunable. Splitting on the `<path>` boundary keeps each window's evidence
+          // with its own path.
+          const windows=text.split(/(?=<path>)/u).filter(part=>part.includes('<path>'));
+          for(const window of windows){
+            const pathMatch=/<path>([^<]+)<\/path>/u.exec(window);
+            if(!pathMatch)continue;
+            // The end-of-file marker only says this window reached the end; a tail read with
+            // offset 900 prints it too. Treating that as a complete body would let a tail
+            // supersede the full read and then lose the middle. Line 1 must be present in the
+            // SAME window, unless the producer states completeness explicitly.
+            const eofMarker=/\(End of file - total \d+ lines\)/u.test(window);
+            const startsAtLineOne=/(?:^|\n)1: /u.test(window);
+            const complete=(eofMarker&&startsAtLineOne)||/<content complete="true"/u.test(window);
+            if(!complete)continue;
+            latest.set(sourceKey(agent,pathMatch[1]),event.seq);
+          }
         }
       },
     });

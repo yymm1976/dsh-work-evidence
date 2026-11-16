@@ -225,3 +225,21 @@ test('a mid-file window with no statement shape is still source',()=>{
     assert.equal(looksLikeSourceBody(text),false,`${label} stays a log`);
   }
 });
+
+test('a compact JSON document is source, and a shell envelope is not',()=>{
+  // Review found that a large pretty-printed JSON has no statement lines and no assignments,
+  // so `bash cat package.json` could have its middle replaced by a receipt. A COMPACT document
+  // is worse: one 13,390-character line, which the line-count gate rejected outright.
+  const compact=JSON.stringify({deps:Object.fromEntries(Array.from({length:800},(_,i)=>[`dep${i}`,`1.${i}`]))});
+  assert.ok(compact.length>=8000,'the fixture clears thresholdChars');
+  assert.equal(looksLikeSourceBody(compact),true,'a compact JSON document is source');
+  assert.equal(isSourceBody(compact),true);
+  assert.equal(isSourceBody(`<path>build.log</path>\n<content>\n${compact}\n</content>`),true,
+    'and a non-source name does not change that');
+  // The negative control that matters: a shell envelope is also valid JSON, so a bare parse
+  // would have classified every shell result as configuration and disabled the receipt branch.
+  const envelope=JSON.stringify({stdout:{text:'build step 1 ok'},stderr:{text:''}});
+  assert.equal(isSourceBody(envelope),false,'the transport envelope is not configuration');
+  // And prose wrapped in braces must not parse.
+  assert.equal(looksLikeSourceBody('{'+'this is prose, not json. '.repeat(500)+'}'),false);
+});

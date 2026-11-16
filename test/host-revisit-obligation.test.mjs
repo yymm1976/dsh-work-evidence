@@ -29,7 +29,10 @@ async function withHost(body){
     const agent=await host.createAgent('max');
     return await body({answers,
       command:action=>host.command(agent,action),send:message=>host.send(agent,message),
-      body:()=>host.requests.map(requestText).join('\n')});
+      body:()=>host.requests.map(requestText).join('\n'),
+      // The last request on its own. The joined transcript cannot tell "emitted once" from
+      // "emitted N times and carried forward", which is the question review asked twice.
+      lastRequest:()=>host.requests.length?requestText(host.requests.at(-1)):''});
   }finally{await host.close();}
 }
 const writeAtFour=answers=>{
@@ -38,7 +41,7 @@ const writeAtFour=answers=>{
 };
 
 test('a written file that is never read back gets one reminder that names it',async()=>{
-  await withHost(async({answers,send,body,command})=>{
+  await withHost(async({answers,send,body,command,lastRequest})=>{
     writeAtFour(answers);
     await send('处理 a.txt');
     await send('继续。');
@@ -60,14 +63,15 @@ test('a written file that is never read back gets one reminder that names it',as
     // would have forced the stale-state notice to be suppressed to pass, which is a
     // capability loss, not a fix.
     assert.equal(detail.counts.stateNotices,2,'the stale-state notice and the revisit reminder are emitted');
-    // The whole transcript contains a.txt in the user request and in the write arguments,
-    // so a bare includes() would pass even if the reminder omitted the file. Anchor on the
-    // reminder text itself.
-    const text=body();
-    const reminders=[...text.matchAll(new RegExp(REMINDER,'gu'))];
-    assert.equal(reminders.length,1,'the revisit reminder appears exactly once in the transcript');
+    // Count where the reminder is DELIVERED, not across the joined transcript. `body()` joins
+    // every request, so it cannot tell "emitted once" from "emitted N times and carried
+    // forward" — the exact question review asked twice. The final request is the one the last
+    // turn was built from, and it must contain the reminder exactly once.
+    const last=lastRequest();
+    const reminders=[...last.matchAll(new RegExp(REMINDER,'gu'))];
+    assert.equal(reminders.length,1,'the revisit reminder reaches the last request exactly once');
     const from=reminders[0].index;
-    const clause=text.slice(from,from+240);
+    const clause=last.slice(from,from+240);
     assert.match(clause,/a\.txt/u,'the reminder itself names the changed file');
   });
 });

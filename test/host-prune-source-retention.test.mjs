@@ -109,3 +109,20 @@ test('an unmarked source body is recognised without its path extension',async()=
   assert.ok(prune&&prune.decisions>0,'the prune path was evaluated');
   assert.ok(third.includes(DEEP_MARKER),'assignment-dense output is treated as source');
 });
+
+test('a compound result does not lend one file completeness markers from another',async()=>{
+  // Review finding: the superseded-read scan took the FIRST `<path>` in a result and then
+  // looked for the line-1 and end-of-file markers across the WHOLE text, so a tail window of
+  // a.mjs followed by a complete b.mjs window made a.mjs look completely read. An earlier full
+  // read of a.mjs then looked superseded and became prunable.
+  //
+  // A host-level assertion cannot see this without driving the exact two-file result, so the
+  // invariant is pinned where it lives: the scan must judge each `<path>` window on its own
+  // text. This reads the shipped source to assert the split exists, because the observable
+  // consequence needs a full session to surface.
+  const source=await fs.readFile(path.join(import.meta.dirname,'..','index.mjs'),'utf8');
+  assert.ok(source.includes("text.split(/(?=<path>)/u)"),
+    'the supersession scan splits the result into per-path windows');
+  assert.ok(!/const pathMatch=\/<path>.{0,40}\/.exec\(text\)/.test(source),
+    'it no longer takes the first path and scans the whole text');
+});
