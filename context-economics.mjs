@@ -26,7 +26,14 @@ export function canonicalUsage(raw){
   const sumKeys=['inputTokens','cacheReadTokens','cacheWriteTokens','outputTokens'];
   let complete=sumKeys.every(key=>usage[key]!==null);
   const sum=complete?sumCounts(sumKeys.map(key=>usage[key])):null;
-  const consistent=!Object.values(sources).includes('invalid-adapter-value')&&(!complete||sum!==null&&(usage.totalTokens===null||sum===usage.totalTokens));
+  // A reported total cannot be smaller than the fields already known, even when the
+  // usage is incomplete: nonnegative output could never make input+cache+output equal a
+  // smaller total. Accepting that contradiction fed a 6000-token prompt into the totals
+  // and advanced projection reviews on impossible data.
+  const knownSubtotal=sumCounts([usage.inputTokens??0,usage.cacheReadTokens??0,usage.cacheWriteTokens??0,...(usage.outputTokens===null?[]:[usage.outputTokens])]);
+  const totalContradicts=usage.totalTokens!==null&&knownSubtotal!==null&&usage.totalTokens<knownSubtotal;
+  const consistent=!Object.values(sources).includes('invalid-adapter-value')&&!totalContradicts&&
+    (!complete||sum!==null&&(usage.totalTokens===null||sum===usage.totalTokens));
   if(complete&&sum!==null&&sources.totalTokens==='missing'){usage.totalTokens=sum;sources.totalTokens='sum-of-reported-disjoint-fields';}
   complete=complete&&consistent;
   return {usage,sources,consistent,complete,method:'disjoint-adapter-usage; omitted-zero-cache-fields require exact total equality'};

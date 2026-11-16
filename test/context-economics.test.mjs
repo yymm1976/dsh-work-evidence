@@ -278,3 +278,15 @@ test('a failed first attempt with usage cannot crash the retry on a missing base
   // The drop is still counted: the reset only needs the previous measured attempt.
   assert.equal(economics.summary(agent).cacheResetCount,1);
 });
+
+test('a reported total below the known fields is inconsistent, not a valid prompt size',()=>{
+  // inputTokens 6000 with zero cache and a total of 100 cannot be a real observation:
+  // nonnegative output could not make the fields sum to 100. Accepting it fed a 6000-token
+  // prompt into the totals and advanced projection reviews on impossible data.
+  const bad=canonicalUsage({inputTokens:6000,cacheReadTokens:0,cacheWriteTokens:0,totalTokens:100});
+  assert.equal(bad.consistent,false,'the total contradicts the known fields');
+  assert.equal(bad.complete,false);
+  // A total at or above the known subtotal stays acceptable when output is missing.
+  const plausible=canonicalUsage({inputTokens:6000,cacheReadTokens:0,cacheWriteTokens:0,totalTokens:6100});
+  assert.equal(plausible.consistent,true);
+});

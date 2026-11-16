@@ -375,10 +375,11 @@ export function createEffectObserver(ctx,runtime){
         const writtenIds=new Set(decisions.map(item=>item?.id));
         state.pendingDecisions=state.pendingDecisions.filter(item=>!writtenIds.has(item?.id));
       }
-      // The overflowed decisions are the same kind of unpersisted record: if their
-      // append failed and the queue is still non-empty, keep the state rather than
-      // deleting it and dropping them with it.
-      if(state.pendingOverflow.length)return;
+      // The overflowed decisions are the same kind of unpersisted record, and decisions
+      // can arrive while these appends are in flight. Both are checked after the flush:
+      // deleting the state with either still non-empty would drop records that never
+      // reached disk.
+      if(state.pendingOverflow.length||state.pendingDecisions.length)return;
       nativeAttempts.delete(agent);states.delete(agent.session.id);
     },async dispose(){
       for(const stop of [unsubscribe,unsubscribeStreams])if(typeof stop==='function')stop();
@@ -400,5 +401,10 @@ export function createEffectObserver(ctx,runtime){
             state.pendingDecisions=state.pendingDecisions.filter(item=>!ids.has(item?.id));}
         }
       }));
-      states.clear();}};
+      // The map is cleared only after every state either persisted or was given its
+      // chance: a failed append keeps its decisions on the state object, and clearing the
+      // map here is what discards them. States that still hold unpersisted records are
+      // kept so a later dispose attempt can retry them.
+      const remaining=[...states.entries()].filter(([,state])=>state.pendingOverflow.length||state.pendingDecisions.length);
+      if(!remaining.length)states.clear();}};
 }

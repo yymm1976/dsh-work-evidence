@@ -136,7 +136,10 @@ export function createFeatureControl(ctx,runtime,{available,canRecall,workingSet
         // fallback cannot price at all. swEviction folds repeated bodies through
         // the same `decision.allowed` check in context-window.mjs.
         if(['historyHygiene','contextPrune','contextProtocol','requestProjection','swEviction','stubSummary'].includes(key)){
-          const price=contextEconomics?.pricingFor?.(agent);
+          // Price the route this snapshot REPORTS, not the header's: after a model switch
+          // the two differ, and a readiness line could claim a priced route while the
+          // displayed model is unpriced (or the reverse).
+          const price=contextEconomics?.pricingFor?.(agent,selection??undefined);
           if(!price)reasons.push('route-price-unavailable:uses-published-deepseek-v4.1-flash');
         }
         if(['nativeProgramReuse','structuredCalls'].includes(key)&&!ptc)reasons.push('requires-ptc-tool-mode');
