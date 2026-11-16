@@ -192,14 +192,6 @@ export function apply(ctx,config={}){
   const evidenceViews=createEvidenceViews(ctx,runtime);
   const contextWindow=createContextWindow(ctx,runtime);contextWindow.observe();
   const observationLedger=createObservationLedger(ctx,runtime,nativeFiles);observationLedger.observe();
-  ctx.on('tools/execute',async(exec,next)=>{
-    // Capture before any tool can complete. Ledger hooks that later await routing or
-    // receipts must not accidentally read a later mutation as this read's dispatch state.
-    if(exec?.agent&&['read','project_evidence'].includes(exec.name)&&!Number.isSafeInteger(exec.mutationCountAtDispatch)){
-      try{exec.mutationCountAtDispatch=observationLedger.mutationCount(exec.agent);}catch{}
-    }
-    return next();
-  },{prepend:true});
   const historyCoordinator=createHistoryCoordinator(runtime,contextWindow,contextEconomics);runtime.historyCoordinator=historyCoordinator;
   const clearPluginState=agent=>{observationLedger.clear(agent);contextWindow.clear(agent);finalJson.clear(agent);handoffDelivery.clear(agent);};
   const routeRead=createReadRouting(ctx,runtime,call,nativeFiles);
@@ -359,14 +351,14 @@ export function apply(ctx,config={}){
     });
   });
   const isReadOnlyRequest=request=>{
-    const readOnly=/(?:只读|read[- ]only)|(?:不得|不要|禁止|不允许|不可|do not|don't|never|must not|mustn't|may not|mayn't|should not|shouldn't|shall not|shan't|cannot|can't).{0,24}(?:修改|创建|写入|编辑|删除|modify|create|write|edit|delete)/iu.test(request);
+    const readOnly=/(?:只读|read[- ]only)|(?:不得|不要|不能|不可|无需|不必|不准|禁止|不允许|不应|请勿|勿|do not|don't|never|must not|mustn't|may not|mayn't|should not|shouldn't|shall not|shan't|cannot|can't|won't|wouldn't|would not|will not|need not|needn't).{0,24}(?:修改|修复|实现|编写|重构|创建|编辑|写入|增加|更新|添加|新增|更改|移除|删除|替换|重写|修补|重命名|modify|fix|implement|write|edit|create|delete|replace|update|add|change|refactor|remove|rename|patch)/iu.test(request);
     if(!readOnly)return false;
-    const writeVerb=/(?:修改|修复|实现|编写|重构|创建|编辑|写入|增加|删除|替换|重写|改|modify|fix|implement|write|edit|create|delete|replace)/iu;
-    const deniedWrite=/(?:不得|不要|禁止|不允许|不可|无需|不必|do not|don't|never|must not|mustn't|may not|mayn't|should not|shouldn't|shall not|shan't|cannot|can't)/iu;
+    const writeVerb=/(?:修改|修复|实现|编写|重构|创建|编辑|写入|增加|更新|添加|新增|更改|移除|删除|替换|重写|修补|重命名|改|modify|fix|implement|write|edit|create|delete|replace|update|add|change|refactor|remove|rename|patch)/iu;
+    const deniedWrite=/(?:不得|不要|不能|不可|无需|不必|不准|禁止|不允许|不应|请勿|勿|do not|don't|never|must not|mustn't|may not|mayn't|should not|shouldn't|shall not|shan't|cannot|can't|won't|wouldn't|would not|will not|need not|needn't)/iu;
     // An allowance word must be its own token: in "src/can-edit.js" the `can` is part
     // of a filename, not permission to write, and reading it as permission turned an
     // explicit denial into a writable task.
-    const allowedAfterDenial=/(?:^|[^A-Za-z0-9_-])(?:但|但是|不过|然而|而是|需要|允许|可以|请|必须|应当|instead|however|but|should|must|can|may)(?![A-Za-z0-9_-]).{0,40}(?:(?:修改|修复|实现|编写|重构|创建|编辑|写入|增加|删除|替换|重写|改(?!动|变))|(?:modify|fix|implement|write|edit|create|delete|replace)\b)/iu;
+    const allowedAfterDenial=/(?:^|[^A-Za-z0-9_-])(?:但|但是|不过|然而|而是|需要|允许|可以|请|必须|应当|instead|however|but|should|must|can|may)(?![A-Za-z0-9_-]).{0,40}(?:(?:修改|修复|实现|编写|重构|创建|编辑|写入|增加|更新|添加|新增|更改|移除|删除|替换|重写|修补|重命名|改(?!动|变))|(?:modify|fix|implement|write|edit|create|delete|replace|update|add|change|refactor|remove|rename|patch)\b)/iu;
     // A sentence can mention an edit without asking for one: "review the edits in
     // src/a.js" is a read, because "edits" is the object of "review". The English
     // verbs are therefore matched in base form only (\b so "edits"/"edited" do not
@@ -376,7 +368,7 @@ export function apply(ctx,config={}){
     // case-sensitive test accepts an ALL-CAPS name: "create README" is a request,
     // "the edits" is a description. It has to be a separate pattern because the main
     // one is /iu, where [A-Z] would also match lowercase words like "edits".
-    const writeRequest=/(?:^|[，,、：:\s])(?:[^。；;\n]{0,8})?(?:(?:修改|修复|实现|编写|重构|创建|编辑|写入|增加|删除|替换|重写|改(?!动|变))|(?:modify|fix|implement|write|edit|create|delete|replace)\b)[^。；;\n]{0,16}(?:[\w./\\-]+\.[a-z0-9]{1,8}\b|[\w-]*\/[\w.-]+|文件|代码|函数|方法|类|模块|程序|脚本|实现|逻辑|配置|file|code|function|method|class|module|program|script|config)/iu;
+    const writeRequest=/(?:^|[，,、：:\s])(?:[^。；;\n]{0,8})?(?:(?:修改|修复|实现|编写|重构|创建|编辑|写入|增加|更新|添加|新增|更改|移除|删除|替换|重写|修补|重命名|改(?!动|变))|(?:modify|fix|implement|write|edit|create|delete|replace|update|add|change|refactor|remove|rename|patch)\b)[^。；;\n]{0,16}(?:[\w./\\-]+\.[a-z0-9]{1,8}\b|[\w-]*\/[\w.-]+|文件|代码|函数|方法|类|模块|程序|脚本|实现|逻辑|配置|file|code|function|method|class|module|program|script|config)/iu;
     // The ALL-CAPS variant is a separate case-sensitive pattern: the main one is /iu,
     // where [A-Z] would also match lowercase words like "edits". Its English verbs are
     // spelled as explicit letter classes because without the /i flag a plain `create`
@@ -384,32 +376,28 @@ export function apply(ctx,config={}){
     // alternatives only: a CJK verb is a non-word character, so a trailing \b would
     // only match when an ASCII letter follows immediately, and Chinese text normally
     // puts a space before an ASCII name ("创建 README").
-    const upperCaseTarget=/(?:^|[，,、：:\s])(?:[^。；;\n]{0,8})?(?:(?:修改|修复|实现|编写|重构|创建|编辑|写入|增加|删除|替换|重写|改(?!动|变))|[Mm]odify\b|[Ff]ix\b|[Ii]mplement\b|[Ww]rite\b|[Ee]dit\b|[Cc]reate\b|[Dd]elete\b|[Rr]eplace\b)[^。；;\n]{0,16}[A-Z][A-Z0-9_-]{1,30}\b/u;
-    // A denial governs only its own coordinate clause. Splitting just on sentence ends
-    // made "Modify a.js, but do not delete b.js" look wholly denied; splitting on every
-    // comma would instead detach the target from "Do not modify src/a.js". Keep comma
-    // boundaries only where a following conjunction introduces a new write decision.
-    const clauses=[];
-    for(const sentence of request.split(/[。；;\n]|\.(?=\s+[A-Z])/u)){
-      let start=0;
-      for(const match of sentence.matchAll(/(?:^|[，,])\s*(?:但(?:是)?|不过|然而|而是|instead|however|but)(?=\s|[\u4e00-\u9fff])/giu)){
-        // Keep the comma in the prefix, not in the new clause; at the sentence start
-        // the match itself is the boundary. Chinese permits no space after the
-        // conjunction, so only English requires a following separator.
-        const comma=/^[，,]/u.test(match[0])?match.index+1:match.index;
-        clauses.push(sentence.slice(start,comma));start=match.index+match[0].length;
-      }
-      clauses.push(sentence.slice(start));
-    }
+    const upperCaseTarget=/(?:^|[，,、：:\s])(?:[^。；;\n]{0,8})?(?:(?:修改|修复|实现|编写|重构|创建|编辑|写入|增加|更新|添加|新增|更改|移除|删除|替换|重写|修补|重命名|改(?!动|变))|[Mm]odify\b|[Ff]ix\b|[Ii]mplement\b|[Ww]rite\b|[Ee]dit\b|[Cc]reate\b|[Dd]elete\b|[Rr]eplace\b|[Uu]pdate\b|[Aa]dd\b|[Cc]hange\b|[Rr]efactor\b|[Rr]emove\b|[Rr]ename\b|[Pp]atch\b)[^。；;\n]{0,16}[A-Z][A-Z0-9_-]{1,30}\b/u;
+    // A denial governs only its coordinate clause. Sentence ends and every comma
+    // separate decisions; a conjunction alone does not, so the prefix test below keeps
+    // "Fix a.js and do not modify b.js" writable.
+    const clauses=request.split(/[。；;\n，,]|\.(?=\s+[A-Z])/u);
     return !clauses.some(clause=>{
       if(!writeVerb.test(clause))return false;
       if(!writeRequest.test(clause)&&!upperCaseTarget.test(clause))return false;
       if(!deniedWrite.test(clause))return true;
       // An allowance must follow the denial and must itself be a write clause. A
-      // repeated denial is not permission ("but do not modify a.js").
-      const denialAt=clause.search(deniedWrite),after=clause.slice(denialAt),allowanceAt=after.search(allowedAfterDenial);
+      // repeated denial is not permission ("but do not modify a.js"). Match the denial
+      // first: searching from its start would read the "must" of "must not" as an
+      // allowance and reject the clause before a later real allowance.
+      const denialAt=clause.search(deniedWrite),prefix=clause.slice(0,denialAt);
+      // The text before the first denial is not governed by it: "Fix a.js, do not
+      // modify b.js" asks for the first edit and forbids only the second.
+      if(writeVerb.test(prefix)&&(writeRequest.test(prefix)||upperCaseTarget.test(prefix)))return true;
+      const after=clause.slice(denialAt),denial=deniedWrite.exec(after);
+      if(!denial)return true;
+      const remaining=after.slice(denial[0].length),allowanceAt=remaining.search(allowedAfterDenial);
       if(allowanceAt<0)return false;
-      return !deniedWrite.test(after.slice(allowanceAt));
+      return !deniedWrite.test(remaining.slice(allowanceAt));
     });
   };
   const surfaceModeForRequest=request=>{
@@ -610,6 +598,12 @@ export function apply(ctx,config={}){
     await runtime.init(exec.agent,exec.signal);
     await effects.load(exec.agent);
     if(!runtime.isEnabled(exec.agent))return next();
+    // Stamp the ledger's mutation count before routing or recovery can return without
+    // running the rest of the middleware chain. Otherwise a routed read observed after
+    // a concurrent write would register the post-write count as its dispatch count.
+    if(!Number.isSafeInteger(exec.mutationCountAtDispatch)){
+      try{exec.mutationCountAtDispatch=observationLedger.mutationCount(exec.agent);}catch{}
+    }
     // The step the read was issued at is stamped here, on the live exec object, because
     // this is the only place that sees the call before it runs. A read dispatched before
     // a write can finish after it, and the obligation check needs the issue step to tell

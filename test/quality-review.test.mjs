@@ -431,6 +431,28 @@ test('an unmatched verified-edit alias cannot inherit another file\'s applied st
   }finally{await h.close();}
 });
 
+test('a small check-file budget does not reject a larger applied source change',async()=>{
+  let payload;const artifacts=[],h=await harness({artifacts,review:value=>{payload=value;return {issues:[]};}});
+  try{
+    h.request('修改 core.mjs 并更新 test/big.test.mjs。');
+    const sourceBody='SOURCE_MARKER '+ 's'.repeat(5000);
+    const result=h.event('tool/ptc-dispatch',{subCallId:'edit-budget',rootCallId:'outer',name:'verified_exec',isError:false,
+      arguments:{summary:'source and check',edits:[
+        {file:'core.mjs',content:sourceBody},
+        {file:'test/big.test.mjs',content:'CHECK_MARKER'}]},
+      content:[{type:'text',text:JSON.stringify({effectState:'applied',files:[
+        {path:'core.mjs',effectState:'applied'},{path:'test/big.test.mjs',effectState:'applied'}]})}]});
+    artifacts.push({seq:result.seq,path:'core.mjs',tool:'verified_exec',effectState:'applied'});
+    artifacts.push({seq:result.seq,path:'test/big.test.mjs',tool:'verified_exec',effectState:'applied'});
+    h.answer('已修改。');await h.run();
+    const rows=payload.evidence.filter(item=>item.seq===result.seq);
+    const record=rows.find(item=>String(item.data).includes('successful-historical-change'));
+    assert.ok(record,'the call produces a change record, not only raw trajectory text');
+    assert.ok(record.data.includes('SOURCE_MARKER'),'the source change is retained');
+    assert.ok(record.data.includes('CHECK_MARKER'),'the small check change is retained when it fits its own budget');
+  }finally{await h.close();}
+});
+
 test('a verified edit supplies its per-file change body and skips a file that did not apply',async()=>{
   // A verified_exec call reports its changes inside edits[], not in content/new_string,
   // and a mixed result can apply one file while leaving another at effectState none.

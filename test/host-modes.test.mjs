@@ -110,6 +110,29 @@ test('a modal denial still marks the task read-only',async()=>{
     await host.send(agent,'You may not delete src/a.js.');
     assert.doesNotMatch(systemOf(host.requests.at(-1)),/\bwork_exec: \{/u,
       'may not is a denial');
+    await host.send(agent,'You must not modify src/a.js but create src/b.js.');
+    assert.match(systemOf(host.requests.at(-1)),/\bwork_exec: \{/u,
+      'the must of must-not is not an allowance; the later create is');
+    await host.send(agent,'不能修改 src/a.js。');
+    assert.doesNotMatch(systemOf(host.requests.at(-1)),/\bwork_exec: \{/u);
+    await host.send(agent,'请勿修改 src/a.js。');
+    assert.doesNotMatch(systemOf(host.requests.at(-1)),/\bwork_exec: \{/u);
+  }finally{await host.close();}
+});
+
+test('a write before a denial in the same clause keeps the task writable',async()=>{
+  const host=await startHost({toolMode:'ptc',extraMounts:[['dsh-ptc-runtime-node']],script:answer});
+  try{
+    const agent=await host.createAgent('max');
+    for(const request of [
+      'Refactor src/a.js. Do not modify src/b.js.',
+      'Update src/a.js. Do not delete src/b.js.',
+      'Fix src/a.js, do not modify src/b.js.',
+      'Edit src/a.js and do not delete src/b.js.',
+    ]){
+      await host.send(agent,request);
+      assert.match(systemOf(host.requests.at(-1)),/\bwork_exec: \{/u,request);
+    }
   }finally{await host.close();}
 });
 

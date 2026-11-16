@@ -76,6 +76,18 @@ test('a prior pointer mismatch cannot erase the additional projection refill exp
   assert.match(result.cachedExposureMethod,/only when the current request is a complete continuation/);
 });
 
+test('capacity pressure sees a newer positive prompt even when its output usage is missing',()=>{
+  const {agent,economics,finish,options}=harness();
+  // A complete baseline first, then a huge prompt with no output count. The exposure
+  // baseline must stay on the complete row; capacity pressure must not.
+  finish(false,{inputTokens:1000,cacheReadTokens:0,cacheWriteTokens:0,outputTokens:100,totalTokens:1100});
+  economics.requestFinished(agent,options,{usage:{inputTokens:95000,cacheReadTokens:0,cacheWriteTokens:0,totalTokens:95000},
+    settled:true,finishReason:'stop',usageComplete:false});
+  const pressure=economics.pressure(agent);
+  assert.ok(pressure.tokens>=95000,'the newer measured prompt reaches capacity pressure');
+  assert.equal(pressure.emergency,true);
+  assert.equal(economics.lastUsage(agent).outputTokens,100,'the exposure baseline stays on the complete row');
+});
 test('capacity pressure uses the optional service getter when direct property access requires inject',()=>{
   const {agent}=harness(),state={config:{projectionPricing:[],projectionHorizonSteps:16}};
   const ctx={get:name=>name==='tokenMeter'?{measure:()=>({totalTokens:9500})}:undefined,

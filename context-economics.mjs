@@ -100,7 +100,7 @@ export function createContextEconomics(ctx,runtime){
   const states=new Map();
   const get=agent=>{
     let state=states.get(agent.session.id);
-    if(!state){state={last:null,previousAttempt:null,lastSuccessfulMain:null,mainHistory:[],mainAttempts:[],decisions:[],skips:{},requests:0,reportedPromptTokens:0,reportedMainPromptTokens:0,mainPromptRequests:0,reportedOutputTokens:0,
+    if(!state){state={last:null,latestPrompt:null,previousAttempt:null,lastSuccessfulMain:null,mainHistory:[],mainAttempts:[],decisions:[],skips:{},requests:0,reportedPromptTokens:0,reportedMainPromptTokens:0,mainPromptRequests:0,reportedOutputTokens:0,
       missingUsage:0,missingCacheUsage:0,pricedRequests:0,costByCurrency:Object.create(null),auxiliaryRequests:0,compactionRequests:0,mainFinished:0,
       surfaceChanges:0,cacheResetCount:0,uncachedInputAtReset:0,resetTaxByCurrency:Object.create(null),
       effortChanges:0,cacheResetAfterEffortChange:0,effortResetExposureByCurrency:Object.create(null),
@@ -388,6 +388,11 @@ export function createContextEconomics(ctx,runtime){
     // the observation so the later check can read it.
     const usageComplete=canonical.complete===true;
     const finishAccepted=successfulFinish.has(record.finishReason);
+    // Capacity pressure needs the newest positive prompt count even when the same
+    // response omitted output usage and therefore cannot become the exposure baseline.
+    if(total>0&&!record.failureCode&&!record.aborted&&finishAccepted)
+      state.latestPrompt={provider:options.provider,model:options.model,reasoningEffort:options.reasoningEffort,
+        usage,usageComplete,at:record.at};
     const usableForExposure=total>0&&!record.failureCode&&!record.aborted&&usageComplete&&finishAccepted;
     if(usableForExposure)state.last={provider:options.provider,model:options.model,reasoningEffort:options.reasoningEffort,usage,usageComplete,
       generation:record.generation,alignmentSafe:textProjection(options.messages),
@@ -404,7 +409,11 @@ export function createContextEconomics(ctx,runtime){
   }
   function pressure(agent,routeContext=null,maxTokens=null){
     const context=routeContext??agent.session.requestContext(),limit=context?.contextWindow;
-    const last=get(agent).last,reported=promptTokens(last?.usage);
+    const state=get(agent),last=state.last,currentRoute=agent.session.requestHeader()?.config;
+    // Prefer the newest measured prompt for this route even when its output usage was
+    // missing; the exposure baseline below still comes from a complete `last` row.
+    const latestPrompt=state.latestPrompt&&sameObservedRoute(state.latestPrompt,currentRoute)?state.latestPrompt:null;
+    const reported=promptTokens((latestPrompt??last)?.usage);
     let measured=null;
     try{const measurement=(ctx.get?ctx.get('tokenMeter'):ctx.tokenMeter)?.measure(agent.session);measured=measurement?.totalTokens??measurement?.projectedTokens??null;}catch{}
     const projected=runtime.projectedMessages?.(agent);
@@ -415,7 +424,7 @@ export function createContextEconomics(ctx,runtime){
       if(reported!==null&&last){
         const previous=last.weights.reduce((sum,value)=>sum+value,0)+(last.envelopeTokens??0);
         tokens=Math.max(0,reported+(current-previous)*last.factor);
-      }else tokens=current;
+      }else tokens=Math.max(reported??0,current);
       method='actual-request usage plus estimated effective-view growth; original surface meter excluded';
     }else{tokens=Math.max(reported??0,measured??0);method='actual usage and host surface meter';}
     const reserve=maxTokens??agent.session.requestHeader()?.config?.maxTokens??0;

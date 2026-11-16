@@ -85,20 +85,24 @@ export function scopeReviewSources(payload,root,configured='auto'){
     ...payload.observed.executions.flatMap(item=>[item.completionObservation?.seq,item.completionObservation?.registrationSeq]),
     ...[...payload.observed.executions,...payload.observed.unresolvedErrors,...payload.observed.pendingJobEvents,
       ...artifacts.filter(item=>key(item.path)===selectedKey||['partial','unknown'].includes(item.effectState))].map(item=>item.seq)]);
+  const storedCall=item=>{
+    try{return JSON.parse(item.data);}catch{
+      const match=/^Tool: (\w+)\nArguments: (.+)(?:\n|$)/u.exec(item.data);
+      if(!match)return null;
+      try{return {tool:match[1],arguments:JSON.parse(match[2])};}catch{return null;}
+    }
+  };
   const belongs=item=>{
     if(critical.has(item.seq))return true;
     if(item.sourceFiles?.some(file=>typeof file==='string'&&key(file)===selectedKey))return true;
-    let value;try{value=JSON.parse(item.data);}catch{
-      const match=/^Tool: (\w+)\nArguments: (.+)(?:\n|$)/u.exec(item.data);
-      if(match)try{value={tool:match[1],arguments:JSON.parse(match[2])};}catch{}
-    }
+    const value=storedCall(item);
     return (FILE_READS.has(value?.tool)||FILE_WRITES.has(value?.tool))&&
       filePaths({name:value.tool,args:value.arguments??{}}).some(file=>typeof file==='string'&&key(file)===selectedKey);
   };
   const checkArtifacts=artifacts.filter(item=>/(?:^|[\\/])(?:tests?|__tests__)(?:[\\/]|$)|(?:^|[\\/])(?:test|check)[_-][^\\/]+\.(?:[cm]?js|tsx?|py)$|\.(?:test|spec)\.[^\\/]+$/iu.test(item.path));
   const belongsToCheck=item=>{
     if(item.sourceFiles?.some(file=>typeof file==='string'&&checkArtifacts.some(artifact=>key(artifact.path)===key(file))))return true;
-    let value;try{value=JSON.parse(item.data);}catch{return false;}
+    const value=storedCall(item);
     return FILE_WRITES.has(value?.tool)&&filePaths({name:value.tool,args:value.arguments??{}})
       .some(file=>typeof file==='string'&&checkArtifacts.some(artifact=>key(artifact.path)===key(file)));
   };
@@ -258,16 +262,21 @@ function payloadFor(current,review,root){
       let value;try{value=JSON.parse((content??[]).map(block=>block.text??'').join(''));}catch{value=null}
       const states=[value?.effectState,...(Array.isArray(value?.files)?value.files.map(file=>file?.effectState):[])].filter(Boolean);
       if(states.length&&!states.some(state=>['applied','partial','unknown'].includes(state)))return null;
-      // A mixed result applies some files and not others; keep the per-file states so
-      // the change-history pass can skip the files that did not take the change.
-      call.effectState=typeof value?.effectState==='string'?value.effectState:null;
-      call.editStates=perFileEffortStates(value,fileKey);
-      call.resultFiles=Array.isArray(value?.files)?value.files.map(file=>({
-        target:typeof file?.path==='string'?file.path:typeof file?.file==='string'?file.file:null,
-        effectState:typeof file?.effectState==='string'?file.effectState:null,
-      })).filter(file=>file.target&&file.effectState):[];
-      // filePaths() must key its state lookup the same way the states were keyed.
-      call.stateKey=fileKey;
+      // Unparseable/truncated content provides no producer identity at all. Leave the
+      // fields undefined so filePaths and appliedVerifiedEdits keep their conservative
+      // no-identity fallback instead of treating every edit as unapplied.
+      if(value&&typeof value==='object'){
+        // A mixed result applies some files and not others; keep the per-file states so
+        // the change-history pass can skip the files that did not take the change.
+        call.effectState=typeof value.effectState==='string'?value.effectState:null;
+        call.editStates=perFileEffortStates(value,fileKey);
+        call.resultFiles=Array.isArray(value.files)?value.files.map(file=>({
+          target:typeof file?.path==='string'?file.path:typeof file?.file==='string'?file.file:null,
+          effectState:typeof file?.effectState==='string'?file.effectState:null,
+        })).filter(file=>file.target&&file.effectState):[];
+        // filePaths() must key its state lookup the same way the states were keyed.
+        call.stateKey=fileKey;
+      }
     }
     return call;
   };
@@ -278,9 +287,9 @@ function payloadFor(current,review,root){
     // When the producer reports no per-file identity, its top-level applied state is
     // the only available evidence. Once files[] exists, an unmatched edit is unknown
     // and must not borrow an applied state from a different alias.
-    const state=call.resultFiles?.length?result?.effectState
+    const state=call.resultFiles?.length?(result?.effectState??null)
       :call.editStates?.size?call.editStates.get(fileKey(target)):call.effectState;
-    return ['applied','partial','unknown'].includes(state);
+    return state===undefined||['applied','partial','unknown'].includes(state);
   });
   const requestSections=requestSourceSections(events,request,assistant,root,fileCall);
   const requestSourceData=new Map();
@@ -316,7 +325,7 @@ function payloadFor(current,review,root){
     const files=filePaths(call).map(fileKey).filter(Boolean);if(!files.length)return false;
     const available=Math.min(14000,changeAllowance),parts=files.map(file=>({file,budget:Math.min(available,sourceBudgets.get(file)??available)}));
     const dataBudget=Math.min(...parts.map(part=>part.budget));
-    if(dataBudget<200)return false;
+    if(dataBudget<200&&call.name!=='verified_exec')return false;
     const callArgs=call.args??{};
     // A verified edit carries its changes per file inside edits[], so a call without
     // the plain content/new_string fields is joined into one bounded body here
@@ -327,24 +336,33 @@ function payloadFor(current,review,root){
       // change belong in the history, or an unapplied file is described as changed.
       const applied=appliedVerifiedEdits(call);
       if(!applied.length)return false;
-      const joined=applied.map(edit=>{
+      // Each target has its own budget: a small check-file allowance must not reject
+      // an otherwise eligible implementation body. Serialize per edit, then charge the
+      // selected piece to its own file; the total record still has to fit the call.
+      const pieces=[];
+      for(const edit of applied){
         const target=edit?.file??edit?.path??edit?.file_path??'';
+        const targetKey=fileKey(target);
+        const budget=sourceBudgets.get(targetKey)??available;
         const before=typeof edit?.old_text==='string'?edit.old_text:'';
         // A `create` edit carries its body in `content`, not `new_text`.
         const after=typeof edit?.new_text==='string'?edit.new_text
           :typeof edit?.content==='string'?edit.content:'';
-        return `--- ${target}\n${before}${before&&after?'\n=>\n':''}${after}`;
-      }).join('\n\n');
-      if(!joined||joined.length>dataBudget)return false;
+        const piece=`--- ${target}\n${before}${before&&after?'\n=>\n':''}${after}`;
+        if(piece.length>budget)continue;
+        pieces.push({file:targetKey,target,piece,budget});
+      }
+      if(!pieces.length)return false;
+      const joined=pieces.map(item=>item.piece).join('\n\n');
       // The target paths travel with the record: scopeReviewSources associates evidence
       // with the selected source or a retained check file through sourceFiles, and
       // without them a filtered verified-edit change is dropped from a large payload.
-      const targets=[...new Set(applied.map(edit=>edit?.file??edit?.path??edit?.file_path).filter(Boolean))];
+      const targets=[...new Set(pieces.map(item=>item.target))];
       const data=JSON.stringify({tool:'verified_exec',summary:callArgs.summary??null,patch:joined,sourceFiles:targets,
         sourceState:'successful-historical-change; later observations take precedence; current file not reconstructed'});
-      if(data.length>dataBudget)return false;
+      if(data.length>Math.min(available,changeAllowance))return false;
       changeAllowance-=data.length;
-      for(const part of parts)sourceBudgets.set(part.file,part.budget-data.length);
+      for(const item of pieces)sourceBudgets.set(item.file,item.budget-item.piece.length);
       sourceChanges.set(event.seq,data);changeTargets.set(event.seq,targets);seqs.add(event.seq);return true;
     }
     const values=[{newText:call.name==='write'?callArgs.content:callArgs.new_string,oldText:callArgs.old_string}];

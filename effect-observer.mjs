@@ -95,11 +95,34 @@ export function createEffectObserver(ctx,runtime){
     // buffer: a string index is short whenever a retained row holds non-ASCII text.
     const boundary=raw.lastIndexOf(0x0a)+1,tail=raw.subarray(boundary).toString('utf8');
     if(!tail){state.needsLeadingNewline.delete(kind);return;}
-    let complete=false;
-    try{JSON.parse(tail);complete=true;}catch{}
+    // A complete row without its trailing newline is still data. If a partial append
+    // follows it, retain the first complete JSON object and drop only the unparseable
+    // remainder instead of truncating the row together with the fragment.
+    let keep=null;
+    try{JSON.parse(tail);keep=tail;}catch{}
+    if(keep===null&&tail.startsWith('{')){
+      let depth=0,inString=false,escape=false;
+      for(let index=0;index<tail.length;index++){
+        const character=tail[index];
+        if(inString){
+          if(escape)escape=false;
+          else if(character==='\\')escape=true;
+          else if(character==='"')inString=false;
+        }else if(character==='"')inString=true;
+        else if(character==='{')depth++;
+        else if(character==='}'&&--depth===0){
+          const candidate=tail.slice(0,index+1);
+          try{JSON.parse(candidate);keep=candidate;}catch{}
+          break;
+        }
+      }
+    }
     try{
-      if(complete)await fs.appendFile(file,'\n','utf8');
-      else await fs.truncate(file,boundary);
+      if(keep!==null){
+        const keepBytes=Buffer.byteLength(keep,'utf8');
+        await fs.truncate(file,boundary+keepBytes);
+        await fs.appendFile(file,'\n','utf8');
+      }else await fs.truncate(file,boundary);
       state.needsLeadingNewline.delete(kind);
     }catch{}
   }

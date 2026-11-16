@@ -557,11 +557,19 @@ export function createObservationLedger(ctx,runtime,nativeFiles=null){
     const mutationCountAtPrepare=state.mutationCount??0;
     if(ledgerOn)try{prepared=await prepareVisibleResult(exec.agent,exec,result);}catch(error){addProblem(state,'receipt-prepare: '+error.message);}
     if(prepared){
-      state.pending.set(exec.callId,{...prepared,mutationCountAtDispatch,mutationCountAtPrepare,receiptApplied:!!prepared.receipt,at:Date.now()});
+      // A receipt may only claim the referenced body is current if no mutation
+      // happened after dispatch, before preparation, or between preparation and
+      // delivery. Otherwise the original result is delivered and the observation is
+      // recorded as historical for later reads.
+      const receiptCurrent=Boolean(prepared.receipt)&&mutationCountAtDispatch===mutationCountAtPrepare&&
+        (state.mutationCount??0)===mutationCountAtPrepare;
+      state.pending.set(exec.callId,{...prepared,mutationCountAtDispatch,mutationCountAtPrepare,
+        receiptApplied:receiptCurrent,at:Date.now()});
       if(state.pending.size>MAX_PENDING)state.pending.delete(state.pending.keys().next().value);
+      const content=receiptCurrent?[{type:'text',text:prepared.receipt}]:result.content;
+      return content!==result.content?{...decision,content}:decision;
     }
-    const content=prepared?.receipt?[{type:'text',text:prepared.receipt}]:result.content;
-    return content!==result.content?{...decision,content}:decision;
+    return decision;
   }
 
   function addObservation(agent,event){

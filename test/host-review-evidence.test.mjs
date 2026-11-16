@@ -99,6 +99,18 @@ test('focused review retains a later check identified by a successful source rea
   assert.ok(result.evidence.some(item=>item.seq===2));
 });
 
+test('a stored Tool-text verified edit for a check file is retained by focused scope',()=>{
+  const call='Tool: verified_exec\nArguments: '+JSON.stringify({edits:[{file:'test/api.core.js',content:'CHECK_MARKER'}]});
+  const payload={observed:{mutation:{seq:3},artifacts:[
+    {seq:1,path:'lib/core.mjs',effectState:'applied'},
+    {seq:2,path:'test/api.core.js',effectState:'applied'}],executions:[],unresolvedErrors:[],pendingJobEvents:[]},evidence:[
+    {seq:1,type:'tool/result',data:'implementation\n'.repeat(2000)},
+    {seq:2,type:'tool/result',data:call}]};
+  const result=scopeReviewSources(payload,process.cwd(),'auto');
+  assert.equal(result.sourceReview.mode,'focused');
+  assert.ok(result.evidence.some(item=>item.seq===2),'the check edit is associated through its stored arguments');
+});
+
 test('review retains every bounded artifact and focused scope counts retained uncertain files',()=>{
   const artifacts=Array.from({length:9},(_,index)=>({seq:index+1,path:`src/file-${index}.mjs`,
     effectState:index===0?'unknown':'applied'}));

@@ -149,6 +149,20 @@ test('an archive lexical fallback re-fetches a unique member at its own line',as
     'a retry must start at the matched member, not the archive entry prefix');
 });
 
+test('an archive text-window fallback re-fetches at the selected window',async()=>{
+  const text=['header',...Array.from({length:18},(_,i)=>`filler ${i}`),'target marker','tail'].join('\n');
+  const observed=await run({memberParsing:false},[[tool('project_evidence',
+    {mode:'archive',archive:'src-sources.jar',entry:'demo/notes.txt',member:'target'})]],
+    async cwd=>{await fs.writeFile(path.join(cwd,'src-sources.jar'),buildZip([{name:'demo/notes.txt',data:text}]));});
+  const source=observed.results[0].sources[0];
+  assert.equal(source.parser.mode,'text-window');
+  assert.ok(source.matches.length>=1);
+  const windowStart=source.matches[0].lines[0].line;
+  assert.ok(windowStart>1);
+  assert.equal(source.retrieveCurrent.arguments.offset,windowStart,
+    'an archive text-window retry must start at the selected window');
+});
+
 test('mavenSourceBinding requires coordinates and selects a matching sources jar',async()=>{
   const steps=[[tool('project_evidence',{mode:'source',query:'demo.Calc'})]];
   async function setup(cwd){
