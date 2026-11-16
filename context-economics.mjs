@@ -354,8 +354,8 @@ export function createContextEconomics(ctx,runtime){
     // must not report the same transition again. Only an attempt that reported no
     // usage at all is skipped, because a zero there is absent evidence.
     if(usage&&total>0){state.previousMeasured={provider:options.provider,model:options.model,reasoningEffort:options.reasoningEffort,
-      cacheReadTokens:usage.cacheReadTokens,inputTokens:usage.inputTokens};}
-    const previous=previousBaseline,same=previous&&sameRoute(previous,options),changed=same&&previous.envelope!==envelope;
+      envelope,cacheReadTokens:usage.cacheReadTokens,inputTokens:usage.inputTokens};}
+    const previous=previousBaseline,same=previous&&sameRoute(previous,options);
     const effortChanged=same&&effortKey(previous.reasoningEffort)!==effortKey(options.reasoningEffort);
     // An incomplete observation can leave cacheReadTokens null. `null < x*.5` is
     // true in JavaScript, so an omitted count would read as a cache reset and would
@@ -378,9 +378,15 @@ export function createContextEconomics(ctx,runtime){
     const effortTransitionKey=JSON.stringify([effortKey(resetPrevious?.reasoningEffort),effortKey(options.reasoningEffort)]);
     const repeatedEffortTransition=Boolean(resetPrevious)&&resetSame&&
       effortKey(resetPrevious.reasoningEffort)!==effortKey(options.reasoningEffort)&&state.countedEffortTransition===effortTransitionKey;
+    // The tax answers "did a surface change make this attempt re-read its prefix?", so it must
+    // compare the envelopes of the two attempts the drop is measured BETWEEN. `previous` is
+    // the retained exposure baseline and can be several attempts old: if A succeeded on
+    // envelope X, B failed on envelope Y, and C succeeded on Y after a drop, comparing with A
+    // charges a surface change that did not cause that transition. `resetPrevious` is B.
+    const resetEnvelopeChanged=Boolean(resetSame)&&resetPrevious.envelope!==envelope;
     if(resetComparable&&resetPrevious.cacheReadTokens>0&&usage.cacheReadTokens<resetPrevious.cacheReadTokens*.5&&usage?.inputTokens>2000){
       state.cacheResetCount++;state.uncachedInputAtReset+=usage.inputTokens;
-      if(changed&&price){const extra=Math.max(0,Math.min(usage.inputTokens-resetPrevious.inputTokens,resetPrevious.cacheReadTokens-usage.cacheReadTokens));
+      if(resetEnvelopeChanged&&price){const extra=Math.max(0,Math.min(usage.inputTokens-resetPrevious.inputTokens,resetPrevious.cacheReadTokens-usage.cacheReadTokens));
         state.resetTaxByCurrency[price.currency]=(state.resetTaxByCurrency[price.currency]??0)+extra*Math.max(0,price.input-price.cacheRead)/1e6;}
       if(resetPrevious&&effortKey(resetPrevious.reasoningEffort)!==effortKey(options.reasoningEffort)&&!repeatedEffortTransition){
         state.cacheResetAfterEffortChange++;

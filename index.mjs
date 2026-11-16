@@ -5,7 +5,7 @@ import {createFeatureControl} from './feature-control.mjs';
 import {isReadOnlyTaskRequest} from './task-intent.mjs';
 import path from 'node:path';
 import fs from 'node:fs/promises';
-import {createHash,randomUUID} from 'node:crypto';
+import {randomUUID} from 'node:crypto';
 import {limits,within,literal,textWindow,references} from "./evidence.mjs";
 import {createRuntime,VERSION,argsOf,eventLog,textOf,isUserRequestMessage} from "./runtime.mjs";
 import {createSelfIndex} from './self-index.mjs';
@@ -286,22 +286,14 @@ export function apply(ctx,config={}){
       },
     });
   };
-  // A whole-result prune has no path, so identify the file by the body it delivered: the
-  // session's own read events are the only record of which path produced this text. The
-  // match is exact on a hash, so a similar file cannot be charged for another's re-reads.
-  // Nothing is cached: a hash of a large body is cheap next to the read that produced it,
-  // while a map keyed by body text would retain every disposed session's bodies.
+  // A whole-result prune has no path, so identify the file by the body it delivered. The body
+  // itself carries the `<path>` markup, so this is a parse of the text being pruned, not a
+  // scan of the session: hashing the body and then re-hashing every `tool/result` in the log
+  // was O(session) per prune candidate for the same answer.
   const bodyTextOf=content=>(content??[]).filter(block=>block?.type==='text').map(block=>block.text??'').join('');
   const sourceKeyForBody=(agent,body)=>{
-    const hash=createHash('sha256').update(String(body)).digest('hex');
-    for(const event of eventLog(agent.session)){
-      if(event.type!=='tool/result'||event.surfaceOp?.op==='replace')continue;
-      const text=bodyTextOf(event.data?.message?.content);
-      const named=/<path>([^<]+)<\/path>/u.exec(text)?.[1];
-      if(!named)continue;
-      if(createHash('sha256').update(text).digest('hex')===hash)return sourceKey(agent,named);
-    }
-    return null;
+    const named=/<path>([^<]+)<\/path>/u.exec(String(body??''))?.[1];
+    return named?sourceKey(agent,named):null;
   };
   // whose rows were read twice is exactly the file whose hidden middle comes back, so its
   // size is charged as a revisit cost. Read counts are per source key and monotone.

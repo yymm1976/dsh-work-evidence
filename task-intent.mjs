@@ -39,6 +39,9 @@ const IDIOM='forget|hesitate|fail|neglect|忘记|忘了|犹豫';
 const ALLOWANCE='但|但是|不过|然而|而是|反而|只|仅|需要|允许|可以|请|必须|应当|instead|however|but|should|must|can|may|only';
 // A target: a path-like word, an extensionless name, or a Chinese code noun.
 const TARGET='[\\w./\\\\-]+\\.[a-z0-9]{1,8}|[\\w-]*\\/[\\w.-]+|文件|代码|函数|方法|类|模块|程序|脚本|实现|逻辑|配置|file|code|function|method|class|module|program|script|config|anything|everything|任何|一切';
+// An ALL-CAPS identifier (README, MAKEFILE) is a target too. It is matched separately
+// because a case-insensitive verb pattern cannot also be case-sensitive about its object.
+const CAPS_TARGET=/[A-Z][A-Z0-9_-]{1,30}(?![A-Za-z0-9_])/u;
 
 // English alternatives are wrapped in lookarounds instead of \b: the patterns are built
 // with /u, and \b is defined on ASCII word characters, which already excludes CJK, but a
@@ -101,41 +104,55 @@ function sentenceIsWritable(prose,raw=prose){
     if(idiomPattern.test(governed))return true;
     // An allowance only counts when it is followed by a write request. "but review the
     // update" names a noun, not a request, so the denial still holds.
-    if(allowancePattern.test(governed)&&hasWriteRequest(`${governedRaw}${raw.slice(verb.at)}`))return true;
+    if(allowancePattern.test(governed)&&writeRequestIn(`${governedRaw}${raw.slice(verb.at)}`))return true;
   }
   return false;
 }
 
 /** Does this sentence name a write verb followed by a target? */
-// One definition of "this text asks for a change": a write verb followed by a target within
-// the same sentence. The gap is bounded by the sentence, not by a fixed character count: a
-// target described as "the failing authentication regression in src/b.js" is 40+ characters
-// after the verb and is still that verb's object. The verb side is case-insensitive so a
-// sentence-initial "Create" counts; only the ALL-CAPS filename itself is case-sensitive.
-const VERB_THEN_TARGET=new RegExp(`(?:(?:${VERB_ZH})|(?:${enWord(VERB_EN)}))[^。！？；;\\n]*?(?:${TARGET})`,'iu');
-const VERB_THEN_CAPS=new RegExp(`(?:(?:${VERB_ZH})|(?:${enWord(VERB_EN)}))[^。！？；;\\n]*?[A-Z][A-Z0-9_-]{1,30}(?![A-Za-z0-9_])`,'iu');
-const CAPS_TARGET=/[A-Z][A-Z0-9_-]{1,30}(?![A-Za-z0-9_])/u;
+// One definition of "this text asks for a change": a write verb followed by a target.
+// There is exactly one implementation, because two rounds of review found the same class
+// of bug twice: the request test recognised an ALL-CAPS target and the allowance test did
+// not, so `Do not run tests, but create README.` was a request in one place and not in the
+// other. Any second predicate here reintroduces that.
+//
+// The gap between verb and target is bounded by the sentence, not by a fixed character
+// count: a target described as "the failing authentication regression in src/b.js" is 40+
+// characters after the verb and is still that verb's object.
+//
+// Two kinds of target, collected separately because one pattern cannot be case-insensitive
+// about the verb and case-sensitive about an all-caps identifier:
+//   - a path-like word, an extension word, or a Chinese code noun (TARGET);
+//   - an ALL-CAPS identifier such as README or MAKEFILE (CAPS_TARGET).
+const SCAN_VERB=new RegExp(`(?:${VERB_ZH})|${enWord(VERB_EN)}`,'giu');
+const SCAN_TARGET=new RegExp(TARGET,'giu');
+const SCAN_CAPS=new RegExp(CAPS_TARGET.source,'gu');
 
-/** Does `text` name a write verb with a target in the same sentence? */
-function hasWriteRequest(text){
+function writeRequestIn(text){
   const raw=String(text??'');
-  // Run on the raw text: stripPaths would erase the path that is the target.
-  return VERB_THEN_TARGET.test(raw);
+  const verbs=[];
+  SCAN_VERB.lastIndex=0;
+  for(const match of raw.matchAll(SCAN_VERB)){
+    // A determiner directly before the verb makes it a noun ("the patch", "the update"),
+    // which is the same rule the clause scan applies; two definitions of "verb" would be
+    // the same mistake as two definitions of "target".
+    if(isVerbUse(raw,match.index))verbs.push({at:match.index,end:match.index+match[0].length});
+  }
+  if(!verbs.length)return false;
+  const targets=[];
+  SCAN_TARGET.lastIndex=0;
+  for(const match of raw.matchAll(SCAN_TARGET))targets.push({at:match.index,end:match.index+match[0].length});
+  SCAN_CAPS.lastIndex=0;
+  for(const match of raw.matchAll(SCAN_CAPS))targets.push({at:match.index,end:match.index+match[0].length});
+  if(!targets.length)return false;
+  // Any verb/target pair in order counts. Stopping at the first candidate is what made
+  // `Do not modify src/a.js. Please create the README.` read-only: the first caps match was
+  // "create the", the case check rejected it, and `README` was never looked at.
+  return verbs.some(verb=>targets.some(target=>target.at>=verb.end));
 }
 
-/** Does `text` name a write verb with an ALL-CAPS (extensionless) target? */
-function hasCapsTarget(text){
-  const raw=String(text??'');
-  if(!VERB_THEN_CAPS.test(raw))return false;
-  // The caps pattern above is /iu, so it would accept a lowercase word as the "target";
-  // require an actual ALL-CAPS token after the verb.
-  const verb=VERB_THEN_CAPS.exec(raw);
-  return Boolean(verb&&CAPS_TARGET.test(verb[0]));
-}
-
-/** Does this sentence name a write verb followed by a target? */
 function sentenceNamesTarget(sentence){
-  return hasWriteRequest(sentence)||hasCapsTarget(sentence);
+  return writeRequestIn(sentence);
 }
 
 export function isReadOnlyTaskRequest(request){

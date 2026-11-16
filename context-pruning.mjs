@@ -44,6 +44,26 @@ export function looksLikeSourceBody(text){
 }
 
 /**
+ * Is this tool body a source file whose middle must stay visible?
+ *
+ * The single answer to that question. Every prune and receipt entry point calls it, because
+ * five separate implementations of "named source, else source-shaped" produced five
+ * different answers: one ignored an unrelated name beside an unmarked body, one asked only
+ * about the first path, and the receipt branches never asked at all. A body is source when
+ * ANY path it names is source, or — when it names no source path — when the body itself is
+ * source-shaped.
+ */
+export function isSourceBody(text){
+  const body=String(text??'');
+  const named=[...body.matchAll(/<path>([^<]+)<\/path>/gu)].map(match=>match[1]);
+  if(named.some(file=>isSourceBodyPath(file)))return true;
+  // A named non-source path does not make an unmarked source body a log, and a named source
+  // path anywhere in a compound result keeps the whole result. Only the absence of any
+  // source path leaves the body itself as the remaining evidence.
+  return looksLikeSourceBody(body);
+}
+
+/**
  * Advance a per-session annotation over an append-only event log.
  *
  * The annotations that decide whether a body may be hidden (edited paths, superseded
@@ -235,11 +255,15 @@ export function planContextPrune(message,reads,options){
   // and the source body it was run against, and retaining either one forbids the cut.
   if(!reads.length&&options.retainSource){
     const named=[...original.matchAll(/<path>([^<]+)<\/path>/gu)].map(match=>match[1]);
+    // `retainSource` is the authority on a NAMED path: it knows whether a later complete
+    // read superseded this copy, and refusing here on "it is source" alone would make a
+    // superseded body permanently unprunable — the exact case pruning exists for.
     if(named.some(file=>options.retainSource(file)))return null;
     // A body can still be source the named paths do not describe: `bash cat src/widget.py`
     // returns the file with no markup, and a result can name an unrelated `run.log` next to
     // an unmarked source body. The body itself is then the remaining evidence, so the
-    // recognition applies whenever no named path required retention.
+    // recognition is NOT gated on `named.length` — that gate is what let
+    // `<path>run.log</path>` beside an unmarked source body switch the detector off.
     if(looksLikeSourceBody(original))return null;
   }
   let content,ranges=[],dedupStats=[];

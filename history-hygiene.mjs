@@ -1,6 +1,6 @@
 import path from 'node:path';
 import {argsOf,eventLog} from './runtime.mjs';
-import {isSourceBodyPath,looksLikeSourceBody,planContextPrune,readDispatch,hasPruneProblem} from './context-pruning.mjs';
+import {isSourceBodyPath,isSourceBody,planContextPrune,readDispatch,hasPruneProblem} from './context-pruning.mjs';
 import {resultText,surfaceReferences} from './visible-results.mjs';
 import {renderedReads} from './observation-ledger.mjs';
 import {messageTokens} from './context-economics.mjs';
@@ -96,8 +96,7 @@ export function toolOutputDigest(name,text,{seq=null,command=null,truncated=fals
   // A source body is never replaced by a head/tail receipt, whatever produced it: a shell
   // `cat` returns the whole file with no native read dispatch and no markup, and hiding its
   // middle makes the task re-read exactly the part that was hidden.
-  const namedSource=[...text.matchAll(/<path>([^<]+)<\/path>/gu)].map(match=>match[1]);
-  if(namedSource.some(file=>isSourceBodyPath(file))||(!namedSource.length&&looksLikeSourceBody(text)))return null;
+  if(isSourceBody(text))return null;
   const failureLines=text.split(/\r?\n/u).filter(line=>/ERROR|FAILED|Exception|not ok|Traceback|What went wrong/iu.test(line)).slice(0,8).map(line=>line.slice(0,300));
   const head=text.slice(0,2000),tail=text.slice(-2500);
   const header='[work-evidence output receipt] tool='+name+(command?' command='+String(command).trim().slice(0,180):'');
@@ -144,6 +143,10 @@ export function testOutputDigest(command,text,{seq=null,truncated=false,focus=[]
   // A spill marker means this request view never held the complete output;
   // work_recall cannot recover a host-spilled body, so it must not be hidden.
   if(/\[output truncated; full output:|\[truncated\]/iu.test(text))return null;
+  // A check command can print a source body next to passing totals. This function is the
+  // innermost producer of a receipt, so the retention rule has to hold here too: every
+  // caller that forgot to ask would otherwise reduce the body to a summary of its own tail.
+  if(isSourceBody(text))return null;
   const failure=isNodeTest?tapCheckFailure(text):reportedCheckFailure(text),summary=failure?.summary??null,entries=failure?.failureEntries??[];
   const failedLines=text.split(/\r?\n/u).filter(line=>/^\s*(?:FAILED|ERROR|not ok|[1-9]\d*\s+(?:failed|failures))\b/iu.test(line));
   // Non-TAP check outputs do not carry structured failure causes. Projecting a passing run is safe;
@@ -246,9 +249,14 @@ export function createHistoryHygiene(runtime,taskFlow,{isProtected=()=>false,ret
         const isPytest=/^python(?:\.exe)?\s+-m\s+pytest/iu.test(command??'');
         const testFocus=isPytest?['tests/']:[];
         const textOnly=Array.isArray(message.content)&&message.content.every(block=>block?.type==='text');
-        const digest=command&&textOnly?testOutputDigest(command,text,{seq:event.seq,truncated:event.data?.meta?.truncated===true,focus:[...baseFocus,...testFocus],filterEnvironment:isPytest}):null;
+        // Source recognition runs before EVERY receipt branch, including the test receipt.
+        // `node --test` can print a source body beside passing TAP totals; the test branch
+        // summarised it without ever asking whether the body was source, which is the same
+        // middle loss the retention rule exists to prevent, through a fourth entry point.
+        const sourceBody=isSourceBody(text);
+        const digest=!sourceBody&&command&&textOnly?testOutputDigest(command,text,{seq:event.seq,truncated:event.data?.meta?.truncated===true,focus:[...baseFocus,...testFocus],filterEnvironment:isPytest}):null;
         const failed=!!message.isError||hasPruneProblem(message.content??[])||state.failures.has(id)||isProtected(agent,id);
-        const toolDigest=textOnly&&!digest&&!failed&&call?toolOutputDigest(call.name,text,{seq:event.seq,command,truncated:event.data?.meta?.truncated===true}):null;
+        const toolDigest=textOnly&&!digest&&!failed&&!sourceBody&&call?toolOutputDigest(call.name,text,{seq:event.seq,command,truncated:event.data?.meta?.truncated===true}):null;
         state.commands.delete(id);
         const record={seq:event.seq,step:state.step,callId:id,failed,reads:[...(state.liveReads.get(id)?.values()??[])],
           paths:[...(state.observedPaths.get(id)??[])],testDigest:digest?.text??null,testSignature:digest?.signature??null,testOriginalChars:digest?.originalChars??0,toolDigest:toolDigest?.text??null,toolOriginalChars:toolDigest?.originalChars??0};
@@ -306,14 +314,9 @@ export function createHistoryHygiene(runtime,taskFlow,{isProtected=()=>false,ret
       // A source body returned by a shell command is not a log to summarise: `bash cat`
       // can return a whole file with no native read dispatch, and replacing it with a
       // head/tail digest would hide the middle exactly as middle-pruning does. The
-      // retention rule therefore applies before the generic digest branch.
-      const originalText=resultText(original?.content??[]);
-      const sourceBodyPath=[...originalText.matchAll(/<path>([^<]+)<\/path>/gu)]
-        .map(match=>fileKey(root,match[1])).find(file=>isSourceBodyPath(file))??null;
-      // A body can be source without any <path> (a shell `cat`), so the body itself is the
-      // remaining evidence. Without this the digest branch was a fourth truncator that the
-      // retention rule never saw.
-      const sourceBody=Boolean(sourceBodyPath)||looksLikeSourceBody(originalText);
+      // capture stage already refuses to build a digest for source, so this is the second
+      // half of the same answer for a record captured before the rule existed.
+      const sourceBody=isSourceBody(resultText(original?.content??[]));
       if(textOnly&&entry?.toolDigest&&!sourceBody&&!isProtected(agent,entry.callId)&&runtime.get(agent).config?.swLedger!==true&&state.step-entry.step>=1&&!state.fullOutputRequested&&!state.pinnedResults.has(entry.seq)&&!pins.opaque&&!pins.targets.has(entry.seq)){
         const reduction=resultText(message.content).length-entry.toolDigest.length;
         if(reduction>=MIN_SAVING){

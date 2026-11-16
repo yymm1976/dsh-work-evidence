@@ -61,6 +61,11 @@ const CASES = [
   ['Read-only: explain the hotfix in src/a.js.', true, 'fix inside hotfix is not a verb'],
   // The request precedes 'whenever', so it is affirmative regardless of the subclause.
   ['Please implement this whenever you can in src/a.js.', false, 'the request precedes whenever, so it is affirmative'],
+  // Round-40 findings. Both were the same defect: an ALL-CAPS target was recognised by one
+  // of the two target predicates and not the other, so one sentence was a request in one
+  // place and not in the other. A single predicate has to answer both.
+  ['Do not modify src/a.js. Please create the README.', false, 'an article before an all-caps target does not hide it'],
+  ['Do not run tests, but create README.', false, 'an allowance accepts the same targets as the request test'],
 ];
 
 for (const [request, expected, why] of CASES) {

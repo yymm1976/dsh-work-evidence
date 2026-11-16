@@ -397,3 +397,32 @@ test('a reported total below the known fields is inconsistent, not a valid promp
   const plausible=canonicalUsage({inputTokens:6000,cacheReadTokens:0,cacheWriteTokens:0,totalTokens:6100});
   assert.equal(plausible.consistent,true);
 });
+
+test('the reset tax compares the two attempts the drop is measured between',()=>{
+  // A succeeds on envelope X. B fails on envelope Y — the surface changed, but B is a
+  // failure and never becomes the exposure baseline `state.last`. C succeeds on the same
+  // envelope Y after the cache drops. The drop happened between B and C, where nothing
+  // changed, so no reset tax is owed.
+  //
+  // The tax used to compare with `previous` (the retained baseline, still A) and charged
+  // the X->Y change that B carried, on a transition it did not cause.
+  const {agent,economics,state,options}=harness();
+  state.config.projectionPricing=[{provider:'p',model:'m',currency:'CNY',input:1,cacheRead:.2,output:2}];
+  const tools=[{name:'a'}],otherTools=[{name:'b'}];
+  options.tools=tools;
+  economics.requestFinished(agent,options,{usage:{inputTokens:1000,cacheReadTokens:5000,cacheWriteTokens:0,outputTokens:100,totalTokens:6100},
+    settled:true,finishReason:'stop',usageComplete:true,usageConsistent:true});
+  assert.equal(economics.summary(agent).resetTaxByCurrency.CNY,undefined,'the first attempt has no drop');
+  // B: same route, different envelope, and it is a FAILURE, so `last` keeps A.
+  options.tools=otherTools;
+  economics.requestFinished(agent,options,{usage:{inputTokens:1000,cacheReadTokens:4000,cacheWriteTokens:0,outputTokens:100,totalTokens:5100},
+    settled:true,finishReason:'error',failureCode:'SERVER',usageComplete:true,usageConsistent:true});
+  const afterFailure=economics.summary(agent).resetTaxByCurrency.CNY??0;
+  // C: envelope Y again, and now the cache is gone. Nothing changed between B and C.
+  economics.requestFinished(agent,options,{usage:{inputTokens:6000,cacheReadTokens:0,cacheWriteTokens:0,outputTokens:100,totalTokens:6100},
+    settled:true,finishReason:'stop',usageComplete:true,usageConsistent:true});
+  const summary=economics.summary(agent);
+  assert.equal(summary.cacheResetCount,1,'the drop is still counted');
+  assert.equal(summary.resetTaxByCurrency.CNY??0,afterFailure,
+    'a transition that changed no envelope must not add reset tax');
+});
