@@ -1,6 +1,6 @@
 import path from 'node:path';
 import {argsOf,eventLog} from './runtime.mjs';
-import {planContextPrune,readDispatch,hasPruneProblem} from './context-pruning.mjs';
+import {SOURCE_BODY_PATH,planContextPrune,readDispatch,hasPruneProblem} from './context-pruning.mjs';
 import {resultText,surfaceReferences} from './visible-results.mjs';
 import {renderedReads} from './observation-ledger.mjs';
 import {messageTokens} from './context-economics.mjs';
@@ -316,7 +316,10 @@ export function createHistoryHygiene(runtime,taskFlow,{isProtected=()=>false,ret
       // Reading is not evidence that the middle of a source is disposable.
       // Leave source windows to the existing larger, recoverable protocol.
       if(entry.reads.length)return message;
-      const protect=file=>retainedSource(agent,file)||state.retainedSources.has(fileKey(root,file))||focus.has(fileKey(root,file));
+      // A result that names source code is the object of the repair, not a log: keep it
+      // whole here too. Every prune entry point must give the same answer for the same
+      // body, or one path silently undoes the retention the others enforce.
+      const protect=file=>SOURCE_BODY_PATH.test(file??'')||retainedSource(agent,file)||state.retainedSources.has(fileKey(root,file))||focus.has(fileKey(root,file));
       const existing=state.outputPlans.get(entry.seq);
       if(existing?.test||existing?.tool)return message;
       const planned=existing??planContextPrune(original,entry.reads,{seq:entry.seq,...pruneSettings,retainSource:protect});
