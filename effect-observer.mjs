@@ -146,7 +146,12 @@ export function createEffectObserver(ctx,runtime){
       }else await fs.truncate(file,boundary);
       state.needsLeadingNewline.delete(kind);
       return true;
-    }catch{return false;}
+    }catch(error){
+      // The reason travels with the failure: a read-only ledger fails with EPERM/EACCES and
+      // an operator needs that code to tell a permission problem from a corrupt tail.
+      state.lastRepairError=String(error?.code??error?.message??'unknown').slice(0,120);
+      return false;
+    }
   }
   function queue(state,agent,row,kind='observability'){
     const dir=storageFor(agent);if(!dir){state.writeErrors.push('Observability storage outside the workspace is unavailable');state.writeErrors=state.writeErrors.slice(-8);return Promise.resolve(false);}
@@ -361,8 +366,17 @@ export function createEffectObserver(ctx,runtime){
         // Repairing a missing trailing newline keeps later appends one row per line. When
         // that write fails the restore itself already succeeded, so record the failure,
         // mark the next append self-terminating and do not re-read on every request.
-        if(raw&&!raw.endsWith('\n')){try{await fs.appendFile(file,'\n','utf8');}
-          catch(error){state.needsLeadingNewline.add(kind);state.writeErrors.push('newline repair: '+String(error.message??error).slice(0,200));}}
+        // Repair the boundary, not only the missing newline. A partial append can leave an
+        // unparseable fragment joined to a complete row; appending '\n' terminates the COMBINED
+        // line, so the earlier complete row stays unreadable for the rest of the session. The
+        // in-memory `needsLeadingNewline` marker does not survive a restart, so `load()` has to
+        // do the same truncate-the-tail repair the append path does.
+        if(raw&&!raw.endsWith('\n')){try{
+          const repaired=await repairAppendBoundary(state,file,kind);
+          // A read-only ledger cannot be repaired. Record it under the same label the test and
+          // the status output already use, and mark the next append self-terminating.
+          if(!repaired){state.needsLeadingNewline.add(kind);state.writeErrors.push('newline repair: '+(state.lastRepairError??'boundary not repairable'));}
+        }catch(error){state.needsLeadingNewline.add(kind);state.writeErrors.push('newline repair: '+String(error.message??error).slice(0,200));}}
       }
     })().finally(()=>{state.writeErrors=state.writeErrors.slice(-8);state.loaded=true;});
     try{await state.loading;}

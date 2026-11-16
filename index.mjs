@@ -3,6 +3,11 @@ import {registerSourceTools} from './source-tools.mjs';
 import {registerPluginCommand} from './plugin-command.mjs';
 import {createFeatureControl} from './feature-control.mjs';
 import {isReadOnlyTaskRequest} from './task-intent.mjs';
+// A window that prints line 1 and an end-of-file marker can still be missing text: the host
+// clips an over-long row and appends this marker. Treating a clipped window as a complete read
+// let it supersede the earlier full body, and that body then became prunable — losing exactly
+// the text the clip hid. The same marker is recognised in evidence.mjs and dependency-source.mjs.
+const lineClipped=text=>/\.\.\. \(line truncated to \d+ chars\)/u.test(text);
 import path from 'node:path';
 import fs from 'node:fs/promises';
 import {randomUUID} from 'node:crypto';
@@ -287,7 +292,12 @@ export function apply(ctx,config={}){
             // SAME window, unless the producer states completeness explicitly.
             const eofMarker=/\(End of file - total \d+ lines\)/u.test(window);
             const startsAtLineOne=/(?:^|\n)1: /u.test(window);
-            const complete=(eofMarker&&startsAtLineOne)||/<content complete="true"/u.test(window);
+            // A window can print line 1 and the EOF marker and still be missing text: the host
+            // clips an over-long row and marks it `... (line truncated to N chars)`. Accepting
+            // that as a complete body let a clipped read supersede the earlier full one, and
+            // the earlier body then became prunable — losing exactly the text the clip hid.
+            const clipped=lineClipped(window);
+            const complete=!clipped&&((eofMarker&&startsAtLineOne)||/<content complete="true"/u.test(window));
             if(!complete)continue;
             latest.set(sourceKey(agent,pathMatch[1]),event.seq);
           }

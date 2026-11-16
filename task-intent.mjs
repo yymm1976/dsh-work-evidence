@@ -85,7 +85,16 @@ const nounPrefix=/(?:^|\s)(?:a|an|the|this|that|these|those|its|their|his|her|ou
 // 「实现」 there is a noun. Measured: `只读分析 src/a.js 的实现。` was classified writable
 // because 实现 was read as a write verb, so the explicit 只读 marker never decided.
 // The characters before the verb are what make it a noun: 的 / 此 / 该 / 这 / 那 / 本 / 其.
-const CJK_NOUN_PREFIX=/(?:的|之|此|该|这|那|本|其|各|每|某|所有|全部)\s*$/u;
+// Only the two constructions that unambiguously make a following verb a noun:
+//   English determiner   "the patch", "the update"
+//   Chinese 的/之        "这个模块的实现"
+// The earlier list also had 此/该/这/那/本/其/各/每/某/所有/全部. Those are adverbs as often as
+// they are attributives — 「请全部更新 src/a.js」 puts 全部 before a VERB — and a regex cannot
+// tell the two apart. The error is asymmetric: reading a request as a noun drops the clause,
+// the task becomes read-only, and the write tools are hidden. So the ambiguous set is dropped
+// and only the certain set remains; 「全部的更新」 then reads as a verb, which is the harmless
+// direction. This is the third round this file has been narrowed and widened here.
+const CJK_NOUN_PREFIX=/(?:的|之)\s*$/u;
 const readOnlyMarker=/(?:只读|read[- ]only)/iu;
 // Sentence boundaries. A period splits only before a capital so "src/a.js" survives.
 // Sentence boundaries. A period splits only before a capital so "src/a.js" survives.
@@ -99,7 +108,10 @@ const readOnlyMarker=/(?:只读|read[- ]only)/iu;
 // must keep its denial on every verb. The two are distinguished by what follows the comma:
 // a bare verb (or a conjunction then a verb) continues the list, while anything with its own
 // object starts a new clause. `splitSentences` applies that rule; the regex alone cannot.
-const SENTENCE_BOUNDARY=/[。！？；;\n]|[.!?](?!\s*[a-z0-9])/u;
+// Sentence boundaries. A period splits only before a capital so "src/a.js" survives, and it
+// must NOT split when the dot introduces a path prefix: `Fix ./src/b.js` split into `Fix` and
+// `/src/b.js`, so the verb lost its target and a denied earlier sentence decided the task.
+const SENTENCE_BOUNDARY=/[。！？；;\n]|[.!?](?!\s*[a-z0-9])(?!\s*[\\/.])/u;
 const COMMA=/[，,]/u;
 /** Is the text after a comma a bare verb list continuation rather than a new clause? */
 // A continuation is a SHORT verb sequence: `create,` / `or delete src/a.js` where the verb has
@@ -126,16 +138,29 @@ export function splitSentences(text){
   const raw=String(text??'');
   const out=[];
   // First split on real boundaries; then split each piece on commas that start a new clause.
+  //
+  // A merged verb list is NOT the end of the scan. `Do not modify, create, or delete src/a.js,
+  // fix src/b.js.` has two comma decisions: the first two merge into one denied list, and the
+  // third starts a new clause. The earlier `break` stopped at the merge, so `fix src/b.js`
+  // inherited the denial and the whole request classified read-only.
   for(const piece of raw.split(SENTENCE_BOUNDARY)){
     if(!piece.trim())continue;
-    let current=piece;
+    let current='';
+    let rest=piece;
     for(;;){
-      const match=COMMA.exec(current);
-      if(!match)break;
-      const head=current.slice(0,match.index),tail=current.slice(match.index+1);
-      if(continuesVerbList(tail)){current=head+'，'+tail;break;}
-      if(head.trim())out.push(head);
-      current=tail;
+      const match=COMMA.exec(rest);
+      if(!match){current+=rest;break;}
+      const head=rest.slice(0,match.index),tail=rest.slice(match.index+1);
+      if(continuesVerbList(tail)){
+        // Keep the list inside the clause and keep scanning the remainder.
+        current+=head+'，';
+        rest=tail;
+        continue;
+      }
+      current+=head;
+      if(current.trim())out.push(current);
+      current='';
+      rest=tail;
     }
     if(current.trim())out.push(current);
   }
@@ -244,10 +269,12 @@ function writeRequestIn(text){
   SCAN_CAPS.lastIndex=0;
   for(const match of raw.matchAll(SCAN_CAPS))targets.push({at:match.index,end:match.index+match[0].length});
   if(!targets.length)return false;
-  // Any verb/target pair in order counts. Stopping at the first candidate is what made
-  // `Do not modify src/a.js. Please create the README.` read-only: the first caps match was
-  // "create the", the case check rejected it, and `README` was never looked at.
-  return verbs.some(verb=>targets.some(target=>target.at>=verb.end));
+  // A target anywhere in the same clause counts, before the verb as well as after. English
+  // and Chinese both put it first routinely: `In src/a.js fix the bug`, `请把 src/a.js 修复`.
+  // Requiring the target AFTER the verb dropped those clauses, the denial decided the task,
+  // and the write tools were hidden. The clause is already the unit here, so "anywhere in it"
+  // is the right scope — a target in a different clause is not visible to this function.
+  return verbs.some(verb=>targets.some(target=>target.at>=verb.end||target.end<=verb.at));
 }
 
 function sentenceNamesTarget(sentence){

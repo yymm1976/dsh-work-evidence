@@ -327,7 +327,13 @@ function applyOperations(text,operations){
 // to come off here. Handling only the colon form made `run_code` output rendered with a pipe
 // pass window matching and then fail source recognition, which sends a real source body down
 // the prune path.
-const LINE_NUMBER_PREFIX=/^\s*\d+(?::|\t|[ \t]*\|[ \t]?)[ \t]?/u;
+// Separator grammar per form, so the CONTENT's own indentation survives:
+//   `N: row`   the producer writes one space after the colon, which is not content
+//   `N\trow`   the tab IS the separator; a following space is content
+//   `N | row`  spaces around the pipe are separator; nothing after it is
+// The previous single trailing `[ \t]?` consumed one content space for the tab and pipe
+// forms, so a four-space-indented row became three and CODE_INDENT stopped matching.
+const LINE_NUMBER_PREFIX=/^\s*\d+(?::[ \t]?|\t|[ \t]{0,2}\|[ \t]?)/u;
 export function stripLineNumbers(text){
   return String(text??'').split('\n').map(line=>line.replace(LINE_NUMBER_PREFIX,'')).join('\n');
 }

@@ -243,3 +243,14 @@ test('a compact JSON document is source, and a shell envelope is not',()=>{
   // And prose wrapped in braces must not parse.
   assert.equal(looksLikeSourceBody('{'+'this is prose, not json. '.repeat(500)+'}'),false);
 });
+
+test('prefix stripping preserves the content indentation',()=>{
+  // Review finding: one trailing `[ \t]?` consumed a CONTENT space for the tab and pipe
+  // forms, so a four-space-indented row became three and CODE_INDENT stopped matching. A body
+  // of only indented calls then read as a log and its middle was prunable.
+  assert.equal(stripLineNumbers('1\t    x = 1'),'    x = 1','tab prefix keeps the content spaces');
+  assert.equal(stripLineNumbers('1 |     x = 1'),'    x = 1','pipe prefix keeps them too');
+  assert.equal(stripLineNumbers('1:     x = 1'),'    x = 1','colon prefix consumes only its own space');
+  // A row that merely starts with a number and an equals sign is untouched.
+  assert.equal(stripLineNumbers('1234 = count'),'1234 = count');
+});

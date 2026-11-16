@@ -496,3 +496,16 @@ test('an incomplete usage observation cannot leave the reset comparison point be
     settled:true,finishReason:'stop',usageComplete:true,usageConsistent:true});
   assert.equal(economics.summary(agent).cacheResetCount,1,'one observed drop is one reset');
 });
+
+test('auxiliary requests do not lengthen the main-history horizon',()=>{
+  // The horizon estimates how many more MAIN steps will reuse the history being rewritten.
+  // state.requests also counts auxiliary and compaction calls, which never contain that
+  // history: one main request plus 63 auxiliary ones raised the horizon to its 64 cap and
+  // turned a refusal into an approval with no additional reuse.
+  const {agent,economics,finish}=harness();
+  finish();
+  const before=economics.assess(agent,{savedChars:4000,savedTokensEstimate:1000,changedSeq:1}).horizonSteps;
+  for(let i=0;i<63;i++)finish(true);   // auxiliary
+  const after=economics.assess(agent,{savedChars:4000,savedTokensEstimate:1000,changedSeq:1}).horizonSteps;
+  assert.equal(after,before,'auxiliary requests leave the horizon unchanged: '+before+' -> '+after);
+});

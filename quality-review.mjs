@@ -1,5 +1,6 @@
 import {randomUUID} from 'node:crypto';
 import path from 'node:path';
+import {realpathSync} from 'node:fs';
 import fs from 'node:fs/promises';
 import {canonicalUsage} from './context-economics.mjs';
 import {modelJson} from './model.mjs';
@@ -52,7 +53,18 @@ const filePaths=call=>{
     if(!edit||typeof edit!=='object')return undefined;
     const target=edit.file??edit.path??edit.file_path;
     if(call?.resultFiles?.length){
-      const result=call.resultFiles.find(file=>file.target===target)??call.resultFiles.find(file=>normalizer(file.target)===normalizer(target));
+      // Three tiers, in order: the exact target, the case-folded/lexical form, and finally the
+      // REAL path. `verified_exec` groups edits by real path, so a symlink alias joins its
+      // target's group and the producer reports ONE files[] entry for that group. Comparing
+      // lexical paths only left the alias unmatched, its state null, and the edit dropped from
+      // the eligible set even though the group write may have applied its text.
+      const real=value=>{
+        try{return realpathSync.native(path.resolve(String(value)));}catch{return null;}
+      };
+      const targetReal=real(target);
+      const result=call.resultFiles.find(file=>file.target===target)
+        ??call.resultFiles.find(file=>normalizer(file.target)===normalizer(target))
+        ??(targetReal?call.resultFiles.find(file=>real(file.target)===targetReal):undefined);
       // null marks a target the producer's identity list did not match, so it cannot
       // inherit another file's state. undefined is reserved for no identity at all.
       return result?.effectState??null;

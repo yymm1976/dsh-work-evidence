@@ -633,8 +633,11 @@ export function createRuntime(ctx,call,initial={}){
       // the live observation was then skipped by `s.seen` — a reread never discharged the
       // obligation and a later reminder could claim the file was not reread.
       const lineRecords=(result.value?.lines?.length??0)>0||result.value?.totalLines===0;
-      const renderedRows=/^\s*\d+(?:[:|]|\t)/mu.test(textOf(result.content??[]));
-      const emptyFile=/\(End of file - total 0 lines\)/u.test(textOf(result.content??[]));
+      // textOf reads `.content` off its argument, so passing the content ARRAY yields an empty
+      // string and both checks silently inspected nothing. Pass an object with `content`.
+      const rendered=textOf({content:result.content??[]});
+      const renderedRows=/^\s*\d+(?:[:|]|\t)/mu.test(rendered);
+      const emptyFile=/\(End of file - total 0 lines\)/u.test(rendered);
       const deliveredLines=lineRecords||renderedRows||emptyFile;
       if(deliveredLines&&s.pendingRevisit?.size){
         const target=ledgerPath(s,args.file_path);

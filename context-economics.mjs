@@ -140,9 +140,15 @@ export function createContextEconomics(ctx,runtime){
     // it with the session and is bounded only by the 64-step ceiling. An explicit
     // caller horizon still wins, and a costly refill is still refused.
     const declaredHorizon=horizon??config.projectionHorizonSteps;
+    // The horizon estimates how many more MAIN steps will reuse this history, so it counts
+    // main requests only. `state.requests` also counts auxiliary and compaction calls, which
+    // never contain the history being rewritten: one main request followed by 63 auxiliary
+    // ones raised the horizon to its 64 cap and turned a refusal into an approval with no
+    // additional reuse at all.
+    const mainOnly=Math.max(0,(state.requests??0)-(state.auxiliaryRequests??0)-(state.compactionRequests??0));
     const remainingSteps=horizon!==undefined
       ?Math.max(1,Math.min(64,horizon))
-      :Math.max(1,Math.min(64,Math.max(declaredHorizon,state.requests??0)));
+      :Math.max(1,Math.min(64,Math.max(declaredHorizon,mainOnly)));
     let cachedSuffixTokens=null,prefixMessages=0,oldSuffixTokens=null,exposureMethod='conservative previous-request prompt';
     // An aborted/errored attempt reports zero usage. Its zero cache read is an
     // absence of evidence, not proof that no cached prefix exists; treating it

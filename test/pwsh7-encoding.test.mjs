@@ -27,7 +27,11 @@ function resolvePwsh(){
   const explicit=process.env.DSH_PWSH_PATH?.trim();
   if(explicit&&existsSync(explicit))return explicit;
   // The launcher's documented order: %ProgramFiles%\PowerShell\7, then PATH, then 5.1.
+  // The project's own isolated profile pins the unpacked 7.x here (bench-r31/cordis.patch.yml
+  // sets pwshPath to this file). Without it the three cases below SKIP on the project host,
+  // and a gate-1 claim backed by three skips is not evidence.
   const candidates=[
+    'D:/dsh-tools/pwsh7/pwsh.exe',
     path.join(process.env.ProgramFiles??'C:/Program Files','PowerShell','7','pwsh.exe'),
     path.join(process.env.LOCALAPPDATA??'','Microsoft','WindowsApps','pwsh.exe'),
   ];

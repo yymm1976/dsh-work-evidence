@@ -161,3 +161,24 @@ test('task intent: a comma clause with its own object starts a new decision',()=
   // A comma list WITH an explicit conjunction is coordinate: the denial covers every verb.
   assert.equal(isReadOnlyTaskRequest('Read-only: 不要修改 src/a.js，或者创建 src/b.js'),true);
 });
+
+test('task intent: the classifier no longer drops affirmative clauses on lexical detail',()=>{
+  // Five holes from round 47, all of the same family: a rule I had added was either too narrow
+  // or too wide, so an affirmative clause was skipped and a denial decided the whole task.
+  // The state machine that explains why this kept happening is
+  // runs/v251/TASK-INTENT-STATE-MACHINE-V2.md.
+  //
+  // 1. 全部 before a verb is an adverb, not an attributive: 「请全部更新 src/a.js」.
+  assert.equal(isReadOnlyTaskRequest('不要修改 README.md。请全部更新 src/a.js。'),false);
+  // 2. The dot in `./` does not end a sentence.
+  assert.equal(isReadOnlyTaskRequest('Do not modify src/a.js. Fix ./src/b.js.'),false);
+  // 3. A merged verb list is not the end of the comma scan.
+  assert.equal(isReadOnlyTaskRequest('Do not modify, create, or delete src/a.js, fix src/b.js.'),false);
+  // 4. A target may precede the verb in its own clause.
+  assert.equal(isReadOnlyTaskRequest('Do not modify README.md. In src/a.js fix the bug.'),false);
+  assert.equal(isReadOnlyTaskRequest('不要修改 README.md。请把 src/a.js 修复。'),false);
+  // The three negative controls: widening that stayed correct.
+  assert.equal(isReadOnlyTaskRequest('Read-only: do not modify, create, or delete src/a.js.'),true);
+  assert.equal(isReadOnlyTaskRequest('只读分析 src/a.js 的实现。'),true);
+  assert.equal(isReadOnlyTaskRequest('Read-only: explain the patch in src/a.js.'),true);
+});
