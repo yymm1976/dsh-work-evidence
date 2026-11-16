@@ -9,6 +9,27 @@ const count=text=>Array.from(text).length;
 // way regardless of which one reaches it. Splitting the list between them is how a source
 // body kept being cut to head+tail on the path that did not have it.
 export const SOURCE_BODY_PATH=/\.(?:py|pyi|js|jsx|mjs|cjs|ts|tsx|java|go|rs|c|cc|cpp|cxx|h|hpp|rb|php|cs|kt|swift|scala|m|mm|pl|lua|sql|json|jsonc|json5|yaml|yml|toml|ini|cfg|conf|md|mdx|rst|adoc|html|htm|css|scss|sass|less|vue|svelte|astro|sh|bash|zsh|ps1|psm1|bat|cmd|gradle|xml|proto|graphql|gql|tf|hcl)$/iu;
+
+/**
+ * Advance a per-session annotation over an append-only event log.
+ *
+ * The annotations that decide whether a body may be hidden (edited paths, superseded
+ * reads, read counts) must track the live session. Computing them once froze the first
+ * step's view, so a later complete read could never supersede an earlier body. Each cache
+ * stores the number of events it has consumed and folds only the new tail. A log that
+ * shrank means the session was replaced, so the state is rebuilt from scratch.
+ *
+ * @param {Map<string,{cursor:number,state:any}>} cache per-session cursors
+ * @param {{initial:()=>any, apply:(state:any,events:any[])=>void}} consume
+ */
+export function cacheAdvance(cache,id,events,consume){
+  const at=cache.get(id);
+  const replaced=!at||events.length<at.cursor;
+  const state=replaced?consume.initial():at.state;
+  consume.apply(state,replaced?events:events.slice(at.cursor));
+  cache.set(id,{cursor:events.length,state});
+  return state;
+}
 // The retired OPS read tools stay recognised: a resumed session can replay their
 // results. Keeping the names here preserves the read-window protection those historical
 // entries had; dropping them let history hygiene excerpt a focused source window.
@@ -174,9 +195,11 @@ export function planContextPrune(message,reads,options){
   // A whole-result reduction has no per-window path, but the result itself names one.
   // Without this check the retention rule applied only to the nested-read branch, which
   // is why a complete source body could still be cut to head+tail in the flat branch.
+  // Every named path is checked, not only the first: a result can carry an old log entry
+  // and the source body it was run against, and retaining either one forbids the cut.
   if(!reads.length&&options.retainSource){
-    const named=/<path>([^<]+)<\/path>/u.exec(original)?.[1];
-    if(named&&options.retainSource(named))return null;
+    const named=[...original.matchAll(/<path>([^<]+)<\/path>/gu)].map(match=>match[1]);
+    if(named.some(file=>options.retainSource(file)))return null;
   }
   let content,ranges=[],dedupStats=[];
   if(reads.length){

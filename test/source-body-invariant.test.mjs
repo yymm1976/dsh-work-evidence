@@ -34,3 +34,15 @@ test('a non-source body keeps the old reduction',()=>{
   assert.ok(plan,'a listing still shrinks');
   assert.ok(plan.charsAfter<plan.charsBefore);
 });
+
+test('a flat result naming a retained path is not reduced even when another path is named first',()=>{
+  // A result can carry an old log entry plus the source body it was run against. Checking
+  // only the first <path> would let the retained body lose its middle.
+  const log=Array.from({length:200},(_,i)=>`old log line ${i} `+'z'.repeat(60)).join('\n');
+  const source=Array.from({length:200},(_,i)=>`source line ${i} `+'q'.repeat(60)).join('\n');
+  const message={role:'tool',content:[{type:'text',text:
+    `<path>old.log</path>\n${log}\n<path>target.py</path>\n${source}`}]};
+  const plan=planContextPrune(message,[],{seq:9,thresholdChars:8000,headChars:4096,tailChars:1024,
+    retainSource:file=>SOURCE_BODY_PATH.test(file??'')});
+  assert.equal(plan,null,'a retained path anywhere in the result forbids the cut');
+});

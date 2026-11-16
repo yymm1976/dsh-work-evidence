@@ -205,7 +205,11 @@ export function createContextEconomics(ctx,runtime){
     if(savedTokens<=0)reason='no-request-reduction';
     else if(emergency&&!auxiliaryUsage){allowed=true;reason='context-capacity';}
     else if(auxiliaryUsage&&auxiliaryCost===null)reason='auxiliary-price-or-usage-unavailable';
-    else if (exposureProven && cachedSuffixTokens === 0 && auxiliaryUsage === null) {allowed=true;reason='no-additional-previous-request-prefix-exposure';refillCost=0;breakEvenSteps=0;
+    else if (exposureProven && cachedSuffixTokens === 0 && auxiliaryUsage === null &&
+      // A zero-refill shortcut is only free when the session has not already been
+      // re-reading the body: a large revisit cost means the hidden middle comes back,
+      // and approving here would bypass the priced path entirely.
+      !(revisitCostTokens>0)) {allowed=true;reason='no-additional-previous-request-prefix-exposure';refillCost=0;breakEvenSteps=0;
       if(price)futureSaving=savedTokens*Math.min(price.input,price.cacheRead)*remainingSteps/1e6;}
     else if(cachedSuffixTokens!==null&&price){
       if(old?.usage?.cacheWriteTokens>0&&!finite(price.cacheWrite))reason='cache-write-price-unavailable';
@@ -431,18 +435,20 @@ export function createContextEconomics(ctx,runtime){
     let tokens,method;
     if(projected){
       const requestHeader=agent.session.requestHeader(),messagesTokens=projected.reduce((sum,message)=>sum+messageTokens(message),0),
-        // The observed row measured its own system and schema text; the current envelope
-        // must use the same additive basis, or the subtraction silently drops the system
-        // prompt and reports far less pressure than the request actually carries.
+        // The current envelope counts the LIVE tool schema, because a surface that grew
+        // after the observed request carries those tokens now. The previous envelope uses
+        // the stored schema weight, so an unchanged surface yields a zero delta and the
+        // existing estimate is preserved.
         system=observed?.systemTokens??0,
-        tools=observed?.toolSchemaTokens??textTokens(JSON.stringify(requestHeader?.tools??[])),
-        current=messagesTokens+system+tools;
+        liveTools=textTokens(JSON.stringify(requestHeader?.tools??[])),
+        previousTools=observed?.toolSchemaTokens??liveTools,
+        current=messagesTokens+system+liveTools;
       if(reported!==null&&observed){
         // The growth since the observed request is measured against THAT request's own
         // footprint. Using an older baseline would count the same growth twice when the
         // newer prompt already includes it. Only the calibration factor from `last` is
         // reused, because an incomplete observation has no usable output total.
-        const previous=(observed.weights??[]).reduce((sum,value)=>sum+value,0)+system+tools;
+        const previous=(observed.weights??[]).reduce((sum,value)=>sum+value,0)+system+previousTools;
         const factor=last?.factor??observed.factor??1;
         tokens=Math.max(0,reported+(current-previous)*factor);
       }else tokens=Math.max(reported??0,current);

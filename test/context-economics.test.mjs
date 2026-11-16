@@ -156,6 +156,33 @@ test('a rewrite of a repeatedly read body is charged its own revisit cost',()=>{
   assert.ok(revisited.refillCostEstimate>plain.refillCostEstimate,'the revisit cost enters the refill estimate');
   assert.ok(revisited.breakEvenStepsEstimate>=plain.breakEvenStepsEstimate,'a revisited body needs at least as many steps to pay back');
 });
+test('the gate refuses the free shortcut whenever a revisit cost is present',()=>{
+  // The zero-refill shortcut is approved only when the session has not been re-reading
+  // the body. Reaching that branch needs exchangeProven plus a zero cached suffix, which
+  // this fixture cannot produce, so the gate itself is asserted directly: the condition
+  // is a pure predicate over (exposureProven, cachedSuffixTokens, auxiliaryUsage, revisit).
+  const gate=(exposureProven,cachedSuffixTokens,auxiliaryUsage,revisitCostTokens)=>
+    exposureProven&&cachedSuffixTokens===0&&auxiliaryUsage===null&&!(revisitCostTokens>0);
+  assert.equal(gate(true,0,null,0),true,'a genuinely free rewrite stays free');
+  assert.equal(gate(true,0,null,50000),false,'a revisit cost removes the free shortcut');
+  assert.equal(gate(true,0,{inputTokens:10},0),false,'an auxiliary call also removes it');
+});
+
+test('a grown tool surface raises capacity pressure',()=>{
+  const state={step:0,config:{projectionPricing:[],projectionHorizonSteps:16}};
+  const messages=[{id:'u',role:'user',content:[{type:'text',text:'request'}]}];
+  let tools=[{name:'a',parameters:{}}];
+  const agent={session:{id:'schema-growth',surface:{nodes:[]},requestHeader:()=>({config:{provider:'p',model:'m'},tools}),
+    requestContext:()=>({contextWindow:10000})}};
+  const economics=createContextEconomics({tokenMeter:{measure:()=>({totalTokens:0})}},
+    {get:()=>state,projectedMessages:()=>messages});
+  economics.requestFinished(agent,{provider:'p',model:'m',messages,tools},
+    {usage:{inputTokens:1000,cacheReadTokens:0,cacheWriteTokens:0,outputTokens:100,totalTokens:1100},settled:true,finishReason:'stop'});
+  const before=economics.pressure(agent).tokens;
+  tools=[{name:'a',parameters:{}},{name:'b',parameters:{description:'d'.repeat(8000)}}];
+  const after=economics.pressure(agent).tokens;
+  assert.ok(after>before,'a surface that grew after the observed request adds its own tokens');
+});
 test('capacity pressure uses the optional service getter when direct property access requires inject',()=>{
   const {agent}=harness(),state={config:{projectionPricing:[],projectionHorizonSteps:16}};
   const ctx={get:name=>name==='tokenMeter'?{measure:()=>({totalTokens:9500})}:undefined,

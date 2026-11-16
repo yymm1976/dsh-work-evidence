@@ -37,7 +37,7 @@ import {createHostReferences} from './host-references.mjs';
 import {createNativeFiles} from './native-files.mjs';
 import {createEffectObserver} from './effect-observer.mjs';
 import {createHistoryCoordinator} from './history-coordinator.mjs';
-import {SOURCE_BODY_PATH,planContextPrune,prunableMessage,hasPruneProblem,readDispatch,historyReferences} from './context-pruning.mjs';
+import {SOURCE_BODY_PATH,cacheAdvance,planContextPrune,prunableMessage,hasPruneProblem,readDispatch,historyReferences} from './context-pruning.mjs';
 import {createHistoryHygiene} from "./history-hygiene.mjs";
 import {createReferenceContext} from './reference-context.mjs';
 import {createDisposalCoordinator} from './disposal-coordinator.mjs';
@@ -197,7 +197,7 @@ export function apply(ctx,config={}){
   const clearPluginState=agent=>{observationLedger.clear(agent);contextWindow.clear(agent);finalJson.clear(agent);handoffDelivery.clear(agent);
     // These caches answer "does this session still need this body", so they describe the
     // ledger that was just cleared and must not outlive it.
-    editedSources.delete(agent.session.id);supersededReads.delete(agent.session.id);readCountsCache.delete(agent.session.id);contextRetainedSources.delete(agent.session.id);};
+    editedSources.delete(agent.session.id);supersededCache.delete(agent.session.id);readCountsCache.delete(agent.session.id);contextRetainedSources.delete(agent.session.id);};
   const routeRead=createReadRouting(ctx,runtime,call,nativeFiles);
   const index=createSelfIndex(ctx,runtime,call),candidates=createCandidates(ctx,runtime,call),
     ptcPatterns=createPtcPatterns(ctx,runtime),ptcFastpath=createPtcFastpath(ctx,runtime,call),
@@ -205,7 +205,7 @@ export function apply(ctx,config={}){
     fileProfiler=createFileProfiler(ctx,runtime),structuredJson=createStructuredJson(ctx,runtime);
   // Keep general workflow guidance fixed; dynamic notices carry observed facts.
   ctx.systemPrompt.section({name:'work-evidence:task-flow',order:750,interpolate:false,text:''});
-  const contextPruning=new Set(),pendingContextPrunes=new Map(),preserveContextResults=new Set(),contextReadCalls=new Map(),contextRetainedSources=new Map(),editedSources=new Map(),supersededReads=new Map(),readCountsCache=new Map();
+  const contextPruning=new Set(),pendingContextPrunes=new Map(),preserveContextResults=new Set(),contextReadCalls=new Map(),contextRetainedSources=new Map(),editedSources=new Map(),supersededCache=new Map(),readCountsCache=new Map();
   const preserveContextResult=(sessionId,callId)=>{
     if(typeof callId!=='string'||!callId)return;
     preserveContextResults.add(sessionId+':'+callId);
@@ -229,23 +229,23 @@ export function apply(ctx,config={}){
   // investigation. Both facts are per-session and only grow, so the check is monotone.
   const editedSourceKeys=agent=>{
     const id=agent.session.id;
-    if(!editedSources.has(id)){
-      const keys=new Set();
-      for(const event of eventLog(agent.session)){
-        if(!['tool/call','tool/ptc-dispatch','tool/code-dispatch'].includes(event.type))continue;
-        const data=event.data??{};
-        if(!['edit','write','verified_exec'].includes(data.name))continue;
-        const args=argsOf(data.arguments);
-        if(typeof args.file_path==='string')keys.add(sourceKey(agent,args.file_path));
-        if(typeof args.path==='string')keys.add(sourceKey(agent,args.path));
-        for(const edit of Array.isArray(args.edits)?args.edits:[])
-          if(typeof edit?.file==='string')keys.add(sourceKey(agent,edit.file));
-        for(const file of Array.isArray(args.files)?args.files:[])
-          if(typeof file?.path==='string')keys.add(sourceKey(agent,file.path));
-      }
-      editedSources.set(id,keys);
-    }
-    return editedSources.get(id);
+    return advanceCache(id,editedSources,eventLog(agent.session),{
+      initial:()=>new Set(),
+      apply(keys,events){
+        for(const event of events){
+          if(!['tool/call','tool/ptc-dispatch','tool/code-dispatch'].includes(event.type))continue;
+          const data=event.data??{};
+          if(!['edit','write','verified_exec'].includes(data.name))continue;
+          const args=argsOf(data.arguments);
+          if(typeof args.file_path==='string')keys.add(sourceKey(agent,args.file_path));
+          if(typeof args.path==='string')keys.add(sourceKey(agent,args.path));
+          for(const edit of Array.isArray(args.edits)?args.edits:[])
+            if(typeof edit?.file==='string')keys.add(sourceKey(agent,edit.file));
+          for(const file of Array.isArray(args.files)?args.files:[])
+            if(typeof file?.path==='string')keys.add(sourceKey(agent,file.path));
+        }
+      },
+    });
   };
   // F2-C pruned 49 source-file bodies and then the model re-read 737,310 characters of
   // exactly the dropped middle (against 832,846 saved), so a source body was never a
@@ -254,26 +254,31 @@ export function apply(ctx,config={}){
   // Non-source blobs (listings, logs, generated data) keep the old behaviour.
   // The pattern itself lives in context-pruning.mjs so every prune entry point agrees.
   const isSourceBodyPath=file=>typeof file==='string'&&SOURCE_BODY_PATH.test(file);
+  // These three caches annotate the live session, so they must track it: computing once
+  // would freeze the first step's view and make a later complete read unable to supersede
+  // anything. Each keeps the number of session events it has consumed and only walks the
+  // new tail; the caches are monotone and never need a full rescan.
+  const advanceCache=(id,cache,events,consume)=>cacheAdvance(cache,id,events,consume);
   const supersededSourceKeys=agent=>{
     const id=agent.session.id;
-    if(!supersededReads.has(id)){
+    return advanceCache(id,supersededCache,eventLog(agent.session),{
+      initial:()=>new Map(),
       // For every source path, remember the newest seq whose read was complete. A body
       // recorded before that seq is a duplicate of one the model already has.
-      const latest=new Map();
-      for(const event of eventLog(agent.session)){
-        if(event.type!=='tool/result'||event.surfaceOp?.op==='replace')continue;
-        const message=event.data?.message;
-        if(!message||message.isError)continue;
-        const text=(message.content??[]).filter(block=>block?.type==='text').map(block=>block.text??'').join('');
-        const pathMatch=/<path>([^<]+)<\/path>/.exec(text);
-        if(!pathMatch)continue;
-        const complete=/\(End of file - total \d+ lines\)|<content complete="true"/.test(text);
-        if(!complete)continue;
-        latest.set(sourceKey(agent,pathMatch[1]),event.seq);
-      }
-      supersededReads.set(id,latest);
-    }
-    return supersededReads.get(id);
+      apply(latest,events){
+        for(const event of events){
+          if(event.type!=='tool/result'||event.surfaceOp?.op==='replace')continue;
+          const message=event.data?.message;
+          if(!message||message.isError)continue;
+          const text=(message.content??[]).filter(block=>block?.type==='text').map(block=>block.text??'').join('');
+          const pathMatch=/<path>([^<]+)<\/path>/.exec(text);
+          if(!pathMatch)continue;
+          const complete=/\(End of file - total \d+ lines\)/.test(text)||/<content complete="true"/.test(text);
+          if(!complete)continue;
+          latest.set(sourceKey(agent,pathMatch[1]),event.seq);
+        }
+      },
+    });
   };
   // How much of the region a rewrite would hide has this session already re-read? A file
   // whose rows were read twice is exactly the file whose hidden middle comes back, so its
@@ -295,20 +300,24 @@ export function apply(ctx,config={}){
   };
   const readCountsFor=agent=>{
     const id=agent.session.id;
-    if(!readCountsCache.has(id)){
-      const counts=new Map();
-      for(const event of eventLog(agent.session)){
-        if(event.type!=='tool/call')continue;
-        const data=event.data??{};
-        if(data.name!=='read')continue;
-        const target=argsOf(data.arguments).file_path;
-        if(typeof target!=='string')continue;
-        const key=sourceKey(agent,target);
-        counts.set(key,(counts.get(key)??0)+1);
-      }
-      readCountsCache.set(id,counts);
-    }
-    return readCountsCache.get(id);
+    return advanceCache(id,readCountsCache,eventLog(agent.session),{
+      initial:()=>new Map(),
+      apply(counts,events){
+        for(const event of events){
+          // Nested reads count too: on the PTC route every read beneath run_code arrives
+          // as a dispatch, and ignoring it left the revisit cost at zero exactly where
+          // the prune windows came from. A repeat of the same call is counted once.
+          if(!['tool/call','tool/ptc-dispatch','tool/code-dispatch'].includes(event.type))continue;
+          const data=event.data??{};
+          if(!['read','project_evidence'].includes(data.name))continue;
+          const args=argsOf(data.arguments);
+          const target=typeof args.file_path==='string'?args.file_path:typeof args.path==='string'?args.path:null;
+          if(typeof target!=='string')continue;
+          const key=sourceKey(agent,target);
+          counts.set(key,(counts.get(key)??0)+1);
+        }
+      },
+    });
   };
   function retainedSources(agent){
     if(!contextRetainedSources.has(agent.session.id)){
@@ -755,7 +764,7 @@ export function apply(ctx,config={}){
     const messages=[...await maintenance(payload),...taskFlow.beforeStep(payload.agent,decision.messages,locations)];
     return messages.length?{...decision,messages:[...decision.messages,...messages]}:decision;
   },{prepend:true});
-  ctx.on('agent/disposed',({agent})=>disposal.agentDisposed(agent.session.id,async()=>{await Promise.allSettled([...pendingSaves]);try{toolSurfaceDisposers.get(agent.session.id)?.dispose?.();}catch{}toolSurfaceDisposers.delete(agent.session.id);contextPruning.delete(agent.session.id);pendingContextPrunes.delete(agent.session.id);contextRetainedSources.delete(agent.session.id);editedSources.delete(agent.session.id);supersededReads.delete(agent.session.id);readCountsCache.delete(agent.session.id);for(const key of contextReadCalls.keys())if(key.startsWith(agent.session.id+':'))contextReadCalls.delete(key);for(const key of preserveContextResults)if(key.startsWith(agent.session.id+':'))preserveContextResults.delete(key);try{await retainedCompute.disposeAgent(agent);}catch(error){runtime.problem(state(agent),'retained-compute-cleanup',error.message);}await effects.disposeAgent(agent);historyCoordinator.disposeAgent(agent);workingSet.disposeAgent(agent);historyHygiene.disposeAgent(agent);contextEconomics.clear(agent);taskFlow.disposeAgent(agent);executionEvidence.disposeAgent(agent);runtime.dispose(agent.session.id);}));
+  ctx.on('agent/disposed',({agent})=>disposal.agentDisposed(agent.session.id,async()=>{await Promise.allSettled([...pendingSaves]);try{toolSurfaceDisposers.get(agent.session.id)?.dispose?.();}catch{}toolSurfaceDisposers.delete(agent.session.id);contextPruning.delete(agent.session.id);pendingContextPrunes.delete(agent.session.id);contextRetainedSources.delete(agent.session.id);editedSources.delete(agent.session.id);supersededCache.delete(agent.session.id);readCountsCache.delete(agent.session.id);for(const key of contextReadCalls.keys())if(key.startsWith(agent.session.id+':'))contextReadCalls.delete(key);for(const key of preserveContextResults)if(key.startsWith(agent.session.id+':'))preserveContextResults.delete(key);try{await retainedCompute.disposeAgent(agent);}catch(error){runtime.problem(state(agent),'retained-compute-cleanup',error.message);}await effects.disposeAgent(agent);historyCoordinator.disposeAgent(agent);workingSet.disposeAgent(agent);historyHygiene.disposeAgent(agent);contextEconomics.clear(agent);taskFlow.disposeAgent(agent);executionEvidence.disposeAgent(agent);runtime.dispose(agent.session.id);}));
   async function saveInterruption(agent,{turn,step,provider,reason,signal,observed}){
     const sessionId=agent.session.id,s=state(agent);
     if(!observed.active||s.notedTurn>=turn||s.savingTurn===turn||!/^[-a-zA-Z0-9_][-.a-zA-Z0-9_]{0,127}$/.test(sessionId))return;

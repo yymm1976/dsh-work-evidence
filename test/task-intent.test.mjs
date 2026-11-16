@@ -30,6 +30,12 @@ const CASES = [
   ["Please don't modify files. Explain the fix in src/a.js.", true, 'the fix is a noun in a second sentence'],
   ['Fix the function in src/a.js and explain the change.', false, 'a verb used as a verb is a request'],
   ['Read-only: do not touch src/a.js, only rename src/b.js.', false, 'a later rename is an affirmative request'],
+  ['不要改代码。', true, 'standalone 改 is a write verb in the initial gate'],
+  ['Do not modify src/b.js. Explain the patch and fix src/a.js.', false, 'a verb after a rejected noun match still counts'],
+  ['Do not modify src/a.js! Create src/b.js.', false, 'an exclamation mark ends a clause'],
+  ['Do not modify src/a.js? Create src/b.js.', false, 'a question mark ends a clause'],
+  ['Do not modify src/a.js. Fix src/never.js.', false, 'never inside a path is not a denial'],
+  ['Do not modify src/can-edit.js.', true, 'can inside a path is not an allowance'],
 ];
 
 for (const [request, expected, why] of CASES) {
