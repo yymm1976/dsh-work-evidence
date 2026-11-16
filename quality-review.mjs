@@ -261,6 +261,9 @@ function payloadFor(current,review,root){
   // Keep bounded successful native changes in sequence; an overwrite supersedes earlier text.
   // These are observed edits, never a claim that a complete current file was reconstructed.
   const sourceChanges=new Map();let changeAllowance=18000;
+  // Target paths per change record, so the evidence row can carry them at row level
+  // where the large-payload filter reads them.
+  const changeTargets=new Map();
   const sourceBudgets=new Map();
   for(const artifact of reviewArtifacts.filter(item=>checkArtifacts.includes(item))){
     const key=fileKey(artifact.path);if(key)sourceBudgets.set(key,3000);
@@ -304,7 +307,7 @@ function payloadFor(current,review,root){
       if(data.length>dataBudget)return false;
       changeAllowance-=data.length;
       for(const part of parts)sourceBudgets.set(part.file,part.budget-data.length);
-      sourceChanges.set(event.seq,data);seqs.add(event.seq);return true;
+      sourceChanges.set(event.seq,data);changeTargets.set(event.seq,targets);seqs.add(event.seq);return true;
     }
     const values=[{newText:call.name==='write'?callArgs.content:callArgs.new_string,oldText:callArgs.old_string}];
     if(values.some(value=>typeof value.newText!=='string'))return false;
@@ -321,7 +324,7 @@ function payloadFor(current,review,root){
     if(data.length>dataBudget)return false;
     changeAllowance-=data.length;
     for(const part of parts)sourceBudgets.set(part.file,part.budget-data.length);
-    sourceChanges.set(event.seq,data);seqs.add(event.seq);return true;
+    sourceChanges.set(event.seq,data);changeTargets.set(event.seq,filePaths(call));seqs.add(event.seq);return true;
   };
   const prioritizedArtifacts=[...reviewArtifacts.filter(item=>checkArtifacts.includes(item)),
     ...reviewArtifacts.filter(item=>!checkArtifacts.includes(item))];
@@ -390,8 +393,15 @@ function payloadFor(current,review,root){
     const limit=sourceReads.has(seq)?Math.min(12000,2000+sourceAllowance):2000;
     if(sourceReads.has(seq))sourceAllowance-=Math.max(0,Math.min(data.length,limit)-2000);
     if(!sourceChanges.has(seq)&&!requestSourceData.has(seq)&&data.length>limit){const head=Math.floor(limit*.7);data=data.slice(0,head)+' [middle truncated] '+data.slice(-(limit-head));}
-    evidence.push({seq,type:event.type,data,...(processProjection?{projection:'verified-process-facts'}:{}),...(requestSourceData.has(seq)?{sourceFiles:[requestSourceData.get(seq).path]}:
-      sourceReads.has(seq)?{sourceFiles:filePaths(fileCall(event))}:{})});
+    // The row-level sourceFiles is what belongs()/belongsToCheck() read when the
+    // payload is large enough to filter; a joined verified-edit record carries its
+    // targets here as well, or the filtered record cannot be associated with the
+    // source or check file it changed.
+    const rowFiles=requestSourceData.has(seq)?[requestSourceData.get(seq).path]
+      :sourceReads.has(seq)?filePaths(fileCall(event))
+      :changeTargets.get(seq)??null;
+    evidence.push({seq,type:event.type,data,...(processProjection?{projection:'verified-process-facts'}:{}),
+      ...(rowFiles?{sourceFiles:rowFiles}:{})});
   }
   return {priorRequests,requestSources:requestSections.map(({data,...item})=>item),request:{seq:request.seq,text:requestText},answer:{seq:assistant.seq,text:answer},
     observed:{mutation:review.mutation,artifacts:reviewArtifacts,executions,

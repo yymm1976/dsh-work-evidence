@@ -363,13 +363,19 @@ export function createObservationLedger(ctx,runtime,nativeFiles=null){
     // A dropped read still sits inside the outer JSON projection, and reading windows
     // out of that object would re-admit the pre-write body. The projection is left
     // untouched — it is the model's own result — but the dropped paths are carried to
-    // the window step, which skips them. Deleting inside the projection would also
-    // rewrite what the model sees, which is not this path's job.
+    // the window step, which skips them. Keys are resolved the same way the window
+    // paths are, because the read argument can be relative while the result path is an
+    // absolute realpath; comparing the raw forms would never match.
+    const pathKeyOf=value=>{
+      const resolved=relativePath(root,value);
+      return resolved?resolved.key:null;
+    };
     const droppedPaths=new Set(keptAll?[]:rawReads
       .filter(read=>!reads.includes(read))
       .map(read=>pathsFromArguments(read.arguments)[0])
       .filter(Boolean)
-      .map(value=>String(value).replaceAll('\\','/').toLowerCase()));
+      .map(pathKeyOf)
+      .filter(Boolean));
     if(batch&&sameJson(textBlocks(result.content),batch)){
       source={name:reads[0].name,arguments:{files:reads.map(read=>read.arguments)},value:batch};
     }else if(exec.name==='run_code'&&(source=renderedReads(reads,textBlocks(result.content)))){
@@ -386,8 +392,14 @@ export function createObservationLedger(ctx,runtime,nativeFiles=null){
     }
     const allWindows=collectReadWindows(projection??source.value,pathsFromArguments(source.arguments)[0]??null);
     // Drop the windows whose read was superseded by a later write in the same call.
+    // The comparison resolves each window path the same way the dropped set was built;
+    // the window path is the result's absolute realpath while the read argument was
+    // relative, so raw string equality would keep the pre-write window.
     const windows=droppedPaths.size
-      ?allWindows.filter(window=>!droppedPaths.has(String(window.path).replaceAll('\\','/').toLowerCase()))
+      ?allWindows.filter(window=>{
+        const key=pathKeyOf(window.path);
+        return !key||!droppedPaths.has(key);
+      })
       :allWindows;
     if(!windows.length)return skip('no-line-windows');
     for(const window of windows){

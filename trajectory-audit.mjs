@@ -13,8 +13,10 @@ export const ASSESSMENT_SCHEMA='work-evidence.task-assessment.v1';
 export const AUDIT_LABELS=Object.freeze(['W1','W2','W3','W4','W5','W6','W7','W8','Q1','Q2','Q3','Q4','Q5']);
 const READ=new Set(['read','project_evidence']);
 // Saved histories can still contain retired static tools; the offline audit keeps
-// recognising them so a repeated identical result is still reported.
-const STATIC_RESULTS=new Set([...READ,'glob','grep','ops_grep','ops_glob']); // READ already carries ops_read_files
+// recognising them so the W2 label check and the repeated-static-result candidate
+// still work. `ops_read_files` is listed explicitly: READ does not carry it, and an
+// earlier comment here claimed it did.
+const STATIC_RESULTS=new Set([...READ,'glob','grep','ops_grep','ops_glob','ops_read_files']);
 // The live surface registers only `write`/`edit`/`verified_exec` now.
 // `str_replace_editor` and the two ops_* names stay accepted because this audit
 // reads saved histories, including sessions produced while the OPS adapters

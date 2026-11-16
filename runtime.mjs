@@ -590,15 +590,18 @@ export function createRuntime(ctx,call,initial={}){
       const deliveredLines=(result.value?.lines?.length??0)>0||result.value?.totalLines===0;
       if(deliveredLines&&s.pendingRevisit?.size){
         const target=ledgerPath(s,args.file_path);
-        // A read can start before a write and finish after it. Its body then predates
-        // the write it would appear to confirm, so the obligation is only discharged
-        // when the read reports the revision the write recorded. Without a revision on
-        // either side the ordering is unproven, and the obligation stands.
+        const pending=target?s.pendingRevisit.get(target.key):null;
+        // A read can start before a write and finish after it, so its body can predate
+        // the write it appears to confirm. The native read result carries no revision
+        // (the version lives on the fs event), so ordering is decided by when the call
+        // was issued: an obligation armed for a later step cannot be discharged by a
+        // read that began earlier. A revision match, when both sides report one, is
+        // still the strongest evidence.
         const readRevision=revisionPattern.test(String(result.value?.version||result.value?.revision||''))
           ?String(result.value.version||result.value.revision):null;
-        const pending=target?s.pendingRevisit.get(target.key):null;
-        const sameRevision=!pending?.revision||!readRevision||pending.revision===readRevision;
-        if(target&&sameRevision)s.pendingRevisit.delete(target.key);
+        const revisionAgrees=!pending?.revision||!readRevision||pending.revision===readRevision;
+        const issuedAfterOrAt=pending?Number(s.step)>=Number(pending.atStep):true;
+        if(target&&revisionAgrees&&issuedAfterOrAt)s.pendingRevisit.delete(target.key);
       }
       recordObservation(s,exec,result,seq,{file:args.file_path,lineStart:args.offset||1,lineEnd:Number.isInteger(args.limit)?(args.offset||1)+args.limit-1:null});
     }
@@ -610,32 +613,36 @@ export function createRuntime(ctx,call,initial={}){
       !result.isError&&!['reference','reference-if-visible'].includes(result.value?.responseView?.kind)){
       // A per-file record only proves the file was read when it delivered something:
       // an offset past EOF returns an empty window, and an unavailable source returns
-      // state "unavailable". Neither is marked omitted, so without this check the
-      // obligation was cleared although no source was delivered.
-      const omitted=new Set(),delivered=new Set(),emptyFiles=new Set();
+      // state "unavailable". Neither delivers source, so without this check the
+      // obligation was cleared although nothing was read.
+      // Records carry an absolute path while args.files[] is normally workspace
+      // relative, so every path is resolved through ledgerPath and compared by key.
+      const omittedKeys=new Set(),deliveredKeys=new Set(),emptyKeys=new Set();
+      const resolveKey=value=>ledgerPath(s,value)?.key??null;
       const collect=value=>{
         if(!value||typeof value!=='object')return;
         if(Array.isArray(value)){for(const item of value)collect(item);return;}
         if(typeof value.path==='string'){
-          if(value.omitted===true)omitted.add(value.path);
-          else if(value.state==='unavailable')omitted.add(value.path);
-          else if(Array.isArray(value.lines)&&value.lines.length>0)delivered.add(value.path);
-          else if(value.totalLines===0||value.empty===true)emptyFiles.add(value.path);
+          const resolved=resolveKey(value.path);
+          if(resolved){
+            if(value.omitted===true||value.state==='unavailable')omittedKeys.add(resolved);
+            else if(Array.isArray(value.lines)&&value.lines.length>0)deliveredKeys.add(resolved);
+            else if(value.totalLines===0||value.empty===true)emptyKeys.add(resolved);
+          }
         }
         for(const key of ['sources','files','items','failures','searches'])if(value[key])collect(value[key]);
       };
       collect(result.value);
       for(const item of Array.isArray(args.files)?args.files:[]){
-        const path=item?.path;
-        if(typeof path!=='string'||omitted.has(path))continue;
-        // Delivery is matched by canonical path key, not by suffix: `ba.txt` must not
-        // count as delivery for `a.txt`. The record and the request are both resolved
-        // through ledgerPath so relative and absolute forms agree.
-        const requested=ledgerPath(s,path);
-        const deliveredKeys=new Set([...delivered,...emptyFiles].map(candidate=>ledgerPath(s,candidate)?.key).filter(Boolean));
-        const covered=Boolean(requested)&&deliveredKeys.has(requested.key);
-        if(!covered&&deliveredKeys.size)continue;
-        if(requested)s.pendingRevisit.delete(requested.key);
+        const requested=typeof item?.path==='string'?ledgerPath(s,item.path):null;
+        if(!requested)continue;
+        if(omittedKeys.has(requested.key))continue;
+        // Delivery must be recorded for this exact file. A suffix match would let
+        // `ba.txt` stand in for `a.txt`; a record set with no entry for this file
+        // means nothing was delivered for it.
+        const covered=deliveredKeys.has(requested.key)||emptyKeys.has(requested.key);
+        if(!covered&&(deliveredKeys.size||emptyKeys.size))continue;
+        s.pendingRevisit.delete(requested.key);
       }
     }
     if(['grep','glob'].includes(exec.name)){
