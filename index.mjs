@@ -1,5 +1,5 @@
 import {registerManagementTools} from './management-tools.mjs';
-import {registerSourceTools} from './source-tools.mjs';
+import {registerSourceTools,sourceDeclarationOutline} from './source-tools.mjs';
 import {registerPluginCommand} from './plugin-command.mjs';
 import {createFeatureControl} from './feature-control.mjs';
 import {isReadOnlyTaskRequest} from './task-intent.mjs';
@@ -8,6 +8,8 @@ import {isReadOnlyTaskRequest} from './task-intent.mjs';
 // let it supersede the earlier full body, and that body then became prunable — losing exactly
 // the text the clip hid. The same marker is recognised in evidence.mjs and dependency-source.mjs.
 const lineClipped=text=>/\.\.\. \(line truncated to \d+ chars\)/u.test(text);
+const numberedSourceRows=text=>[...text.matchAll(/^([1-9]\d*): ([^\r\n]*)$/gmu)]
+  .map(([,line,body])=>[Number(line),body]);
 import path from 'node:path';
 import fs from 'node:fs/promises';
 import {randomUUID} from 'node:crypto';
@@ -30,7 +32,7 @@ import {createEvidenceViews} from './evidence-view.mjs';
 import {createContextEconomics,messageTokens} from './context-economics.mjs';
 import {createRequestWorkingSet} from './request-working-set.mjs';
 import {createCompressionControl} from './compression-control.mjs';
-import {createTaskFlow,taskFlowGuidance,textPaths} from './task-flow.mjs';
+import {createTaskFlow,findBareReadme,taskFlowGuidance,textPaths} from './task-flow.mjs';
 import {exportTaskHandoff,createTaskHandoffDelivery} from './task-handoff.mjs';
 import {installUltraEffort} from './ultra-effort.mjs';
 import {nativeReasoningReplayRequest} from './native-reasoning-replay.mjs';
@@ -53,7 +55,7 @@ import {createQualityReview} from './quality-review.mjs';
 import {createCompletionNotice} from './completion-notice.mjs';
 import {installNativeProgramReferences} from './program-reference.mjs';
 import {installStructuredCalls} from './structured-calls.mjs';
-import {surfaceReferences,compactionActive,hasHistoricalReferences} from './visible-results.mjs';
+import {surfaceReferences,compactionActive,hasHistoricalReferences,rewriteSpacingReady} from './visible-results.mjs';
 
 export const name='work-evidence-local';
 export const inject=['tools','workingDirectory','agents','systemPrompt','llm','sessionPersistence','commands','sandboxPolicy'];
@@ -123,7 +125,6 @@ export function apply(ctx,config={}){
   const runtime=createRuntime(ctx,call,config),state=runtime.get;
   const disposal=createDisposalCoordinator(id=>runtime.dispose(id));
   installExecutionDescriptionCompatibility(ctx,runtime);
-  installNativeReadArgumentRecovery(ctx,runtime);
   const disposeUltra=installUltraEffort(ctx,{requestView:options=>nativeReasoningReplayRequest(ctx,runtime,options)});
   ctx.effect(()=>disposeUltra);
   const toolSurfaceDisposers=new Map(),taskSurfaceModes=new Map();
@@ -157,6 +158,8 @@ export function apply(ctx,config={}){
   runtime.canRecall=canRecall;
   const executionDependencies=createExecutionDependencies(nativeFiles);
   const taskFlow=createTaskFlow(ctx,runtime,{nativeFiles,call,executionDependencies});
+  const limitedSourceReads=new WeakSet();
+  installNativeReadArgumentRecovery(ctx,runtime,taskFlow.initialReadLimit,limitedSourceReads);
   const handoffDelivery=createTaskHandoffDelivery();
   const taskHandoff=async(agent,{signal,incremental,baseDeliveryId,...options}={})=>{
     const [hostTransfer]=await Promise.all([hostReferences.transfer(agent,signal),refreshExecutionEvidence(agent,signal)]);
@@ -195,9 +198,9 @@ export function apply(ctx,config={}){
     const agent=ctx.agents.get(id);return agent?{observability:effects.snapshot(agent,{detail}),coordination:historyCoordinator.summary(agent),workingSet:workingSet.metrics(agent),historyHygiene:historyHygiene.summary(agent),contextEconomics:contextEconomics.summary(agent),compression:{...compressionControl.metrics(agent),nativeHandoff:compactionHandoff.metrics(agent)},taskFlow:taskFlow.summary(agent),retainedCompute:retainedCompute.summary(agent),finalJson:finalJson.summary(agent),qualityReview:qualityReview.summary(agent),effortPolicy:{enabled:false,configuredEffort:agent.options?.reasoningEffort??null,selectedEffort:null,reason:'automatic-effort-disabled',classifierModelCalls:0},nativeExecution:executionEvidence.summary(agent)}:{};
   });
   observeRequests(ctx,runtime);
-  const evidenceViews=createEvidenceViews(ctx,runtime);
   const contextWindow=createContextWindow(ctx,runtime);contextWindow.observe();
   const observationLedger=createObservationLedger(ctx,runtime,nativeFiles);observationLedger.observe();
+  const evidenceViews=createEvidenceViews(ctx,runtime,{needsCurrentBody:observationLedger.needsCurrentBody});
   const historyCoordinator=createHistoryCoordinator(runtime,contextWindow,contextEconomics);runtime.historyCoordinator=historyCoordinator;
   const clearPluginState=agent=>{observationLedger.clear(agent);contextWindow.clear(agent);finalJson.clear(agent);handoffDelivery.clear(agent);
     // These caches answer "does this session still need this body", so they describe the
@@ -210,7 +213,7 @@ export function apply(ctx,config={}){
     fileProfiler=createFileProfiler(ctx,runtime),structuredJson=createStructuredJson(ctx,runtime);
   // Keep general workflow guidance fixed; dynamic notices carry observed facts.
   ctx.systemPrompt.section({name:'work-evidence:task-flow',order:750,interpolate:false,text:''});
-  const contextPruning=new Set(),pendingContextPrunes=new Map(),preserveContextResults=new Set(),contextReadCalls=new Map(),contextRetainedSources=new Map(),editedSources=new Map(),supersededCache=new Map(),readCountsCache=new Map();
+  const pendingContextPrunes=new Map(),preserveContextResults=new Set(),contextReadCalls=new Map(),contextRetainedSources=new Map(),editedSources=new Map(),supersededCache=new Map(),readCountsCache=new Map();
   const preserveContextResult=(sessionId,callId)=>{
     if(typeof callId!=='string'||!callId)return;
     preserveContextResults.add(sessionId+':'+callId);
@@ -290,7 +293,7 @@ export function apply(ctx,config={}){
             // offset 900 prints it too. Treating that as a complete body would let a tail
             // supersede the full read and then lose the middle. Line 1 must be present in the
             // SAME window, unless the producer states completeness explicitly.
-            const eofMarker=/\(End of file - total \d+ lines\)/u.test(window);
+            const eofMarker=/\(End of file - total (\d+) lines\)/u.exec(window);
             const startsAtLineOne=/(?:^|\n)1: /u.test(window);
             // A window can print line 1 and the EOF marker and still be missing text: the host
             // clips an over-long row and marks it `... (line truncated to N chars)`. Accepting
@@ -299,7 +302,9 @@ export function apply(ctx,config={}){
             const clipped=lineClipped(window);
             const complete=!clipped&&((eofMarker&&startsAtLineOne)||/<content complete="true"/u.test(window));
             if(!complete)continue;
-            latest.set(sourceKey(agent,pathMatch[1]),event.seq);
+            const rows=numberedSourceRows(window);
+            if(rows.length&&(!eofMarker||Number(eofMarker[1])===rows.length)&&rows.every(([line],index)=>line===index+1))
+              latest.set(sourceKey(agent,pathMatch[1]),{seq:event.seq,rows:new Map(rows)});
           }
         }
       },
@@ -352,10 +357,10 @@ export function apply(ctx,config={}){
           const data=event.data??{};
           if(!['read','project_evidence'].includes(data.name))continue;
           const args=argsOf(data.arguments);
-          const target=typeof args.file_path==='string'?args.file_path:typeof args.path==='string'?args.path:null;
-          if(typeof target!=='string')continue;
-          const key=sourceKey(agent,target);
-          counts.set(key,(counts.get(key)??0)+1);
+          const targets=data.name==='project_evidence'&&Array.isArray(args.files)?
+            args.files.map(file=>file?.path):[args.file_path??args.path];
+          const keys=new Set(targets.filter(target=>typeof target==='string'&&target.trim()).map(target=>sourceKey(agent,target)));
+          for(const key of keys)counts.set(key,(counts.get(key)??0)+1);
         }
       },
     });
@@ -367,8 +372,8 @@ export function apply(ctx,config={}){
         const data=event.data??{};
         if(!['tool/call','tool/ptc-dispatch','tool/code-dispatch'].includes(event.type))continue;
         const args=argsOf(data.arguments);
-        if(['work_exec','work_compute'].includes(data.name)||data.name==='work_recall'&&args.kind==='reference')preserveContextResult(agent.session.id,data.rootCallId??data.callId);
-        if(data.name==='work_recall'&&args.kind!=='reference'||data.name==='work_state'&&args.mode==='recall')retainRecalledSources(agent,args.seq);
+        if(['work_exec','work_compute'].includes(data.name)||data.name==='work_recall'&&(args.kind==='reference'||args.sourceIndex!==undefined))preserveContextResult(agent.session.id,data.rootCallId??data.callId);
+        if(data.name==='work_recall'&&args.kind!=='reference'&&args.sourceIndex===undefined||data.name==='work_state'&&args.mode==='recall')retainRecalledSources(agent,args.seq);
       }
     }
     return contextRetainedSources.get(agent.session.id);
@@ -417,120 +422,189 @@ export function apply(ctx,config={}){
     const s=state(agent);if(!runtime.isEnabled(agent)||!s.config.contextProtocol)return;
     const currentStep=event.data?.step;
     const pending=pendingContextPrunes.get(session.id)??new Map();
-    if(prunableMessage(message)&&!preserveContextResults.has(key)&&
-      textChars(message.content)>=s.config.contextPruneMinChars)pending.set(event.seq,{step:currentStep,reads});
+    if(!preserveContextResults.has(key)&&textChars(message?.content)>=s.config.contextPruneMinChars&&
+      prunableMessage(message))pending.set(event.seq,{step:currentStep,reads});
     if(pending.size)pendingContextPrunes.set(session.id,pending);
-    else pendingContextPrunes.delete(session.id);
-    const candidates=[...pending.entries()].filter(([seq,item])=>
-      seq!==event.seq&&Number.isInteger(item.step)&&Number.isInteger(currentStep)&&item.step<currentStep);
-    if(!candidates.length||contextPruning.has(session.id))return;
-    contextPruning.add(session.id);
-    queueMicrotask(()=>{
-      let pruned=0,charsRemoved=0;
-      try{
-        if(!runtime.isEnabled(agent)||compactionActive(session)||runtime.historyFullOutputRequested(agent))return;
-        const tokenMeter=ctx.get?.('tokenMeter');
-        const visible=new Set(session.surface.nodes);
-        const references=surfaceReferences(session);
-        if(references.opaque)return;
-        for(const [seq,item] of candidates){
-          if(references.targets.has(seq))continue;
-          pending.delete(seq);
-          const originalEvent=session.eventAt(seq);
-          if(!visible.has(seq)||originalEvent?.type!=='tool/result'||originalEvent.surfaceOp?.op==='replace')continue;
-          if(!prunableMessage(originalEvent.data?.message)||
-            preserveContextResults.has(session.id+':'+(originalEvent.data.message.source?.callId??originalEvent.data.message.toolCallId)))continue;
-          const original=session.deriveEventMessage(originalEvent);
-          const focus=new Set((taskFlow.phase(agent).focus??[]).map(file=>sourceKey(agent,file)));
-          const worked=editedSourceKeys(agent),superseded=supersededSourceKeys(agent);
-          const result=planContextPrune(original,item.reads,{
-            seq,thresholdChars:s.config.contextPruneMinChars,
-            headChars:s.config.contextPruneHeadChars,tailChars:s.config.contextPruneTailChars,
-            // A source body is the working object of a repair task, and F2-C shows the
-            // re-read it triggers costs nearly the whole saving. Keep it unless a later
-            // complete read of the same path already supersedes this copy.
-            retainSource:file=>{
-              const key=sourceKey(agent,file);
-              if(retainedSources(agent).has(key)||historyHygiene.retainsSource(agent,file)||focus.has(key)||worked.has(key))return true;
-              if(isSourceBodyPath(file)&&!(Number.isInteger(superseded.get(key))&&superseded.get(key)>seq))return true;
-              return false;
-            },
-          });
-          if(!result){effects.decide(agent,'contextPrune','not-applicable','no-safe-source-reduction',{seq});continue;}
-          if(!canRecall(agent)){
-            effects.decide(agent,'contextPrune','unavailable','historical-recall-unavailable',{seq});continue;
-          }
-          const economics=contextEconomics.remember(agent,contextEconomics.assess(agent,{
-            savedChars:result.charsBefore-result.charsAfter,changedSeq:seq,
-            savedTokensEstimate:Math.max(0,messageTokens(original)-messageTokens({...original,content:result.content})),
-            emergency:contextEconomics.pressure(agent).emergency,
-            // Rows of this result that the session has already re-read are a measured
-            // cost of hiding its middle, so they enter the forecast instead of being
-            // discovered after the fact. The body lookup needs the delivered text, not the
-            // message object: hashing the object yields "[object Object]" and never matches.
-            revisitCostTokens:revisitTokens(agent,result.ranges??[],bodyTextOf(original.content)),
-          }),'contextPrune');
-          effects.decide(agent,'contextPrune',economics.allowed?'approved':'deferred',economics.reason,{seq,economics});
-          if(!economics.allowed)continue;
-          const shadowedTokenCount=typeof tokenMeter?.estimateMessage==='function'?tokenMeter.estimateMessage(original):0;
-          if(compactionActive(session)||runtime.historyFullOutputRequested(agent))break;
-          session.append('compaction/prune',{
-            shadowedRange:{start:seq,end:seq},shadowedSeqs:[seq],shadowedTokenCount,
-          });
-          const replacement=session.append('tool/result',{
-            ...originalEvent.data,
-            message:{...original,content:result.content},
-          },{
-            surfaceOp:{op:'replace',startSeq:seq,endSeq:seq},sourceEventSeqs:[seq],
-          });
-          effects.rewrite(agent,{
-            feature:'contextPrune',afterMessage:replacement.data.message,beforeMessages:[original],
-            seq:replacement.seq,sourceSeqs:[seq],
-          });
-          if(result.dedupStats?.length)effects.decide(agent,'contextBlockDedup','applied','original-result-segments',{seq,segments:result.dedupStats});
-          pruned++;
-          charsRemoved+=result.charsBefore-result.charsAfter;
-        }
-        if(pruned){
-          s.metrics.contextProtocolPrunedResults+=pruned;
-          s.metrics.contextProtocolPrunedChars+=charsRemoved;
-          s.lastHistoryRewriteSeq=Math.max(s.lastHistoryRewriteSeq??-1,session.seq);
-          effects.decide(agent,'contextPrune','applied','large-result-middle-pruned',{
-            pruned,charsRemoved,thresholdChars:s.config.contextPruneMinChars,
-            headChars:s.config.contextPruneHeadChars,tailChars:s.config.contextPruneTailChars,
-          });
-          s.dirty=true;
-        }
-        if(!pending.size)pendingContextPrunes.delete(session.id);
-      }catch(error){runtime.problem(s,'context-protocol-prune',error.message);}
-      finally{contextPruning.delete(session.id);}
-    });
   });
+  function pruneAfterHost({agent,step,signal},generation){
+    const {session}=agent,pending=pendingContextPrunes.get(session.id),s=state(agent);
+    if(!pending?.size||signal.aborted||!runtime.isEnabled(agent)||!s.config.contextProtocol)return;
+    const visible=new Set(session.surface.nodes);
+    for(const seq of pending.keys())if(!visible.has(seq))pending.delete(seq);
+    if(!pending.size){pendingContextPrunes.delete(session.id);return;}
+    // Host pressure compaction runs inside pre-step. Do not start a second cache
+    // transition on the same boundary, even if the host left other candidates intact.
+    if(session.surface.contentGeneration!==generation||compactionActive(session)||
+      !rewriteSpacingReady(session,s)||runtime.historyFullOutputRequested(agent))return;
+    const candidates=[...pending.entries()].filter(([,item])=>Number.isInteger(item.step)&&item.step<step-1);
+    if(!candidates.length)return;
+    let pruned=0,charsRemoved=0;
+    try{
+      const tokenMeter=ctx.get?.('tokenMeter');
+      const references=surfaceReferences(session);
+      if(references.opaque)return;
+      const focus=new Set((taskFlow.phase(agent).focus??[]).map(file=>sourceKey(agent,file)));
+      const worked=editedSourceKeys(agent),superseded=supersededSourceKeys(agent);
+      const retained=retainedSources(agent),retryDelays=[4,8,16];
+      let emergency;
+      const underPressure=()=>emergency??=contextEconomics.pressure(agent).emergency;
+      for(const [seq,item] of candidates){
+        if(references.targets.has(seq))continue;
+        if(item.retryAt>step&&!underPressure())continue;
+        const originalEvent=session.eventAt(seq);
+        if(!visible.has(seq)||originalEvent?.type!=='tool/result'||originalEvent.surfaceOp?.op==='replace'){
+          pending.delete(seq);
+          continue;
+        }
+        if(runtime.isProjectionManaged(agent,seq)){
+          effects.decide(agent,'contextPrune','not-applicable','already-reduced-in-request-view',{seq});
+          pending.delete(seq);
+          continue;
+        }
+        if(!prunableMessage(originalEvent.data?.message)||
+          preserveContextResults.has(session.id+':'+(originalEvent.data.message.source?.callId??originalEvent.data.message.toolCallId))){
+          pending.delete(seq);
+          continue;
+        }
+        let original;
+        const getOriginal=()=>original??=session.deriveEventMessage(originalEvent);
+        const shouldRetain=file=>{
+          const key=sourceKey(agent,file);
+          if(retained.has(key)||historyHygiene.retainsSource(agent,file)||focus.has(key)||worked.has(key))return true;
+          if(!isSourceBodyPath(file))return false;
+          const newer=superseded.get(key);
+          if(!newer||newer.seq<=seq||!visible.has(newer.seq)||runtime.isProjectionManaged(agent,newer.seq))return true;
+          if(!item.sourceRows){
+            item.sourceRows=new Map();
+            for(const window of bodyTextOf(getOriginal().content).split(/(?=<path>)/u)){
+              const pathMatch=/<path>([^<]+)<\/path>/u.exec(window);
+              if(!pathMatch||!isSourceBodyPath(pathMatch[1]))continue;
+              const pathKey=sourceKey(agent,pathMatch[1]);
+              const entry=item.sourceRows.get(pathKey)??{rows:[],checkedSeq:null,matches:false};
+              entry.rows.push(...numberedSourceRows(window));
+              item.sourceRows.set(pathKey,entry);
+            }
+          }
+          const entry=item.sourceRows.get(key);
+          if(!entry?.rows.length)return true;
+          if(entry.checkedSeq!==newer.seq){
+            entry.checkedSeq=newer.seq;
+            entry.matches=entry.rows.every(([line,body])=>newer.rows.get(line)===body);
+          }
+          return !entry.matches;
+        };
+        if(item.sourceBlockers?.every(shouldRetain))continue;
+        item.sourceBlockers=null;
+        const sourceBlockers=new Set();
+        const result=planContextPrune(getOriginal(),item.reads,{
+          seq,thresholdChars:s.config.contextPruneMinChars,
+          headChars:s.config.contextPruneHeadChars,tailChars:s.config.contextPruneTailChars,
+          // A source body is the working object of a repair task, and F2-C shows the
+          // re-read it triggers costs nearly the whole saving. Keep it unless a later
+          // complete read of the same path already supersedes this copy.
+          retainSource:file=>{
+            const blocked=shouldRetain(file);
+            if(blocked)sourceBlockers.add(file);
+            return blocked;
+          },
+        });
+        if(!result){
+          if(sourceBlockers.size){
+            item.sourceBlockers=[...sourceBlockers];
+            effects.decide(agent,'contextPrune','deferred','source-retention-active',{seq});
+          }else{
+            pending.delete(seq);
+            effects.decide(agent,'contextPrune','not-applicable','no-safe-source-reduction',{seq});
+          }
+          continue;
+        }
+        if(!canRecall(agent)){
+          pending.delete(seq);
+          effects.decide(agent,'contextPrune','unavailable','historical-recall-unavailable',{seq});continue;
+        }
+        const economics=contextEconomics.remember(agent,contextEconomics.assess(agent,{
+          savedChars:result.charsBefore-result.charsAfter,changedSeq:seq,
+          savedTokensEstimate:Math.max(0,messageTokens(original)-messageTokens({...original,content:result.content})),
+          emergency:underPressure(),
+          // Rows of this result that the session has already re-read are a measured
+          // cost of hiding its middle, so they enter the forecast instead of being
+          // discovered after the fact. The body lookup needs the delivered text, not the
+          // message object: hashing the object yields "[object Object]" and never matches.
+          revisitCostTokens:revisitTokens(agent,result.ranges??[],bodyTextOf(original.content)),
+        }),'contextPrune');
+        if(!economics.allowed){
+          const retry=item.retries??0,delay=retryDelays[retry];
+          item.retries=retry+1;
+          item.retryAt=delay===undefined?null:step+delay;
+          if(delay===undefined)pending.delete(seq);
+          effects.decide(agent,'contextPrune','deferred',economics.reason,{seq,economics,retryAt:item.retryAt,retryExhausted:delay===undefined});
+          continue;
+        }
+        effects.decide(agent,'contextPrune','approved',economics.reason,{seq,economics});
+        const shadowedTokenCount=typeof tokenMeter?.estimateMessage==='function'?tokenMeter.estimateMessage(original):0;
+        session.append('compaction/prune',{
+          shadowedRange:{start:seq,end:seq},shadowedSeqs:[seq],shadowedTokenCount,
+        });
+        const replacement=session.append('tool/result',{
+          ...originalEvent.data,
+          message:{...original,content:result.content},
+        },{
+          surfaceOp:{op:'replace',startSeq:seq,endSeq:seq},sourceEventSeqs:[seq],
+        });
+        pending.delete(seq);
+        visible.delete(seq);
+        effects.rewrite(agent,{
+          feature:'contextPrune',afterMessage:replacement.data.message,beforeMessages:[original],
+          seq:replacement.seq,sourceSeqs:[seq],
+        });
+        if(result.dedupStats?.length)effects.decide(agent,'contextBlockDedup','applied','original-result-segments',{seq,segments:result.dedupStats});
+        pruned++;
+        charsRemoved+=result.charsBefore-result.charsAfter;
+      }
+      if(pruned){
+        s.metrics.contextProtocolPrunedResults+=pruned;
+        s.metrics.contextProtocolPrunedChars+=charsRemoved;
+        s.lastHistoryRewriteSeq=Math.max(s.lastHistoryRewriteSeq??-1,session.seq);
+        effects.decide(agent,'contextPrune','applied','large-result-middle-pruned',{
+          pruned,charsRemoved,thresholdChars:s.config.contextPruneMinChars,
+          headChars:s.config.contextPruneHeadChars,tailChars:s.config.contextPruneTailChars,
+        });
+        s.dirty=true;
+      }
+      if(!pending.size)pendingContextPrunes.delete(session.id);
+    }catch(error){runtime.problem(s,'context-protocol-prune',error.message);}
+  }
   const isReadOnlyRequest=isReadOnlyTaskRequest;
+  const sourceEvidenceRequest=/\bproject_evidence\b|\b(?:source archives?|dependency source(?: code)?|batch (?:source |file )?read(?:s|ing)?)\b|依赖(?:的)?源码|源码归档|批量(?:读取|查看)(?:源码|文件|区段)/iu;
+  const probeEvidenceRequest=/\b(?:work_probe|probe-[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12})\b/iu;
+  const historicalRecallRequest=/\bwork_recall\b|\bhistorical event\s*(?:#|:)?\s*[0-9]+\b|历史事件\s*(?:#|[:：])?\s*[0-9]+/iu;
   const surfaceModeForRequest=request=>{
     if(!isReadOnlyRequest(request))return 'writable';
     const paths=textPaths(request);
     const hasCode=paths.some(file=>/\.(?:[cm]?[jt]sx?|py|java|rs|go|c|cpp|h)$/iu.test(file));
+    if(paths.length===1&&hasCode&&findBareReadme(request))return 'read-only';
     return paths.length<=1||paths.length<=2&&!hasCode?'minimal':'read-only';
   };
   function classifyTaskSurface(agent,queued){
     let incoming=isUserRequestMessage(queued)?queued:null;
     if(!incoming){
       if(taskSurfaceModes.has(agent.session.id))return taskSurfaceModes.get(agent.session.id);
-      const log=eventLog(agent.session);
-      const last=log.findLast(event=>event.type==='user/message'&&isUserRequestMessage(event.data?.message??event.data));
-      incoming=last?.data?.message??last?.data;
+      incoming=runtime.currentRequest(agent);
     }
     if(!incoming)return taskSurfaceModes.get(agent.session.id)??null;
     const request=textOf(incoming);
     const mode=surfaceModeForRequest(request),previous=taskSurfaceModes.get(agent.session.id);
     taskSurfaceModes.set(agent.session.id,mode);
-    state(agent).taskSurfaceMode=mode;
-    if(previous&&previous!=='writable'&&mode==='writable'&&incoming.id)state(agent).taskSurfaceExpandedFor=incoming.id;
-    else if(mode==='writable')state(agent).taskSurfaceExpandedFor=null;
+    const s=state(agent);
+    s.taskSurfaceMode=mode;
+    s.taskSourceEvidenceRequested=sourceEvidenceRequest.test(request);
+    s.taskProbeRequested=probeEvidenceRequest.test(request);
+    s.taskHistoricalRecallRequested=historicalRecallRequest.test(request);
+    if(previous&&previous!=='writable'&&mode==='writable'&&incoming.id)s.taskSurfaceExpandedFor=incoming.id;
+    else if(mode==='writable')s.taskSurfaceExpandedFor=null;
     return mode;
   }
-  function applyToolSurface(agent){
+  function applyToolSurface(agent,{recoveredRead=false}={}){
     if(!agent?.ctx?.tools?.restrict)return;
     // rc.2 freezes admission before prompt assembly. An unread configuration
     // must not install a temporary disabled mask that this step cannot expand.
@@ -548,19 +622,23 @@ export function apply(ctx,config={}){
       }catch(error){runtime.problem(state(agent),'tool-surface',error.message);}
       return;
     }
-    const mode=taskSurfaceModes.get(agent.session.id),surface=base==='compact'?(mode==='read-only'||mode==='minimal'&&hasHistoricalReferences(agent)?'compact-read-only':mode==='minimal'?'compact-minimal':'compact'):base;
-    const config=state(agent).config;
+    const {config,taskSourceEvidenceRequested,taskProbeRequested,taskHistoricalRecallRequested}=state(agent);
+    const mode=taskSurfaceModes.get(agent.session.id);
+    const keepRecall=base==='compact'&&mode==='minimal'&&(taskHistoricalRecallRequested||recoveredRead||hasHistoricalReferences(agent));
+    const surface=base==='compact'?(mode==='read-only'||keepRecall?'compact-read-only':mode==='minimal'?'compact-minimal':'compact'):base;
     // verified_exec is advertised only when the native conditional-write backend
     // is enabled and the task surface can write. It has no other edit backend,
     // so advertising it otherwise would publish a tool that can only deopt.
     const nativeEditHidden=config.nativeVerifiedEdits?[]:['verified_exec'];
-    // evidenceViews/memberParsing/mavenSourceBinding are default-on and have no
-    // entry point other than project_evidence. Hiding that tool at the default
-    // compact surface left those switches on but unreachable.
-    const evidenceEntry=!['read-only','minimal'].includes(mode)&&
-      (config.evidenceViews||config.memberParsing||config.mavenSourceBinding)?'project_evidence':null;
+    // project_evidence is a read-only entry point for these features. An explicit
+    // source request can need it even when execution tools are hidden.
+    const includeEvidence=taskSourceEvidenceRequested||!['read-only','minimal'].includes(mode);
+    const evidenceEntry=includeEvidence&&(config.evidenceViews||config.memberParsing||config.mavenSourceBinding)?'project_evidence':null;
+    const includeProbe=base==='compact'&&config.executionTriage&&
+      (taskProbeRequested||mode==='writable'&&config.probeReplay);
     const exposedFeatures=[...(config.fileProfiling?['file_profile']:[]),...(config.structuredJson?['structured_json']:[]),
       ...(evidenceEntry?[evidenceEntry]:[]),
+      ...(includeProbe?['work_probe']:[]),
       ...(config.nativeVerifiedEdits&&!['read-only','minimal'].includes(mode)?['verified_exec']:[])];
     const readKey=exposedFeatures.join(',')+'|edits:'+nativeEditHidden.join(',');
     if(current?.surface===surface&&current.readKey===readKey)return;
@@ -585,13 +663,21 @@ export function apply(ctx,config={}){
   ctx.on('agent/inbox/claimed',({agent,message})=>{if(isUserRequestMessage(message)){classifyTaskSurface(agent,message);state(agent).claimedRequest=message;applyToolSurface(agent);}});
   for(const agent of ctx.agents?.list?.()??[])prepareSession(agent);
   ctx.on('system-prompt/assemble',async(_assembly,context,next)=>{
-    if(context?.agent){
+    const agent=context?.agent;
+    const claimedRequest=agent?state(agent).claimedRequest:null;
+    if(agent){
       const signal=context.signal?AbortSignal.any([context.signal,AbortSignal.timeout(10000)]):AbortSignal.timeout(10000);
       try{await runtime.init(context.agent,signal);await runtime.beginRequest(context.agent,signal);classifyTaskSurface(context.agent);applyToolSurface(context.agent);}catch(error){runtime.problem(state(context.agent),'session-prepare',error.message);}
     }
     const section=_assembly.sections.find(section=>section.name==='work-evidence:task-flow');
-    if(section)section.text=context?.agent&&runtime.isEnabled(context.agent)&&state(context.agent).config.stepPacing?
-      taskFlowGuidance(runtime.activeMode(context.agent),taskSurfaceModes.get(context.agent.session.id),state(context.agent).config):'';
+    if(section){
+      section.text='';
+      if(agent&&runtime.isEnabled(agent)&&state(agent).config.stepPacing){
+        const request=claimedRequest??runtime.currentRequest(agent);
+        section.text=taskFlowGuidance(runtime.activeMode(agent),taskSurfaceModes.get(agent.session.id),state(agent).config,
+          textOf(request));
+      }
+    }
     if(context?.agent)effects.instructions(context.agent,section?.text??'');
     if(context?.agent&&runtime.isEnabled(context.agent)&&state(context.agent).config.toolSurface==='compact'&&['read-only','minimal'].includes(taskSurfaceModes.get(context.agent.session.id))&&Array.isArray(_assembly.tools))
       _assembly.tools=_assembly.tools.filter(tool=>tool?.name!=='work_exec');
@@ -637,8 +723,19 @@ export function apply(ctx,config={}){
     const window=textWindow(r.value);
     return window?{state:'observed',...window,retrieveCurrent:{tool:'read',arguments:{file_path:full,offset,limit:limits.lines}}}:{path:full,state:'unknown',code:'UNRECOGNIZED_READ_RESULT'};
   }
+  const sourceSearchInclude='*.{java,js,mjs,cjs,ts,tsx,py,pyi,json,toml,gradle,kts}';
+  async function sourceSearchScope(root,requested,exec){
+    if(requested)return requested;
+    try{
+      const entry=await nativeFiles.stat(root,'src',exec.signal);
+      return entry.exists?'src':'.';
+    }catch(error){
+      exec.signal.throwIfAborted();
+      return ['FS_NOT_FOUND','ENOENT','ENOTDIR'].includes(error?.code)?'.':'src';
+    }
+  }
   async function search(pattern,scope,root,exec){
-    const r=await call('grep',{pattern,path:within(root,scope),include:'*.{java,js,mjs,cjs,ts,tsx,json,toml,gradle,kts}'},exec);
+    const r=await call('grep',{pattern,path:within(root,scope),include:sourceSearchInclude},exec);
     if(r.isError)return {state:'unavailable',code:r.error?.info?.code||r.error?.code||'SEARCH_FAILED',matches:[]};
     if(!Array.isArray(r.value?.matches))return {state:'unknown',code:'UNRECOGNIZED_SEARCH_RESULT',matches:[]};
     return {state:'observed',totalMatches:r.value.matches.length,truncated:r.value.matches.length>limits.matches,matches:r.value.matches.slice(0,limits.matches).map(m=>({path:m.path,lineNumber:m.lineNumber,line:String(m.line).slice(0,300),...(String(m.line).length>300?{lineTruncated:true}:{})}))};
@@ -650,11 +747,15 @@ export function apply(ctx,config={}){
   }
   async function sourceReferences(args,root,exec){
     const terms=[...new Set(args.members||[args.member||String(args.query).split(/[./]/).at(-1)])];
-    const scope=within(root,args.referenceScope||args.scope||'src');
+    const requested=args.referenceScope||args.scope;
+    const selectedScope=await sourceSearchScope(root,requested,exec);
+    const scope=within(root,selectedScope);
     const pattern='(^|[^A-Za-z0-9_$])(?:'+terms.map(literal).join('|')+')([^A-Za-z0-9_$]|$)';
-    const result=await call('grep',{path:scope,pattern},exec),data=result.value;
+    // Limit the implicit workspace scan to code and build files.
+    const include=!requested&&selectedScope==='.'?sourceSearchInclude:undefined;
+    const result=await call('grep',{path:scope,pattern,...(include?{include}:{})},exec),data=result.value;
     if(result.isError||!Array.isArray(data?.matches))return {state:'unavailable',scope,terms,matches:[],code:result.error?.code||'REFERENCE_SEARCH_UNAVAILABLE'};
-    return {state:'observed',scope,terms,
+    return {state:'observed',scope,terms,...(include?{include}:{}),
       matches:data.matches.filter(item=>typeof item?.path==='string'&&Number.isInteger(item.lineNumber)).slice(0,12).map(item=>({path:item.path,line:item.lineNumber,text:String(item.line||'').slice(0,500)})),
       truncated:data.matches.length>12||data.truncated===true,
       coverage:'Bounded textual references by name, including possible declarations or unrelated names. Not a resolved call graph; an empty result does not prove no caller.'};
@@ -664,7 +765,7 @@ export function apply(ctx,config={}){
     return {status:'disabled',reason:!s.workspaceConfigValid?'invalid-configuration':!(s.sessionEnabledOverride??s.config.enabled)?'session-disabled':'aggressive-mode-disabled',tool:name,sessionId:s.id,version:VERSION,effective:false,
       note:'The plugin is disabled for this session. A user can enable it with /work-evidence on; tool results do not authorize changing that choice.'};
   }
-  registerSourceTools({ctx,nativeFiles,runtime,state,effects,evidenceViews,index,candidates,call,read,search,snippets,sourceReferences,disabledResult,output,parameters});
+  registerSourceTools({ctx,nativeFiles,runtime,state,effects,evidenceViews,index,candidates,call,read,search,snippets,sourceReferences,sourceSearchScope,disabledResult,output,parameters});
   registerManagementTools({ctx,runtime,state,effects,available,featureControl,capabilityDiagnostic,contextEconomics,taskFlow,taskHandoff,retainedCompute,finalJson,qualityReview,executionEvidence,executionDependencies,refreshExecutionEvidence,hostReferences,workingSet,compressionControl,compactionHandoff,contextWindow,observationLedger,historyCoordinator,clearPluginState,index,candidates,ptcPatterns,ptcFastpath,verifiedExec,fileProfiler,structuredJson,preserveContextResult,retainRecalledSources,hasHistoricalReferences,applyToolSurface,call,disabledResult,output,COMPACT_HIDDEN_TOOLS,assertParameterBounds,parameters});
   ctx.on('tools/result',(exec,result)=>{
     taskFlow.observe(exec,result);
@@ -730,6 +831,23 @@ export function apply(ctx,config={}){
     const routed=await routeRead(exec);
     if(routed){effects.decide(exec.agent,'archive',routed.isError?'failed':'applied',routed.isError?'archive-read-failed':'archive-path-routed');return routed;}
     const result=await next();
+    if(limitedSourceReads.has(exec)&&!result.isError&&typeof exec.deferContext==='function'&&!exec.signal.aborted){
+      const window=result.value;
+      if(/\.(?:pyi?|[cm]?[jt]sx?)$/iu.test(window?.path??'')&&Array.isArray(window?.lines)&&
+        window.lines.at(-1)?.number<window.totalLines&&taskFlow.reserveSourceOutline(exec.agent,window.path)){
+        try{
+          const outline=await sourceDeclarationOutline(state(exec.agent).root,window,exec,call);
+          if(outline&&!exec.signal.aborted){
+            const text='[work-evidence] '+JSON.stringify(outline.file)+' 首读之后的文本声明行号。可沿所需声明读取正文。'+
+              (outline.omitted?'省略 '+outline.omitted+' 条。':'')+'\n'+outline.entries.map(([line,name])=>line+' '+name).join('\n');
+            exec.deferContext({id:randomUUID(),role:'user',source:{kind:'work-evidence-source-outline'},content:[{type:'text',text}]});
+            effects.decide(exec.agent,'stepPacing','applied','source-declaration-outline',{file:outline.file,count:outline.entries.length,omitted:outline.omitted});
+          }
+        }catch(error){
+          if(!exec.signal.aborted)runtime.problem(state(exec.agent),'source-outline',String(error.message??error).slice(0,180));
+        }
+      }
+    }
     if(nested.has(exec.callId))return result;
     const recovery=recoveryFor(exec.name,exec.arguments,result);
     if(recovery?.automaticAllowed&&state(exec.agent).config.readArgumentRecovery){
@@ -780,6 +898,9 @@ export function apply(ctx,config={}){
     // The native post-execution seam preserves the validated value and outcome.
     // Around-dispatch content edits would be regenerated from the value.
     if(recovered===result&&!sourceContext&&!reportContext&&!parseContext&&!scriptReferenceContext&&!shellContext)return decision;
+    // The next tool set resolves before the pre-step hook. Make the history
+    // underlying this recovery available before that resolution.
+    if(recovered!==result)applyToolSurface(exec.agent,{recoveredRead:true});
     return {...decision,...(recovered===result?{}:{content:recovered.content}),
       ...(sourceContext||reportContext||parseContext||scriptReferenceContext||shellContext?{additionalContexts:[...(decision.additionalContexts??[]),...[sourceContext,reportContext,parseContext,scriptReferenceContext,shellContext].filter(Boolean)]}:{})};
   },{prepend:true});
@@ -793,14 +914,20 @@ export function apply(ctx,config={}){
     await effects.load(payload.agent);
     if(toolModeFor(ctx,payload.agent)==='ptc'){
       const generation=payload.agent.session.surface.contentGeneration;
-      let decision=await next();if(decision.kind==='enter')decision=historyCoordinator.beforeStep(payload,decision,generation);
+      let decision=await next();if(decision.kind==='enter'){
+        pruneAfterHost(payload,generation);
+        decision=historyCoordinator.beforeStep(payload,decision,generation);
+      }
       const s=state(payload.agent);if(decision.kind!=='enter')return decision;
       const locations=await taskFlow.startupPaths(payload.agent,decision.messages,payload.signal);
       const messages=[...(s.queuedMessages??[]),...taskFlow.beforeStep(payload.agent,decision.messages,locations)];s.queuedMessages=[];
       return messages.length?{...decision,messages:[...decision.messages,...messages]}:decision;
     }
     const generation=payload.agent.session.surface.contentGeneration;
-    let decision=await next();if(decision.kind==='enter')decision=historyCoordinator.beforeStep(payload,decision,generation);
+    let decision=await next();if(decision.kind==='enter'){
+      pruneAfterHost(payload,generation);
+      decision=historyCoordinator.beforeStep(payload,decision,generation);
+    }
     if(decision.kind!=='enter')return decision;
     const locations=await taskFlow.startupPaths(payload.agent,decision.messages,payload.signal);
     // Both surfaces must use the SAME set of notices. The PTC branch above drains
@@ -814,14 +941,14 @@ export function apply(ctx,config={}){
     const messages=[...queued,...await maintenance(payload),...taskFlow.beforeStep(payload.agent,decision.messages,locations)];
     return messages.length?{...decision,messages:[...decision.messages,...messages]}:decision;
   },{prepend:true});
-  ctx.on('agent/disposed',({agent})=>disposal.agentDisposed(agent.session.id,async()=>{await Promise.allSettled([...pendingSaves]);try{toolSurfaceDisposers.get(agent.session.id)?.dispose?.();}catch{}toolSurfaceDisposers.delete(agent.session.id);contextPruning.delete(agent.session.id);pendingContextPrunes.delete(agent.session.id);contextRetainedSources.delete(agent.session.id);editedSources.delete(agent.session.id);supersededCache.delete(agent.session.id);readCountsCache.delete(agent.session.id);for(const key of contextReadCalls.keys())if(key.startsWith(agent.session.id+':'))contextReadCalls.delete(key);for(const key of preserveContextResults)if(key.startsWith(agent.session.id+':'))preserveContextResults.delete(key);try{await retainedCompute.disposeAgent(agent);}catch(error){runtime.problem(state(agent),'retained-compute-cleanup',error.message);}await effects.disposeAgent(agent);historyCoordinator.disposeAgent(agent);workingSet.disposeAgent(agent);historyHygiene.disposeAgent(agent);contextEconomics.clear(agent);taskFlow.disposeAgent(agent);executionEvidence.disposeAgent(agent);runtime.dispose(agent.session.id);}));
+  ctx.on('agent/disposed',({agent})=>disposal.agentDisposed(agent.session.id,async()=>{await Promise.allSettled([...pendingSaves]);try{toolSurfaceDisposers.get(agent.session.id)?.dispose?.();}catch{}toolSurfaceDisposers.delete(agent.session.id);pendingContextPrunes.delete(agent.session.id);contextRetainedSources.delete(agent.session.id);editedSources.delete(agent.session.id);supersededCache.delete(agent.session.id);readCountsCache.delete(agent.session.id);for(const key of contextReadCalls.keys())if(key.startsWith(agent.session.id+':'))contextReadCalls.delete(key);for(const key of preserveContextResults)if(key.startsWith(agent.session.id+':'))preserveContextResults.delete(key);try{await retainedCompute.disposeAgent(agent);}catch(error){runtime.problem(state(agent),'retained-compute-cleanup',error.message);}await effects.disposeAgent(agent);historyCoordinator.disposeAgent(agent);workingSet.disposeAgent(agent);historyHygiene.disposeAgent(agent);contextEconomics.clear(agent);taskFlow.disposeAgent(agent);executionEvidence.disposeAgent(agent);runtime.dispose(agent.session.id);}));
   async function saveInterruption(agent,{turn,step,provider,reason,signal,observed}){
     const sessionId=agent.session.id,s=state(agent);
     if(!observed.active||s.notedTurn>=turn||s.savingTurn===turn||!/^[-a-zA-Z0-9_][-.a-zA-Z0-9_]{0,127}$/.test(sessionId))return;
     s.savingTurn=turn;
     try{
-      const root=await ctx.workingDirectory.ensure(agent,signal);
-      const file=within(root,path.join('.dsh','work-evidence',sessionId+'-interrupted.md'));
+      if(!s.telemetryDir)throw new Error('No session storage outside the workspace');
+      const file=path.join(s.telemetryDir,sessionId+'-interrupted.md');
       const code=String(reason).slice(0,100);
       const content=`# 工作中断或交付记录缺失\n\n会话：${sessionId}\n轮次：${turn}，步骤：${step??'未提供'}\n提供方：${provider||'见原会话'}\n原生状态：${code}\n\n## 已观察事实\n\n原生执行出现所列结束状态，或本轮没有成功写入work_report。此记录由插件确定性写入，没有新增模型调用，没有宣告任务完成。详细事件保留在原生会话。\n\n## 已有工作记录\n\n${observed.lastReport||'当前插件生命周期内未观察到成功的work_report写入。'}\n\n## 仍未验证／未完成\n\n业务完成程度未知；继续时先读当前项目工作页、原会话末段工具结果和上列工作记录，不把中断或缺少报告当作完成。\n\n近期成功写入：${JSON.stringify(observed.writes)}\n近期工具失败：${JSON.stringify(observed.failures.map(f=>({tool:f.tool,code:f.code,callId:f.callId})))}\n`;
       signal.throwIfAborted();
@@ -842,6 +969,14 @@ export function apply(ctx,config={}){
   ctx.on('agent/request-error',async(payload,next)=>{
     const action=await next();
     if(action?.kind==='retry'||payload.signal.aborted)return action;
+    if(payload.failure?.code==='MALFORMED_RESPONSE'&&runtime.isEnabled(payload.agent)){
+      const s=state(payload.agent);
+      if(!s.malformedResponseRetry){
+        s.malformedResponseRetry=true;s.dirty=true;
+        runtime.effects?.decide(payload.agent,'failureAdvice','applied','malformed-tool-arguments-no-dispatch');
+        return {kind:'retry',reason:'malformed tool arguments were rejected before dispatch; retry once without replaying a tool'};
+      }
+    }
     await trackedSave(payload.agent,{turn:payload.turn,step:payload.step,provider:payload.provider,reason:payload.failure?.code||payload.failure?.kind||'request-failed',signal:payload.signal});
     return action;
   });

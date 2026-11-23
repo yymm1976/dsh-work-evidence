@@ -71,6 +71,7 @@ export function inlineScriptEventRef(session,callId){
   return event?'event:'+event.seq:null;
 }
 const DECLARED_EXECUTABLE=/\b(?:existing|installed|available)\b|(?:已有|现有|已经安装|已安装|可用)/iu;
+const USE_PREVIOUS_EXECUTABLE=/(?:可(?:以)?|请|应|须|必须)(?:直接)?(?:使用|调用|执行)(?:该|此|上述)(?:路径|解释器)|\b(?:can|may|should|must|please)\s+(?:directly\s+)?(?:use|invoke|run)\s+(?:this|that|the above)\s+(?:path|interpreter)\b/iu;
 const PATH_PERMISSION=/(?:改用|切换到|回退到|使用|采用|用)\s*PATH\b|(?:use|fall\s*back\s+to|switch\s+to)\s+(?:the\s+)?PATH\b|\bor\s+(?:the\s+)?PATH\b/giu;
 const PATH_PROHIBITION=/(?:不要|请勿|禁止|do not|don't|must not|never)[^。；;\n]{0,24}$/iu;
 const PATH_CONTRAST=/(?:\bbut\b|\binstead\b|\brather\b|而是|但是|不过|却|转而)/iu;
@@ -93,24 +94,43 @@ function executablePath(value,runtime){
   const basename=path.split(/[\\/]/u).at(-1);
   return (runtime==='python'?pythonExecutable:nodeExecutable).test(basename)?path:null;
 }
+const CJK_RUNTIME_DECLARATION=/^\s*(?:本机|当前环境)?\s*(?:已有|现有|已经安装|已安装)\s*(python|node(?:\.js)?)(?:\s+v?\d+(?:\.\d+)*)?\s*[,，]$/iu;
+const EN_RUNTIME_DECLARATION=/^\s*(python|node(?:\.js)?)(?:\s+v?\d+(?:\.\d+)*)?\s+is\s+(?:already\s+)?(?:installed|available)\s*[,，]$/iu;
+const EXECUTABLE_PATH_LABEL=/^\s*(?:路径\s*(?:为|是|[:：])|(?:its|the)\s+path\s*(?:is\b|:))/iu;
 function declaredPathFacts(text,runtime){
   const all=new Map(),declared=new Map(),positive=new Map();let negated=false,pathFallbackAllowed=false;
-  const windows=/[A-Za-z]:[\\/](?:[^\r\n"'`<>|?*:\\/]+[\\/])*(?:python(?:3(?:\.\d+)?)?(?:\.exe)?|node(?:\.exe)?)(?![A-Za-z0-9_\\/-]|\.[A-Za-z0-9_-])/giu;
-  const posix=/(?<![\w.:\\/])\/(?:[^\r\n"'`<>|?*\\/\s]+[\\/])*(?:python(?:3(?:\.\d+)?)?(?:\.exe)?|node(?:\.exe)?)(?![A-Za-z0-9_\\/-]|\.[A-Za-z0-9_-])/giu;
+  // Scan both path forms together so a Windows path consumes its POSIX-looking suffix.
+  const unquoted=/(?:[A-Za-z]:[\\/](?:[^\r\n"'`<>|?*:\\/]+[\\/])*|(?<![\w.:\\/])\/(?:[^\r\n"'`<>|?*\\/\s]+[\\/])*)(?:python(?:3(?:\.\d+)?)?(?:\.exe)?|node(?:\.exe)?)(?![A-Za-z0-9_\\/-]|\.[A-Za-z0-9_-])/giu;
   const quoted=/(["'`])([^\r\n]*?)\1/gu;
-  for(const clause of String(text??'').split(/\r?\n|(?<=[!?;。！？；，,])|(?<=\.)(?=\s)/u)){
+  let previousExecutable=null,previousClause='';
+  for(const clause of String(text??'').split(/(\r?\n)|(?<=[!?;。！？；，,])|(?<=\.)(?=\s)/u).filter(Boolean)){
+    const prior=previousClause;
+    previousClause=clause;
+    if(!clause.trim()){if(clause.includes('\n'))previousExecutable=null;continue;}
     const quotedPaths=[...clause.matchAll(quoted)].map(match=>executablePath(match[2],runtime)).filter(Boolean);
-    const views=quotedPaths.length?[]:[windows,posix];
-    const paths=quotedPaths.concat(views.flatMap(view=>[...clause.matchAll(view)].map(match=>executablePath(match[0],runtime))).filter(Boolean));
+    const paths=quotedPaths.length?quotedPaths:[...clause.matchAll(unquoted)].map(match=>executablePath(match[0],runtime)).filter(Boolean);
     const denied=NEGATED_EXECUTABLE.test(clause);
     if(pathFallbackAllowedIn(clause))pathFallbackAllowed=true;
-    if(!paths.length)continue;
+    if(!paths.length){
+      if(previousExecutable&&USE_PREVIOUS_EXECUTABLE.test(clause)){
+        if(denied)negated=true;
+        else if(!declared.has(previousExecutable.key))declared.set(previousExecutable.key,previousExecutable.path);
+      }
+      previousExecutable=null;
+      continue;
+    }
+    previousExecutable=null;
+    const namedRuntime=paths.length===1&&EXECUTABLE_PATH_LABEL.test(clause)&&!NEGATED_EXECUTABLE.test(prior)
+      ?(CJK_RUNTIME_DECLARATION.exec(prior)??EN_RUNTIME_DECLARATION.exec(prior))?.[1]?.toLowerCase()
+      :null;
+    const linkedDeclaration=namedRuntime===runtime||runtime==='node'&&namedRuntime==='node.js';
     for(const candidate of paths){
       const key=/^[A-Za-z]:/u.test(candidate)?candidate.replaceAll('/','\\').toLowerCase():candidate;
       if(!all.has(key))all.set(key,candidate);
       if(denied){negated=true;continue;}
       if(!positive.has(key))positive.set(key,candidate);
-      if(DECLARED_EXECUTABLE.test(clause)&&!declared.has(key))declared.set(key,candidate);
+      if(paths.length===1)previousExecutable={key,path:candidate};
+      if((linkedDeclaration||DECLARED_EXECUTABLE.test(clause))&&!declared.has(key))declared.set(key,candidate);
     }
   }
   return {all:[...all.values()],declared:[...declared.values()],positive:[...positive.values()],negated,pathFallbackAllowed};
@@ -224,7 +244,7 @@ export function declaredInlineExecutable(session,runtime){
 }
 
 /** Reconstruct explicitly referenced scripts from this session's original calls. */
-export function resolveInlineScript(input,session,signal,{nativeShellScriptReuse=false}={}){
+export function resolveInlineScript(input,session,signal,{nativeShellScriptReuse=false,root}={}){
   const events=typeof input?.scriptRef==='string'?eventLog(session):[],calls=new Map(),resultExecutables=new Map(),resultHostRuntimes=new Map();
   for(const event of events){
     const data=event.data??{};
@@ -247,9 +267,9 @@ export function resolveInlineScript(input,session,signal,{nativeShellScriptReuse
     if(hostRuntime)resultHostRuntimes.set(id,hostRuntime);
   }
   const eventRefs=new Map(events.filter(event=>CALL_EVENT_TYPES.has(event.type)&&
-    (event.data?.name==='work_exec'||nativeShellScriptReuse&&event.data?.name==='bash')&&Number.isSafeInteger(event.seq)&&event.seq>=0)
+    (event.data?.name==='work_exec'||nativeShellScriptReuse&&NATIVE_SHELLS.includes(event.data?.name))&&Number.isSafeInteger(event.seq)&&event.seq>=0)
     .map(event=>['event:'+event.seq,eventCallId(event.type,event.data)]).filter(([,id])=>typeof id==='string'&&calls.has(id)));
-  try{return resolveIndexedScript(input,calls,resultExecutables,resultHostRuntimes,eventRefs,signal,nativeShellScriptReuse);}catch(error){
+  try{return resolveIndexedScript(input,calls,resultExecutables,resultHostRuntimes,eventRefs,signal,nativeShellScriptReuse,root);}catch(error){
     if(error.code!=='WORK_EXEC_SCRIPT_REF_NOT_FOUND')throw error;
     const request=events.findLast(event=>event.type==='user/message'&&isUserRequestMessage(messageOf(event)));
     const requestedRuntime=input.runtime??input.language,available=[];
@@ -291,7 +311,7 @@ function scriptEditMismatch(code,edit,editIndex,scriptRef){
     {code:'WORK_EXEC_SCRIPT_EDIT_MISMATCH',editMismatch:detail});
 }
 
-function resolveIndexedScript(input,calls,resultExecutables,resultHostRuntimes,eventRefs,signal,allowNativeShell=false){
+function resolveIndexedScript(input,calls,resultExecutables,resultHostRuntimes,eventRefs,signal,allowNativeShell=false,root){
   const chain=[],seen=new Set(),sourceCallIds=[];let candidate=input,callId=null,runtime;
   let shellSource=null;
   while(true){
@@ -316,13 +336,13 @@ function resolveIndexedScript(input,calls,resultExecutables,resultHostRuntimes,e
     seen.add(ref);
     sourceCallIds.push(ref);
     const previous=calls.get(ref);
-    if(!previous||previous.name!=='work_exec'&&!(allowNativeShell&&previous.name==='bash'))
+    if(!previous||previous.name!=='work_exec'&&!(allowNativeShell&&NATIVE_SHELLS.includes(previous.name)))
       throw Object.assign(new Error('scriptRef does not identify a supported original program in this session'),{code:'WORK_EXEC_SCRIPT_REF_NOT_FOUND'});
-    if(previous.name==='bash'){
-      const program=nativeShellScript(previous.name,previous.args);
+    if(previous.name!=='work_exec'){
+      const program=nativeShellScript(previous.name,previous.args,root);
       if(!program)throw Object.assign(new Error('The recorded Shell command is not one literal supported Python/Node stdin program.'),{code:'WORK_EXEC_SHELL_REF_UNSUPPORTED'});
       const {nativeArguments,...script}=program;
-      shellSource={tool:'bash',callId:ref,seq:previous.seq,nativeArguments};
+      shellSource={tool:previous.name,callId:ref,seq:previous.seq,nativeArguments};
       candidate=script;
     }else candidate=previous.args;
     callId=ref;

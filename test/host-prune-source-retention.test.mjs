@@ -110,6 +110,54 @@ test('an unmarked source body is recognised without its path extension',async()=
   assert.ok(third.includes(DEEP_MARKER),'assignment-dense output is treated as source');
 });
 
+for(const changed of [false,true])test(`a deferred source read requires a complete later copy with matching text (changed=${changed})`,async()=>{
+  const file='module_a.py',body=assignmentBody();
+  const freePrice=[{...price[0],input:0,cacheRead:0,output:0}];
+  const host=await startHost({workspace:{projectionPricing:freePrice,ledgerReceipt:false},script:async(_options,n)=>{
+    if(n===1||n===3){
+      if(n===3&&changed)await fs.writeFile(path.join(host.cwd,file),body.replace(DEEP_MARKER,'updated_branch(200'));
+      return [tool('read',{file_path:file})];
+    }
+    return n===2?[tool('read',{file_path:'notes.txt'})]:[text('完成。')];
+  }});
+  try{
+    await fs.writeFile(path.join(host.cwd,file),body);
+    await fs.writeFile(path.join(host.cwd,'notes.txt'),'notes\n');
+    const agent=await host.createAgent('max');
+    await host.send(agent,'读取两个文件。');
+    const original=host.events.find(event=>event.type==='tool/result'&&event.data.step===1);
+    assert.ok(original);
+    const detail=(await host.command(agent,'detail')).detail;
+    const prune=detail.observability.features.contextPrune;
+    assert.ok(prune.reasons['source-retention-active']);
+    const pruned=host.events.some(event=>event.type==='compaction/prune'&&event.data.shadowedSeqs?.includes(original.seq));
+    assert.equal(pruned,!changed);
+  }finally{await host.close();}
+});
+
+test('an economics deferral keeps the same source event eligible at the retry step',async()=>{
+  const file='module_a.py';
+  const host=await startHost({workspace:{projectionPricing:price,ledgerReceipt:false},script:async(_options,n)=>{
+    if(n===1||n===3)return [tool('read',{file_path:file})];
+    if(n===4){
+      const projectionPricing=[{...price[0],input:0,cacheRead:0,output:0}];
+      await fs.writeFile(path.join(host.cwd,'.dsh','work-evidence','config.json'),JSON.stringify({projectionPricing,ledgerReceipt:false}));
+    }
+    return n<9?[tool('read',{file_path:'notes.txt'})]:[text('完成。')];
+  }});
+  try{
+    await fs.writeFile(path.join(host.cwd,file),assignmentBody());
+    await fs.writeFile(path.join(host.cwd,'notes.txt'),'notes\n');
+    const agent=await host.createAgent('max');
+    await host.send(agent,'读取两个文件。');
+    const original=host.events.find(event=>event.type==='tool/result'&&event.data.step===1);
+    const detail=(await host.command(agent,'detail')).detail;
+    const decisions=detail.observability.decisions.filter(row=>row.feature==='contextPrune'&&row.sourceSeq===original.seq);
+    assert.equal(decisions.find(row=>row.reason==='predicted-cache-cost-insufficient')?.retryAt,8);
+    assert.ok(decisions.some(row=>row.status==='approved'&&row.reason==='zero-priced-route'));
+  }finally{await host.close();}
+});
+
 test('a compound result does not lend one file completeness markers from another',async()=>{
   // Review finding: the superseded-read scan took the FIRST `<path>` in a result and then
   // looked for the line-1 and end-of-file markers across the WHOLE text, so a tail window of

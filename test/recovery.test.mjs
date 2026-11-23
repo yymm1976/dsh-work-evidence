@@ -19,10 +19,11 @@ test('correctedReadArguments ignores unknown tools and non-object arguments', ()
   assert.equal(correctedReadArguments('read', ['a.txt']), null);
 });
 
-test('project_evidence infers unambiguous read and archive modes', () => {
+test('project_evidence repairs conflicting modes and leaves omitted modes to the tool', () => {
   const files = [{path: 'src/main.java', offset: 1, limit: 20}];
+  assert.equal(correctedReadArguments('project_evidence', {files}), null);
   assert.deepEqual(
-    correctedReadArguments('project_evidence', {files}),
+    correctedReadArguments('project_evidence', {mode: 'source', files}),
     {mode: 'read', files}
   );
   assert.deepEqual(

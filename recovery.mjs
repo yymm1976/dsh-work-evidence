@@ -1,7 +1,7 @@
 import path from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {stripTypeScriptTypes} from 'node:module';
-import {executionResultLayers,executionExitCode} from './execution-dependencies.mjs';
+import {dependencyExecutionComplete,executionResultLayers,executionExitCode} from './execution-dependencies.mjs';
 const NATIVE_TEMPLATE_FRAME=/^    at eval \(eval at (?:runProgram|evaluate) \(file:\/\/\/[^\r\n]*\/(?:@deepseek-ai\/dsh-ptc-runtime-node|packages\/ptc-runtime\/ptc-runtime-node)\/(?:lib\/process\.js|src\/evaluators\/async-function\.ts):\d+:\d+\), <anonymous>:(\d+):(\d+)\)/mu;
 
 export function nativePwshInvocationDiagnostic(argumentsValue,result){
@@ -25,6 +25,22 @@ export function nativePwshInvocationDiagnostic(argumentsValue,result){
   if(!english&&!structured)return null;
   return {kind:'unquoted-executable-path',executable,reportedCommand,processExitCode:exitCode,
     suggestedPrefix:"& '"+executable+"'",scope:'Invocation syntax only; original arguments and effects remain. No command was changed or retried.'};
+}
+
+export function nativePwshTableDiagnostic(argumentsValue,result){
+  const command=argumentsValue?.command;
+  if(typeof command!=='string'||command.length>4096||/[\r\n;]/u.test(command)||!/^\s*Get-ChildItem\b/iu.test(command))return null;
+  const fields=/\|\s*Select-Object(?:\s+-First\s+\d+)?(?:\s+-Property)?\s+FullName\s*,\s*Length\s*(\|.*)?$/iu.exec(command);
+  const presentation=/^(?:\|\s*Sort-Object\s+[^|]+)?(?:\|\s*Format-Table(?:\s+-AutoSize)?)?\s*$/iu;
+  if(!fields||!presentation.test(fields[1]??'')||!dependencyExecutionComplete(result))return null;
+  const raw=result?.value??result,value=raw?.data??raw;
+  const stdout=typeof value.stdout==='string'?value.stdout:value.stdout?.text;
+  const stderr=typeof value.stderr==='string'?value.stderr:value.stderr?.text;
+  if(typeof stdout!=='string'||stderr?.trim())return null;
+  const [header,separator,...rows]=stdout.trim().split(/\r?\n/u);
+  if(header?.trim()!=='FullName'||!/^\s*-+\s*$/u.test(separator??'')||!rows.length||
+    rows.some(row=>!/^(?:[A-Za-z]:[\\/]|\\\\)\S/u.test(row.trim())))return null;
+  return {kind:'pwsh-table-missing-length'};
 }
 
 export function nativeProgramParseLocation(code,result){
@@ -256,13 +272,22 @@ export function reportedCheckFailure(text){
   }
   const unittest=unittestCheckFailure(text);if(unittest)return unittest;
   const namedRatio=namedRatioFailure(text);if(namedRatio)return namedRatio;
-  const lines=String(text??'').slice(-12000).split(/\r?\n/u),numericMarkers=new Set();let positive=null,summary=null;
+  const lines=String(text??'').slice(-12000).split(/\r?\n/u),summaryLines=new Set();
+  let positive=null,summary=null,listedFailureEntries=[];
   for(const line of lines){
-    const listed=/^\s*FAILURES\s*:\s*\[\s*((?:'(?:[^'\\]|\\.)*'|"(?:[^"\\]|\\.)*")(?:\s*,\s*(?:'(?:[^'\\]|\\.)*'|"(?:[^"\\]|\\.)*"))*\s*,?)\s*\]\s*$/iu.exec(line);
+    const listed=/^\s*(?:(?:checks?|tests?|suites?|assertions?|comparisons?|total)\s*:\s*(\d+)[ ,;\t]+)?FAIL(?:ED|URES?)?(?:[ _-]ITEMS)?\s*:\s*\[\s*((?:'(?:[^'\\]|\\.)*'|"(?:[^"\\]|\\.)*")(?:\s*,\s*(?:'(?:[^'\\]|\\.)*'|"(?:[^"\\]|\\.)*"))*\s*,?)?\s*\]\s*$/iu.exec(line);
     if(listed){
+      summaryLines.add(line);
+      const [,totalText,entries]=listed;
+      if(!entries)continue;
+      const names=[...entries.matchAll(/'(?:[^'\\]|\\.)*'|"(?:[^"\\]|\\.)*"/gu)];
+      const failed=names.length;
+      listedFailureEntries=names.slice(0,4).map(([name])=>(name.slice(1,-1)||name).slice(0,180));
+      const total=Number(totalText);
       positive=line.trim().slice(0,180);
-      summary={failed:[...listed[1].matchAll(/'(?:[^'\\]|\\.)*'|"(?:[^"\\]|\\.)*"/gu)].length,
+      summary={failed,...(Number.isSafeInteger(total)&&total>=failed?{passed:total-failed,total}:{}),
         source:'reported-list',text:line.trim().slice(0,240)};
+      continue;
     }
     const pair=/^\s*(?:[A-Za-z][\w.-]*[ \t]+){0,2}(?:checks?|tests?|suites?|assertions?|comparisons?)\s*:\s*(\d+)\s+(?:passed|ok)\s*[,;]\s*(\d+)\s+(?:failed|failures)\b/iu.exec(line)??
       /^\s*PASS(?:ED)?[ \t]*[:=]?[ \t]+(\d+)[ \t,;]+FAIL(?:ED|URES?)?[ \t]*[:=]?[ \t]+(\d+)[ \t]*$/iu.exec(line);
@@ -272,17 +297,18 @@ export function reportedCheckFailure(text){
       /^\s*(?:\d+\s+)?(?:checks?|tests?|total)\b[^\r\n]{0,160}?\b(\d+)\s+(?:failed|failures)\b/iu.exec(line)??
       (pair?[pair[0],pair[2]]:null)??/^\s*(\d+)\s+(?:failed|failures)\b/iu.exec(line);
     if(match){
-      numericMarkers.add(line);
+      summaryLines.add(line);
       if(Number(match[1])>0)positive=line.trim().slice(0,180);
-      if(pair&&Number.isSafeInteger(Number(pair[1]))&&Number.isSafeInteger(Number(pair[2])))
+      if(pair&&Number(pair[2])>0&&Number.isSafeInteger(Number(pair[1]))&&Number.isSafeInteger(Number(pair[2])))
         summary={passed:Number(pair[1]),failed:Number(pair[2]),source:'reported-text',text:line.trim().slice(0,240)};
-      if(total&&Number.isSafeInteger(Number(total[1]))&&Number.isSafeInteger(Number(total[2]))&&Number(total[2])<=Number(total[1]))
+      if(total&&Number(total[2])>0&&Number.isSafeInteger(Number(total[1]))&&Number.isSafeInteger(Number(total[2]))&&Number(total[2])<=Number(total[1]))
         summary={passed:Number(total[1])-Number(total[2]),failed:Number(total[2]),total:Number(total[1]),source:'reported-text',text:line.trim().slice(0,240)};
     }
   }
-  const failureEntries=lines.filter(line=>!numericMarkers.has(line)&&(/^\s*(?:FAIL(?:ED)?\s*:\s*\S|LOAD-FAIL[ \t]+\S)/iu.test(line)||
+  const failureEntries=lines.filter(line=>!summaryLines.has(line)&&(/^\s*(?:FAIL(?:ED)?\s*:\s*\S|LOAD-FAIL[ \t]+\S)/iu.test(line)||
     positive&&/^\s*FAIL[ \t]+\S/iu.test(line))).slice(0,4).map(line=>line.trim().slice(0,180));
-  return positive||failureEntries.length?{signature:failureEntries[0]??positive,summary,failureEntries}:null;
+  return positive||failureEntries.length?{signature:failureEntries[0]??positive,summary,
+    failureEntries:failureEntries.length?failureEntries:listedFailureEntries}:null;
 }
 
 /** Process exit and the program's own report are independent observations. */
@@ -315,13 +341,14 @@ export function installExecutionDescriptionCompatibility(ctx,runtime){
     return next();
   },{prepend:true});
 }
-export function installNativeReadArgumentRecovery(ctx,runtime){
+export function installNativeReadArgumentRecovery(ctx,runtime,initialReadLimit,limitedReads){
   ctx.on('tools/pre-execute',async(exec,next)=>{
     if(exec.name!=='read'||!exec.agent)return next();
     await runtime.init(exec.agent,exec.signal);
     const state=runtime.get(exec.agent);
-    if(runtime.isEnabled(exec.agent)&&state.config.readArgumentRecovery){
-      const args=exec.arguments;
+    if(!runtime.isEnabled(exec.agent))return next();
+    const args=exec.arguments;
+    if(state.config.readArgumentRecovery){
       if(args&&typeof args==='object'&&Object.hasOwn(args,'path')&&Object.hasOwn(args,'file_path')&&args.path!==args.file_path)
         return {kind:'deny',reason:'Conflicting read path and file_path; provide one file_path.',info:{code:'INVALID_ARGS'}};
       const corrected=correctedReadArguments('read',exec.arguments);
@@ -331,6 +358,14 @@ export function installNativeReadArgumentRecovery(ctx,runtime){
         exec.arguments=Object.freeze(corrected);
         state.metrics.readArgumentNormalizations++;state.dirty=true;
         runtime.effects?.decide(exec.agent,'argumentRecovery','applied','before-validation-normalization',{tool:'read',execution:'not-inferred'});
+      }
+    }
+    if(initialReadLimit&&object(exec.arguments)&&!exec.parent&&!String(exec.callId??'').startsWith('work-evidence:')){
+      const limit=initialReadLimit(exec.agent,exec.arguments);
+      if(limit!==null){
+        exec.arguments=Object.freeze({...exec.arguments,limit});
+        limitedReads?.add(exec);
+        runtime.effects?.decide(exec.agent,'stepPacing','applied','source-read-default',{limit});
       }
     }
     return next();
@@ -346,7 +381,15 @@ export function correctedReadArguments(name,args){
     next.file_path=next.path;delete next.path;changed=true;
   }
   if(name==='project_evidence'){
-    if(next.mode!=='read'&&Array.isArray(next.files)&&next.files.length>=1&&!text(next.archive)&&!text(next.entry)&&!text(next.query)&&!Array.isArray(next.queries)){
+    // XML-style tool encoders can leave a closing argument tag in an enum value.
+    // Repair only the exact declared value followed by its own closing tag.
+    const layout=typeof next.readLayout==='string'?/^(numbered|records)<\/readLayout>\s*$/u.exec(next.readLayout):null;
+    if(layout&&(next.mode===undefined||next.mode==='read')&&Array.isArray(next.files)&&next.files.length){
+      next.readLayout=layout[1];changed=true;
+    }
+    // project_evidence already selects read when files is supplied without mode.
+    // Only correct a conflicting explicit mode before redispatching.
+    if(next.mode!==undefined&&next.mode!=='read'&&Array.isArray(next.files)&&next.files.length>=1&&!text(next.archive)&&!text(next.entry)&&!text(next.query)&&!Array.isArray(next.queries)){
       next.mode='read';changed=true;
     }
     if(next.mode==='source'&&text(next.archive)&&text(next.entry)&&!text(next.query)&&!Array.isArray(next.queries)){

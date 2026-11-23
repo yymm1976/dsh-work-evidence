@@ -47,6 +47,7 @@ export function defaults(raw={}){
     deferPressureCompaction:false,stubSummary:false,
     executionTriage:true,nativeProgramReuse:false,hostNodeFallback:false,nativeShellScriptReuse:false,probeReplay:false,structuredCalls:false,nativeReasoningReplay:false,stageWorkingSet:true,stepPacing:true,retainedCompute:true,finalJsonGuard:true,finalJsonResultGuard:false,qualityReview:false,qualityReviewEffort:'auto',qualityReviewScope:'auto',
     projectionMinChars:64000,projectionRecentSteps:6,projectionStableSteps:8,projectionHorizonSteps:16,projectionPricing:[],
+    sourceReadDefaultLines:null,
     toolSurface:'compact',
     defaultResponseView:'reference-if-visible',...raw};
   // Settings that chose default mode before aggressiveMode existed keep handing
@@ -58,6 +59,7 @@ export function defaults(raw={}){
     'contextProtocol','contextPruningPolicy','historyHygiene','programHistory','reasoningHistory','retainedCompute','contextPruneMinChars','contextPruneHeadChars','contextPruneTailChars','completionNotice','opsAdapters','fastEditEnabled',
     'ledgerReceipt','ledgerUnresolved','nativeVerifiedEdits','fileProfiling','structuredJson','ledgerFoldPlan','ledgerFoldWrite','defaultResponseView','swLedger','swEviction','swEvictionSteps','nativeProgramReuse','hostNodeFallback','nativeShellScriptReuse','probeReplay','structuredCalls','nativeReasoningReplay',
     'requestProjection','projectionRestore','compressionControl','compactionTiming','deferPressureCompaction','stubSummary','cacheOrderedStub','archiveEntries','executionTriage','executionAdvice','stageWorkingSet','finishAdvice','stepPacing','taskEffort','finalJsonGuard','finalJsonResultGuard','qualityReview','qualityReviewEffort','qualityReviewScope','nativeReadView','nativeExecutionEvidence','projectionMinChars','projectionRecentSteps','projectionStableSteps','projectionHorizonSteps','projectionPricing','toolSurface']);
+  known.add('sourceReadDefaultLines');
   if(!raw||typeof raw!=='object'||Array.isArray(raw)||Object.keys(raw).some(k=>!known.has(k)))throw new Error('Unknown work-evidence setting');
   // Accept old workspaces without loading removed modules or re-enabling their hooks.
   for(const key of RETIRED_SETTINGS){
@@ -72,6 +74,8 @@ export function defaults(raw={}){
   for(const key of ['enabled','aggressiveMode','selfIndex','stateLedger','stateInform','archiveReadRouting','readArgumentRecovery','requestAccounting','evidenceViews','memberParsing','mavenSourceBinding','contextProtocol','historyHygiene','programHistory','reasoningHistory',
     'ledgerReceipt','ledgerUnresolved','nativeVerifiedEdits','fileProfiling','structuredJson','ledgerFoldPlan','ledgerFoldWrite','swLedger','swEviction','requestProjection','projectionRestore','compressionControl','deferPressureCompaction','stubSummary','cacheOrderedStub','archiveEntries','executionTriage','nativeProgramReuse','hostNodeFallback','nativeShellScriptReuse','probeReplay','structuredCalls','nativeReasoningReplay','executionAdvice','stageWorkingSet','finishAdvice','stepPacing','retainedCompute','taskEffort','finalJsonGuard','finalJsonResultGuard','qualityReview','nativeReadView','nativeExecutionEvidence','completionNotice'])if(typeof config[key]!=='boolean')throw new Error('Invalid '+key);
   if(!Number.isInteger(config.swEvictionSteps)||config.swEvictionSteps<3||config.swEvictionSteps>50)throw new Error('Invalid swEvictionSteps');
+  if(config.sourceReadDefaultLines!==null&&(!Number.isInteger(config.sourceReadDefaultLines)||config.sourceReadDefaultLines<40||config.sourceReadDefaultLines>1000))
+    throw new Error('sourceReadDefaultLines must be null or an integer from 40 to 1000');
   for(const [key,min,max] of [['projectionMinChars',16000,2000000],['projectionRecentSteps',3,50],['projectionStableSteps',4,100],['projectionHorizonSteps',1,64]])
     if(!Number.isInteger(config[key])||config[key]<min||config[key]>max)throw new Error('Invalid '+key);
   if(!Number.isInteger(config.contextPruneMinChars)||config.contextPruneMinChars<8000||config.contextPruneMinChars>512000)throw new Error('Invalid contextPruneMinChars');
@@ -202,6 +206,15 @@ export function createRuntime(ctx,call,initial={}){
         s.sessionEnabledOverride=false;
         problem(s,'session-policy-read',policy.error?.message||'Session policy unavailable');
       }
+      if(s.telemetryDir){
+        s.taskModePath=path.join(s.telemetryDir,s.id+'.task-mode.json');
+        const recorded=await loadLocalJson(s.telemetryDir,s.taskModePath,signal);
+        if(recorded.ok){
+          try{s.taskMode=checkedSessionPolicy(recorded.value).taskMode??s.taskMode;}
+          catch(error){problem(s,'task-mode-read',error.message);}
+        }else if(!recorded.missing)problem(s,'task-mode-read',recorded.error?.message||'Task mode unavailable');
+      }
+      signal?.throwIfAborted();
       s.sessionPolicyLoaded=true;
       s.configured=true;return s;
     })();
@@ -217,10 +230,6 @@ export function createRuntime(ctx,call,initial={}){
     const s=get(agent);
     s.viewEpoch++;s.requestObservations=[];
     s.ledger={observations:[],searches:[],mutations:[]};s.reads=[];s.searches=[];
-    // The revisit obligation belongs to the ledger it was recorded against. A read
-    // cannot discharge it while the plugin is disabled (observe() returns early),
-    // so keeping it would let a later reminder claim a file was never reread.
-    s.pendingRevisit=null;
     s.active=false;s.pendingFailure=null;s.pendingLookupFact=null;s.pendingStateNotice=null;s.queuedMessages=[];s.dirty=true;
   }
   function effortSelection(agent){
@@ -259,7 +268,7 @@ export function createRuntime(ctx,call,initial={}){
       const checked=checkedSessionPolicy(value);
       await save(agent,s.sessionPolicyPath,value,signal);
       s.sessionFileSeen=true;s.sessionFileMissing=false;
-      s.sessionEnabledOverride=checked.enabled;s.sessionModeOverride=checked.mode;s.taskMode=checked.taskMode;s.taskModePersisted=true;s.dirty=true;
+      s.sessionEnabledOverride=checked.enabled;s.sessionModeOverride=checked.mode;s.dirty=true;
       return value;
     });
     s.policyQueue=operation;return operation;
@@ -300,22 +309,49 @@ export function createRuntime(ctx,call,initial={}){
     workspaceQueues.set(key,operation);
     try{return await operation;}finally{if(workspaceQueues.get(key)===operation)workspaceQueues.delete(key);}
   }
-  async function beginRequest(agent,signal){
+  function currentRequest(agent){
     const s=get(agent);
-    let incoming=s.claimedRequest;
-    if(!incoming){
-      for(const event of eventLog(agent.session)){const message=event.data?.message??event.data;if(event.type==='user/message'&&isUserRequestMessage(message))incoming=message;}
+    if(s.claimedRequest)return s.claimedRequest;
+    const log=eventLog(agent.session);
+    let history=s.requestHistory;
+    if(!history||history.cursor>log.length||history.cursor>0&&log[history.cursor-1]?.seq!==history.lastSeq)
+      history=s.requestHistory={cursor:0,lastSeq:null,message:null};
+    while(history.cursor<log.length){
+      const event=log[history.cursor++];
+      history.lastSeq=event.seq;
+      if(event.type!=='user/message')continue;
+      const message=event.data?.message??event.data;
+      if(isUserRequestMessage(message))history.message=message;
     }
+    return history.message;
+  }
+  async function beginRequest(agent,signal){
+    const s=get(agent),incoming=currentRequest(agent);
     if(!incoming?.id){s.claimedRequest=null;return modeStatus(s);}
     const selected=modeStatus(agent);
     s.selectedMode=selected.selected;
     const taskMode={requestId:incoming.id,mode:selected.selected,source:'effort-selection',policyVersion:MODE_POLICY_VERSION};
     if(s.taskMode?.requestId===incoming.id&&s.taskMode.mode===taskMode.mode&&s.taskMode.source===taskMode.source){s.claimedRequest=null;return modeStatus(s);}
-    try{await updateSessionPolicy(agent,{taskMode},signal);}
-    catch(error){
+    s.taskMode=taskMode;s.taskModePersisted=false;s.dirty=true;
+    try{
+      if(!s.taskModePath)throw new Error('No session storage outside the workspace');
+      const recorded={schema:SESSION_POLICY_SCHEMA,version:1,enabled:null,taskMode,updatedAt:new Date().toISOString()};
+      checkedSessionPolicy(recorded);
       signal?.throwIfAborted();
-      // Fix the current request even when storage is unavailable; report that it cannot survive a reload.
-      s.taskMode=taskMode;s.taskModePersisted=false;problem(s,'task-mode-save',error.message);
+      await fs.mkdir(s.telemetryDir,{recursive:true});
+      const temp=s.taskModePath+'.'+randomUUID()+'.tmp';
+      try{
+        await fs.writeFile(temp,JSON.stringify(recorded)+'\n',{encoding:'utf8',flag:'wx',signal});
+        signal?.throwIfAborted();
+        await fs.rename(temp,s.taskModePath);
+      }catch(error){
+        await fs.rm(temp,{force:true}).catch(()=>{});
+        throw error;
+      }
+      s.taskModePersisted=true;
+    }catch(error){
+      signal?.throwIfAborted();
+      problem(s,'task-mode-save',error.message);
     }
     s.claimedRequest=null;
     return modeStatus(s);
@@ -362,10 +398,24 @@ export function createRuntime(ctx,call,initial={}){
     return {full,display:relativeToReal.replaceAll('\\','/')||'.',key};
   }
   function boundedPush(list,value,max){list.push(value);if(list.length>max)list.splice(0,list.length-max);}
-  function markStateStale(s,files=[]){
-    let observations=0,searches=0;const changed=[];
+  function searchCanIncludeFile(search,scope,file){
+    // Ripgrep can bypass a glob filter for an explicitly named file.
+    if(scope.key===file.key)return true;
+    const filter=search.tool==='glob'?search.pattern:search.glob;
+    if(typeof filter!=='string')return true;
+    const suffix=/^(?:\*\*\/)?\*\.([\w-]+)$/u.exec(filter)?.[1]?.toLowerCase();
+    if(suffix)return [file.full,file.key].some(value=>path.basename(value).toLowerCase().endsWith('.'+suffix));
+    const directories=/^\*\*\/(?:([\w.-]+)|\{([\w.-]+(?:,[\w.-]+)+)\})\/\*\*\/\*$/u.exec(filter);
+    if(!directories)return true;
+    // These patterns require an ancestor with one of the literal directory names.
+    // Consider both names when the written path resolves through a symlink.
+    const names=(directories[1]??directories[2]).toLowerCase().split(',');
+    return [file.full,file.key].some(value=>path.dirname(value).toLowerCase().split(path.sep).some(name=>names.includes(name)));
+  }
+  function markStateStale(s,files=[],tool){
+    let observations=0,searches=0;
     for(const file of files){
-      if(!file)continue;changed.push(file.display);
+      if(!file)continue;
       for(const observation of s.ledger.observations){
         if(observation.stale||observation.pathKey!==file.key||(file.revision&&observation.revision===file.revision))continue;
         observation.stale=true;observation.staleAt=new Date().toISOString();observations++;
@@ -373,14 +423,20 @@ export function createRuntime(ctx,call,initial={}){
       for(const search of s.ledger.searches){
         if(search.stale)continue;
         const scope=ledgerPath(s,search.scope||'.');
-        if(!scope||file.key===scope.key||file.key.startsWith(scope.key+path.sep)){
+        if(!scope||((file.key===scope.key||file.key.startsWith(scope.key+path.sep))&&searchCanIncludeFile(search,scope,file))){
           search.stale=true;search.staleAt=new Date().toISOString();searches++;
         }
       }
     }
     if(!observations&&!searches)return;
     s.metrics.stateStaleObservations+=observations;s.metrics.stateStaleSearches+=searches;
+    s.dirty=true;
+    // A content edit invalidates older searches, but a search-only change is not
+    // evidence that any now-stale hit is still needed.
+    const contentEdit=tool==='edit';
+    if(!observations&&!s.pendingStateNotice&&contentEdit)return;
     const pending=s.pendingStateNotice||{observations:0,searches:0,files:new Set(),revisions:new Map(),at:new Date().toISOString()};
+    pending.contentEditsOnly=(pending.contentEditsOnly??true)&&contentEdit;
     pending.observations+=observations;pending.searches+=searches;pending.at=new Date().toISOString();
     for(const file of files)if(file){pending.files.add(file.display);if(revisionPattern.test(String(file.revision||'')))pending.revisions.set(file.display,file.revision);}
     s.pendingStateNotice=pending;s.dirty=true;
@@ -402,7 +458,7 @@ export function createRuntime(ctx,call,initial={}){
     const file=ledgerPath(s,exec.arguments?.path||'.');
     if(!file)return;
     boundedPush(s.ledger.searches,{tool:exec.name,scope:file.display,scopeKey:file.key,pattern:exec.arguments?.pattern||null,
-      glob:exec.arguments?.glob||null,complete:outcome(result.value).status==='completed'&&outcome(result.value).data.complete!==false,
+      glob:exec.arguments?.include||exec.arguments?.glob||null,complete:outcome(result.value).status==='completed'&&outcome(result.value).data.complete!==false,
       callId:exec.callId||null,seq,step:s.step,stale:false,observedAt:new Date().toISOString()},48);
     s.metrics.stateSearches++;s.dirty=true;
   }
@@ -412,16 +468,7 @@ export function createRuntime(ctx,call,initial={}){
     const mutation={tool,path:target.display,pathKey:target.key,revision:revisionPattern.test(String(revision||''))?revision:null,
       callId,seq,step:s.step,at:new Date().toISOString()};
     boundedPush(s.ledger.mutations,mutation,32);
-    markStateStale(s,[{...target,revision:mutation.revision}]);
-    // Remember what was just written. If the model moves on without reading the
-    // changed file again, that is the pattern behind the lost cases: it fixed one
-    // site of a behaviour that exists twice and never checked back.
-    if(!s.pendingRevisit)s.pendingRevisit=new Map();
-    // The revision the write produced is kept with the obligation: a read that
-    // started earlier can finish later, and only a read reporting this revision
-    // confirms the post-write content.
-    s.pendingRevisit.set(target.key,{display:target.display,atStep:s.step,revision:mutation.revision??null,
-      mutations:(s.pendingRevisit.get(target.key)?.mutations??0)+1});
+    markStateStale(s,[{...target,revision:mutation.revision}],tool);
     s.active=true;s.dirty=true;return mutation;
   }
   function recordStateObservation(agent,value){
@@ -433,11 +480,9 @@ export function createRuntime(ctx,call,initial={}){
     const observations=s.ledger.observations.map(({pathKey,...item})=>item);
     const searches=s.ledger.searches.map(({scopeKey,...item})=>item);
     const mutations=s.ledger.mutations.map(({pathKey,...item})=>item);
-    // The revisit obligation is state in its own right, not a derived view of the
-    // ledger: it survives while the ledger is consulted and is cleared with it.
-    const revisit=s.pendingRevisit?[...s.pendingRevisit.values()].map(item=>({file:item.display,atStep:item.atStep,mutations:item.mutations})):[];
+    // Keep the legacy status fields, without manufacturing reread obligations.
     if(!detail)return {counts:{observations:observations.length,searches:searches.length,mutations:mutations.length,
-      staleObservations:observations.filter(item=>item.stale).length,staleSearches:searches.filter(item=>item.stale).length,revisitObligations:revisit.length,
+      staleObservations:observations.filter(item=>item.stale).length,staleSearches:searches.filter(item=>item.stale).length,revisitObligations:0,
       // Emissions, not appearances. A notice injected at one step is carried in the history
       // of every later request, so counting occurrences in a captured transcript reports a
       // correct single delivery as many. This counter existed in s.metrics and was never
@@ -448,19 +493,9 @@ export function createRuntime(ctx,call,initial={}){
     return {counts:{observations:observations.length,searches:searches.length,mutations:mutations.length,
       returnedObservations:Math.min(24,observations.length),returnedSearches:Math.min(16,searches.length),returnedMutations:Math.min(12,mutations.length),
       stateNotices:s.metrics.stateNotices},
-      observations:observations.slice(-24),searches:searches.slice(-16),mutations:mutations.slice(-12),revisitObligations:revisit};
+      observations:observations.slice(-24),searches:searches.slice(-16),mutations:mutations.slice(-12),revisitObligations:[]};
   }
   function consumeStateNotice(s){
-    // A file that was written and then left unread for a few steps is the exact
-    // pattern behind the lost cases. Queue one reminder naming those files even
-    // when no new staleness event fired, so the obligation is not forgotten.
-    if(!s.pendingStateNotice&&s.pendingRevisit?.size&&s.step>0){
-      const overdue=[...s.pendingRevisit.values()].filter(item=>s.step-item.atStep>=3);
-      if(overdue.length){
-        s.pendingStateNotice={observations:0,searches:0,files:new Set(overdue.map(item=>item.display)),revisions:new Map(),
-          at:new Date().toISOString(),revisitOnly:true};
-      }
-    }
     if(!s.pendingStateNotice&&s.pendingDuplicateDefinition&&!s.duplicateDefinitionNotified&&s.step>0){
       const {pattern,name,pathCount,sample}=s.pendingDuplicateDefinition;
       // Taken out of the queue here: this notice is delivered once, so leaving it in
@@ -478,41 +513,36 @@ export function createRuntime(ctx,call,initial={}){
     if(!s.pendingStateNotice)return null;
 
     const notice=s.pendingStateNotice;s.pendingStateNotice=null;
-    if(notice.revisitOnly){
-      // Emitting the reminder discharges the obligation for these files; a later
-      // write re-arms it.
-      for(const [key,item] of [...s.pendingRevisit.entries()])if(s.step-item.atStep>=3)s.pendingRevisit.delete(key);
-    }
+    if(notice.contentEditsOnly&&!notice.observations)return null;
     // A definition found in two or more files is the shape of the lost cases: one
     // semantic layer was fixed and the other was never located. Say so once, before
     // the model commits to a single site, and name the files it already has.
     if(notice.duplicateDefinition){
-      const {pattern,pathCount,sample}=notice.duplicateDefinition;
+      const {name,pathCount,sample}=notice.duplicateDefinition;
       // One notice per session: a second search for the same or another definition
       // would otherwise repeat it, and a repeated notice is noise rather than a
       // decision input.
       s.duplicateDefinitionNotified=true;
-      const text=`同一定义出现在 ${pathCount} 个文件（${sample.join('、')}${pathCount>sample.length?' 等':''}）：\`${pattern}\` 在多个位置实现。同一语义常分两层（校验层与计算层、外层采集与内层构造、注入与消费）；只改其中一处时，另一处仍按旧行为运行。落笔前确认这些位置是否属于同一能力，以及是否需要各自修正。`;
+      const text=`在 ${pathCount} 个文件找到 \`${name}\` 的同名定义（${sample.join('、')}${pathCount>sample.length?' 等':''}）。沿用户描述的入口确认实际调用位置。多个实现会处理该场景时，分别核对哪些条件会走到各处。`;
       s.metrics.stateNotices++;s.metrics.stateNoticeChars+=text.length;s.dirty=true;
       return {text,observations:0,searches:0,files:[],extraFiles:0,revisions:[],duplicateDefinition:true};
     }
     if(notice.narrowSearch){
       const {pattern,scope}=notice.narrowSearch;
       s.narrowSearchNotified=true;
-      const text=`上面的检索只在 \`${scope}\` 内进行（\`${pattern}\`）。同一能力常在另一个文件里另有实现——校验层与计算层、外层采集与内层构造、注入与消费往往分处不同模块。若这次改动涉及的行为可能由多处共同决定，先在工程范围内确认是否还有第二处，再落笔。仅是局部读取时不必扩大范围。`;
+      const text=`\`${scope}\` 中找到 \`${pattern}\` 的定义。若需要判断它与其他层的关系，只追已经看到的调用方或同一标识符。已有调用路径能解释问题时，直接处理当前分支。`;
       s.metrics.stateNotices++;s.metrics.stateNoticeChars+=text.length;s.dirty=true;
       return {text,observations:0,searches:0,files:[],extraFiles:0,revisions:[],narrowSearch:true};
     }
     const files=[...notice.files].slice(0,5),extra=Math.max(0,notice.files.size-files.length);
     const revisions=[...notice.revisions].slice(0,5).map(([file,revision])=>`${file}@${revision.slice(0,12)}`);
-    // A notice that only says "state expired" was ignored in every measured
-    // session; the model kept working from pre-edit reads. Name the files and the
-    // concrete assertions to re-check, and ask about the second implementation
-    // site, because the lost cases were single-site fixes of a behaviour that
-    // exists in two places.
-    const text=notice.revisitOnly
-      ? `改动后未复核：${files.join('、')}${extra?' 等'+extra+'个文件':''} 已被修改若干步，之后没有再读取。请在继续修改其他文件前，按当前内容确认这三件事：(1) 被改动函数的行为是否符合要求，(2) 调用方是否仍假设旧行为，(3) 同一能力是否在另一个模块另有实现——同一语义常分两层（校验层与计算层、外层采集与内层构造、注入与消费）。只读你准备据此下结论的区段。`
-      : `工程状态已失效（已修改 ${files.join('、')}${extra?' 等'+extra+'个文件':''}）：${notice.observations} 个旧源码观察和 ${notice.searches} 个旧搜索命中对应修改前的内容。按当前文件核对三类断言：(1) 被改动函数的行为，(2) 调用方是否仍假设旧行为，(3) 同一能力是否在另一个模块另有实现——同一语义常分两层（校验层与计算层、外层采集与内层构造、注入与消费）。只重读你准备据此下结论的区段，不整文件重读。${revisions.length?' 当前 revision：'+revisions.join('、'):''}`;
+    // Invalidated evidence is a fact about an old observation, not evidence of a
+    // new defect. A search-only invalidation cannot require a source reread or a
+    // second implementation hunt; a write without a later read is not a failed edit.
+    const text=`工程状态已失效（已修改 ${files.join('、')}${extra?' 等'+extra+'个文件':''}）：${notice.observations} 个旧源码观察和 ${notice.searches} 个旧搜索命中对应修改前的内容。`+
+        (notice.observations>0?'旧源码观察不能证明当前正文；后续判断需要引用这些内容时，读取对应区段。':'')+
+        (notice.searches>0?'旧搜索命中不能证明修改后的命中或完整范围；只有后续判断依赖这些搜索事实时，才重新检索对应范围。':'')+
+        `本次写入本身不新增源码回读或调用链调查要求。${revisions.length?' 当前 revision：'+revisions.join('、'):''}`;
     s.metrics.stateNotices++;s.metrics.stateNoticeChars+=text.length;s.dirty=true;
     return {text,observations:notice.observations,searches:notice.searches,files,extraFiles:extra,revisions};
   }
@@ -562,7 +592,7 @@ export function createRuntime(ctx,call,initial={}){
     s.metrics.nativeEvents++;
     const ownRewrite=event.type==='compaction/summary'&&d.provider==='work-evidence-ledger'||event.type==='user/message'&&d.message?.source?.kind==='work-evidence-working-set'&&d.message.source.workingSet?.action==='project'||event.type==='tool/result'&&event.surfaceOp?.op==='replace'&&parseValue(d.message)?.kind==='work-evidence-reference';
     if(ownRewrite)s.lastHistoryRewriteSeq=Math.max(s.lastHistoryRewriteSeq??-1,event.seq);
-    if(event.type==='turn/start'){s.turn=d.turn;s.active=false;s.reportedCurrentTurn=false;s.writes=[];s.automaticEvidence.clear();s.autoAttemptsThisTurn=0;s.pendingFailure=null;s.pendingLookupFact=null;s.pendingStateNotice=null;}
+    if(event.type==='turn/start'){s.turn=d.turn;s.active=false;s.reportedCurrentTurn=false;s.writes=[];s.automaticEvidence.clear();s.autoAttemptsThisTurn=0;s.malformedResponseRetry=false;s.pendingFailure=null;s.pendingLookupFact=null;s.pendingStateNotice=null;}
     if(event.type==='step/start')s.step++;
     // The step the call was issued at is recorded with it: a result can arrive in a
     // later step than the one that dispatched it, and only the issue step shows
@@ -622,111 +652,20 @@ export function createRuntime(ctx,call,initial={}){
     }
     if(exec.name==='read'&&args.file_path){
       s.reads.push({path:args.file_path,line:args.offset||1,seq,step:s.step});if(s.reads.length>12)s.reads.shift();
-      // Reading the changed file again discharges the revisit obligation, but only
-      // when the read delivered something to check. An offset past the end of the
-      // file completes successfully with no lines, and that cannot confirm anything
-      // about the change; an empty file (totalLines 0) is a real observation.
-      //
-      // Two sources, because the persisted event and the live hook carry different shapes.
-      // A live read has `value.lines`; a persisted `tool/result` has rendered text and
-      // `parseValue` yields undefined, so `lines` alone made deliveredLines false there and
-      // the live observation was then skipped by `s.seen` — a reread never discharged the
-      // obligation and a later reminder could claim the file was not reread.
-      const lineRecords=(result.value?.lines?.length??0)>0||result.value?.totalLines===0;
-      // textOf reads `.content` off its argument, so passing the content ARRAY yields an empty
-      // string and both checks silently inspected nothing. Pass an object with `content`.
-      const rendered=textOf({content:result.content??[]});
-      const renderedRows=/^\s*\d+(?:[:|]|\t)/mu.test(rendered);
-      const emptyFile=/\(End of file - total 0 lines\)/u.test(rendered);
-      const deliveredLines=lineRecords||renderedRows||emptyFile;
-      if(deliveredLines&&s.pendingRevisit?.size){
-        const target=ledgerPath(s,args.file_path);
-        const pending=target?s.pendingRevisit.get(target.key):null;
-        // A read can start before a write and finish after it, so its body can predate
-        // the write it appears to confirm. The native read result carries no revision
-        // (the version lives on the fs event), so ordering is decided by when the call
-        // was issued. A missing issue step is unproven ordering, not proof: it leaves
-        // the obligation standing, which is the conservative direction.
-        const readRevision=revisionPattern.test(String(result.value?.version||result.value?.revision||''))
-          ?String(result.value.version||result.value.revision):null;
-        const revisionAgrees=!pending?.revision||!readRevision||pending.revision===readRevision;
-        const issuedAt=Number.isInteger(exec.issuedStep)?exec.issuedStep:null;
-        // Strictly after: a read issued in the same step as the write may have run
-        // before it, so only a later step proves the body is post-write.
-        const orderingProven=issuedAt!==null&&pending?issuedAt>Number(pending.atStep):false;
-        if(target&&revisionAgrees&&orderingProven)s.pendingRevisit.delete(target.key);
-      }
       recordObservation(s,exec,result,seq,{file:args.file_path,lineStart:args.offset||1,lineEnd:Number.isInteger(args.limit)?(args.offset||1)+args.limit-1:null});
-    }
-    // project_evidence mode:read delivers current source for named files, but its
-    // inner read uses a plugin call id and the outer tool is not `read`, so the
-    // obligation was never discharged and the reminder later claimed the file had
-    // not been reread. A failed or reference-only result does not count.
-    if(exec.name==='project_evidence'&&args.mode==='read'&&s.pendingRevisit?.size&&
-      !result.isError&&!['reference','reference-if-visible'].includes(result.value?.responseView?.kind)){
-      // A per-file record only proves the file was read when it delivered something:
-      // an offset past EOF returns an empty window, and an unavailable source returns
-      // state "unavailable". Neither delivers source, so without this check the
-      // obligation was cleared although nothing was read.
-      // Records carry an absolute path while args.files[] is normally workspace
-      // relative, so every path is resolved through ledgerPath and compared by key.
-      const omittedKeys=new Set(),deliveredKeys=new Set(),emptyKeys=new Set();
-      const resolveKey=value=>ledgerPath(s,value)?.key??null;
-      const collect=value=>{
-        if(!value||typeof value!=='object')return;
-        if(Array.isArray(value)){for(const item of value)collect(item);return;}
-        if(typeof value.path==='string'){
-          const resolved=resolveKey(value.path);
-          if(resolved){
-            if(value.omitted===true||value.state==='unavailable')omittedKeys.add(resolved);
-            else if(Array.isArray(value.lines)&&value.lines.length>0)deliveredKeys.add(resolved);
-            else if(value.totalLines===0||value.empty===true)emptyKeys.add(resolved);
-          }
-        }
-        for(const key of ['sources','files','items','failures','searches'])if(value[key])collect(value[key]);
-      };
-      collect(result.value);
-      for(const item of Array.isArray(args.files)?args.files:[]){
-        const requested=typeof item?.path==='string'?ledgerPath(s,item.path):null;
-        if(!requested)continue;
-        if(omittedKeys.has(requested.key))continue;
-        // Delivery must be recorded for this exact file. A suffix match would let
-        // `ba.txt` stand in for `a.txt`. An empty window (offset past EOF) and an
-        // unavailable record land in neither set, so they leave the obligation in
-        // place instead of clearing it — the previous fallback cleared any file when
-        // the record sets were empty, which is exactly the no-delivery case.
-        if(!deliveredKeys.has(requested.key)&&!emptyKeys.has(requested.key))continue;
-        // The same ordering rule the native read branch applies: a read dispatched
-        // before the write can return after it, and coverage alone would let that body
-        // discharge the obligation it predates.
-        const pending=s.pendingRevisit.get(requested.key);
-        const issuedAt=Number.isInteger(exec.issuedStep)?exec.issuedStep:null;
-        if(pending&&(issuedAt===null||issuedAt<=Number(pending.atStep)))continue;
-        s.pendingRevisit.delete(requested.key);
-      }
     }
     if(['grep','glob'].includes(exec.name)){
       const items=exec.name==='grep'?result.value?.matches:result.value?.paths;
       s.searches.push({tool:exec.name,query:args.pattern||'',scope:args.path||'.',seq,step:s.step,empty:Array.isArray(items)&&!items.length});if(s.searches.length>12)s.searches.shift();
       recordSearch(s,exec,result,seq);
-      // A search confined to one file cannot reveal a second implementation of the
-      // same capability in another file. Measured on the F1 full-plugin run: 70 of
-      // 115 greps were single-file, and the lost 059 case searched only inside
-      // identity_metadata.py before editing it — the calculation layer in another
-      // module was never searched for. This is a scope reminder, not a finding.
-      if(exec.name==='grep'&&!s.pendingNarrowSearch&&!s.narrowSearchNotified
-        &&typeof args.path==='string'&&/\.(?:[cm]?[jt]sx?|py|java|rs|go|rb|php|cs|cpp|h)$/iu.test(args.path)
-        &&typeof args.pattern==='string'&&/^[\w$|\[\]().*+?^\\-]{3,120}$/u.test(args.pattern.trim())
-        &&Array.isArray(items)&&items.length>0){
-        s.pendingNarrowSearch={pattern:args.pattern.trim(),scope:args.path.split(/[\\/]/u).pop()};
-      }
       if(Array.isArray(items)&&!items.length){const key=JSON.stringify([exec.name,args]),prior=s.emptyLookups.get(key),now=Date.now();if(prior&&now-prior.time<120000&&!prior.noted){prior.noted=true;s.pendingLookupFact={tool:exec.name,arguments:args,firstCallId:prior.callId,repeatedCallId:exec.callId};s.active=true;}else if(!prior||now-prior.time>=120000)s.emptyLookups.set(key,{time:now,callId:exec.callId,noted:false});if(s.emptyLookups.size>24)s.emptyLookups.delete(s.emptyLookups.keys().next().value);}
       // One symbol defined in two files is a real risk: two implementations of the
       // same capability, where fixing one leaves the other on the old behaviour.
       // The reminder fires on the search that reveals both sites, before the model
       // commits to one, because the write-after reminder cannot catch a second site
       // that is never written.
-      if(exec.name==='grep'&&!s.pendingDuplicateDefinition&&!s.duplicateDefinitionNotified&&Array.isArray(items)&&items.length>=2){
+      if(exec.name==='grep'&&Array.isArray(items)&&items.length&&
+        (!s.pendingDuplicateDefinition&&!s.duplicateDefinitionNotified||!s.pendingNarrowSearch&&!s.narrowSearchNotified)){
         const pattern=typeof args.pattern==='string'?args.pattern.trim():'';
         // A definition query, not a free-text search: one identifier, optionally the
         // language's definition keyword. Anything wider is a normal search.
@@ -751,8 +690,12 @@ export function createRuntime(ctx,call,initial={}){
             const path=typeof match?.path==='string'?match.path:null;
             if(path&&declares(match.line??match.text??''))sites.set(path,(sites.get(path)??0)+1);
           }
-          if(sites.size>=2)s.pendingDuplicateDefinition={pattern,name,pathCount:sites.size,
+          if(sites.size>=2&&!s.pendingDuplicateDefinition&&!s.duplicateDefinitionNotified)s.pendingDuplicateDefinition={pattern,name,pathCount:sites.size,
             sample:[...sites.keys()].slice(0,3).map(file=>file.split(/[\\/]/u).pop())};
+          else if(sites.size===1&&items.length===1&&!s.pendingNarrowSearch&&!s.narrowSearchNotified&&
+            typeof args.path==='string'&&/\.(?:[cm]?[jt]sx?|py|java|rs|go|rb|php|cs|cpp|h)$/iu.test(args.path)){
+            s.pendingNarrowSearch={pattern,scope:args.path.split(/[\\/]/u).pop()};
+          }
         }
       }
     }
@@ -804,7 +747,7 @@ export function createRuntime(ctx,call,initial={}){
       problem(s,'receipt-write',message);ctx.logger.warn('work-evidence: activity record unavailable: '+message);
     }}
   let runtimeContextSnapshot=null;
-  return {get,init,isEnabled,currentSelection:effortSelection,clearSessionState,setSessionEnabled,setSessionMode,setWorkspaceMode,setAggressiveMode,setWorkspaceConfig,modeStatus,activeMode,beginRequest,sync,observe,save,loadJson,problem,snapshot,stateSnapshot,consumeStateNotice,recordMutation,recordStateObservation,
+  return {get,init,isEnabled,currentSelection:effortSelection,currentRequest,clearSessionState,setSessionEnabled,setSessionMode,setWorkspaceMode,setAggressiveMode,setWorkspaceConfig,modeStatus,activeMode,beginRequest,sync,observe,save,loadJson,problem,snapshot,stateSnapshot,consumeStateNotice,recordMutation,recordStateObservation,
     setContextSnapshot:reader=>{runtimeContextSnapshot=reader;},
     receipt,execFor,withExecution,dispose:id=>states.delete(id)};
 }

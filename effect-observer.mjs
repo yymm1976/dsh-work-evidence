@@ -42,12 +42,20 @@ FEATURES.toolSurface='toolSurface';
 FEATURES.qualityReviewEffort='qualityReviewEffort';
 FEATURES.qualityReviewScope='qualityReviewScope';
 FEATURES.historyBlockDedup='historyHygiene';
+FEATURES.historyTestOutput='historyHygiene';
 FEATURES.contextBlockDedup='contextProtocol';
 FEATURES.nativeVerifiedEdit='nativeVerifiedEdits';
 FEATURES.fileProfile='fileProfiling';
 FEATURES.structuredJson='structuredJson';
 const PLUGIN_TOOLS=new Set(['project_evidence','work_report','work_status','work_state','work_recall','work_exec','work_compute','work_probe','evidence_index','candidate_select','ptc_patterns','ptc_fastpath','verified_exec','file_profile','structured_json']);
 const RETIRED_FEATURES=new Set(['programHistory','ledgerFold','foldPlan','reasoningHistory','executionAdvice','finishAdvice','presentationAdvice','nativeProgramReference','fastEdit']);
+const NOTICE_FEATURES=new Map([
+  ['work-evidence-completion','completionNotice'],
+  ['work-evidence-ledger','unresolved'],
+  ['work-evidence-quality-review','qualityReview'],
+  ['work-evidence-state','stateInform'],
+  ['work-evidence-source-outline','stepPacing'],
+]);
 export const featureSetting=name=>FEATURES[name]??null;
 
 /** Measures changes on the same task trajectory. Provider usage is never attributed by subtraction. */
@@ -194,22 +202,36 @@ export function createEffectObserver(ctx,runtime){
   }
   function begin(agent,options,{auxiliary=false,requestKind}={}){
     requestKind=requestKindOf({purpose:options.purpose,auxiliary,requestKind});
-    const main=requestKind==='main',state=get(agent),byFeature={},used=new Set();let misses=0;
+    const main=requestKind==='main',state=get(agent),byFeature={},used=new Set();let misses=0,delta=0,charDelta=0;
     const expand=(message,depth=0)=>{
-      if(depth>16){misses++;return [message];}
-      const list=state.effects.get(message.id),effect=list?.findLast(item=>item.key===contentKey(message)&&!used.has(item.id));
-      if(effect){used.add(effect.id);const before=effect.before;const value=byFeature[effect.feature]??={tokensEstimate:0,chars:0,effects:0,sourceSeqs:[],retainedSeqs:[]};value.tokensEstimate+=tokens(before)-tokens([message]);value.chars+=chars(before)-chars([message]);value.effects++;value.sourceSeqs=[...new Set([...value.sourceSeqs,...(effect.sourceSeqs?.length?effect.sourceSeqs:Number.isSafeInteger(effect.seq)?[effect.seq]:[])])].slice(0,128);value.retainedSeqs=[...new Set([...value.retainedSeqs,...(effect.retainedSeqs??[])])].slice(0,128);return before.flatMap(item=>expand(item,depth+1));}
+      if(depth>16){misses++;return;}
+      const list=state.effects.get(message.id),key=list?contentKey(message):null;
+      const effect=list?.findLast(item=>item.key===key&&!used.has(item.id));
+      if(effect){
+        used.add(effect.id);
+        const before=effect.before,value=byFeature[effect.feature]??={tokensEstimate:0,chars:0,effects:0,sourceSeqs:[],retainedSeqs:[]};
+        const tokenChange=tokens(before)-messageTokens(message),charChange=chars(before)-chars([message]);
+        value.tokensEstimate+=tokenChange;value.chars+=charChange;value.effects++;
+        delta+=tokenChange;charDelta+=charChange;
+        value.sourceSeqs=[...new Set([...value.sourceSeqs,...(effect.sourceSeqs?.length?effect.sourceSeqs:Number.isSafeInteger(effect.seq)?[effect.seq]:[])])].slice(0,128);
+        value.retainedSeqs=[...new Set([...value.retainedSeqs,...(effect.retainedSeqs??[])])].slice(0,128);
+        for(const item of before)expand(item,depth+1);
+        return;
+      }
       const source=String(message.source?.kind??'');
       if(source.startsWith('work-evidence')&&source!=='work-evidence-working-set'){
         const kind=message.source?.taskFlow?.kind;
-        const name=source==='work-evidence-final-json'?'finalJson':source==='work-evidence-quality-review'?'qualityReview':
-          kind?({judgment:'stageJudgment',reuse:'reuseAdvice',cleanup:'cleanupAdvice',pacing:'stepPacing',compute:'retainedComputeAdvice',validation:'stepPacing',inlineExec:'inlineExecAdvice',diagnostic:'failureAdvice',scriptReuse:'scriptReuseAdvice',scriptSource:'scriptReuseAdvice'}[kind]??'guidance'):'guidance';
-        const value=byFeature[name]??={tokensEstimate:0,chars:0,effects:0};value.tokensEstimate-=tokens([message]);value.chars-=chars([message]);value.effects++;return [];
+        const name=source==='work-evidence-final-json'?(message.source?.finalJson?.kind==='observed-result-repair'?'finalJsonResult':'finalJson'):
+          NOTICE_FEATURES.get(source)??(
+          kind?({judgment:'stageJudgment',reuse:'reuseAdvice',cleanup:'cleanupAdvice',pacing:'stepPacing',compute:'retainedComputeAdvice',validation:'stepPacing',inlineExec:'inlineExecAdvice',diagnostic:'failureAdvice',scriptReuse:'scriptReuseAdvice',scriptSource:'scriptReuseAdvice'}[kind]??'guidance'):'guidance');
+        const value=byFeature[name]??={tokensEstimate:0,chars:0,effects:0};
+        const removedTokens=messageTokens(message),removedChars=chars([message]);
+        value.tokensEstimate-=removedTokens;value.chars-=removedChars;value.effects++;
+        delta-=removedTokens;charDelta-=removedChars;
       }
-      return [message];
     };
-    const reference=main?options.messages.flatMap(message=>expand(message)):options.messages;
-    const delta=main?tokens(reference)-tokens(options.messages):0,charDelta=main?chars(reference)-chars(options.messages):0;
+    // Adding the changes along the attribution chain cancels every intermediate view.
+    if(main)for(const message of options.messages)expand(message);
     const systemTokens=textTokens(typeof options.system==='string'?options.system:JSON.stringify(options.system??null)),messageTokensEstimate=tokens(options.messages);
     const instructionText=state.instructionText??'';
     const instructionPresent=instructionText&&(typeof options.system==='string'&&options.system.includes(instructionText)||
@@ -238,7 +260,7 @@ export function createEffectObserver(ctx,runtime){
         systemTokensEstimate:systemTokens,messageTokensEstimate,byFeature,reconstructionMisses:misses,
         coverage:'Recorded body changes, recognizable guidance and top-level plugin schemas; host-generated PTC SDK/prelude overhead is not reconstructed',
         method:'same-trajectory message reconstruction; local text-density estimate; provider tokenization not observed',causalTaskSaving:false},
-      localRequestTokensEstimate:tokens(options.messages)+textTokens(JSON.stringify({system:options.system??null,tools:options.tools??[]})),
+      localRequestTokensEstimate:messageTokensEstimate+textTokens(JSON.stringify({system:options.system??null,tools:options.tools??[]})),
       decisions:rowDecisions,sourceSeq:agent.session.seq,step:runtime.get(agent).step};
   }
   async function start(agent,row){

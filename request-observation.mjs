@@ -20,6 +20,7 @@ export function observeRequests(ctx,runtime){
     if(!config.requestAccounting&&!config.requestProjection&&!config.compressionControl){yield* next();return;}
     const s=runtime.sync(agent),started=performance.now();
     const requestKind=requestKindOf({purpose:options.purpose,auxiliary:s.auxiliarySignals.has(options.signal)}),auxiliary=requestKind==='auxiliary',main=requestKind==='main';
+    const taskRequestId=main?runtime.currentRequest?.(agent)?.id:null;
     const effectRecord=runtime.effects?.begin(agent,options,{auxiliary,requestKind});
     if(effectRecord)await runtime.effects?.start?.(agent,effectRecord);
     const record={ordinal:main?++s.metrics.contextRequests:null,at:new Date().toISOString(),sourceSeq:agent.session.seq,preset:s.selectedPreset||null,mode:runtime.modeStatus(agent),requestKind,auxiliary,purpose:options.purpose??(auxiliary?'work-evidence-auxiliary':null),
@@ -47,9 +48,12 @@ export function observeRequests(ctx,runtime){
       record.elapsedMs=Math.round(performance.now()-started);record.aborted=!!options.signal?.aborted;s.dirty=true;
       const canonical=canonicalUsage(record.usage);record.usage=canonical.usage;record.usageSources=canonical.sources;
       record.usageConsistent=canonical.consistent;record.usageComplete=canonical.complete;
+      record.taskRequestId=taskRequestId;
       runtime.contextControl?.requestFinished(agent,options,record);
       if(effectRecord){Object.assign(effectRecord,{usage:record.usage,usageSources:record.usageSources,usageConsistent:record.usageConsistent,usageComplete:record.usageComplete,
-        settled:record.settled,finishReason:record.finishReason,failureCode:record.failureCode,elapsedMs:record.elapsedMs,aborted:record.aborted});runtime.effects.finish(agent,effectRecord);}
+        settled:record.settled,finishReason:record.finishReason,failureCode:record.failureCode,elapsedMs:record.elapsedMs,aborted:record.aborted});
+        if(record.cacheReadDrop)effectRecord.cacheReadDrop=record.cacheReadDrop;
+        runtime.effects.finish(agent,effectRecord);}
       if(main)runtime.noteProjectionDispatch?.(agent,options,effectRecord);
     }
   });

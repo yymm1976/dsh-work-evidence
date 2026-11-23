@@ -44,6 +44,28 @@ for(const toolMode of ['native','ptc'])test(`quality review keeps a complete ins
   }finally{await host.close();}
 });
 
+for(const toolMode of ['native','ptc'])test(`quality review retains a completed inline program's scope (${toolMode})`,async()=>{
+  const code='const observed = [1, 2].map(x => x * 2);\nif (observed[1] !== 4) throw new Error("unexpected result");\nconsole.log("passed");';
+  let payload;
+  const args={runtime:'node',code};
+  const run=toolMode==='native'?tool('work_exec',args):tool('run_code',{
+    code:`const r=await tools.work_exec(${JSON.stringify(args)}); console.log(r.stdout.text);`});
+  const host=await startHost({workspace:{qualityReview:true},toolMode,
+    extraMounts:toolMode==='ptc'?[['dsh-ptc-runtime-node',{}],['dsh-agent-tool-presentation',{mode:'ptc'}]]:[],
+    script:(_options,n)=>n===1?[run]:[text('程序核对了所有项目行为。')],
+    auxiliary:options=>{payload=JSON.parse(options.messages[0].content[0].text);return [text('{"issues":[]}')];}});
+  try{
+    const agent=await host.createAgent('ultra');await host.send(agent,'运行程序并说明它实际核对了什么。');
+    assert.ok(payload);
+    const execution=payload.observed.executions.find(item=>item.tool==='work_exec'&&item.executionCompleted);
+    assert.ok(execution);
+    const row=payload.evidence.find(item=>item.seq===execution.seq);
+    assert.ok(row?.data.includes(code),'the recorded result keeps the exact program that produced it');
+    assert.ok(row?.data.includes('passed'),'the native result is also available');
+    assert.equal(payload.evidence.filter(item=>item.data.includes(code)).length,1);
+  }finally{await host.close();}
+});
+
 test('quality review does not promote a source read superseded by a later write',async()=>{
   const marker='SUPERSEDED_SOURCE_MIDDLE',body='header\n'.repeat(300)+marker+'\n'+'tail\n'.repeat(300);
   let payload=null;

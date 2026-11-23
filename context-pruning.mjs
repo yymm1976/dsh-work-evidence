@@ -77,6 +77,16 @@ export function looksLikeSourceBody(text){
   return false;
 }
 
+export function sourceBodyPaths(text){
+  const paths=new Set([...text.matchAll(/<path>([^<]+)<\/path>/gu)].map(match=>match[1]));
+  // PowerShell Select-String -Context marks the matched source row with "> ".
+  // Its path and line prefix hide the declarations from the plain-source matcher.
+  for(const [,file] of text.matchAll(/^[ \t]*>[ \t]+((?:[A-Za-z]:)?[^:\r\n]{1,1024}):[1-9]\d*:/gmu)){
+    if(isSourceBodyPath(file))paths.add(file);
+  }
+  return [...paths];
+}
+
 /**
  * Is this tool body a source file whose middle must stay visible?
  *
@@ -89,7 +99,7 @@ export function looksLikeSourceBody(text){
  */
 export function isSourceBody(text){
   const body=String(text??'');
-  const named=[...body.matchAll(/<path>([^<]+)<\/path>/gu)].map(match=>match[1]);
+  const named=sourceBodyPaths(body);
   if(named.some(file=>isSourceBodyPath(file)))return true;
   // A named non-source path does not make an unmarked source body a log, and a named source
   // path anywhere in a compound result keeps the whole result. Only the absence of any
@@ -174,9 +184,14 @@ export const prunableMessage=message=>!!message&&!message.isError&&Array.isArray
   message.content.length>0&&message.content.every(block=>block?.type==='text')&&!hasPruneProblem(message.content);
 
 const PRUNE_PROBLEM=/(?:^|\n)\s*(?:fatal:|Traceback\b|\w*(?:Error|Exception):|FAIL(?:ED)?\b|[1-9]\d*\s+(?:failed|failures)\b)|["']passed["']\s*:\s*false|\b(?:exit(?:\s+code)?|exitCode|exit_code)\s*["']?\s*[:= ]\s*-?[1-9]\d*\b/i;
+// A producer can carry a large successful body in a history-safe form and then must
+// still have any deliberately incomplete retrieval short-circuited by the caller.
+// Recognising the explicit marker keeps an intermediate excerpt from later being
+// treated as the complete source and receiving a no-op "already read" receipt.
+const INCOMPLETE_EVIDENCE=/["'](?:textComplete|rangeComplete|lineTextComplete)["']\s*:\s*false|["'](?:budgetTruncated|omitted)["']\s*:\s*true/iu;
 export function hasPruneProblem(content,value=null){
   const text=resultText(content),parsed=value??parseResult(text);
-  if(resultHasProblem(parsed??text))return true;
+  if(resultHasProblem(parsed??text)||INCOMPLETE_EVIDENCE.test(text))return true;
   // A successful wrapper can contain a failed command or a failed assertion.
   if(PRUNE_PROBLEM.test(text))return true;
   // Serialized command output contains escaped newlines. Inspect the decoded
@@ -350,7 +365,7 @@ export function planContextPrune(message,reads,options){
   // Every named path is checked, not only the first: a result can carry an old log entry
   // and the source body it was run against, and retaining either one forbids the cut.
   if(!reads.length&&options.retainSource){
-    const named=[...original.matchAll(/<path>([^<]+)<\/path>/gu)].map(match=>match[1]);
+    const named=sourceBodyPaths(original);
     // `retainSource` is the authority on a NAMED path: it knows whether a later complete
     // read superseded this copy, and refusing here on "it is source" alone would make a
     // superseded body permanently unprunable — the exact case pruning exists for.

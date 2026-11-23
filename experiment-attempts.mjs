@@ -30,10 +30,11 @@ export function summarizeAttempts(events){
       const ordinal=(ordinals.get(stepKey)||0)+1;ordinals.set(stepKey,ordinal);
       const begin=starts.get(stepKey)||(header?{at:header.at,kind:'request-header-boundary',sourceSeq:header.sourceSeq}:null);
       const noSurfaceAttempt=event.type==='assistant/attempt';
-      attempts.push({sourceSeq:event.seq??null,turn:data.turn??null,step:data.step??null,ordinal,route,noSurfaceAttempt,interrupted:!!data.interrupted,
+      const interrupted=!!data.interrupted;
+      attempts.push({sourceSeq:event.seq??null,turn:data.turn??null,step:data.step??null,ordinal,route,noSurfaceAttempt,interrupted,
         startedAt:begin?.at??null,startSource:begin?.kind||null,endedAt:at,elapsedMs:at!==null&&begin?.at!=null?Math.max(0,at-begin.at):null,
         usage:cleaned,usageSources:canonical.sources,usageConsistent:canonical.consistent,usageComplete:canonical.complete,usageState,
-        consumptionUnknown:!canonical.complete||(noSurfaceAttempt&&(usageState==='explicit-zero'||!['stop','tool-calls','max-tokens','length'].includes(finish?.kind))),
+        consumptionUnknown:!canonical.complete||interrupted||(noSurfaceAttempt&&(usageState==='explicit-zero'||!['stop','tool-calls','max-tokens','length'].includes(finish?.kind))),
         failure:finish?.failure||data.failure||null,finishReason:finish?.kind||null});
       starts.delete(stepKey);header=null;
     }

@@ -1,10 +1,46 @@
 import path from 'node:path';
-import {limits,within,literal,textWindow,boundEvidence,finalizeEvidenceWindow,references,checkedReport,reportMarkdown} from './evidence.mjs';
+import {limits,within,literal,textWindow,boundEvidence,finalizeEvidenceWindow,renderSourceEvidence,references,checkedReport,reportMarkdown} from './evidence.mjs';
 import {archiveSource,archiveMemberSource} from './archive-source.mjs';
 import {dependencySource} from './dependency-source.mjs';
 import {evidenceArgumentError} from "./recovery.mjs";
+import {toolModeFor} from './tool-execution.mjs';
 
-export function registerSourceTools({ctx,nativeFiles,runtime,state,effects,evidenceViews,index,candidates,call,read,search,snippets,sourceReferences,disabledResult,output,parameters}){
+const PYTHON_DECLARATION=/^\s*(?:async\s+)?(?:def|class)\s+([A-Za-z_]\w*)\b/u;
+const JS_DECLARATION=/^\s*(?:export\s+(?:default\s+)?)?(?:async\s+)?(?:function(?:\s*\*\s*|\s+)|class\s+|interface\s+|type\s+)([A-Za-z_$][\w$]*)(?:[\s(<={:]|$)/u;
+const MAX_OUTLINE_ENTRIES=64;
+
+export async function sourceDeclarationOutline(root,window,exec,call){
+  const {path:file,lines,totalLines}=window??{};
+  const through=Array.isArray(lines)?lines.at(-1)?.number:null;
+  if(typeof file!=='string'||!Number.isSafeInteger(through)||!Number.isSafeInteger(totalLines)||through>=totalLines||totalLines>10000)return null;
+  const pattern=/\.pyi?$/iu.test(file)?PYTHON_DECLARATION:/\.[cm]?[jt]sx?$/iu.test(file)?JS_DECLARATION:null;
+  if(!pattern)return null;
+  const full=within(root,file);
+  const result=await call('grep',{path:full,pattern:pattern.source},exec);
+  if(result.isError||!Array.isArray(result.value?.matches))return null;
+  const entries=[];
+  for(const match of result.value.matches){
+    if(typeof match?.path!=='string'||path.relative(full,path.resolve(root,match.path))||
+      !Number.isSafeInteger(match.lineNumber)||match.lineNumber<=through||match.lineNumber>totalLines)continue;
+    const name=typeof match.line==='string'?pattern.exec(match.line)?.[1]:null;
+    if(name&&name.length<=96)entries.push([match.lineNumber,name]);
+  }
+  if(!entries.length)return null;
+  entries.sort((a,b)=>a[0]-b[0]);
+  const sample=entries.length<=MAX_OUTLINE_ENTRIES?entries:[
+    ...entries.slice(0,MAX_OUTLINE_ENTRIES/2),...entries.slice(-MAX_OUTLINE_ENTRIES/2),
+  ];
+  let chars=0;
+  const shown=sample.filter(([line,name])=>{
+    const size=String(line).length+name.length+2;
+    if(chars+size>2200)return false;
+    chars+=size;
+    return true;
+  });
+  return {file:path.relative(root,full).replaceAll('\\','/'),entries:shown,omitted:entries.length-shown.length};
+}
+
+export function registerSourceTools({ctx,nativeFiles,runtime,state,effects,evidenceViews,index,candidates,call,read,search,snippets,sourceReferences,sourceSearchScope,disabledResult,output,parameters}){
   const observeParser=(exec,parser)=>{
     if(!parser)return;
     const reason=parser.fallbackReason??parser.mode;
@@ -22,20 +58,57 @@ export function registerSourceTools({ctx,nativeFiles,runtime,state,effects,evide
         ...(rejected.mavenBinding.coordinates?{coordinates:rejected.mavenBinding.coordinates}:{}),evidence:rejected.mavenBinding.evidence??null});
     }
   };
-  ctx.tools.register({name:'project_evidence',description:'取得真实源码：entry读工程入口，locate按query定位，failure回看实际失败；read按files读取1至4个范围；archive读取指定的工作区jar/zip条目；source按类名在当前工作区或匹配当前工程版本的源码归档中选择真实来源，并可按member返回成员窗口。归档仅在内存读取，不解压；版本冲突或成员未命中保留为未解决，不判根因或宣告业务覆盖。',
-    parameters:{...parameters({lineTextLimit:{type:'integer',minimum:1,maximum:12000,description:'source/archive/read: maximum characters per source line. A larger explicit value can recover a previously clipped line; native read or total budget limits remain explicit.'},responseView:{type:'string',enum:['full','reference-if-visible'],description:'source/archive/read: default full unless the workspace sets defaultResponseView. A reference is returned only when this exact complete body is proven visible in the current model request; request full to re-read current source.'},maxChars:{type:'integer',minimum:2000,maximum:64000,description:'Serialized evidence string budget, not tokens. Omitted items retain locators and completeness limits.'},mode:{type:'string',enum:['entry','locate','failure','read','archive','source']},query:{type:'string'},queries:{type:'array',minItems:1,maxItems:4,description:'Only mode source, standalone: batch up to 4 independent class lookups in one call. Each item {query, member|members, entryKind?}.',items:{type:'object',additionalProperties:false,properties:{query:{type:'string'},member:{type:'string'},members:{type:'array',minItems:1,maxItems:8,items:{type:'string'}},entryKind:{type:'string',enum:['types','runtime']}},required:['query']}},member:{type:'string',description:'source (with query) or archive (with archive+entry): return this member\'s window inside the selected source.'},members:{type:'array',minItems:1,maxItems:8,items:{type:'string'},description:'source (with query) or archive (with archive+entry): return windows for these members inside the selected source.'},scope:{type:'string'},includeReferences:{type:'boolean',description:'Only mode source: opt in to bounded project textual references; no automatic caller expansion.'},referenceScope:{type:'string',description:'Workspace scope for optional references; defaults to scope or src.'},entryKind:{type:'string',enum:['types','runtime'],description:'Only mode source: select npm type declarations or runtime entry; ambiguous conditional exports remain unresolved.'},error_text:{type:'string'},archive:{type:'string',description:'Only mode archive: required workspace jar/zip path; also requires entry. For class lookup use mode source and query without archive.'},entry:{type:'string',description:'Only mode archive: required exact relative path inside archive, e.g. net/example/ClassName.java. mode archive does not list entries.'},offset:{type:'integer',minimum:1},limit:{type:'integer',minimum:1,maximum:160},files:{type:'array',minItems:1,maxItems:4,items:{type:'object',additionalProperties:false,properties:{path:{type:'string'},offset:{type:'integer',minimum:1},limit:{type:'integer',minimum:1,maximum:160}},required:['path']}}}),required:['mode']},output,isConcurrencySafe:args=>args?.mode!=='archive'&&args?.mode!=='source',
+  ctx.tools.register({
+    name:'project_evidence',
+    description:'read 按 files 批读源码，source 按名称找源码或成员，archive 读归档，entry 查入口，locate 搜名称，failure 查失败。',
+    parameters:{...parameters({
+      lineTextLimit:{type:'integer',minimum:1,maximum:12000,description:'Characters per source line.'},
+      responseView:{type:'string',enum:['full','reference-if-visible'],description:'Full text or reference to visible exact text.'},
+      maxChars:{type:'integer',minimum:2000,maximum:200000,description:'UTF-8 bytes. Default 48000 for read/source/archive.'},
+      mode:{type:'string',enum:['entry','locate','failure','read','archive','source']},
+      query:{type:'string'},
+      queries:{type:'array',minItems:1,maxItems:4,description:'Batch source lookups.',items:{
+        type:'object',additionalProperties:false,properties:{
+          query:{type:'string'},member:{type:'string'},members:{type:'array',minItems:1,maxItems:8,items:{type:'string'}},
+          entryKind:{type:'string',enum:['types','runtime']},
+        },required:['query'],
+      }},
+      member:{type:'string',description:'One named source or archive member.'},
+      members:{type:'array',minItems:1,maxItems:8,items:{type:'string'},description:'Named source or archive members.'},
+      scope:{type:'string'},
+      includeReferences:{type:'boolean',description:'Textual references for source.'},
+      referenceScope:{type:'string',description:'Defaults to scope, then src or workspace.'},
+      entryKind:{type:'string',enum:['types','runtime'],description:'npm entry kind in source mode.'},
+      error_text:{type:'string'},
+      archive:{type:'string',description:'Workspace JAR or ZIP.'},
+      entry:{type:'string',description:'Exact path inside archive.'},
+      offset:{type:'integer',minimum:1},
+      limit:{type:'integer',minimum:1,maximum:2000,description:'Line count.'},
+      readLayout:{type:'string',enum:['records','numbered']},
+      files:{type:'array',minItems:1,maxItems:limits.sourceRanges,description:'read ranges. Set offset and limit inside each item. Defaults: 1, 2000.',items:{
+        type:'object',additionalProperties:false,properties:{
+          path:{type:'string'},offset:{type:'integer',minimum:1},limit:{type:'integer',minimum:1,maximum:2000},
+        },required:['path'],
+      }},
+    })},output:{...output,render:(_args,value)=>[{type:'text',text:renderSourceEvidence(value)}]},isConcurrencySafe:args=>args?.mode!=='archive'&&args?.mode!=='source',
     async execute(args,exec){
       if(!exec.agent)throw new Error('Agent required');
       await runtime.init(exec.agent,exec.signal);
       if(!runtime.isEnabled(exec.agent))return disabledResult(exec.agent,'project_evidence');
       state(exec.agent).active=true;
       try{
-      if(!args||Object.keys(args).some(k=>!['mode','query','queries','member','members','scope','error_text','files','archive','entry','offset','limit','includeReferences','referenceScope','entryKind','responseView','maxChars','lineTextLimit'].includes(k)))throw new Error('Unknown evidence field');
+      if(!args||Object.keys(args).some(k=>!['mode','query','queries','member','members','scope','error_text','files','archive','entry','offset','limit','includeReferences','referenceScope','entryKind','responseView','readLayout','maxChars','lineTextLimit'].includes(k)))throw new Error('Unknown evidence field');
+      if(args.mode===undefined){
+        if(Array.isArray(args.files)&&!['archive','entry','query','queries'].some(key=>args[key]!==undefined))args={...args,mode:'read'};
+        else if(typeof args.query==='string'||Array.isArray(args.queries))args={...args,mode:'source'};
+        else if(typeof args.archive==='string'&&typeof args.entry==='string')args={...args,mode:'archive'};
+      }
       if(args.lineTextLimit!==undefined&&(!['source','archive','read'].includes(args.mode)||!Number.isInteger(args.lineTextLimit)||args.lineTextLimit<1||args.lineTextLimit>12000))throw new Error('lineTextLimit requires source/archive/read and an integer from 1 to 12000');
       if(args.responseView!==undefined&&(!['full','reference-if-visible'].includes(args.responseView)||!['source','archive','read'].includes(args.mode)))throw new Error('responseView requires source/archive/read and full or reference-if-visible');
-      if(args.maxChars!==undefined&&(!Number.isInteger(args.maxChars)||args.maxChars<2000||args.maxChars>64000))throw new Error('maxChars must be an integer from 2000 to 64000');
+      if(args.maxChars!==undefined&&(!Number.isInteger(args.maxChars)||args.maxChars<2000||args.maxChars>200000))throw new Error('maxChars must be an integer from 2000 to 200000');
       if(!['entry','locate','failure','read','archive','source'].includes(args.mode))throw new Error('Invalid evidence mode');
       if(args.files!==undefined&&args.mode!=='read')throw new Error('files is only supported by mode read');
+      if(args.readLayout!==undefined&&(args.mode!=='read'||!['records','numbered'].includes(args.readLayout)))throw new Error('readLayout requires read mode and records or numbered');
       if(args.mode!=='archive'&&['archive','entry'].some(k=>args[k]!==undefined))return evidenceArgumentError(args,'archive and entry require mode archive. Use mode source with query and member(s), or mode archive with both archive and entry. The tool will not guess which source you intended.','EVIDENCE_MODE_FIELDS');
       if(args.mode==='archive'&&(typeof args.archive!=='string'||!args.archive.trim()||typeof args.entry!=='string'||!args.entry.trim()))return evidenceArgumentError(args,'mode archive reads one exact entry. Supply both archive and entry; use mode source with query when only a class is known. member(s) locate named members inside the entry.','ARCHIVE_LOCATOR_REQUIRED');
       if(!['archive','source'].includes(args.mode)&&['offset','limit'].some(k=>args[k]!==undefined))throw new Error('offset and limit require mode archive or source');
@@ -50,8 +123,8 @@ export function registerSourceTools({ctx,nativeFiles,runtime,state,effects,evide
       if(args.members!==undefined&&(!Array.isArray(args.members)||args.members.length<1||args.members.length>8||args.members.some(value=>typeof value!=='string'||!value.trim()||value.length>300)))throw new Error('members must contain 1-8 nonempty member names');
       if(args.member!==undefined&&args.members!==undefined)throw new Error('Use either member or members, not both');
       if(args.offset!==undefined&&(!Number.isInteger(args.offset)||args.offset<1))throw new Error('offset must be an integer >=1');
-      if(args.limit!==undefined&&(!Number.isInteger(args.limit)||args.limit<1||args.limit>160))throw new Error('limit must be an integer from 1 to 160');
-      if(args.mode==='read'&&(!Array.isArray(args.files)||args.files.length<1||args.files.length>4||args.files.some(f=>!f||typeof f!=='object'||Object.keys(f).some(k=>!['path','offset','limit'].includes(k))||typeof f.path!=='string'||!f.path.trim()||(f.offset!==undefined&&(!Number.isInteger(f.offset)||f.offset<1))||(f.limit!==undefined&&(!Number.isInteger(f.limit)||f.limit<1||f.limit>160)))))throw new Error('read requires 1-4 files with path, offset>=1 and limit=1-160');
+      if(args.limit!==undefined&&(!Number.isInteger(args.limit)||args.limit<1||args.limit>2000))throw new Error('limit must be an integer from 1 to 2000');
+      if(args.mode==='read'&&(!Array.isArray(args.files)||args.files.length<1||args.files.length>limits.sourceRanges||args.files.some(f=>!f||typeof f!=='object'||Object.keys(f).some(k=>!['path','offset','limit'].includes(k))||typeof f.path!=='string'||!f.path.trim()||(f.offset!==undefined&&(!Number.isInteger(f.offset)||f.offset<1))||(f.limit!==undefined&&(!Number.isInteger(f.limit)||f.limit<1||f.limit>2000)))))throw new Error('read requires 1-'+limits.sourceRanges+' ranges with path, offset>=1 and limit=1-2000; omit limit to read to EOF, and the same path may appear more than once');
       for(const k of ['query','scope','error_text','referenceScope'])if(args[k]!==undefined&&(typeof args[k]!=='string'||!args[k].trim()||args[k].length>(k==='error_text'?6000:500)))throw new Error('Invalid '+k);
       if(args.includeReferences!==undefined&&(args.mode!=='source'||typeof args.includeReferences!=='boolean'))throw new Error('includeReferences requires mode source and a boolean');
       if(args.referenceScope!==undefined&&args.mode!=='source')throw new Error('referenceScope requires mode source');
@@ -71,7 +144,8 @@ export function registerSourceTools({ctx,nativeFiles,runtime,state,effects,evide
           ?'命中的成员窗口仅证明该条目内这些成员的正文；未命中成员保留未解决，不证明该类或其它版本不存在。'
           :'仅为所列归档条目及行范围；读取全条目不等于业务调用链完整。没有解压文件。';
       }else if(args.mode==='read'){
-        const requests=args.files.map(f=>({path:within(root,f.path),offset:f.offset??1,limit:f.limit??80}));
+        if(args.readLayout)facts.readLayout=args.readLayout;
+        const requests=args.files.map(f=>({path:within(root,f.path),offset:f.offset??1,limit:f.limit??2000}));
         facts.sources=await Promise.all(requests.map(async request=>{
           const locator=/^(.+\.(?:jar|zip))![\\/](.+)$/i.exec(request.path);
           if(locator)return archiveSource(root,{archive:locator[1],entry:locator[2],offset:request.offset,limit:request.limit,lineTextLimit:args.lineTextLimit},exec,call);
@@ -80,7 +154,7 @@ export function registerSourceTools({ctx,nativeFiles,runtime,state,effects,evide
           const window=!r.isError&&textWindow(r.value,{maxLines:request.limit,maxLineChars:args.lineTextLimit??500});
           return {state:window?'observed':'unavailable',...(window||{path:request.path,code:r.error?.info?.code||r.error?.code||'UNRECOGNIZED_READ_RESULT'}),requestedRange:{offset:request.offset,limit:request.limit},retrieveCurrent:{tool:'read',arguments:{file_path:request.path,offset:request.offset,limit:request.limit}}};
         }));
-        facts.coverage='仅观察所列文件与行范围；整文件已读也不证明跨文件调用或运行分支已核对。truncated或unavailable部分不作为否定证据。';
+        facts.coverage='结果只覆盖已送达行段。缺失或截断部分不能作为否定依据。';
       }else if(args.mode==='source'){
         facts.limits='源码定位只选择当前工作区或与当前工程声明版本相符的工作区源码归档；版本不明或候选冲突时保留为未选择。归档内容在内存读取，不解压。';
         if(args.queries){
@@ -122,14 +196,15 @@ export function registerSourceTools({ctx,nativeFiles,runtime,state,effects,evide
         }else facts.kind='unclassified';
       }else if(args.mode==='locate'){
         if(!args.query)throw new Error('locate requires an exact symbol or literal query');
+        const scope=await sourceSearchScope(root,args.scope,exec);
         let found;
         if(/^[A-Za-z_$][\w$-]{1,100}$/.test(args.query)){
-          const files=await call('glob',{path:within(root,args.scope||'src'),pattern:'**/*'+args.query+'*.{java,js,mjs,cjs,ts,tsx}'},exec);
+          const files=await call('glob',{path:within(root,scope),pattern:'**/*'+args.query+'*.{java,js,mjs,cjs,ts,tsx,py,pyi}'},exec);
           if(!files.isError&&Array.isArray(files.value?.paths)&&files.value.paths.length){
             found={state:'observed',selection:'actual matching source filenames',totalMatches:files.value.paths.length,truncated:files.value.paths.length>limits.files,matches:files.value.paths.slice(0,limits.files).map(file=>({path:file,lineNumber:1,line:'File name matches the supplied symbol; not a declaration guarantee.'}))};
           }
         }
-        if(!found)found=await search(literal(args.query),args.scope||'src',root,exec);
+        if(!found)found=await search(literal(args.query),scope,root,exec);
         facts.search=found;facts.sources=await snippets(found.matches,root,exec);
       }else{
         const failures=state(exec.agent).failures.slice(-3).reverse();facts.failures=failures.map(f=>({...f,detail:f.detail.slice(0,700),...(f.detail.length>700?{detailTruncated:true}:{})}));
@@ -178,11 +253,40 @@ export function registerSourceTools({ctx,nativeFiles,runtime,state,effects,evide
         if(!locators.length&&!facts.sources.length)facts.nextFactNeeded='没有取得可读的源码定位；需要实际错误输出或明确的符号query。插件不编造根因或诊断命令。';
       }
       facts.elapsedMs=Math.round(performance.now()-began);
-      for(const source of facts.sources)if(!source.retrieveCurrent)source.retrieveCurrent={tool:'project_evidence',arguments:{...args,responseView:'full'}};
-      const requestedBudget=args.maxChars??(['read','archive'].includes(args.mode)?19000:args.mode==='source'?24000:undefined);
-      const bounded=boundEvidence(facts,requestedBudget===undefined?undefined:requestedBudget-256);
-      if(['read','archive'].includes(args.mode))for(const source of bounded.sources)finalizeEvidenceWindow(source,source.archive&&source.entry?'archive':args.mode);
-      return evidenceViews.present(bounded,args,exec);
+      const lineWindows=['read','archive'].includes(args.mode);
+      for(const source of facts.sources){
+        if(!source.retrieveCurrent)source.retrieveCurrent={tool:'project_evidence',arguments:{...args,responseView:'full'}};
+        if(lineWindows)finalizeEvidenceWindow(source,source.archive&&source.entry?'archive':args.mode);
+        if(args.mode!=='read'||source.responseBudget||!source.budgetTruncated||!Number.isInteger(source.nextOffset)||!source.requestedRange)continue;
+        const {offset,limit}=source.requestedRange;
+        const remaining=offset+limit-source.nextOffset;
+        if(remaining<=0)continue;
+        source.responseBudget={batch:true,bodyDelivered:true,truncatedAfterLine:source.nextOffset-1,
+          resumeTool:'project_evidence',resumeArguments:{mode:'read',files:[{path:source.path,offset:source.nextOffset,limit:remaining}],
+            responseView:'full',...(args.lineTextLimit===undefined?{}:{lineTextLimit:args.lineTextLimit}),
+            ...(args.maxChars===undefined?{}:{maxChars:args.maxChars}),...(args.readLayout?{readLayout:args.readLayout}:{})}};
+      }
+      const requestedBudget=args.maxChars??(['read','archive','source'].includes(args.mode)?48000:undefined);
+      const bodyBudget=requestedBudget===undefined?undefined:requestedBudget-256;
+      const nativeRead=args.mode==='read'&&!exec.parent&&toolModeFor(ctx,exec.agent)==='native';
+      const defaultNumbered=nativeRead&&exec.toolSet&&args.readLayout===undefined;
+      if(defaultNumbered&&facts.sources.every(source=>source.rangeComplete)){
+        // Keep the existing partial selection unless the rendered format fits every requested range.
+        const complete={...facts,budgetTruncated:false};
+        if(Buffer.byteLength(JSON.stringify(complete))>bodyBudget&&
+          Buffer.byteLength(renderSourceEvidence({...complete,readLayout:'numbered'}))<=bodyBudget)facts.readLayout='numbered';
+      }
+      let bounded=boundEvidence(facts,bodyBudget,{
+        preferWholeSources:args.mode==='read',lineTextLimit:args.lineTextLimit,resumeMaxChars:args.maxChars,
+        numberedBudget:nativeRead&&facts.readLayout==='numbered'
+      });
+      if(lineWindows)for(const source of bounded.sources)finalizeEvidenceWindow(source,source.archive&&source.entry?'archive':args.mode);
+      // For a partial selection, only change how the already selected rows are displayed.
+      if(defaultNumbered&&bounded.readLayout===undefined){
+        const numbered={...bounded,readLayout:'numbered'};
+        if(Buffer.byteLength(renderSourceEvidence(numbered))<Buffer.byteLength(JSON.stringify(bounded)))bounded=numbered;
+      }
+      return evidenceViews.present(bounded,args,exec,renderSourceEvidence);
     }});
   ctx.tools.register({name:'work_report',description:'把本次工作的已完成依据、仍未验证和仍未完成事项保存到当前工作区.dsh/work-evidence/<session>.md。可选claims按关键结论列出依据、假设、反例与缺口；插件不会把模型填写的依据或“已处理反例”自动视为证明。status不会让DSH自动结束或宣布成功。',
     parameters:{...parameters({status:{type:'string',enum:['complete','partial','unknown']},summary:{type:'string'},observed:{type:'array',items:{type:'string'}},unverified:{type:'array',items:{type:'string'}},remaining:{type:'array',items:{type:'string'}},

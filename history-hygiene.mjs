@@ -1,14 +1,14 @@
 import path from 'node:path';
 import {argsOf,eventLog} from './runtime.mjs';
-import {isSourceBodyPath,isSourceBody,planContextPrune,readDispatch,hasPruneProblem} from './context-pruning.mjs';
+import {isSourceBodyPath,isSourceBody,planContextPrune,readDispatch,hasPruneProblem,sourceBodyPaths} from './context-pruning.mjs';
 import {resultText,surfaceReferences} from './visible-results.mjs';
 import {renderedReads} from './observation-ledger.mjs';
 import {messageTokens} from './context-economics.mjs';
 import {reportedCheckFailure} from './recovery.mjs';
 
-const AGE=2,MIN_SAVING=512;
+const AGE=2,MIN_SAVING=512,MAX_CANDIDATE_PLANS=32;
 const TEST_MIN_CHARS=4000,TEST_TAIL_CHARS=1800,TEST_DIGEST_MAX=4000,TOOL_MIN_CHARS=12000,TOOL_DIGEST_MAX=5000;
-const FULL_OUTPUT_REQUEST=/完整输出|全部输出|原始输出|full output|full canonical output/iu;
+const FULL_OUTPUT_REQUEST=/(?:完整|全部|原始)(?:的)?(?:工具|命令)?输出|\b(?:full|raw)(?:\s+(?:canonical|tool|command))?\s+output\b/iu;
 /** TAP (`node --test`) reports its own exact counts; require all three so a
  *  truncated or unrelated body is never hidden behind a receipt. */
 function tapCheckFailure(text){
@@ -185,13 +185,90 @@ export function testOutputDigest(command,text,{seq=null,truncated=false,focus=[]
     signature:failure?.signature??null,summary,originalChars:text.length};
 }
 
+/** Render the native MatchInfo line format with one common path prefix. */
+export function compactPowerShellMatchPaths(text,root,command){
+  if(typeof command!=='string'||!/^\s*Select-String\s/iu.test(command)||
+    typeof text!=='string'||text.length<2*MIN_SAVING||typeof root!=='string'||!path.isAbsolute(root)||
+    /\[(?:output truncated|truncated|stderr|exit code:|timed out|still running)/iu.test(text))return text;
+  const prefix=path.normalize(root).replace(/[\\/]+$/u,'')+path.sep;
+  // Without context markers, require a complete block of absolute MatchInfo rows.
+  const unprefixed=text.trimStart().startsWith(prefix)&&text.split(/\r?\n/u).every(row=>
+    !row.trim()||row.startsWith(prefix)&&/^[^:]+:[1-9]\d*:/u.test(row.slice(prefix.length)));
+  let matches=0;
+  const relative=text.replace(/^(> | {2})?([^\r\n]+?):([1-9]\d*):/gmu,(line,lead,file,number)=>{
+    if((!lead&&!unprefixed)||!file.startsWith(prefix)||file.length===prefix.length)return line;
+    matches++;
+    return (lead??'')+file.slice(prefix.length)+':'+number+':';
+  });
+  const shortened='[Select-String path prefix: '+prefix+']\n'+relative;
+  return matches>=2&&text.length-shortened.length>=MIN_SAVING?shortened:text;
+}
+
+/** Share the workspace prefix of a single-column FullName table without changing any displayed rows. */
+export function compactPowerShellInventoryPaths(text,root,command){
+  if(typeof command!=='string'||!/^\s*Get-ChildItem\s/iu.test(command)||
+    typeof text!=='string'||text.length<2*MIN_SAVING||typeof root!=='string'||!path.isAbsolute(root)||
+    /\[(?:output truncated|truncated|stderr|exit code:|timed out|still running)/iu.test(text))return text;
+  const header=/^(?:\r?\n)*FullName[ \t]*\r?\n-{8}[ \t]*\r?\n/u.exec(text)?.[0];
+  if(!header)return text;
+  const prefix=path.normalize(root).replace(/[\\/]+$/u,'')+path.sep;
+  const rows=text.slice(header.length).split('\n');
+  if(rows.some(row=>row.trim()&&(!row.startsWith(prefix)||!row.slice(prefix.length).trim())))return text;
+  const relative=rows.map(row=>row.startsWith(prefix)?row.slice(prefix.length):row).join('\n');
+  const shortened='[FullName path prefix: '+prefix+']\n'+header+relative;
+  return text.length-shortened.length>=MIN_SAVING?shortened:text;
+}
+
+/** Use a proven matched excerpt when the native head preview hides every literal alternative. */
+export function compactNativeGrepPreviews(text,matches,pattern){
+  if(typeof text!=='string'||!text.includes(' (line truncated)')||!/^Found \d+ (?:match|matches)\n\n/u.test(text)||
+    !Array.isArray(matches)||typeof pattern!=='string'||pattern.length>512||
+    !/^[\p{L}\p{N}_ -]+(?:\|[\p{L}\p{N}_ -]+)*$/u.test(pattern))return text;
+  const terms=pattern.split('|'),sections=text.split('\n\n');
+  if(terms.length>32||terms.some(term=>!term.trim()))return text;
+  const linesByPath=new Map();
+  for(const match of matches){
+    if(typeof match?.path!=='string'||!Number.isSafeInteger(match.lineNumber)||typeof match.line!=='string')continue;
+    let lines=linesByPath.get(match.path);
+    if(!lines){lines=new Map();linesByPath.set(match.path,lines);}
+    if(lines.has(match.lineNumber))lines.set(match.lineNumber,null);
+    else lines.set(match.lineNumber,match.line);
+  }
+  for(let index=1;index<sections.length;index++){
+    const [file,...rows]=sections[index].split('\n'),lines=linesByPath.get(file);
+    if(!lines)continue;
+    const rendered=rows.map(row=>{
+      const match=/^Line ([1-9]\d*): (.*) \(line truncated\)$/u.exec(row);
+      if(!match)return row;
+      const [,number,preview]=match,source=lines.get(Number(number));
+      if(typeof source!=='string'||source.length<=preview.length||!source.startsWith(preview))return row;
+      let position=Infinity,length=0;
+      for(const term of terms){
+        const start=source.indexOf(term);
+        if(start<0)continue;
+        if(start+term.length<=preview.length)return row;
+        if(start<position){position=start;length=term.length;}
+      }
+      if(position===Infinity)return row;
+      let start=Math.max(0,position-64),end=Math.min(source.length,position+length+96);
+      if(start>0&&/[\uDC00-\uDFFF]/u.test(source[start]))start--;
+      if(end<source.length&&/[\uDC00-\uDFFF]/u.test(source[end]))end++;
+      const excerpt=(start>0?'…':'')+source.slice(start,end)+(end<source.length?'…':'');
+      const replacement=`Line ${number}: ${excerpt} (matched excerpt; line truncated)`;
+      return row.length-replacement.length>=MIN_SAVING?replacement:row;
+    });
+    sections[index]=[file,...rendered].join('\n');
+  }
+  return sections.join('\n\n');
+}
+
 /** A request view only; canonical events and reasoning remain complete. */
 export function createHistoryHygiene(runtime,taskFlow,{isProtected=()=>false,retainedSource=()=>false,canRecall=()=>false,referenceContext=null}={}){
   const states=new Map();
   function get(agent){
     let state=states.get(agent.session.id);
     if(!state){state={cursor:0,step:0,results:new Map(),failures:new Set(),pinnedCalls:new Set(),pinnedResults:new Set(),retainedSources:new Set(),
-      outputPlans:new Map(),hiddenResults:new Set(),omittedSources:new Set(),liveReads:new Map(),observedPaths:new Map(),commands:new Map(),toolCalls:new Map(),fullOutputRequested:false,requests:0,outputs:0,chars:0,testOutputViews:0,testOutputChars:0,restores:0,rereadPromotions:0};states.set(agent.session.id,state);}
+      outputPlans:new Map(),candidatePlans:new Map(),hiddenResults:new Set(),omittedSources:new Set(),liveReads:new Map(),liveGrepViews:new Map(),observedPaths:new Map(),commands:new Map(),toolCalls:new Map(),fullOutputRequested:false,requests:0,outputs:0,chars:0,testOutputViews:0,testOutputChars:0,restores:0,rereadPromotions:0};states.set(agent.session.id,state);}
     return state;
   }
   function rememberRead(state,root,read){
@@ -205,6 +282,13 @@ export function createHistoryHygiene(runtime,taskFlow,{isProtected=()=>false,ret
     const state=get(exec.agent),root=exec.rootCallId??exec.callId;
     rememberRead(state,root,readDispatch({...exec,subCallId:exec.callId,...result}));
     if(result.isError||hasPruneProblem(result.content??[],result.value))state.failures.add(root);
+    else if(exec.name==='grep'&&!exec.parent&&result.content?.length===1&&result.content[0].type==='text'){
+      const before=result.content[0].text,after=compactNativeGrepPreviews(before,result.value?.matches,argsOf(exec.arguments).pattern);
+      if(after!==before){
+        if(state.liveGrepViews.size>=64)state.liveGrepViews.delete(state.liveGrepViews.keys().next().value);
+        state.liveGrepViews.set(exec.callId,{before,after});
+      }
+    }
   }
   function sync(agent){
     const state=get(agent),events=eventLog(agent.session);
@@ -244,25 +328,38 @@ export function createHistoryHygiene(runtime,taskFlow,{isProtected=()=>false,ret
       }
       if(event.type==='tool/result'&&event.surfaceOp?.op!=='replace'&&message){
         const id=callIdOf(message),text=resultText(message.content),command=state.commands.get(id)?.command??null,call=state.toolCalls.get(id);
+        const grepView=state.liveGrepViews.get(id);
+        state.liveGrepViews.delete(id);
         if(id)state.toolCalls.delete(id);
-        const baseFocus=(()=>{try{return taskFlow.phase(agent)?.focus??[]}catch{return []}})();
-        const isPytest=/^python(?:\.exe)?\s+-m\s+pytest/iu.test(command??'');
-        const testFocus=isPytest?['tests/']:[];
         const textOnly=Array.isArray(message.content)&&message.content.every(block=>block?.type==='text');
-        // Source recognition runs before EVERY receipt branch, including the test receipt.
-        // `node --test` can print a source body beside passing TAP totals; the test branch
-        // summarised it without ever asking whether the body was source, which is the same
-        // middle loss the retention rule exists to prevent, through a fourth entry point.
-        const sourceBody=isSourceBody(text);
-        const digest=!sourceBody&&command&&textOnly?testOutputDigest(command,text,{seq:event.seq,truncated:event.data?.meta?.truncated===true,focus:[...baseFocus,...testFocus],filterEnvironment:isPytest}):null;
+        let digest=null;
+        if(command&&textOnly&&text.length>=TEST_MIN_CHARS&&TEST_COMMAND.test(command.trim())){
+          const isPytest=/^python(?:\.exe)?\s+-m\s+pytest/iu.test(command);
+          let focus=[];
+          try{focus=taskFlow.phase(agent)?.focus??[];}catch{}
+          digest=testOutputDigest(command,text,{seq:event.seq,truncated:event.data?.meta?.truncated===true,
+            focus:isPytest?[...focus,'tests/']:focus,filterEnvironment:isPytest});
+        }
         const failed=!!message.isError||hasPruneProblem(message.content??[])||state.failures.has(id)||isProtected(agent,id);
-        const toolDigest=textOnly&&!digest&&!failed&&!sourceBody&&call?toolOutputDigest(call.name,text,{seq:event.seq,command,truncated:event.data?.meta?.truncated===true}):null;
+        const toolDigest=textOnly&&!digest&&!failed&&call?toolOutputDigest(call.name,text,{seq:event.seq,command,truncated:event.data?.meta?.truncated===true}):null;
         state.commands.delete(id);
-        const record={seq:event.seq,step:state.step,callId:id,failed,reads:[...(state.liveReads.get(id)?.values()??[])],
-          paths:[...(state.observedPaths.get(id)??[])],testDigest:digest?.text??null,testSignature:digest?.signature??null,testOriginalChars:digest?.originalChars??0,toolDigest:toolDigest?.text??null,toolOriginalChars:toolDigest?.originalChars??0};
+        let initialOutputView=textOnly&&!failed&&grepView?.before===text?
+          {text:grepView.after,reason:'native-grep-match-excerpt'}:null;
+        if(textOnly&&!failed&&call?.name==='pwsh'&&event.data?.meta?.truncated!==true){
+          const root=runtime.get(agent).root;
+          const matches=compactPowerShellMatchPaths(text,root,command);
+          if(matches!==text)initialOutputView={text:matches,reason:'powershell-match-path-prefix'};
+          else if(message.content.length===1){
+            const inventory=compactPowerShellInventoryPaths(text,root,command);
+            if(inventory!==text)initialOutputView={text:inventory,reason:'powershell-inventory-path-prefix'};
+          }
+        }
+        const record={seq:event.seq,step:state.step,callId:id,failed,textOnly,textLength:text.length,
+          initialOutputView,reads:[...(state.liveReads.get(id)?.values()??[])],
+          paths:[...(state.observedPaths.get(id)??[])],testDigest:digest?.text??null,toolDigest:toolDigest?.text??null};
         state.results.set(message.id,record);
         if(!failed&&record.reads.length){
-          const printed=renderedReads(record.reads,resultText(message.content));
+          const printed=renderedReads(record.reads,text);
           for(const window of printed?.value?.items??[]){
             const key=fileKey(runtime.get(agent).root,window.path);
             if(state.omittedSources.has(key)&&!state.retainedSources.has(key)){state.retainedSources.add(key);state.rereadPromotions++;}
@@ -276,30 +373,60 @@ export function createHistoryHygiene(runtime,taskFlow,{isProtected=()=>false,ret
   function project(agent,messages,{record=true}={}){
     if(!runtime.isEnabled(agent)||!runtime.get(agent).config.historyHygiene)return messages;
     if(!canRecall(agent)){if(record)get(agent).hiddenResults.clear();return messages;}
-    const allowed=(feature,before,after,seq)=>{
-      const economics=runtime.contextControl?.assess(agent,{messages:[before],proposedMessages:undefined,
-        savedChars:JSON.stringify(before.content).length-JSON.stringify(after.content).length,changedSeq:seq,changedMessageId:before.id,
-        savedTokensEstimate:Math.max(0,messageTokens(before)-messageTokens(after)),
+    const config=runtime.get(agent).config;
+    let pricingSettings;
+    const allowed=(feature,before,after,seq,entry=null,savedTokensEstimate=Math.max(0,messageTokens(before)-messageTokens(after)))=>{
+      const economics=runtime.contextControl?.assess(agent,{messages:[before],changedSeq:seq,changedMessageId:before.id,savedTokensEstimate,
         ...(feature==='referenceContext'?{route:runtime.currentSelection?.(agent)??null}:{})});
-      if(record&&economics){runtime.contextControl.remember(agent,economics,feature);
-        runtime.effects?.decide(agent,feature,economics.allowed?'approved':'deferred',economics.reason,{sourceSeq:seq,economics});}
+      if(record&&economics){
+        runtime.contextControl.remember(agent,economics,feature);
+        let details={sourceSeq:seq,economics};
+        if(entry){
+          pricingSettings??=JSON.stringify([config.projectionPricing,config.projectionHorizonSteps]);
+          const signature=JSON.stringify([economics.reason,economics.route,economics.pricingSource,economics.currency]);
+          const prior=entry.deferredEconomics;
+          if(economics.allowed)entry.deferredEconomics=null;
+          else if(prior?.signature===signature&&prior.pricingSettings===pricingSettings){
+            prior.count++;
+            // Snapshot the trend sparsely, while preserving every outcome and the latest live estimate.
+            if(!Number.isInteger(Math.log2(prior.count)))details={sourceSeq:seq};
+          }else entry.deferredEconomics={signature,pricingSettings,count:1};
+        }
+        runtime.effects?.decide(agent,feature,economics.allowed?'approved':'deferred',economics.reason,details);
+      }
       return economics?.allowed===true;
     };
-    const config=runtime.get(agent).config;
     const pruneSettings={thresholdChars:config.contextPruneMinChars,headChars:config.contextPruneHeadChars,tailChars:config.contextPruneTailChars};
     const settingsKey=JSON.stringify(pruneSettings),state=sync(agent),pins=surfaceReferences(agent.session),root=runtime.get(agent).root,flow=taskFlow.phase(agent),focus=new Set((flow.focus??[]).map(file=>fileKey(root,file)));
-    if(state.settingsKey!==settingsKey){state.outputPlans.clear();state.settingsKey=settingsKey;}
+    if(state.settingsKey!==settingsKey){
+      state.outputPlans.clear();
+      state.candidatePlans.clear();
+      for(const entry of state.results.values())entry.deferredEconomics=null;
+      state.settingsKey=settingsKey;
+    }
     let outputs=0,saved=0,testViews=0,testSaved=0;const hidden=new Set();
     const result=messages.map(message=>{
-      if(message.role!=='tool')return message;
+      if(message.role!=='tool'||state.fullOutputRequested||pins.opaque)return message;
       const entry=state.results.get(message.id);
-      const original=entry&&agent.session.eventAt(entry.seq)?.data?.message;
+      if(!entry?.textOnly||state.step-entry.step<1||state.pinnedResults.has(entry.seq)||pins.targets.has(entry.seq)||isProtected(agent,entry.callId))return message;
+      const original=agent.session.eventAt(entry.seq)?.data?.message;
       // A surface replacement may retain the message id while changing the body.
       // Receipts and prune plans describe only the captured canonical result.
-      if(!original||message.isError!==original.isError||JSON.stringify(message.content)!==JSON.stringify(original.content))return message;
-      const textOnly=Array.isArray(message.content)&&message.content.every(block=>block?.type==='text');
-      if(textOnly&&entry?.testDigest&&!isProtected(agent,entry.callId)&&state.step-entry.step>=1&&!state.fullOutputRequested&&!state.pinnedResults.has(entry.seq)&&!pins.opaque&&!pins.targets.has(entry.seq)){
-        const reduction=resultText(message.content).length-entry.testDigest.length;
+      if(!original||message.isError!==original.isError||message.content!==original.content&&JSON.stringify(message.content)!==JSON.stringify(original.content))return message;
+      if(entry.initialOutputView&&(entry.initialOutputProjected||state.step-entry.step===1)){
+        const {text,reason}=entry.initialOutputView;
+        const after={...message,content:[{type:'text',text}]};
+        const reduction=entry.textLength-text.length;
+        outputs++;saved+=reduction;hidden.add(entry.seq);
+        if(record&&!entry.initialOutputProjected){
+          entry.initialOutputProjected=true;
+          runtime.effects?.rewrite(agent,{feature:'historyOutput',afterMessage:after,beforeMessages:[message],sourceSeqs:[entry.seq]});
+          runtime.effects?.decide(agent,'historyOutput','applied',reason,{seq:entry.seq,savedChars:reduction});
+        }
+        return after;
+      }
+      if(entry.testDigest){
+        const reduction=entry.textLength-entry.testDigest.length;
         if(reduction>=MIN_SAVING){
           const after={...message,content:[{type:'text',text:entry.testDigest}]};
           outputs++;saved+=reduction;testViews++;testSaved+=reduction;hidden.add(entry.seq);
@@ -311,17 +438,15 @@ export function createHistoryHygiene(runtime,taskFlow,{isProtected=()=>false,ret
           return after;
         }
       }
-      // A source body returned by a shell command is not a log to summarise: `bash cat`
-      // can return a whole file with no native read dispatch, and replacing it with a
-      // head/tail digest would hide the middle exactly as middle-pruning does. The
-      // capture stage already refuses to build a digest for source, so this is the second
-      // half of the same answer for a record captured before the rule existed.
-      const sourceBody=isSourceBody(resultText(original?.content??[]));
-      if(textOnly&&entry?.toolDigest&&!sourceBody&&!isProtected(agent,entry.callId)&&runtime.get(agent).config?.swLedger!==true&&state.step-entry.step>=1&&!state.fullOutputRequested&&!state.pinnedResults.has(entry.seq)&&!pins.opaque&&!pins.targets.has(entry.seq)){
-        const reduction=resultText(message.content).length-entry.toolDigest.length;
+      // The digest builder excludes source bodies, and this view still holds the exact captured content.
+      if(entry.toolDigest&&config.swLedger!==true){
+        const reduction=entry.textLength-entry.toolDigest.length;
         if(reduction>=MIN_SAVING){
           const after={...message,content:[{type:'text',text:entry.toolDigest}]};
-          if(!state.outputPlans.get(entry.seq)?.tool&&!allowed('historyOutput',message,after,entry.seq))return message;
+          if(!state.outputPlans.get(entry.seq)?.tool){
+            entry.toolSavings??=Math.max(0,messageTokens(original)-messageTokens(after));
+            if(!allowed('historyOutput',message,after,entry.seq,entry,entry.toolSavings))return message;
+          }
           outputs++;saved+=reduction;hidden.add(entry.seq);
           if(record){
             state.outputPlans.set(entry.seq,{test:false,tool:true,content:after.content});
@@ -331,7 +456,7 @@ export function createHistoryHygiene(runtime,taskFlow,{isProtected=()=>false,ret
           return after;
         }
       }
-      if(!entry||entry.failed||isProtected(agent,entry.callId)||state.fullOutputRequested||state.step-entry.step<AGE||state.pinnedResults.has(entry.seq)||pins.opaque||pins.targets.has(entry.seq))return message;
+      if(entry.failed||state.step-entry.step<AGE||entry.textLength<=pruneSettings.thresholdChars)return message;
       // Reading is not evidence that the middle of a source is disposable.
       // Leave source windows to the existing larger, recoverable protocol.
       if(entry.reads.length)return message;
@@ -341,16 +466,29 @@ export function createHistoryHygiene(runtime,taskFlow,{isProtected=()=>false,ret
       const protect=file=>isSourceBodyPath(file)||retainedSource(agent,file)||state.retainedSources.has(fileKey(root,file))||focus.has(fileKey(root,file));
       const existing=state.outputPlans.get(entry.seq);
       if(existing?.test||existing?.tool)return message;
-      const planned=existing??planContextPrune(original,entry.reads,{seq:entry.seq,...pruneSettings,retainSource:protect});
+      let planned=existing;
+      if(!planned){
+        entry.namedPaths??=sourceBodyPaths(resultText(original.content));
+        if(entry.namedPaths.some(protect))return message;
+        planned=state.candidatePlans.get(entry.seq);
+        if(planned===undefined){
+          const draft=planContextPrune(original,entry.reads,{seq:entry.seq,...pruneSettings,retainSource:isSourceBodyPath});
+          planned=draft&&{...draft,reduction:entry.textLength-resultText(draft.content).length,
+            savedTokensEstimate:Math.max(0,messageTokens(original)-messageTokens({...original,content:draft.content}))};
+          if(state.candidatePlans.size>=MAX_CANDIDATE_PLANS)state.candidatePlans.delete(state.candidatePlans.keys().next().value);
+          state.candidatePlans.set(entry.seq,planned);
+        }
+      }
       if(!planned)return message;
-      const reduction=resultText(message.content).length-resultText(planned.content).length;
+      const {reduction}=planned;
       if(reduction<MIN_SAVING)return message;
       const after={...message,content:planned.content};
-      if(!existing&&!allowed('historyOutput',message,after,entry.seq))return message;
+      if(!existing&&!allowed('historyOutput',message,after,entry.seq,entry,planned.savedTokensEstimate))return message;
       outputs++;saved+=reduction;
       hidden.add(entry.seq);
       if(record){
         state.outputPlans.set(entry.seq,planned);
+        state.candidatePlans.delete(entry.seq);
         for(const range of planned.ranges)if(range.path)state.omittedSources.add(fileKey(root,range.path));
         runtime.effects?.rewrite(agent,{feature:'historyOutput',afterMessage:after,beforeMessages:[message],sourceSeqs:[entry.seq]});
         runtime.effects?.decide(agent,'historyOutput','applied','message-rewrite-recorded',{seq:entry.seq});
@@ -371,7 +509,7 @@ export function createHistoryHygiene(runtime,taskFlow,{isProtected=()=>false,ret
       if(!runtime.isEnabled(agent)||!runtime.get(agent).config.historyHygiene)return false;
       const s=sync(agent);if(s.suspended)return false;
       return [...s.results.values()].some(entry=>!entry.failed&&!entry.reads.length&&s.step-entry.step>=1&&
-        resultText(agent.session.eventAt(entry.seq)?.data?.message?.content).length>=runtime.get(agent).config.contextPruneMinChars);
+        entry.textLength>=runtime.get(agent).config.contextPruneMinChars);
     },
     bodyVisible(agent,seq){
       if(!runtime.isEnabled(agent)||!runtime.get(agent).config.historyHygiene)return true;

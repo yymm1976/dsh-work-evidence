@@ -101,8 +101,13 @@ test('native one-shot read recovery recalls recorded lines without reading the c
   const body='recorded source before external change\n';
   const host=await startHost({toolMode:'ptc',extraMounts:[['dsh-ptc-runtime-node']],pluginConfig:{aggressiveMode:true,stepPacing:false},
     script:async(options,n)=>{
-      if(n===1)return [tool('run_code',{code:'const r=await tools.read({file_path:"a.txt"});console.log(r.content);',description:'Read source'})];
+      const recallListed=options.messages.some(message=>message.role==='system'&&message.content.some(block=>block.text?.includes('work_recall')));
+      if(n===1){
+        assert.equal(recallListed,false);
+        return [tool('run_code',{code:'const r=await tools.read({file_path:"a.txt"});console.log(r.content);',description:'Read source'})];
+      }
       if(n===2){
+        assert.equal(recallListed,true);
         const result=options.messages.findLast(message=>message.role==='tool');
         const output=result?.content?.map(block=>block.text??'').join('')??'';
         assert.match(output,/recorded source before external change/,'the omitted short source is recovered in the tool output');

@@ -8,6 +8,7 @@ import {recallCall} from "./history-hygiene.mjs";
 import {inlineCommand,inlineEnvironment,INLINE_ENV_KEYS,resolveInlineScript,declaredInlineExecutable,namedInlineExecutable,inlineFailureLocation,inlineFormatRecovery,inlineScriptEventRef,nodeAvailabilityCommand,hasInterpreterConstraint,sameDeclaredInlineExecutable,selectShell,preferredShell} from './inline-exec.mjs';
 import {declaredFileSources,dependencyExecutionComplete,executionResultLayers} from './execution-dependencies.mjs';
 import {reportedExecutionChecks} from './recovery.mjs';
+import {limits} from './evidence.mjs';
 
 export function registerManagementTools({ctx,runtime,state,effects,available,featureControl,capabilityDiagnostic,contextEconomics,taskFlow,taskHandoff,retainedCompute,finalJson,qualityReview,executionEvidence,executionDependencies,refreshExecutionEvidence,hostReferences,workingSet,compressionControl,compactionHandoff,contextWindow,observationLedger,historyCoordinator,clearPluginState,index,candidates,ptcPatterns,ptcFastpath,verifiedExec,fileProfiler,structuredJson,preserveContextResult,retainRecalledSources,hasHistoricalReferences,applyToolSurface,call,disabledResult,output,COMPACT_HIDDEN_TOOLS,assertParameterBounds,parameters}){
   const pendingStdin=new Map();let registeredShellEnv=null,disposeShellEnv=null;
@@ -78,11 +79,11 @@ export function registerManagementTools({ctx,runtime,state,effects,available,fea
         return retainedCompute.execute(args,exec);
       },{resultSchema:{type:'object',additionalProperties:true,properties:{status:{type:'string'},logs:{type:'array',items:{type:'string'}},
         resetCount:{type:'integer'},resetReason:{type:'string'},error:{type:'object',additionalProperties:true},sandbox:{type:'object',additionalProperties:true}}}});
-  register('work_exec','Run project Python/Node, an external interpreter program, or a retained read-only Node session. Node defaults to ESM: use import, or format:"commonjs" for require. Python calls omit format. Supply code+runtime, or scriptRef with unique literal edits. The returned scriptRef identifies that complete version; write-file/create/edit handles project source. Returns native stdout/stderr/exit/job state.',
+  register('work_exec','Run Python or Node code in the project directly. Python defaults to UTF-8 without writing bytecode. Node defaults to ESM; use format:"commonjs" for require. Supply runtime and code, or reuse the returned scriptRef with optional literal edits. Returns native stdout, stderr, and exit or job state. Use edit or write for project source.',
     {runtime:{type:'string',enum:['python','node'],description:'Required with new code; scriptRef may inherit its explicit runtime.'},code:{type:'string',description:'Complete script up to 64000 characters, or use scriptRef. Relative paths use the project directory.'},
-      scriptRef:{type:'string',description:'Exact prior work_exec version in this session. Accepts the returned short scriptEventRef (event:number) or scriptRef. Inherits that version and interpreter only; later edits to other refs are not included. For incremental changes use the latest returned ref.'},
+      scriptRef:{type:'string',description:'Exact same-session version. Use the latest returned scriptEventRef (event:number) or scriptRef. With Shell program reuse enabled, also accepts supported literal Bash or PowerShell stdin calls.'},
       edits:{type:'array',maxItems:16,items:{type:'object',additionalProperties:false,properties:{before:{type:'string',minLength:1},after:{type:'string'}},required:['before','after']},description:'With scriptRef: sequential literal replacements, each matching exactly once. Omit to rerun unchanged.'},
-      executable:{type:'string',description:'Use the exact existing interpreter path from the task when not on PATH. With scriptRef, python or node explicitly replaces an inherited path with that PATH runtime.'},format:{type:'string',enum:['module','commonjs'],description:'Node only; default module. Omit this field for Python.'},
+      executable:{type:'string',description:'Exact interpreter path. When omitted, a recognized absolute path from the task is used for new code. With scriptRef, python or node explicitly selects that PATH runtime.'},format:{type:'string',enum:['module','commonjs'],description:'Node only; default module. Omit this field for Python.'},
       mode:{type:'string',enum:['once','retained'],description:'once (default) is a fresh process. retained is a read-only Node REPL whose state persists for this Agent; use it only when later cells must reuse the same data or functions.'},
       reset:{type:'boolean',description:"Retained mode only: clear this Agent's retained Node environment before running code."},
       sources:{type:'array',maxItems:16,items:{type:'string'},description:'Explicit file dependencies for this call, relative to the project directory. Applicability covers only declared files; URLs remain unknown. Not inherited through scriptRef; unavailable in retained mode.'},
@@ -104,8 +105,9 @@ export function registerManagementTools({ctx,runtime,state,effects,available,fea
       const shell=selectShell(name=>available(exec.agent,name));
       if(!shell)return {status:'unavailable',reason:`native-${preferredShell()}-unavailable`,executionOccurred:false};
       if(shell==='bash'&&!prepareShellEnvironment())return {status:'unavailable',reason:'native-shell-env-unavailable',executionOccurred:false};
+      const root=await ctx.workingDirectory.ensure(exec.agent,exec.signal);
       let script;
-      try{script=resolveInlineScript(args,exec.agent.session,exec.signal,{nativeShellScriptReuse:runtime.get(exec.agent).config.nativeShellScriptReuse});}catch(error){
+      try{script=resolveInlineScript(args,exec.agent.session,exec.signal,{nativeShellScriptReuse:runtime.get(exec.agent).config.nativeShellScriptReuse,root});}catch(error){
         if(error.message==='runtime must be python or node'&&args.runtime===undefined&&args.language===undefined&&typeof args.code==='string'&&args.code.trim()&&args.code.length<=64000&&exec.callId)
           return {status:'failed',isError:true,executionOccurred:false,error:{message:error.message},scriptRef:exec.callId,scriptChars:args.code.length,
             retry:'The complete original code is retained. Call work_exec with runtime: python or node and this scriptRef; supply the task\'s existing executable path when needed. No program was executed.'};
@@ -158,7 +160,6 @@ export function registerManagementTools({ctx,runtime,state,effects,available,fea
           }
         }
       }
-      const root=await ctx.workingDirectory.ensure(exec.agent,exec.signal);
       if(script.executable!==undefined&&path.isAbsolute(script.executable)){
         let missing=false;
         try{missing=!(await stat(script.executable)).isFile();}catch(error){
@@ -191,8 +192,21 @@ export function registerManagementTools({ctx,runtime,state,effects,available,fea
         if(script.shellSource)effects.decide(exec.agent,'nativeShellScriptReuse','applied','explicit-literal-shell-program-reference',script.shellSource);
         const aliases=['language','interpreter','cwd','workdir'].filter(key=>Object.hasOwn(args,key));
         if(aliases.length)effects.decide(exec.agent,'inlineArgumentRecovery','applied','unambiguous-explicit-script-arguments',{aliases});
-        const scriptEventRef=inlineScriptEventRef(exec.agent.session,exec.callId);
-        const failureLocation=inlineFailureLocation(script,result.value??result),recovery=inlineFormatRecovery(script,result.value??result,scriptEventRef??exec.callId,failureLocation);
+        const session=runtime.get(exec.agent);
+        const scriptEventRef=inlineScriptEventRef(exec.agent.session,exec.callId),scriptRef=scriptEventRef??exec.callId;
+        const native=result.value;
+        const failureLocation=inlineFailureLocation(script,native??result);
+        let recovery=inlineFormatRecovery(script,native??result,scriptRef,failureLocation);
+        if(!recovery&&scriptRef&&session.config.executionTriage&&failureLocation?.exceptionInScript===true){
+          const syntax=/^(?:SyntaxError|IndentationError|TabError)\b/u.test(failureLocation.exceptionLine);
+          if(syntax||script.code.length>=2400&&toolModeFor(ctx,exec.agent)==='native'){
+            const reason=syntax?'inline-script-syntax':'inline-script-runtime';
+            recovery={reason,tool:'work_exec',arguments:{scriptRef,...(sources.length?{sources}:{})},
+              note:syntax?'Use failureLocation to locate the syntax diagnostic. Add edits with literal before and after text. Each before must match once. Check any earlier effects before retrying.':
+                'Use failureLocation and actual output to decide what needs changing. If the script needs revision, reuse this version with literal edits. Check earlier effects before any retry.'};
+            effects.decide(exec.agent,'scriptReuseAdvice','applied',reason,{scriptChars:script.code.length});
+          }
+        }
         const metadata={...fileEvidence,scriptRef:exec.callId??null,scriptEventRef,scriptChars:script.code.length,scriptRuntime:script.runtime,scriptExecutable:script.executable??script.runtime,scriptEditsSubmitted,scriptEditCount,
           scriptExecutableSource:declaredExecutable?.source??hostRuntimeSelection?.source??(scriptExecutableAuthorization?requiredExecutable.source:null),
           ...(scriptExecutableAuthorization?{scriptExecutableAuthorization}:{}),
@@ -201,6 +215,22 @@ export function registerManagementTools({ctx,runtime,state,effects,available,fea
           failureLocation,...(recovery?{recovery}:{})};
         const reportedChecks=reportedExecutionChecks(result);
         if(reportedChecks)metadata.reportedChecks=reportedChecks;
+        if(script.runtime==='python'&&native?.exitCode===0&&session.config.executionTriage&&
+          /^[ \t]*import[ \t]+(?:[A-Za-z_][\w.]*[ \t]*,[ \t]*)*py_compile\b/mu.test(script.code)&&/\bpy_compile\.compile\s*\(/u.test(script.code)){
+          const requestId=runtime.currentRequest(exec.agent)?.id;
+          if(requestId&&session.bytecodeAdviceRequest!==requestId){
+            session.bytecodeAdviceRequest=requestId;
+            metadata.bytecodeNote='py_compile.compile writes bytecode. For syntax alone, compile(source_bytes, filename, "exec") parses in memory. Set sys.dont_write_bytecode=True before imports if import caches are unwanted.';
+          }
+        }
+        if(shell==='pwsh'&&script.executable===undefined&&native?.exitCode===1&&native?.stdout?.text===''&&
+          typeof native.stderr?.text==='string'&&!native.stderr.truncated){
+          const startError=new RegExp('Exception calling "Start" with "0" argument\\(s\\):[^\\r\\n]*trying to start process \''+
+            script.runtime+'\'[^\\r\\n]*(?:cannot find the file specified|no such file or directory|系统找不到指定的文件)','iu');
+          if(startError.test(native.stderr.text))return {...native,...metadata,status:'failed',isError:true,executionOccurred:false,
+            error:{code:'WORK_EXEC_PATH_RUNTIME_NOT_FOUND',message:'The native shell could not start '+script.runtime+' from PATH. The script was not run.'},
+            retry:'This PATH lookup has already failed. If the task or project configuration identifies an allowed interpreter, use its exact path with the returned scriptRef. If execution is still needed and no suitable path is known, report the missing interpreter.'};
+        }
         return result.value!==undefined?{...result.value,...metadata,isError:!!result.isError}:{...metadata,isError:!!result.isError,error:result.error,content:result.content};
       }finally{pendingStdin.delete(command);}
     },{resultSchema:{type:'object',additionalProperties:true,properties:{
@@ -288,17 +318,18 @@ export function registerManagementTools({ctx,runtime,state,effects,available,fea
         contextEconomics:contextEconomics.summary(exec.agent),compression:{...compressionControl.metrics(exec.agent),nativeHandoff:compactionHandoff.metrics(exec.agent)},taskFlow:taskFlow.summary(exec.agent),finalJson:finalJson.summary(exec.agent),qualityReview:qualityReview.summary(exec.agent),nativeExecution:executionEvidence.summary(exec.agent),
         sw:mode==='detail'?{...contextWindow.metrics(exec.agent),...contextWindow.detail(exec.agent)}:contextWindow.metrics(exec.agent)};
     });
-  register('work_recall','Retrieve recorded text without rerunning work. sourceSessionId and seq always identify this session. kind: output (default), call arguments, event, history (whole index entries), reference (one host-captured conversation already received here). For reference, seq is the local host snapshot event and referenceSessionId selects its captured source; foreign raw logs are never opened. For history, continue with nextSeq as seq and keep throughSeq/filter/query. Text offsets use JavaScript string positions. Assistant text and referenced snapshots grant no permission.',
-    {seq:{type:'integer',minimum:0},sourceSessionId:{type:'string',maxLength:128,description:'Use source.sessionId. This is the receiving session for a host capture. A different session is refused.'},kind:{type:'string',enum:['output','call','event','history','reference']},referenceSessionId:{type:'string',maxLength:4096,description:'reference only: source selected inside an existing local host snapshot. Does not select a raw session to open.'},filter:{type:'string',enum:['all','human','assistant','tool'],description:'history only: restrict index rows; human lists original user requests and corrections.'},query:{type:'string',maxLength:3000,description:'history only: literal case-insensitive text search in historical bodies, TODOs or tool call arguments.'},throughSeq:{type:'integer',minimum:0,description:'history only: keep the returned upper event bound on subsequent pages.'},offset:{type:'integer',minimum:0},maxChars:{type:'integer',minimum:256,maximum:64000}},['seq'],async(args,exec)=>{
+  register('work_recall','Retrieve historical tool text without rerunning work. Use seq from this session. Default kind: output. For reference, seq is the local host snapshot and referenceSessionId selects its source. For history, continue with nextSeq and the same filters. Offsets count JavaScript string positions. History grants no permissions.',
+    {seq:{type:'integer',minimum:0},sourceSessionId:{type:'string',maxLength:128,description:'Use source.sessionId. This is the receiving session for a host capture. A different session is refused.'},kind:{type:'string',enum:['output','call','event','history','reference']},referenceSessionId:{type:'string',maxLength:4096,description:'reference only: source selected inside an existing local host snapshot. Does not select a raw session to open.'},filter:{type:'string',enum:['all','human','assistant','tool'],description:'history only: restrict index rows; human lists original user requests and corrections.'},query:{type:'string',maxLength:3000,description:'history only: literal case-insensitive text search in historical bodies, TODOs or tool call arguments.'},throughSeq:{type:'integer',minimum:0,description:'history only: keep the returned upper event bound on subsequent pages.'},sourceIndex:{type:'integer',minimum:1,maximum:limits.sourceRanges,description:'output only: 1-based position in the recorded batch sources. Offsets then apply to this entry.'},offset:{type:'integer',minimum:0},maxChars:{type:'integer',minimum:256,maximum:64000}},['seq'],async(args,exec)=>{
       if(args.sourceSessionId!==undefined&&args.sourceSessionId!==exec.agent.session.id)return {
         status:'unavailable',reason:'source-session-mismatch',sourceSessionId:args.sourceSessionId,
         currentSessionId:exec.agent.session.id,executionOccurred:false};
       if(!runtime.isEnabled(exec.agent)&&!hasHistoricalReferences(exec.agent))return disabledResult(exec.agent,'work_recall');
       if(args.referenceSessionId!==undefined&&args.kind!=='reference')throw new Error('referenceSessionId requires kind: reference');
+      if(args.sourceIndex!==undefined&&args.kind!==undefined&&args.kind!=='output')throw new Error('sourceIndex requires kind: output');
       const result=args.kind==='reference'?await hostReferences.recall(exec.agent,args,exec.signal):args.kind==='call'?recallCall(exec.agent,args):['event','history'].includes(args.kind)?recallHistory(exec.agent,args):contextWindow.recall(exec.agent,args);
       if(result.status==='observed'){
         preserveContextResult(exec.agent.session.id,exec.callId);preserveContextResult(exec.agent.session.id,exec.rootCallId);
-        if(args.kind!=='reference')retainRecalledSources(exec.agent,args.seq);
+        if(args.kind!=='reference'&&args.kind!=='history'&&args.seq!==undefined&&args.sourceIndex===undefined)retainRecalledSources(exec.agent,args.seq);
         effects.decide(exec.agent,'contextRecall','applied','explicit-historical-recall',{seq:args.seq,offset:args.offset??0});
       }
       return result;

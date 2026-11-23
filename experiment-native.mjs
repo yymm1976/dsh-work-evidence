@@ -35,7 +35,7 @@ export async function importSession({directory,sessionId,variant,home,app,file,o
   if(!['work-evidence','recorder-only'].includes(variant))throw new Error('Import requires --variant work-evidence or recorder-only');
   const require=createRequire(path.join(app,'package.json'));
   const {assistantStreamFirstTokenTime,lastAssistantStreamChunk}=require('@deepseek-ai/dsh-llm');
-  let events,header={},inherited=0,ctx,handle,observationsFile=observations?path.resolve(observations):null;
+  let events,header={},inherited=0,ctx,handle,telemetryDir=null,observationsFile=observations?path.resolve(observations):null;
   if(file){const data=JSON.parse(await fs.readFile(file,'utf8'));events=data.events;header={id:data.sessionId,cwd:data.workspace};if(sessionId&&sessionId!==data.sessionId)throw new Error('Session id does not match the supplied engineering artifact');sessionId=data.sessionId;}
   else{
     if(!sessionId)throw new Error('Import requires --session');
@@ -48,15 +48,13 @@ export async function importSession({directory,sessionId,variant,home,app,file,o
       fiber=await ctx.plugin(Persistence.default||Persistence,{root:path.join(home,'sessions')});await fiber.ready;
       handle=await ctx.sessionPersistence.open(sessionId,'read');header=handle.header;inherited=handle.inheritedEventCount||0;
       events=(await handle.read()).events;
-      if(!observationsFile){
-        const location=ctx.sessionPersistence.locate?.({...header,id:sessionId}),root=header.cwd;
-        const outside=target=>typeof root==='string'&&path.isAbsolute(root)&&
-          (path.relative(root,target)==='..'||path.relative(root,target).startsWith('..'+path.sep)||path.isAbsolute(path.relative(root,target)));
-        const hosted=typeof location?.path==='string'&&path.isAbsolute(location.path)?path.join(path.dirname(location.path),'work-evidence'):null;
-        const fallback=path.join(os.homedir(),'.dsh','work-evidence','sessions',sessionId);
-        const telemetry=hosted&&outside(hosted)?hosted:outside(fallback)?fallback:null;
-        if(telemetry)observationsFile=path.join(telemetry,sessionId+'.observability.jsonl');
-      }
+      const location=ctx.sessionPersistence.locate?.({...header,id:sessionId}),root=header.cwd;
+      const outside=target=>typeof root==='string'&&path.isAbsolute(root)&&
+        (path.relative(root,target)==='..'||path.relative(root,target).startsWith('..'+path.sep)||path.isAbsolute(path.relative(root,target)));
+      const hosted=typeof location?.path==='string'&&path.isAbsolute(location.path)?path.join(path.dirname(location.path),'work-evidence'):null;
+      const fallback=path.join(os.homedir(),'.dsh','work-evidence','sessions',sessionId);
+      telemetryDir=hosted&&outside(hosted)?hosted:outside(fallback)?fallback:null;
+      if(!observationsFile&&telemetryDir)observationsFile=path.join(telemetryDir,sessionId+'.observability.jsonl');
     }finally{await handle?.close();await ctx.fiber.dispose();}
   }
   if(!Array.isArray(events)||!sessionId)throw new Error('No native session events found');
@@ -104,13 +102,22 @@ export async function importSession({directory,sessionId,variant,home,app,file,o
   // exact report paths separately; file presence never substitutes for a call.
   meta.workspaceArtifacts={};
   if(typeof header.cwd==='string'&&/^[-a-zA-Z0-9_][-.a-zA-Z0-9_]{0,127}$/.test(sessionId)){
+    const workspaceDir=path.join(header.cwd,'.dsh','work-evidence');
+    const artifact=async(suffix,sessionOwned)=>{
+      if(sessionOwned&&telemetryDir){
+        const target=path.join(telemetryDir,sessionId+suffix);
+        try{return {target,stat:await fs.stat(target)};}
+        catch(error){if(error.code!=='ENOENT')throw error;}
+      }
+      const target=path.join(workspaceDir,sessionId+suffix);
+      return {target,stat:await fs.stat(target)};
+    };
     for(const [key,suffix] of [['report','.md'],['handoff','-interrupted.md']]){
-      const target=path.join(header.cwd,'.dsh','work-evidence',sessionId+suffix);
-      try{const stat=await fs.stat(target);meta.workspaceArtifacts[key]={state:stat.isFile()?'present':'not-file',modifiedAt:stat.mtime.toISOString()};}
+      try{const {stat}=await artifact(suffix,key==='handoff');meta.workspaceArtifacts[key]={state:stat.isFile()?'present':'not-file',modifiedAt:stat.mtime.toISOString()};}
       catch(error){meta.workspaceArtifacts[key]={state:error.code==='ENOENT'?'absent':'unavailable'};}
     }
     try{
-      const target=path.join(header.cwd,'.dsh','work-evidence',sessionId+'.runtime.json'),stat=await fs.stat(target);
+      const {target,stat}=await artifact('.runtime.json',true);
       if(stat.size>100000)throw new Error('Oversized runtime record');
       const record=JSON.parse(await fs.readFile(target,'utf8'));
       if(record.sessionId!==sessionId||typeof record.metrics!=='object')throw new Error('Invalid runtime record');

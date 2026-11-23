@@ -4,6 +4,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import {crc32} from 'node:zlib';
 import {startHost,text,tool} from './helpers/host.mjs';
+import {parseResult} from '../visible-results.mjs';
 
 const full={toolSurface:'full'};
 
@@ -63,8 +64,7 @@ async function writeFile(root,file,content){
 
 function resultOf(event){
   const text=event.data?.message?.content?.map(block=>block.text??'').join('')??'';
-  let json;
-  try{json=JSON.parse(text);}catch{}
+  const json=parseResult(text)??undefined;
   return {isError:event.data?.message?.isError===true,text,json};
 }
 
@@ -166,6 +166,102 @@ test('project_evidence read and archive return requested line numbers and contin
     assert.equal(source.returnedThrough,3);
     assert.equal(source.hasMore,true);
     assert.equal(source.fileHasMore,true);
+  });
+});
+
+test('project_evidence read accepts eight ranges and repeated offsets for one file', async t=>{
+  await withHost(t,{
+    script:scripted([
+      [tool('project_evidence',{files:[{path:'inferred.txt',offset:1,limit:1}]})],
+      [tool('project_evidence',{files:[{path:'whole.txt'}]})],
+      [tool('project_evidence',{mode:'read',maxChars:200000,files:[
+        {path:'large.txt',limit:2000},
+      ]})],
+      [tool('project_evidence',{mode:'read',maxChars:64000,files:[
+        {path:'eight.txt',offset:1,limit:1},
+        {path:'eight.txt',offset:2,limit:1},
+        {path:'eight.txt',offset:3,limit:1},
+        {path:'eight.txt',offset:4,limit:1},
+        {path:'eight.txt',offset:5,limit:1},
+        {path:'eight.txt',offset:6,limit:1},
+        {path:'eight.txt',offset:7,limit:1},
+        {path:'eight.txt',offset:8,limit:1},
+      ]})],
+      [tool('project_evidence',{mode:'read',maxChars:2000,files:[
+        {path:'large.txt',offset:1,limit:40},
+        {path:'large.txt',offset:41,limit:40},
+        {path:'large.txt',offset:81,limit:40},
+        {path:'large.txt',offset:121,limit:40},
+        {path:'large.txt',offset:161,limit:40},
+        {path:'large.txt',offset:201,limit:40},
+        {path:'large.txt',offset:241,limit:40},
+        {path:'large.txt',offset:281,limit:40},
+      ]})],
+    ]),
+  },async host=>{
+    await writeFile(host.cwd,'inferred.txt','inferred mode\n');
+    await writeFile(host.cwd,'whole.txt','first\nsecond\nthird\n');
+    await writeFile(host.cwd,'eight.txt','1\n2\n3\n4\n5\n6\n7\n8\n');
+    await writeFile(host.cwd,'large.txt',Array.from({length:320},(_,index)=>String(index+1).padStart(3,'0')+' '+('x'.repeat(120))).join('\n')+'\n');
+    const agent=await host.createAgent('max');
+    await host.send(agent,'Infer one read, read a whole file, then read a large first range, eight ranges, and repeat them under a small budget.');
+    const [inferred,whole,large,read,budgeted]=results(host);
+    assert.equal(inferred.isError,false,inferred.text);
+    assert.equal(inferred.json.mode,'read');
+    assert.equal(inferred.json.sources[0].lines[0].text,'inferred mode');
+    assert.equal(whole.isError,false,whole.text);
+    assert.deepEqual(whole.json.sources[0].lines.map(source=>source.text),['first','second','third']);
+    assert.equal(whole.json.sources[0].rangeComplete,true);
+    assert.equal(whole.json.sources[0].fileHasMore,false);
+    assert.equal(large.isError,false,large.text);
+    assert.equal(large.json.sources[0].requestedRange.limit,2000);
+    assert.equal(large.json.sources[0].lines.length,320);
+    assert.equal(large.json.sources[0].rangeComplete,true);
+    assert.equal(read.isError,false,read.text);
+    assert.equal(read.json.sources.length,8);
+    assert.deepEqual(read.json.sources.map(source=>source.lines[0].text),['1','2','3','4','5','6','7','8']);
+    assert.ok(read.json.sources.every(source=>source.rangeComplete),read.text);
+
+    assert.equal(budgeted.isError,false,budgeted.text);
+    assert.ok(read.json.sources.every(source=>source.truncated===source.fileHasMore),read.text);
+    assert.ok(budgeted.text.length<=64000,budgeted.text.length);
+    assert.equal(budgeted.json.sources.length,8,JSON.stringify(budgeted.json.sources));
+    assert.ok(budgeted.json.sources.filter(source=>source.responseBudget).every(source=>source.responseBudget.batch),JSON.stringify(budgeted.json.sources));
+    assert.deepEqual(budgeted.json.sources.map(source=>source.requestedRange?.offset??source.retrieveCurrent?.arguments?.files?.[0]?.offset),[1,41,81,121,161,201,241,281],JSON.stringify(budgeted.json.sources));
+    assert.ok(budgeted.json.sources.every(source=>source.retrieveCurrent),JSON.stringify(budgeted.json.sources));
+    assert.ok(budgeted.json.sources.every(source=>source.responseBudget?.resumeArguments?.mode==='read'),JSON.stringify(budgeted.json.sources));
+    assert.ok(budgeted.json.sources.every(source=>source.responseBudget?.resumeArguments?.files?.[0]?.path===source.path),
+      JSON.stringify(budgeted.json.sources));
+    assert.ok(budgeted.json.sources.every(source=>source.responseBudget?.resumeArguments?.files?.[0]?.limit!==undefined),
+      JSON.stringify(budgeted.json.sources));
+    const omitted=budgeted.json.sources.filter(source=>source.omitted===true);
+    assert.ok(omitted.length>0);
+    assert.ok(omitted.every(source=>source.retrieveCurrent));
+  });
+});
+
+test('project_evidence defaults to host-visible batches and keeps whole source bodies', async t=>{
+  await withHost(t,{
+    script:scripted([
+      [tool('project_evidence',{files:[
+        {path:'small.txt'},
+        {path:'large.txt'},
+      ]})],
+    ]),
+  },async host=>{
+    await writeFile(host.cwd,'small.txt','small one\nsmall two\n');
+    await writeFile(host.cwd,'large.txt',Array.from({length:520},(_,index)=>String(index+1).padStart(4,'0')+' '+('x'.repeat(95))).join('\n')+'\n');
+    const agent=await host.createAgent('max');
+    await host.send(agent,'Read one small and one large source without spilling either.');
+    const [result]=results(host);
+    assert.equal(result.isError,false,result.text);
+    assert.ok(result.text.length<=48000,result.text.length);
+    assert.deepEqual(result.json.sources[0].lines.map(line=>line.text),['small one','small two']);
+    assert.equal(result.json.sources[0].rangeComplete,true);
+    assert.equal(result.json.sources[1].omitted,true);
+    assert.equal(result.json.sources[1].responseBudget.bodyDelivered,false);
+    assert.equal(result.json.sources[1].responseBudget.resumeArguments.mode,'read');
+    assert.match(result.json.sources[1].responseBudget.resumeArguments.files[0].path,/large\.txt$/u);
   });
 });
 

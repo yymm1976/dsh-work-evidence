@@ -83,6 +83,31 @@ test('a successful native read supplies a bounded source excerpt and a failed or
   }
 });
 
+test('review keeps complete inline program inputs within the existing result scope and a shared budget',async()=>{
+  const executions=[];let payload;
+  const h=await harness({executions,review:value=>{payload=value;return {issues:[]};}});
+  try{
+    h.request('运行程序并说明实际核对范围。');
+    const add=(label,{size=1900,completed=true,scriptRef}={})=>{
+      const code=label.padEnd(size,' '),event=h.event('tool/ptc-dispatch',{
+        name:'work_exec',arguments:{runtime:'node',code,...(scriptRef?{scriptRef}:{})},
+        isError:false,content:[{type:'text',text:'observed'}],
+      });
+      executions.push({seq:event.seq,tool:'work_exec',executionCompleted:completed,exitCode:completed?0:null});
+      return {code,seq:event.seq};
+    };
+    const older=add('older program');
+    const kept=[add('completed program A'),add('completed program B')];
+    const excluded=[older,add('oversized program',{size:2001}),add('pending program',{completed:false}),
+      add('referenced program',{scriptRef:'event:2'})];
+    h.answer('程序已执行，覆盖了所有入口。');await h.run();
+    for(const {seq,code} of kept)assert.ok(payload.evidence.find(row=>row.seq===seq)?.data.endsWith(code));
+    for(const {seq} of excluded)assert.doesNotMatch(payload.evidence.find(row=>row.seq===seq)?.data??'',/Recorded work_exec program input:/u);
+    h.answer('程序已执行。');await h.run();
+    assert.equal(payload.evidence.some(row=>row.data.includes('Recorded work_exec program input:')),false);
+  }finally{await h.close();}
+});
+
 test('quality review links producer completion to the exact nested call without upgrading task or file validity',async()=>{
   const executions=[];let payload;
   const h=await harness({executions,review:value=>{payload=value;return {issues:[]};}});

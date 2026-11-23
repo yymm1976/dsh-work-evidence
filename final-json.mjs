@@ -135,6 +135,7 @@ export function finalJsonSyntaxIssue(text,request){
   if(!expectsFinalJson(requestText))return null;
   const trimmed=source.trim();
   if(requiresRawFinalJson(requestDirectives(requestText))){
+    if(!trimmed)return {kind:'missing-final-json',error:'The final response did not contain any JSON text.'};
     try{JSON.parse(trimmed);}catch(error){return {raw:trimmed,error:String(error.message).slice(0,300),rawFinal:true};}
     return null;
   }
@@ -231,6 +232,11 @@ export function createFinalJsonGuard(ctx,runtime){
     if(signal?.aborted||!runtime.isEnabled(agent)||!runtime.get(agent).config.finalJsonGuard){syntaxRepairing.delete(agent.session.id);return;}
     const current=inspect(agent,turn);
     if(!current.issue){syntaxRepairing.delete(agent.session.id);return;}
+    if(current.issue.kind==='missing-final-json'){
+      syntaxRepairing.delete(agent.session.id);
+      runtime.effects?.decide(agent,'finalJson','failed','missing-final-json',{afterSeq:current.assistant.seq});
+      return;
+    }
     if(syntaxRepairing.get(agent.session.id)?.afterSeq===current.assistant.seq)return;
     const prior=current.events.filter(event=>feedback(event)&&messageOf(event).source.finalJson?.requestSeq===current.request.seq);
     const kind=current.issue.kind??'syntax-repair';
@@ -288,6 +294,7 @@ export function createFinalJsonGuard(ctx,runtime){
     return {enabled:runtime.isEnabled(agent)&&runtime.get(agent).config.finalJsonGuard,repairNotices:notices.length,
       currentRepairs:notices.filter(event=>messageOf(event).source.finalJson?.requestSeq===current.request?.seq).length,
       unresolvedSyntax:current.issue&&!current.issue.kind?{assistantSeq:current.assistant.seq,error:current.issue.error}:null,
+      missingFinalJson:current.issue?.kind==='missing-final-json'?{assistantSeq:current.assistant.seq}:null,
       unresolvedResult:current.issue?.kind==='observed-result-repair'?{assistantSeq:current.assistant.seq,sourceSeq:current.issue.sourceSeq,fields:current.issue.fields}:null,
       syntaxRepairActive:syntaxRepairing.get(agent.session.id)?.kind==='syntax-repair',
       resultRepairActive:syntaxRepairing.get(agent.session.id)?.kind==='observed-result-repair',

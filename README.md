@@ -40,7 +40,7 @@ mode 只查询状态。旧的 mode <名称> 和 workspace-mode 命令不再设�
 `feature <设置名>` 查看单项，末尾加 `on` 或 `off` 修改布尔设置。
 `toolSurface` 接受 `compact` 或 `full`；`defaultResponseView` 接受 `full` 或 `reference-if-visible`。
 `qualityReviewEffort` 接受 `auto`、`inherit`、`low`、`medium`、`high` 或 `max`，只控制交付复核。
-`qualityReviewScope` 接受 `auto` 或 `full`，控制复核采用的源码片段范围。`defaultResponseView` 记录未显式覆盖时的默认短引用是否实际采用、回退为完整正文的原因或视图不可用；`toolSurface` 记录实际生效的工具面及只读/最小任务动态切换。`qualityReviewEffort` 和 `qualityReviewScope` 记录实际复核档位、选择来源与装配范围；未请求复核、显式覆盖来源返回或未采用短引用时保持未观察或不适用。`evidenceViews` 关闭时，默认返回视图记录 `evidence-views-disabled`；插件关闭时 `project_evidence` 在禁用门控直接返回，通常不产生默认视图效果，只有已进入视图处理时才记 `plugin-disabled`。这些原因不归为上下文代际错误。`selfIndex` 记录 `verified-index-match`、`no-index-match` 或 `index-query-error`；`historyHygiene` 在成功改写历史正文时记 `message-rewrite-recorded`；`ledgerUnresolved` 在注入未解决事项时记 `ledger-unresolved-injected`；过程指引中的阶段判断提醒归入 `stageJudgment` 计数器。`defaultResponseView` 在 `evidenceViews` 关闭且采用默认短引用时显示 `requires-setting:evidenceViews`；`qualityReviewEffort` 和 `qualityReviewScope` 在 `qualityReview` 关闭时显示 `requires-setting:qualityReview`。
+`qualityReviewScope` 接受 `auto` 或 `full`，控制复核采用的源码片段范围。`defaultResponseView` 记录未显式覆盖时的默认短引用是否实际采用、回退为完整正文的原因或视图不可用；`toolSurface` 记录实际生效的工具面及只读/最小任务动态切换。`qualityReviewEffort` 和 `qualityReviewScope` 记录实际复核档位、选择来源与装配范围；未请求复核、显式覆盖来源返回或未采用短引用时保持未观察或不适用。`evidenceViews` 关闭时，默认返回视图记录 `evidence-views-disabled`；插件关闭时 `project_evidence` 在禁用门控直接返回，通常不产生默认视图效果，只有已进入视图处理时才记 `plugin-disabled`。这些原因不归为上下文代际错误。`selfIndex` 记录 `verified-index-match`、`no-index-match` 或 `index-query-error`；`historyHygiene` 在成功改写历史正文时记 `message-rewrite-recorded`；`ledgerUnresolved` 在注入未解决事项时记 `ledger-unresolved-injected`；过程指引中的阶段判断提醒归入 `stageJudgment` 计数器。完成过工具参数解析前即被宿主拒绝的 `MALFORMED_RESPONSE` 可触发一次当前请求重试，原始失败保留，不自动重放工具，也不放宽权限、取消或其他错误。`defaultResponseView` 在 `evidenceViews` 关闭且采用默认短引用时显示 `requires-setting:evidenceViews`；`qualityReviewEffort` 和 `qualityReviewScope` 在 `qualityReview` 关闭时显示 `requires-setting:qualityReview`。
 默认 compact 会隐藏管理工具，以上命令仍可直接使用，无须先让模型查找工具。
 
 `feature` 和 `config <JSON>` 保存到当前工作区的 `.dsh/work-evidence/config.json`，同一工作区的会话在下次读取配置时采用。
@@ -289,6 +289,8 @@ PTC 程序只在内部读取、输出省略或分页不全时，保留原快照�
 
 测试/检查命令（pytest、ruff、compileall、node --test、gradlew/gradle/mvn）输出完整且超过 4,000 个 UTF-16 单元时，后续请求视图使用有界的测试回执：命令、退出/失败计数、最多 8 个失败用例、关键错误行和尾部；规范事件保留完整输出，可用 `work_recall` 取回。`node --test` 只接受带完整 `# tests`、`# pass`、`# fail` 摘要的 TAP 输出，摘要缺失时保留规范正文。输出被宿主截断或 spill 到临时文件、没有可解析的失败/计数、用户要求完整输出、或历史取回不可用时，不做回执。
 
+原生 `grep` 搜索普通词或用 `|` 分隔的备选词时，宿主的长行预览可能省掉实际匹配。若同一次调用还返回完整匹配行，插件可在请求中显示匹配词附近的原文。文件、行号、结果数量和其他匹配照常交付。摘录标明长行仍有省略。宿主原始结果可按原方式取回。该处理不重新搜索或读取文件。
+
 状态中的 `historyHygiene.referenceContext` 列出当前要求、追踪页、采用的来源、字符差和保留原因。
 `charsRemovedAcrossViews` 按请求视图累计，不能当成单次减少量或费用收益。
 原始事件的跨会话读取继续使用宿主授权的 `session_event_read` 地址。
@@ -341,6 +343,8 @@ URL、目录、项目外路径、缺失文件和版本信息不可用的来源�
 
 qualityReview 控制质量模式的最终答复复核，默认关闭。已取得源码遗漏发现和实际修正结果，较大交付采用明确的源码范围。
 JSON 格式修正先处理。阶段摘要还有可执行下一步、且完成提醒将接续工作时，先继续工作；完整交付再复核。关闭完成提醒时，保留独立复核行为。
+
+完成提醒开启后，如果用户明确要求最终汇报，模型正常停止却只留下推理内容，宿主会收到一次补答复提示。暂停、待授权和请求失败沿用原来的处理。
 用户明确暂停或只要求汇报时，交付复核等待；明确要求的 JSON 格式仍可修正。待写文本中的引号内容不当作暂停指令。
 状态中的 `waitingReason` 区分 `authorized-continuation-pending` 与 `current-request-report-only`，等待期间没有复核通过结论。
 复核使用当前会话路由和有界历史；结果没有充分依据时保留原答复。
@@ -349,6 +353,7 @@ JSON 格式修正先处理。阶段摘要还有可执行下一步、且完成提
 复核优先携带已修改文件在修改后读到的正文，并限制证据长度。
 同一文件的成功 write/edit/verified_exec 片段按事件顺序补入，完整覆盖写入之前的旧片段退出选择；补充片段合计最多 18000 个字符，单份最多 14000 个字符。失败的写入和预览不作为成功片段；原生 `read` 的已读源码可提供片段，范围收缩时保留读取事件对应的文件。
 片段标为历史修改，后续观察优先，不拼造当前整份文件，也不额外读取项目文件。
+答复声明执行范围时，已成功执行的 `work_exec` 内联程序可随对应结果进入复核。程序单份最多 2,000 个字符，合计最多 4,000 个字符，优先保留最近的完整程序。复核只使用已记录的调用和结果，不再次执行程序。
 `qualityReviewEffort` 默认 `auto`，从当前通道声明的 low、medium、high、max 中选择最低可用档位；声明不可取得时继承主请求。
 `inherit` 始终继承主请求。显式档位未在通道声明中出现时，状态记为 `review-effort-not-declared`，不发请求。
 主任务的思考档位保持原选择。状态记录复核所选档位；宿主在发送时仍可执行 Ultra 等原有映射。
@@ -398,9 +403,11 @@ completionNotice 独立控制阶段摘要后的继续提醒，默认关闭。显
 ## 工具与存储
 
 - work_exec 执行当前任务已经允许的 Python 或 Node 程序；retained 模式保留只读 Node 状态。
-- work_recall 按 seq 取回原始会话文字。offset 和 nextOffset 是 JavaScript 字符串位置。
+- `work_recall` 按 `seq` 取回原始会话文字。`offset` 和 `nextOffset` 是 JavaScript 字符串位置。紧凑工具界面在用户点名 `work_recall` 或给出历史事件号时，从首问提供取回工具。
 - work_status 查看状态，修改工作区配置或会话开关。
-- project_evidence 读取工程、归档和依赖源码。
+- `project_evidence` 读取工程、归档和依赖源码。`read` 一次接受 1–16 个独立行范围，同一文件可用不同 offset 分段出现。默认总预算为 48,000 字节。原生模型批读在带行号的显示更短时采用该格式。若只有该格式能容纳全部请求区段，插件一次交付这些区段。两种格式均放不下时，默认按结构化记录选择可交付区段。显式指定 `readLayout:"numbered"` 时按带行号的显示计算字节。需要逐行对象时指定 `readLayout:"records"`。程序调用默认返回结构化行记录。未送达的范围使用 `responseBudget.resumeArguments` 续读。
+- 源码定位和引用搜索可指定范围。省略范围时先用 `src`。工作区没有 `src` 时，在工作区内查找源码和构建文件。引用搜索按名称返回文本命中，实际调用关系须从源码或执行结果核对。
+- `work_recall({seq, sourceIndex})` 取回历史批量读取结果中的单项。序号从 1 开始，按该结果的 `sources` 数组排列。分页偏移量针对所选项，正文仍是历史记录。
 - work_probe 执行已明确的原生调用；work_report、索引、候选、PTC 快速路径及精确编辑工具由 full 工具面提供。work_report 保存明确请求的工作报告。
 
 `/work-evidence feature retainedCompute` 列出保留计算缺少的原生服务。初始化失败后，依赖补齐时显示等待下一次调用；下一次 `work_compute` 或 retained 模式的 `work_exec` 会重新加载。成功后继续复用同一会话中的数据，状态查询本身不会运行程序。
@@ -422,6 +429,10 @@ compact 写入回执中的 `submittedContentMatchesAfter` 比较提交正文与�
 该处理只取得文件信息，正文仍由原生读取工具返回；不会提前读取正文或扩大文件权限。
 原生 DSH 文件服务承担全部读取、搜索和精确编辑。`dsh-ops` 适配及其 `ops_*` 工具面已从本插件删除，`opsAdapters` 不再是可设置项。
 `readArgumentRecovery` 开启时，原生 `read` 的单一 `path` 别名在宿主检查前转为 `file_path`。两个字段冲突时返回错误。
+
+`sourceReadDefaultLines` 默认采用宿主的原生行数。设为 40 至 1000 的整数时，激进模式中仅从源码定位的任务可使用这个首读行数。顶层原生 `read` 省略 `offset` 和 `limit` 时才采用该值。结果给出实际行号，可显式设定范围或继续读取。用户要求通读时采用原生行数。`stepPacing` 须开启。
+
+使用短首读时，插件可用原生 `grep` 在同一 Python、JavaScript 或 TypeScript 文件中定位后续文本声明。声明名和行号作为附加信息交付，每次请求最多查 8 个文件。未找到声明或检索失败时，原生读取结果仍可用于续读。
 该调用保留原生 `lines` 返回值和文件权限检查，不重读文件。
 PTC 已取得行记录，却在访问 `.content` 或 `.text` 后输出 `undefined` 或取值错误时，插件每条用户要求至多提示 1 次 `lines` 用法。
 已读到非空正文，但错误字段的空字符串兜底只留下空白或标题时，也使用同一条提示。
@@ -454,9 +465,13 @@ PTC 已取得行记录，却在访问 `.content` 或 `.text` 后输出 `undefine
 自动回退仅用于允许写入的原生会话。回退继续使用原生执行与权限检查。结果的 `hostRuntimeSelection` 记录路径和版本，后续 `scriptRef` 继承该准确路径。查询被拒、超时或结果不明确时，程序不执行。该选项尚未证明正式任务的稳定费用收益。
 原生会话为 `read-only` 时，`work_exec` 明确拒绝新进程程序执行。只读计算可使用受限的 retained 模式；该模式继续按原权限约束处理文件访问。
 
-`nativeShellScriptReuse` 默认关闭。开启后，`work_exec.scriptRef` 可引用同一会话中原生 `bash` 的调用 ID 或事件地址。只接受单个 Python/Node 命令和单引号 heredoc。解释器使用原 PATH 名称，默认保留原 stdin 参数；代码按原字节复用。显式 `format` 只替换 Node 的输入格式，保留其他参数，并记录生效参数。含管道、环境赋值、目录覆盖、其他 Shell 命令、展开式 heredoc 或后台执行的记录会被拒绝。引用只保留程序文字和解释器参数，当前目录、环境、PATH 解析结果及权限重新生效；原进程环境和二进制不被固定。原结果不会被当成本次成功。后续修改继续引用返回的新 `scriptRef`。
+`nativeShellScriptReuse` 默认关闭。开启后，`work_exec.scriptRef` 可引用同一会话中原生 Bash 或 PowerShell 的调用 ID 或事件地址。Bash 接受单个 Python 或 Node 命令及单引号 heredoc。PowerShell 接受单引号 here-string 直接送入一个 Python 或 Node 解释器的 stdin，也支持单引号包裹的绝对 `.exe` 路径。两种入口均保留程序正文和原解释器参数。显式指定 `format` 时，仅替换 Node 的输入格式。带额外命令、环境赋值、目录覆盖或后台执行的记录会被拒绝。再次执行时使用当前目录、环境和权限。后续修改可引用返回的新 `scriptRef`。
 
-`probeReplay` 默认关闭。开启后，`work_probe({mode:"replay",id})` 从本会话原调用恢复命令、显式来源列表和 `expectedJson`，再显式执行一次。重执行调用只能设置 `id` 和显示预算，不能覆盖检查或预期。原调用及结果必须仍能从会话恢复；修改保存到工作区的记录文件不能改变执行内容。后台或未结束的检查继续使用原任务 ID 查看，不启动副本。
+开启 `executionTriage` 后，如果当前请求包含 `work_probe` 或探针 ID，紧凑工具界面会提供 `work_probe`。取回已保存的探针会返回历史结果。
+
+`work_probe` 保留声明文件的执行前后快照和逐文件评估。可按 `retrieveOriginal` 取回已保存记录。
+
+`probeReplay` 默认关闭。可写任务同时开启 `executionTriage` 和 `probeReplay` 时，紧凑工具界面也提供 `work_probe`。`work_probe({mode:"replay",id})` 从本会话原调用恢复命令、显式来源列表和 `expectedJson`，再显式执行一次。重执行调用只能设置 `id` 和显示预算，不能覆盖检查或预期。原调用及结果必须仍能从会话恢复；修改保存到工作区的记录文件不能改变执行内容。后台或未结束的检查继续使用原任务 ID 查看，不启动副本。
 
 每次重执行都取得新的观察 ID，并记录原观察及结果事件地址。命令和预期保持原文；命令读取的项目文件、环境、PATH 及权限使用当前状态。引用文件的内容不被固定，文件适用性继续由显式来源观察说明。原失败仍保留，新结果只说明同一调用本次观察到的值。只读会话的 `work_probe` 拒绝不受限 Shell 执行，原生只读工具仍可用。
 
@@ -464,6 +479,7 @@ PTC 已取得行记录，却在访问 `.content` 或 `.text` 后输出 `undefine
 
 声明文件在执行期间变化，或无法确认声明文件状态时，原失败继续保持未决。任一次原样重执行转入后台后，同一原检查的其他引用也会阻止重复派发。只有对应任务的原生生产者结束记录完整匹配，才允许再次显式执行。
 Windows 继续通过原生 `pwsh` 执行。POSIX 通过宿主原生 `bash` 向 Python/Node 的 stdin 传入完整程序，保留原生权限、stdout、stderr、退出码、超时、取消和作业状态。缺少 `bash` 或逐次环境注册服务时，分别返回 `native-bash-unavailable` 或 `native-shell-env-unavailable`。程序上限为 UTF-16 字符串的 1–64000 个字符。POSIX 将正文编码为最多 3 段环境变量，每段最多 96,000 个 UTF-8 字节，由宿主 `shellEnv` 仅注入匹配 Agent 和唯一命令的原生执行。Bash 内建 `printf` 还原反斜杠和 NUL 字节并送入解释器 stdin；正文不写项目文件，也不放入 `bash -c` 参数。传输标识或分段缺失时退出 125。解释器启动前清除传输变量，原生调用返回或转后台后清除插件中的暂存正文。
+新程序省略 `executable` 时，`work_exec` 可选用用户声明的唯一已安装解释器。支持“本机已有 Python 3.12，路径为 ……”的相邻分句。
 显式绝对 `executable` 路径不存在或指向目录时，调用在启动所选原生 shell 前返回 `WORK_EXEC_EXECUTABLE_NOT_FOUND`、`executionOccurred:false`，保留 `scriptRef`。程序引用继承记录的解释器路径；省略 `executable` 不会改用 PATH。只有任务允许更换环境时，才建议将 `executable` 显式设为 `python` 或 `node`，改用 PATH 中的同名运行时；任务声明特定解释器时保留缺失路径为阻塞项。权限无法确认、PATH 名称及相对路径仍交给宿主执行；这里不检查执行权限或文件格式。
 `scriptEditsSubmitted` 记录提交的编辑数，`scriptEditCount` 只计替换前后文字不同的编辑。相同文字仍会按请求再次执行原程序，不发送脚本已改动的版本提示。
 结果中的 `scriptEventRef` 是当前会话内准确调用的短地址，例如 `event:69`。后续把该地址传给 `scriptRef` 即可修改或执行同版程序；原来的完整 `scriptRef` 继续可用。地址不匹配、语言冲突或编辑不唯一时拒绝执行。
@@ -492,14 +508,15 @@ Windows 继续通过原生 `pwsh` 执行。POSIX 通过宿主原生 `bash` 向 P
 
 工作区设置位于 .dsh/work-evidence/config.json。
 会话开关位于 .dsh/work-evidence/sessions/<session-id>.json。
-自动观察记录放在宿主会话目录或用户会话目录，避免混入项目源码检索。
+自动会话记录放在宿主会话目录或用户会话目录。任务模式、运行记录和自动中断说明均用该目录。手动保存的工作区报告仍在 `.dsh/work-evidence/`。
 配置无效时自动处理关闭，并保留错误信息。
 
 ## 最终 JSON 的有界修正
 
-`finalJsonGuard` 默认开启。用户明确要求最终 JSON 时，语法无法解析会触发修正提示。
+`finalJsonGuard` 默认开启。用户明确要求最终 JSON 时，已有正文无法解析会触发修正提示。
 每条用户要求最多提示 2 次；完全相同的错误再次出现时停止提示。
 原答复保留，状态继续列出未解决的语法错误。
+要求直接交付 JSON 且最终正文为空时，状态记录 `missingFinalJson`，本功能结束处理。
 
 `finalJsonResultGuard` 候选默认关闭，依赖 `finalJsonGuard`。
 用户明确要求完整实际 `exitCode`、`stdout`、`stderr` 时，候选识别终稿遗漏的末尾换行。
@@ -546,7 +563,9 @@ deferPressureCompaction 也保持默认关闭。
 以下设置键对应实际运行接线，均可通过 `/work-evidence feature <键>` 查看或开关。
 
 - `stateLedger`：默认开启。记录本会话的读取、搜索、修改和失败依据，是 `stateInform`、`ledgerUnresolved` 等状态提醒的数据来源；关闭后不再积累新的账本状态。
-- `stateInform`：默认开启。账本维护发现适用状态时，在后续请求中注入一次有界提醒；依赖 `stateLedger`，默认组合之外没有独立数据源。
+- `stateInform` 默认开启，依赖 `stateLedger`。内容编辑后，旧搜索结果失效保留在状态中。待显示的源码观察为零时，任务流省略该状态提示。单文件检索命中定义或检索发现多处定义时，可提示核对范围。`stepPacing` 尊重只在最终汇报的要求。批量续读和精确编辑失败时，任务流优先提示具体动作。`executionTriage` 可指出精确编辑删除的调用参数和新增的相邻布尔状态。
+- 只允许从源码定位问题时，`stepPacing` 在首次修改前引用刚交付的源码范围。修改后，调查累计到触发条件，且检索命中近期读过的文件中尚未读到的字段写入或函数调用时，提示核对会改变修改决定的分支。宽范围检索须接在同文件的读取之后。
+- `executionTriage` 根据实际内嵌程序、执行结果和恢复记录提供建议。普通文件修改或原生命令失败不单独触发 `work_exec` 推荐。PowerShell 盘点请求完整路径和大小，但成功结果只有路径列时，同一请求提示一次。提示指出缺列，区分指定文件查询和整份列表，保留原始结果。
 - `archiveReadRouting`：默认开启。把 `.jar`、`.zip` 等归档路径转入受限解码读取，需要原生文件系统与 `fflate`；解码器缺失时返回明确的不可用原因，不退化为直接读取二进制。
 - `requestAccounting`：默认开启。分别记录主请求、压缩请求和辅助请求的用量及未知消费；关闭只影响统计口径，不停止或改写实际请求。
 - `memberParsing`：默认开启。按语法实体定位 Java 类和方法范围；解析器不可用时退回词法扫描，并把本次解析失败记录为不可用而不是成功。其他语言使用文本窗口，不提供语法完整的成员范围。
@@ -572,7 +591,7 @@ stubSummary 保留问题处理标记、事件指针和原文取回。
 
 ## 开发与桌面加载
 
-开发目录：当前仓库根目录。测试和实验工具可使用 `DSH_APP`、`DSH_PROFILE`、`DSH_TEST_PYTHON` 指向本机运行时和可选组件。
+从仓库根目录运行 `node --test`。宿主用例默认使用 `Documents/DSH Desktop/runtime/kernel-next` 下的完整 `0.2.2-rc.1` 内核。可用 `DSH_APP` 指定另一套声明支持的完整内核。`DSH_PROFILE` 和 `DSH_TEST_PYTHON` 可指定本机的配套组件。
 桌面加载目录：由桌面 profile 决定。需要同步时使用 `node sync-desktop.mjs`，不要写死本机绝对路径。
 桌面 web profile 的包依赖和目录联接指向加载目录。
 加载目录保存独立源码与 Python 环境；宿主依赖来自已安装的桌面运行时。

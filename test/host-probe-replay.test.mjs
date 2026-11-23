@@ -9,14 +9,12 @@ import {createExecutionEvidence} from '../execution-evidence.mjs';
 const shell=process.platform==='win32'?'pwsh':'bash';
 const startHost=options=>baseStartHost({...options,...(process.platform==='win32'?{}:
   {mountShell:false,extraMounts:[['dsh-bash-local',{}],['dsh-tool-bash',{}]]})});
-// PowerShell single quotes are literal, so a double quote inside them reaches
-// node unescaped and `node -e` receives broken source. Escaping the double
-// quotes with a backtick keeps them inside the single-quoted argument; bash only
-// needs its own quote escaping.
+// Avoid literal double quotes in the JavaScript argument so both PowerShell
+// native argument passing modes deliver the same code to Node.
 const quote=value=>process.platform==='win32'
-  ? "'"+value.replaceAll("'","''").replaceAll('"','`"')+"'"
+  ? "'"+value.replaceAll("'","''")+"'"
   : "'"+value.replaceAll("'","'\\''")+"'";
-const code='console.log(JSON.stringify(JSON.parse(require("node:fs").readFileSync("value.json","utf8"))));';
+const code="console.log(JSON.stringify(JSON.parse(require('node:fs').readFileSync('value.json','utf8'))));";
 const command=(process.platform==='win32'?'& ':'')+quote(process.execPath)+' -e '+quote(code);
 const plan={question:'Does the current project value equal the specified answer?',tool:shell,arguments:{command,description:'Read the current project value'},
   sources:['value.json'],cases:[{name:'answer',pointer:'/answer',expectedJson:'42'}]};
@@ -25,6 +23,36 @@ const results=host=>host.events.filter(event=>event.type==='tool/result').map(ev
 test('probe replay is an explicit opt-in',()=>{
   assert.equal(defaults().probeReplay,false);
   assert.throws(()=>defaults({probeReplay:'yes'}),/Invalid probeReplay/u);
+});
+
+test('compact mode admits an explicitly requested probe and its saved id without enabling replay',async()=>{
+  let observed;
+  const readCommand=process.platform==='win32'?"Get-Content -Raw -LiteralPath 'value.json'":'cat -- value.json';
+  const host=await startHost({pluginConfig:{toolSurface:'compact',probeReplay:false,stepPacing:false},script:(options,n)=>{
+    if(n===1)return [tool('work_probe',{...plan,arguments:{...plan.arguments,command:readCommand}})];
+    if(n===2)observed=JSON.parse(options.messages.findLast(message=>message.role==='tool').content[0].text);
+    if(n===3)return [tool('work_probe',{mode:'recall',id:observed.id,maxChars:12000})];
+    return [text('done')];
+  }});
+  try{
+    const file=path.join(host.cwd,'value.json');
+    await fs.writeFile(file,'{"answer":42}');
+    const agent=await host.createAgent('max');
+    await host.send(agent,'Use work_probe to observe the answer in value.json.');
+    assert.equal(observed.status,'observed',JSON.stringify({error:observed.error,stderr:observed.stderr?.text}));
+    assert.equal(observed.cases[0].actualJson,'42');
+    assert.equal(observed.evidenceSaved,true);
+    await fs.writeFile(file,'{"answer":7}');
+    await host.send(agent,'只读取已保存的 '+observed.id+'，不要重新执行，不要修改文件。');
+    const recalled=results(host).at(-1);
+    assert.equal(recalled.historical,true);
+    assert.equal(recalled.complete,true);
+    assert.equal(JSON.parse(recalled.text).observation.cases[0].actualJson,'42');
+    await host.send(agent,'Answer briefly without using any tools.');
+    const hasTool=(request,name)=>request.tools.some(tool=>tool.name===name);
+    assert.deepEqual(host.requests.map(request=>hasTool(request,'work_probe')),[true,true,true,true,false]);
+    assert.equal(hasTool(host.requests[2],'work_exec'),false);
+  }finally{await host.close();}
 });
 
 test('probe replay restores the original command and expectation after the observed file changes',async()=>{

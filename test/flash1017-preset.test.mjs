@@ -57,4 +57,9 @@ test('the route guard refuses a non-Flash model instead of swapping routes',asyn
   await assert.rejects(()=>run(null,{provider:'magpie',model:'qoder/ultimate'}),error=>error.code==='FLASH1017_ROUTE_REQUIRED');
   const noEffort=await run(null,{provider:'magpie',model:'workbuddy-ai/deepseek-v4.1-flash'});
   assert.equal(noEffort.reasoningEffort,'max','a missing effort is filled with max');
+  for(const model of ['3/deepseek-v4-1-flash-1017','3/deepseek-v4_1-flash']){
+    const selection={provider:'magpie',model};
+    assert.deepEqual(await run(selection,flash),{...selection,reasoningEffort:'low'});
+    assert.deepEqual(await run(null,selection),{...selection,reasoningEffort:'max'});
+  }
 });

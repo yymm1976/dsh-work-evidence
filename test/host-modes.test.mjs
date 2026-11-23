@@ -5,14 +5,15 @@ import {startHost,text,tool,systemOf,toolNames} from './helpers/host.mjs';
 const answer=()=>[text('完成。')];
 
 test('a fresh native PTC request declares and executes work_exec without a preceding status command',async()=>{
-  const host=await startHost({toolMode:'ptc',extraMounts:[['dsh-ptc-runtime-node']],script:(options,n)=>{
-    assert.match(systemOf(options),/\bwork_exec: \{/u);
-    assert.ok(systemOf(options).includes('Supply code+runtime'));
+  const host=await startHost({toolMode:'ptc',extraMounts:[['dsh-ptc-runtime-node']],script:(_options,n)=>{
     return n===1?[tool('run_code',{code:'console.log(JSON.stringify(await tools.work_exec({runtime:"node",code:"console.log(42)"})));',description:'Run the requested fresh-session program'})]:answer();
   }});
   try{
     const agent=await host.createAgent('max');await host.send(agent,'运行当前任务允许的 Node 程序，输出 42。');
+    assert.match(systemOf(host.requests[0]),/\bwork_exec: \{/u);
     const call=host.events.find(event=>event.type==='tool/ptc-dispatch'&&event.data.name==='work_exec');
+    assert.ok(call,'the fresh request invokes work_exec through the SDK');
+    assert.equal(call.data.isError,false);
     const result=JSON.parse(call.data.content.map(block=>block.text??'').join(''));
     assert.equal(result.exitCode,0);assert.equal(result.stdout.text.trim(),'42');
   }finally{await host.close();}

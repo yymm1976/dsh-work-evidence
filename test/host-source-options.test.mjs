@@ -5,6 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import {startHost,text,tool} from './helpers/host.mjs';
 import {buildZip} from './helpers/archive.mjs';
+import {parseResult} from '../visible-results.mjs';
 const JAVA='package demo;\npublic class Calc {\n  public int add(int a, int b) {\n    return a + b;\n  }\n  public int sub(int a, int b) {\n    return a - b;\n  }\n}\n';
 const output=host=>host.events.filter(e=>e.type==='tool/result').map(e=>{const body=e.data.message.content.map(b=>b.text??'').join('');try{return JSON.parse(body);}catch{return {error:e.data.message.isError,text:body};}});
 async function run(workspace,steps,setup,pluginConfig={}){
@@ -12,6 +13,30 @@ async function run(workspace,steps,setup,pluginConfig={}){
   try{await setup(host.cwd);const agent=await host.createAgent('max');await host.send(agent,'按指定范围读取源码');return {results:output(host),status:await host.command(agent,'detail'),features:(await host.command(agent,'features')).features};}
   finally{await host.close();}
 }
+
+test('implicit source searches use the workspace when src is missing',async()=>{
+  const locate={mode:'locate',query:'resolveWidget'};
+  const source={mode:'source',query:'Widget',includeReferences:true};
+  const steps=[
+    [tool('project_evidence',locate)],
+    [tool('project_evidence',source)],
+    [tool('project_evidence',{...locate,scope:'missing'})],
+    [tool('project_evidence',{...source,referenceScope:'missing'})],
+  ];
+  const {results}=await run({stepPacing:false},steps,async cwd=>{
+    await fs.mkdir(path.join(cwd,'lib'));
+    await fs.writeFile(path.join(cwd,'lib','Widget.js'),'class Widget {}\n');
+    await fs.writeFile(path.join(cwd,'index.js'),"const Widget = require('./lib/Widget');\nfunction resolveWidget() { return new Widget(); }\n");
+    await fs.writeFile(path.join(cwd,'README.md'),'Widget references in documentation\n');
+  });
+  assert.equal(results[0].search.state,'observed');
+  assert.equal(results[0].search.matches[0].path,'index.js');
+  assert.equal(results[1].selectionState,'selected');
+  assert.ok(results[1].references.matches.some(match=>match.path==='index.js'));
+  assert.ok(results[1].references.matches.every(match=>!match.path.endsWith('.md')));
+  assert.equal(results[2].search.state,'unavailable');
+  assert.equal(results[3].references.state,'unavailable');
+});
 
 test('archiveReadRouting reads virtual archive paths and exposes an ordinary file error when disabled',async()=>{
   const steps=[[tool('read',{file_path:'src-sources.jar!/demo/Calc.java',offset:2,limit:4})]];
@@ -30,10 +55,36 @@ test('evidenceViews references a proven full body and sends full text after a wr
   const setup=cwd=>fs.writeFile(path.join(cwd,'a.txt'),Array.from({length:65},(_,i)=>`row ${i} `+'z'.repeat(40)).join('\n'));
   const on=await run({ledgerReceipt:false},steps,setup),off=await run({evidenceViews:false,ledgerReceipt:false},steps,setup);
   assert.equal(on.results[0].responseView.kind,'full');assert.equal(on.results[1].responseView.kind,'reference');
+  assert.equal(on.results[0].readLayout,'numbered');assert.equal(on.results[1].responseView.receiptId,on.results[0].responseView.receiptId);
   assert.equal(on.results[3].responseView.kind,'full');assert.match(JSON.stringify(on.results[3]),/changed/);
   assert.equal(on.features.find(item=>item.key==='evidenceViews').effect.status,'applied');
   assert.ok(off.results.filter(x=>x.mode==='read').every(x=>x.responseView.kind==='full'));
   assert.equal(off.features.find(item=>item.key==='evidenceViews').effect.status,'not-observed');
+});
+
+test('native batch read selects a shorter presentation while explicit records and tiny reads retain line objects',async()=>{
+  const args={mode:'read',files:[{path:'a.txt',offset:3,limit:65}],lineTextLimit:100,maxChars:4200};
+  const steps=[
+    [tool('project_evidence',args)],
+    [tool('project_evidence',{...args,readLayout:'records'})],
+    [tool('project_evidence',{mode:'read',files:[{path:'b.txt'}]})],
+  ];
+  const {results}=await run({evidenceViews:false,ledgerReceipt:false},steps,async cwd=>{
+    const lines=Array.from({length:90},(_,i)=>'source row '+i+' '+'x'.repeat(68));
+    await fs.writeFile(path.join(cwd,'a.txt'),lines.join('\n'));
+    await fs.writeFile(path.join(cwd,'b.txt'),'one\n');
+  });
+  const [numbered,records,tiny]=results;
+  assert.equal(numbered.readLayout,'numbered');
+  assert.equal(records.readLayout,'records');
+  assert.equal(numbered.sources[0].lines,undefined);
+  assert.equal(tiny.readLayout,undefined);
+  assert.deepEqual(tiny.sources[0].lines,[{line:1,text:'one'}]);
+  const restored=parseResult(JSON.stringify(numbered));
+  assert.deepEqual(restored.sources[0].lines,records.sources[0].lines);
+  assert.equal(numbered.budgetTruncated,records.budgetTruncated);
+  const resume=numbered.sources[0].responseBudget.resumeArguments;
+  assert.deepEqual(resume.files,records.sources[0].responseBudget.resumeArguments.files);
 });
 
 test('defaultResponseView independently records its actual default and explicit override',async()=>{

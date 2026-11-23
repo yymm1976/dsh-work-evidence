@@ -12,7 +12,7 @@ const DEFINITIONS=[
   ['selfIndex','源码索引','记录并核对已观察的源码入口'],
   ['stateLedger','状态记录','记录读取、修改和执行依据'],
   ['stateInform','状态提醒','提醒已记录结果的适用状态'],
-  ['completionNotice','完成提醒','继续尚有明确可执行事项的阶段摘要'],
+  ['completionNotice','完成提醒','继续可执行的阶段事项，或补交用户明确请求的答复'],
   ['archiveReadRouting','归档读取','将归档路径转入准确来源读取'],
   ['readArgumentRecovery','读取参数纠错','修正明确的读取参数别名'],
   ['requestAccounting','用量记录','区分主请求、压缩和辅助调用'],

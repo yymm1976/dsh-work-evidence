@@ -7,6 +7,9 @@ const userEvent=(text,kind='user')=>({type:'user/message',data:{role:'user',sour
 test('only genuine user messages can request full canonical output',()=>{
   assert.deepEqual(fullOutputRequest(userEvent('请给出完整输出')),{applies:true,requested:true});
   assert.deepEqual(fullOutputRequest(userEvent('show full output')),{applies:true,requested:true});
+  for(const request of ['请给出原始工具输出','请给出完整的命令输出','show raw tool output'])
+    assert.deepEqual(fullOutputRequest(userEvent(request)),{applies:true,requested:true});
+  assert.deepEqual(fullOutputRequest(userEvent('查看工具输出摘要')),{applies:true,requested:false});
   assert.deepEqual(fullOutputRequest(userEvent('implement the fix')),{applies:true,requested:false});
   assert.deepEqual(fullOutputRequest(userEvent('本次程序已结束，退出码为 1，原始输出报告了失败','work-evidence-task-flow')),{applies:false,requested:false});
   assert.deepEqual(fullOutputRequest(userEvent('原始输出保留在 canonical 历史','work-evidence-state')),{applies:false,requested:false});

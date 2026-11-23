@@ -1,5 +1,5 @@
 // Keyless DSH host for plugin integration tests: real agent loop, tools and
-// session store from the installed desktop runtime, with a scripted model.
+// session store from the selected kernel runtime, with a scripted model.
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
@@ -8,12 +8,28 @@ import {createRequire,registerHooks} from 'node:module';
 import {pathToFileURL,fileURLToPath} from 'node:url';
 import {randomUUID} from 'node:crypto';
 import {patchToolExecution} from '../../tool-execution.mjs';
-import {DSH_APP} from './paths.mjs';
+import {DSH_APP,DSH_TEST_HOST_VERSION} from './paths.mjs';
 
 export const APP=DSH_APP;
+const PLUGIN=path.resolve(import.meta.dirname,'..','..');
+const hostPackages=path.join(APP,'node_modules','@deepseek-ai');
+const readPackage=(name)=>{
+  const file=path.join(hostPackages,name,'package.json');
+  if(!existsSync(file))throw new Error(`DSH test host is missing @deepseek-ai/${name} at ${APP}. Set DSH_APP to a complete supported kernel runtime.`);
+  return JSON.parse(readFileSync(file,'utf8'));
+};
+const toolsVersion=readPackage('dsh-tools').version;
+const manifest=JSON.parse(readFileSync(path.join(PLUGIN,'package.json'),'utf8'));
+const supported=manifest.engines.dsh.split('||').map(version=>version.trim());
+const expectedVersions=process.env.DSH_APP?.trim()?supported:[DSH_TEST_HOST_VERSION];
+if(!expectedVersions.includes(toolsVersion))throw new Error(`DSH test host at ${APP} has version ${toolsVersion}. Expected ${expectedVersions.join(' or ')}. Set DSH_APP to a complete supported kernel runtime.`);
+readPackage('cordis');
+for(const name of ['dsh-brand','dsh-llm']){
+  const version=readPackage(name).version;
+  if(version!==toolsVersion)throw new Error(`DSH test host at ${APP} mixes @deepseek-ai/${name} ${version} with dsh-tools ${toolsVersion}.`);
+}
 const require=createRequire(path.join(APP,'package.json'));
 const rootZod=path.join(APP,'node_modules','zod');
-const toolsVersion=JSON.parse(readFileSync(require.resolve('@deepseek-ai/dsh-tools/package.json'),'utf8')).version;
 const splitToolExecutor=toolsVersion.startsWith('0.2.2');
 // Same zod de-duplication the experiment runner uses for the desktop bundle.
 registerHooks({resolve(specifier,context,next){
@@ -42,7 +58,6 @@ registerHooks({resolve(specifier,context,next){
   }catch(e){if(e.code!=='ERR_MODULE_NOT_FOUND'||!specifier.startsWith('@deepseek-ai/'))throw e;return next(pathToFileURL(require.resolve(specifier)).href,context);}
 }});
 export const load=name=>import(pathToFileURL(require.resolve('@deepseek-ai/'+name)).href);
-const PLUGIN=path.resolve(import.meta.dirname,'..','..');
 
 export const text=value=>({kind:'text',text:value});
 export const reasoning=value=>({kind:'reasoning',text:value});
@@ -52,7 +67,13 @@ async function* emit(turn,usage){
   const calls=turn.filter(item=>item.kind==='tool');
   let index=0;
   for(const item of turn){
-    if(item.kind==='reasoning'){
+    if(item.kind==='malformed'){
+      yield {type:'block-start',index,blockType:'tool-call'};
+      yield {type:'tool-call-delta',index,id:'call_malformed_'+randomUUID().slice(0,8),name:'pwsh',argumentsDelta:'{"command":"Write-Output ok","description":"controlled command"'};
+      yield {type:'usage',usage};
+      yield {type:'finish',reason:{kind:'error',failure:{code:'MALFORMED_RESPONSE',message:'invalid completed tool arguments'}}};
+      return;
+    }else if(item.kind==='reasoning'){
       yield {type:'block-start',index,blockType:'reasoning'};
       yield {type:'reasoning-delta',index,text:item.text};
       yield {type:'block-end',index,block:{type:'reasoning',text:item.text}};

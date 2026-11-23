@@ -10,7 +10,8 @@ const resolveOverride=(value,fallback,allowBare=false)=>{
   return allowBare?text:path.resolve(text);
 };
 
-export const DSH_APP=resolveOverride(process.env.DSH_APP,path.join(home,'AppData','Local','Programs','DSH Desktop','dsh-desktop'));
+export const DSH_TEST_HOST_VERSION='0.2.2-rc.1';
+export const DSH_APP=resolveOverride(process.env.DSH_APP,path.join(home,'Documents','DSH Desktop','runtime','kernel-next'));
 export const DSH_PROFILE=resolveOverride(process.env.DSH_PROFILE,path.join(home,'Documents','DSH Desktop','home','profiles','web'));
 export const DSH_PYTHON=resolveOverride(process.env.DSH_TEST_PYTHON,path.join(home,'Documents','DSH Desktop','runtime','python312','python.exe'),true);
 /** A bare interpreter name (for example `python.exe`) resolves through PATH,

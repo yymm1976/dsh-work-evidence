@@ -154,9 +154,11 @@ test('a completed turn with writes but no work_report leaves a continuation note
     const agent=await host.createAgent('max');
     await host.send(agent,'写 a.txt');
     await new Promise(resolve=>setTimeout(resolve,300));
-    const dir=path.join(host.cwd,'.dsh','work-evidence');
-    const notes=(await fs.readdir(dir)).filter(name=>name.endsWith('-interrupted.md'));
-    assert.equal(notes.length,1);
+    const status=await host.command(agent,'detail');
+    const dir=status.telemetry.directory;
+    const note=path.join(dir,agent.session.id+'-interrupted.md');
+    assert.ok((await fs.stat(note)).isFile());
+    await assert.rejects(fs.stat(path.join(host.cwd,'.dsh','work-evidence',path.basename(note))),{code:'ENOENT'});
   }finally{await host.close();}
 });
 

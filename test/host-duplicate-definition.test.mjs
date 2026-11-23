@@ -22,7 +22,7 @@ async function run(files,script,workspace={}){
   }finally{await host.close();}
 }
 
-const REMINDER='同一定义出现在';
+const REMINDER='的同名定义';
 
 test('a definition that exists in two files raises one notice naming both sites',async()=>{
   const observed=await run({
@@ -34,8 +34,8 @@ test('a definition that exists in two files raises one notice naming both sites'
   });
   assert.ok(observed.body.includes(REMINDER),'the notice is delivered');
   assert.ok(observed.body.includes('days_until_birthday'),'it names the definition');
-  assert.ok(/one\.py|two\.py/u.test(observed.body),'it names the files');
-  assert.ok(observed.body.includes('校验层与计算层'),'it states why two sites matter');
+  assert.match(observed.body,/的同名定义（(?:one\.py、two\.py|two\.py、one\.py)）/u,'it names both files');
+  assert.ok(observed.body.includes('沿用户描述的入口确认实际调用位置'),'it asks which implementation the user reaches');
 });
 
 test('a definition in a single file raises no notice',async()=>{
@@ -98,20 +98,17 @@ test('an import and a call are references, not duplicate definitions',async()=>{
   assert.equal(observed.detail.metrics.stateNotices,0);
 });
 
-test('a search confined to one file raises a scope reminder naming that file',async()=>{
-  // Measured on the F1 run: 70 of 115 greps were single-file, and the lost 059 case
-  // searched only inside identity_metadata.py before editing it, so the calculation
-  // layer in another module was never searched for.
-  const observed=await run({
-    'identity.py':'def normalize_birthday(value):\n    return value\n',
-    'upcoming.py':'def days_until_birthday(today, birthday):\n    return 0\n'
-  },async(_o,n)=>{
-    if(n===1)return [tool('grep',{pattern:'normalize_birthday',path:'identity.py'})];
-    return [text('完成。')];
-  });
-  assert.ok(observed.body.includes('只在'),'the reminder states the restricted scope');
-  assert.ok(observed.body.includes('identity.py'),'and names the file it searched');
-  assert.ok(observed.body.includes('normalize_birthday'),'and the query');
+test('a single-file definition-only result raises a scope reminder, while existing uses do not',async()=>{
+  const definition='def calculate_total(rows):\n    return sum(rows)\n';
+  const scopeReminder='中找到 \u0060calculate_total\u0060 的定义';
+  for(const use of ['', '\ndef report(rows):\n    return calculate_total(rows)\n']){
+    const observed=await run({'totals.py':definition+use},async(_o,n)=>{
+      if(n===1)return [tool('grep',{pattern:'calculate_total',path:'totals.py'})];
+      return [text('完成。')];
+    });
+    assert.equal(observed.body.includes(scopeReminder),!use);
+    assert.equal(observed.detail.metrics.stateNotices,use?0:1);
+  }
 });
 
 test('a workspace-wide search raises no scope reminder',async()=>{

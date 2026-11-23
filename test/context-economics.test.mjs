@@ -17,12 +17,12 @@ test('unsafe disjoint sums stay unknown even when each reported field is a safe 
   assert.equal(exact.usage.totalTokens,Number.MAX_SAFE_INTEGER);
 });
 function harness(){
-  const state={step:0,config:{projectionPricing:[],projectionHorizonSteps:16}};
+  const state={step:0,requestId:'user-request',config:{projectionPricing:[],projectionHorizonSteps:16}};
   const agent={session:{id:'economics',surface:{nodes:[]},requestHeader:()=>({config:{provider:'p',model:'m'}}),requestContext:()=>({contextWindow:10000})}};
-  const economics=createContextEconomics({tokenMeter:{measure:()=>({totalTokens:9000})}},{get:()=>state});
+  const economics=createContextEconomics({tokenMeter:{measure:()=>({totalTokens:9000})}},{get:()=>state,currentRequest:()=>({id:state.requestId})});
   const options={provider:'p',model:'m',messages:[{id:'u',role:'user',content:[{type:'text',text:'request'}]}]};
   function finish(auxiliary=false,usage={inputTokens:1000,cacheReadTokens:0,cacheWriteTokens:0,outputTokens:100,totalTokens:1100}){
-    economics.requestFinished(agent,options,{auxiliary,usage,settled:true,finishReason:'stop'});
+    economics.requestFinished(agent,options,{auxiliary,usage,settled:true,finishReason:'stop',taskRequestId:state.requestId});
   }
   return {agent,economics,finish,state,options};
 }
@@ -252,14 +252,10 @@ test('a partial usage observation cannot replace the exposure baseline',()=>{
 
 test('a DeepSeek V4.1 Flash route is priced from the published rate when no exact row exists',()=>{
   const {agent,economics}=harness();
-  const route={provider:'magpie',model:'opendesign/deepseek-v4.1-flash-eco'};
-  const price=economics.pricingFor(agent,route);
-  assert.ok(price,'the published family rate must price this route');
-  assert.equal(price.input,1);
-  assert.equal(price.cacheRead,0.02);
-  assert.equal(price.output,4);
-  assert.equal(price.currency,'CNY');
-  assert.equal(price.publishedRate,true,'the source must stay distinguishable from an exact setting');
+  for(const model of ['opendesign/deepseek-v4.1-flash-eco','3/deepseek-v4-1-flash-1017','3/deepseek-v4_1-flash']){
+    const price=economics.pricingFor(agent,{provider:'magpie',model});
+    assert.deepEqual(price,{input:1,cacheRead:0.02,cacheWrite:0,output:4,currency:'CNY',publishedRate:true},model);
+  }
   // An unrelated route stays unpriceable so the gate keeps refusing it.
   assert.equal(economics.pricingFor(agent,{provider:'magpie',model:'group/qwen3.8flash'}),null);
 });
@@ -273,7 +269,7 @@ test('the published card also prices the official deepseek-flash model id',()=>{
   assert.equal(economics.pricingFor(agent,{provider:'x',model:'deepseek-chat'}),null);
 });
 
-test('the forecast horizon follows the session length instead of stopping at the configured minimum',()=>{
+test('the forecast horizon follows the current task and resets at the next human request',()=>{
   const {agent,economics,finish,state,options}=harness();
   // Same shape as the pointer-mismatch test: a complete prior request that leaves
   // a usable exposure baseline, and an explicit price so the forecast is computed.
@@ -291,21 +287,22 @@ test('the forecast horizon follows the session length instead of stopping at the
   options.messages=[system,user,pointer];
   finish(false,{inputTokens:100,cacheReadTokens:900,cacheWriteTokens:0,outputTokens:20,totalTokens:1020});
   const early=propose();
-  assert.equal(early.horizonSteps,16,'a young session keeps the configured horizon');
+  assert.equal(early.horizonSteps,16,'a new task keeps the configured horizon');
   assert.ok(Number.isFinite(early.futureSavingEstimate),'the priced forecast is computed');
 
-  // The measured 屎山 arms issued 209-416 requests. Under a fixed 16-step horizon a
-  // rewrite whose break-even was 60 steps was rejected at step 109 while the session
-  // went on for 200 more; decision counts were 919 with 0 applied. Lengthening the
-  // session must lengthen the forecast.
+  // Long tasks can still earn a longer horizon. A later task has separate evidence.
   for(let n=0;n<200;n++)finish(false,{inputTokens:100,cacheReadTokens:900,cacheWriteTokens:0,outputTokens:20,totalTokens:1020});
   const late=propose();
   assert.ok(late.horizonSteps>early.horizonSteps,
-    `horizon must follow the session: early=${early.horizonSteps} late=${late.horizonSteps}`);
+    `horizon must follow the current task: early=${early.horizonSteps} late=${late.horizonSteps}`);
   assert.ok(late.horizonSteps<=64,'the forecast stays capped');
   assert.ok(late.futureSavingEstimate>early.futureSavingEstimate,
     `the same saving is worth more over the longer remaining run: ${early.futureSavingEstimate} -> ${late.futureSavingEstimate}`);
-  // An explicit caller horizon still wins, so a caller that knows better is obeyed.
+  state.requestId='next-request';
+  assert.equal(propose().horizonSteps,16);
+  finish();
+  assert.equal(propose().horizonSteps,16);
+  // The active task's clock does not replace a direct caller estimate.
   options.messages=[system,user,{
     ...pointer,content:[{type:'text',text:'full original result body that differs from the previous pointer'}]}];
   const explicit=economics.assess(agent,{messages:options.messages,

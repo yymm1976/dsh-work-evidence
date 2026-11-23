@@ -21,9 +21,10 @@
  * "must not" act as an allowance, and a noun phrase read as a request. Looking backwards
  * from each verb removes all four at once.
  *
- * Two lexical guards remain, both closed judgments about a character position:
+ * Lexical guards use only local context around the candidate:
  *   1. a verb preceded by a determiner is a noun ("the patch", "the update");
- *   2. English words match whole words only ("whenever", "bugfix", "prefix").
+ *   2. English words match whole words only ("whenever", "bugfix", "prefix");
+ *   3. a read verb followed by a name and a code noun identifies the symbol ("explain add method").
  */
 
 const VERB_ZH='修改|修复|实现|编写|重构|创建|编辑|写入|增加|更新|添加|新增|更改|移除|删除|替换|重写|修补|重命名|改';
@@ -40,7 +41,8 @@ const VERB_EN='modify|fix|implement|write|rewrite|edit|create|delete|replace|upd
 // because 别 inside 分别 was taken as a denial and 修改 as denied. They therefore require a
 // character that cannot be part of a compound: start of text, punctuation, or a space.
 // 不要/不必/不准 stay in the plain list because a two-character form is unambiguous.
-const DENIAL_ZH='不得|不要|不能|无需|不必|不用|不准|不需要|严禁|禁止|不允许|不应|请勿|(?<![分识区特类级告性鉴辨个])别|(?<![请])勿|莫';
+// A bare 不 only qualifies when it directly negates a known write verb.
+const DENIAL_ZH='不得|不要|不能|无需|不必|不用|不准|不需要|严禁|禁止|不允许|不应|请勿|(?<![分识区特类级告性鉴辨个])别|(?<![请])勿|莫|(?<![得能会])不(?=(?:'+VERB_ZH+'))';
 const DENIAL_EN="do not|don't|never|must not|mustn't|may not|mayn't|should not|shouldn't|shall not|shan't|cannot|can't|won't|wouldn't|would not|will not|need not|needn't|not allowed to|not supposed to|make sure not to|be sure not to|no need to|there is no need to";
 // A denial that only introduces an idiom does not deny the verb after it.
 const IDIOM='forget|hesitate|fail|neglect|忘记|忘了|犹豫';
@@ -95,6 +97,8 @@ const nounPrefix=/(?:^|\s)(?:a|an|the|this|that|these|those|its|their|his|her|ou
 // and only the certain set remains; 「全部的更新」 then reads as a verb, which is the harmless
 // direction. This is the third round this file has been narrowed and widened here.
 const CJK_NOUN_PREFIX=/(?:的|之)\s*$/u;
+const READ_SYMBOL_PREFIX=/(?:解释|说明|查看|阅读|分析|检查|核对|追踪)\s*`?$|(?:^|\s)(?:explain|describe|inspect|read|review|summarize|trace)\s+`?$/iu;
+const READ_SYMBOL_SUFFIX=/^`?\s*(?:函数|方法|属性|变量|接口|类|(?:function|method|property|variable|interface|class)(?![A-Za-z0-9_]))/iu;
 const readOnlyMarker=/(?:只读|read[- ]only)/iu;
 // Sentence boundaries. A period splits only before a capital so "src/a.js" survives.
 // Sentence boundaries. A period splits only before a capital so "src/a.js" survives.
@@ -180,23 +184,28 @@ function positions(pattern,text){
   return out;
 }
 
-/**
- * Is the verb at `index` a request rather than a noun? Only a preceding determiner makes
- * it a noun; that is the one noun construction this classifier claims to recognise.
- */
-const isVerbUse=(text,index)=>{
-  const before=text.slice(Math.max(0,index-24),index);
-  return !nounPrefix.test(before)&&!CJK_NOUN_PREFIX.test(before);
-};
+function isVerbUse(text,index,word,raw=text){
+  const start=Math.max(0,index-24);
+  const before=text.slice(start,index);
+  if(nounPrefix.test(before)||CJK_NOUN_PREFIX.test(before))return false;
+  // An explicit read verb and a following code noun identify a symbol such as `add`.
+  // Read the original neighbors so removing a path cannot create this construction.
+  return !(/^[A-Za-z]+$/u.test(word)&&READ_SYMBOL_PREFIX.test(raw.slice(start,index))&&
+    READ_SYMBOL_SUFFIX.test(raw.slice(index+word.length)));
+}
 
 /** Does `text` ask for a change, and is it not denied? `raw` is the same text unstripped. */
 function sentenceIsWritable(prose,raw=prose){
   const denials=positions(denialPattern,prose);
   for(const verb of positions(verbPattern,prose)){
-    if(!isVerbUse(prose,verb.at))continue;
+    if(!isVerbUse(prose,verb.at,verb.text,raw))continue;
     // Only the text before this verb can deny it.
     const before=prose.slice(0,verb.at);
-    const prior=denials.filter(denial=>denial.at+denial.text.length<=verb.at);
+    // A bare 不 governs the attached verb, not a later request in the same clause.
+    const prior=denials.filter(denial=>{
+      const end=denial.at+denial.text.length;
+      return denial.text==='不'?end===verb.at:end<=verb.at;
+    });
     if(!prior.length)return true;
     const last=prior.at(-1);
     // stripPaths preserves length, so the same offsets address the raw text. The allowance
@@ -260,7 +269,7 @@ function writeRequestIn(text){
     // A determiner directly before the verb makes it a noun ("the patch", "the update"),
     // which is the same rule the clause scan applies; two definitions of "verb" would be
     // the same mistake as two definitions of "target".
-    if(isVerbUse(raw,match.index))verbs.push({at:match.index,end:match.index+match[0].length});
+    if(isVerbUse(raw,match.index,match[0]))verbs.push({at:match.index,end:match.index+match[0].length});
   }
   if(!verbs.length)return false;
   const targets=[];
@@ -300,9 +309,7 @@ function sentenceImplements(sentence){
 // different verb class from "modify": `Do not modify any files. Use work_exec to run ...`
 // forbids edits and requests an execution, so the execution must stay available.
 const EXECUTION_TOOL=/(?<![A-Za-z0-9_])(?:work_exec|verified_exec|work_reason|bash|pwsh)(?![A-Za-z0-9_])/iu;
-function namesExecutionTool(text){
-  return EXECUTION_TOOL.test(String(text??''));
-}
+const EXECUTION_CLAUSE=/^\s*(?:(?:请|随后|接着|然后|接下来|再|also|then|please)\s*)*(?:运行|执行|跑一下|(?:run|execute)\s+)\s*\S/iu;
 
 export function isReadOnlyTaskRequest(request){
   const text=String(request??'');
@@ -315,7 +322,8 @@ export function isReadOnlyTaskRequest(request){
   // A sentence with a verb but no target states no request ("review the edits in src/a.js"
   // is a read). A sentence with a verb and a target is a request; it decides the answer.
   let sawRequest=false;
-  for(const sentence of splitSentences(text)){
+  const sentences=splitSentences(text);
+  for(const sentence of sentences){
     if(!sentence.trim())continue;
     const sentenceProse=stripPaths(sentence);
     // The gate must accept every verb the sentence scan considers. `verbProbe` covers the
@@ -340,7 +348,7 @@ export function isReadOnlyTaskRequest(request){
   // direction — the same rule the marker-only fallback below already states. The execution
   // verb has to be checked before `sawRequest` decides, because the denied sentence is what
   // set it.
-  if(namesExecutionTool(text)&&!readOnlyMarker.test(prose))return false;
+  if(!markerPresent&&(EXECUTION_TOOL.test(text)||sentences.some(sentence=>EXECUTION_CLAUSE.test(sentence))))return false;
   if(sawRequest)return true;
   // No tracked write verb with a target. A denial alone does not make the task read-only:
   // "don't use old/node.exe; use the new one to run the program" is a task whose verb

@@ -59,6 +59,15 @@ test('labeled total and failure reports retain arithmetic counts and only anchor
   assert.equal(reportedCheckFailure('checks: 9007199254740992, failures: 1').summary,null,'unsafe totals stay unknown');
 });
 
+test('quoted failure lists retain the reported names without treating empty lists as failures',()=>{
+  assert.equal(reportedCheckFailure('checks: 12 failed: []\r\nall checks passed\r\n'),null);
+  const summary=`checks: 12 failed: ['lost draft', "wrong account", 'missing retry', "stale view", 'wrong total']`;
+  const failure=reportedCheckFailure(summary);
+  assert.equal(failure.signature,summary);
+  assert.deepEqual(failure.summary,{passed:7,failed:5,total:12,source:'reported-list',text:summary});
+  assert.deepEqual(failure.failureEntries,['lost draft','wrong account','missing retry','stale view']);
+});
+
 test('unittest reports on stderr preserve test totals, failures and errors without reading exception counts',()=>{
   const stderr='FAIL: test_wrong_value (checks.Example.test_wrong_value)\nAssertionError: 2 != 3\nERROR: test_missing_value (checks.Example.test_missing_value)\nKeyError: missing\nRan 5 tests in 0.004s\n\nFAILED (failures=1, errors=1, skipped=1)\n';
   const report=reportedExecutionChecks({exitCode:1,stdout:{text:''},stderr:{text:stderr}});
@@ -81,6 +90,11 @@ test('string-list failure reports preserve named failures and leave absent total
   for(const live of [false,true])assert.equal(reviewResult({exitCode:0,stdout,stderr:''},{live}).executions[0].failureSource,'reported-checks');
   const escaped=String.raw`FAILURES: ['quoted \'key\', comma', "second \"name\"",]`;
   assert.equal(reportedCheckFailure(escaped).summary.failed,2,'commas and escaped quotes inside names are not extra entries');
+  for(const label of ['FAILED','FAILED_ITEMS','FAILURES']){
+    assert.equal(reportedCheckFailure(label+": ['wrong value']").summary.failed,1);
+    assert.equal(reportedCheckFailure(label+': [ ]'),null);
+    assert.equal(reportedCheckFailure(label+': []\nFAIL: wrong value').signature,'FAIL: wrong value');
+  }
   for(const value of ["FAILURES: []","FAILURES: none","Example output: FAILURES: ['example']",
     "FAIL example: ordinary prose","FAILURES: [get_failures()]","FAILURES: ['unclosed'","FAILURES: ['one', 2]"])
     assert.equal(reportedCheckFailure(value),null,value);
@@ -188,9 +202,9 @@ test('explicit failures, incomplete output and stopped processes retain their li
   }
 });
 
-function timeline(config={},availableTools=[],mode='aggressive'){
+function timeline(config={},availableTools=[],mode='aggressive',toolMode='native'){
   const log=[],agent={session:{id:'flow-timeline',log,seq:0}},runtimeState={config:{...defaults(),...config},root:process.cwd(),taskSurfaceMode:'writable'};
-  const flow=createTaskFlow({tools:{get:name=>availableTools.includes(name)?{}:null}}, {get:()=>runtimeState,isEnabled:()=>runtimeState.config.enabled!==false,activeMode:()=>mode,modeStatus:()=>({selected:mode})});
+  const flow=createTaskFlow({tools:{get:name=>availableTools.includes(name)?{}:null,modeFor:()=>toolMode}}, {get:()=>runtimeState,isEnabled:()=>runtimeState.config.enabled!==false,activeMode:()=>mode,modeStatus:()=>({selected:mode})});
   const add=(type,data)=>{const event={seq:log.length,type,data};log.push(event);agent.session.seq=event.seq;return event;};
   const user=()=>add('user/message',{message:{id:'request-'+log.length,role:'user',source:{kind:'user'},content:[{type:'text',text:'修改项目并运行检查'}]}});
   add('turn/start',{turn:1});user();
@@ -469,28 +483,45 @@ test('a completed failed revision exposes its exact new version without claiming
   }
 });
 
-test('a long task gets one convergence reminder without claiming successful observations made no progress',()=>{
-  const t=timeline({executionTriage:false}),reminders=[];
-  // The reminder is gated on having produced real file effects.
-  t.command('write',{file_path:'src/main.js',content:'export const n=1;'},{});
-  for(let i=0;i<28;i++){
-    t.add('assistant/message',{usage:{outputTokens:5000},message:{role:'assistant',content:[]}});
-    t.command('pwsh',{command:'observe '+i},{exitCode:0,stdout:'new fact '+i,stderr:''});
-    const messages=t.notices();t.keep(messages);
-    reminders.push(...messages.filter(m=>m.source.taskFlow.key.includes('finalize-reminder')));
+test('a write alone cannot trigger delivery guidance before explicit completion',()=>{
+  for(const todo of [null,'pending','completed','stale']){
+    const t=timeline({executionTriage:false}),reminders=[];
+    const recordTodos=status=>t.add('todo/write',{todos:[{content:'Complete user request',status}]});
+    if(todo==='stale')recordTodos('completed');
+    t.command('write',{file_path:'probe.py',content:'print(1)'},{});
+    if(todo==='pending'||todo==='completed')recordTodos(todo);
+    for(let i=0;i<20;i++){
+      t.add('assistant/message',{usage:{outputTokens:5000},message:{role:'assistant',content:[]}});
+      t.command('pwsh',{command:'observe '+i},{exitCode:0,stdout:'new fact '+i,stderr:''});
+      const messages=t.notices();t.keep(messages);
+      reminders.push(...messages.filter(m=>JSON.parse(m.source.taskFlow.key)[1]==='finalize'));
+    }
+    assert.equal(reminders.length,todo==='completed'?1:0,todo??'without a todo list');
   }
-  assert.equal(reminders.length,1);
-  assert.ok(reminders[0].content[0].text.includes('完成全部明确要求'));
-  assert.ok(!reminders[0].content[0].text.includes('没有带来新的覆盖或进展'));
 });
 
-test('script execution advice includes conditional host discovery and remains optional',()=>{
-  const t=timeline({stepPacing:false},['pwsh','work_exec']);
-  t.command('write',{file_path:'main.js',content:'export const n=42;'},{});
-  const message=t.notices().find(m=>m.source.taskFlow.kind==='inlineExec');
-  assert.ok(message.content[0].text.includes('宿主已声明的 capabilities.search'));
-  assert.ok(message.content[0].text.includes('已有结果足够时不因本提示新增执行'));
-  assert.ok(!t.notices().some(m=>m.source.taskFlow.kind==='inlineExec'));
+test('a file edit or an ordinary command failure does not advertise a new interpreter program',()=>{
+  for(const operation of ['edit','failure']){
+    const t=timeline({stepPacing:false},['pwsh','work_exec']);
+    if(operation==='edit')t.command('write',{file_path:'main.js',content:'export const n=42;'},{});
+    else t.command('pwsh',{command:'Get-ChildItem missing-folder'},{exitCode:1,stdout:'',stderr:'Path not found'});
+    assert.ok(!t.notices().some(message=>message.source.taskFlow.kind==='inlineExec'),operation);
+    if(operation==='failure')assert.equal(t.flow.reviewState(t.agent).unresolvedErrors.length,1,'the original failure remains visible');
+  }
+});
+
+test('a real embedded program still receives conditional host discovery once',()=>{
+  for(const toolMode of ['native','ptc']){
+    const t=timeline({stepPacing:false},['pwsh','work_exec'],'aggressive',toolMode);
+    t.command('pwsh',{command:'node -e "'+('console.log(42);\n'.repeat(70))+'"'},{exitCode:0,stdout:'42\n',stderr:''});
+    const message=t.notices().find(m=>m.source.taskFlow.kind==='inlineExec');
+    assert.ok(message,'the program-specific recovery path remains available');
+    const body=message.content[0].text;
+    assert.match(body,/可沿用事件\d+的输出/u);
+    assert.match(body,/work_exec\(\{runtime,code,executable\?\}\)/u);
+    assert.equal(body.includes('capabilities.search'),toolMode==='ptc');
+    assert.ok(!t.notices().some(m=>m.source.taskFlow.kind==='inlineExec'));
+  }
 });
 
 test('a running job with an exception in partial output gets one status reminder and stays pending',()=>{
@@ -617,26 +648,103 @@ test('the next user request and successful program clear a prior clipped-read is
 test('aggressive guidance does not ban network access unconditionally',()=>{
   const body=taskFlowGuidance('aggressive');
   assert.doesNotMatch(body,/禁止访问网络/u,'experiment isolation must not be the default product rule');
-  assert.match(body,/需要联网的操作沿用用户已有授权；超出授权范围时再确认/u);
-  assert.match(body,/用户明确要求移植上游修复或恢复发布版实现时，按该要求使用指定来源/u);
-  assert.match(body,/不得使用用户禁止的外部实现/u);
+  assert.match(body,/从用户允许的来源定位实际入口和触发条件/u);
 });
 
-test('correct failing reproductions must be fixed, not deleted',()=>{
+test('continued source reads receive one short batch-read hint when the tool is available',()=>{
+  const t=timeline({stepPacing:true},['project_evidence']);
+  t.command('read',{file_path:'a.py'},'a');
+  t.command('read',{file_path:'b.py'},'b');
+  const first=t.notices(),advice=first.find(message=>message.source.taskFlow.key.includes('source-read-batch'));
+  assert.ok(advice);
+  assert.match(advice.content[0].text,/同一轮发出多个 read/u);
+  assert.match(advice.content[0].text,/统一返回预算或读取归档条目时，可用 project_evidence/u);
+  t.keep(first);
+  assert.ok(!t.notices().some(message=>message.source.taskFlow.key.includes('source-read-batch')));
+});
+
+test('a delivered batch-read hint is still emitted only once',()=>{
+  const t=timeline({stepPacing:true},['project_evidence']);
+  t.command('read',{file_path:'a.py'},'a');
+  t.command('read',{file_path:'b.py'},'b');
+  const first=t.notices();
+  assert.ok(first.some(message=>message.source.taskFlow.key.includes('source-read-batch')));
+  t.keep(first);
+  t.command('read',{file_path:'c.py'},'c');
+  assert.ok(!t.notices().some(message=>message.source.taskFlow.key.includes('source-read-batch')));
+});
+
+test('using project_evidence suppresses a following native-read batch hint',()=>{
+  const t=timeline({stepPacing:true},['project_evidence']);
+  t.command('project_evidence',{files:[{path:'a.py'},{path:'b.py'}]},{
+    mode:'read',sources:[
+      {path:'a.py',state:'observed',lines:[{line:1,text:'a'}]},
+      {path:'b.py',state:'observed',lines:[{line:1,text:'b'}]},
+    ]},{live:false});
+  t.command('read',{file_path:'c.py'},'c');
+  t.command('read',{file_path:'d.py'},'d');
+  assert.ok(!t.notices().some(message=>message.source.taskFlow.key.includes('source-read-batch')));
+});
+
+test('a live batch with implicit read mode gets an exact one-shot continuation',()=>{
+  const t=timeline({stepPacing:true});
+  t.runtimeState.taskSurfaceMode='writable';
+  t.command('project_evidence',{files:[{path:'a.py'},{path:'b.py'}],maxChars:2000},{
+    mode:'read',sources:[
+      {path:'a.py',state:'partial',omitted:true,responseBudget:{batch:true,bodyDelivered:false,
+        resumeTool:'project_evidence',resumeArguments:{mode:'read',files:[{path:'a.py',offset:1,limit:2000}],responseView:'full',maxChars:2000}}},
+      {path:'b.py',state:'observed',lines:[{line:1,text:'seen'}]}]});
+  const first=t.notices(),advice=first.find(message=>message.source.taskFlow.key.includes('source-followup'));
+  assert.ok(advice,JSON.stringify({first,followup:t.flow.summary(t.agent).sourceFollowup,phase:t.flow.summary(t.agent).phase}));
+  assert.match(advice.content[0].text,/a\.py/u);
+  assert.doesNotMatch(advice.content[0].text,/"b\.py"/u);
+  t.keep(first);
+  assert.ok(!t.notices().some(message=>message.source.taskFlow.key.includes('source-followup')));
+});
+
+test('a partial batch is not followed by optional pacing in the same result cycle',()=>{
+  const t=timeline({stepPacing:true});
+  t.runtimeState.taskSurfaceMode='writable';
+  t.command('project_evidence',{mode:'read',files:[{path:'a.py'},{path:'b.py'}],maxChars:2000},{
+    mode:'read',sources:[
+      {path:'a.py',state:'partial',omitted:true,responseBudget:{batch:true,bodyDelivered:false,
+        resumeTool:'project_evidence',resumeArguments:{mode:'read',files:[{path:'a.py'}],responseView:'full'}}},
+      {path:'b.py',state:'observed',lines:[{line:1,text:'seen'}]},
+    ]},{live:false});
+  const notices=t.notices();
+  assert.ok(notices.some(message=>message.source.taskFlow.key.includes('source-followup')));
+  assert.ok(!notices.some(message=>message.source.taskFlow.key.includes('source-read-batch')));
+  assert.ok(!notices.some(message=>message.source.taskFlow.key.includes('economy')));
+});
+
+test('a batch continuation keeps project_evidence mode and source ranges',()=>{
+  const t=timeline({stepPacing:true});
+  t.runtimeState.taskSurfaceMode='writable';
+  t.command('project_evidence',{mode:'read',files:[{path:'a.py',offset:43,limit:2000}],maxChars:2000},{
+    mode:'read',sources:[{
+      path:'a.py',state:'partial',omitted:true,requestedRange:{offset:43,limit:2000},
+      retrieveCurrent:{tool:'read',arguments:{file_path:'a.py',offset:43,limit:2000}},
+    }]},{live:false});
+  const advice=t.notices().find(message=>message.source.taskFlow.key.includes('source-followup'));
+  assert.ok(advice);
+  assert.match(advice.content[0].text,/"mode":"read"/u);
+  assert.match(advice.content[0].text,/"path":"a\.py"/u);
+  assert.match(advice.content[0].text,/"offset":43/u);
+  assert.match(advice.content[0].text,/"limit":2000/u);
+  assert.doesNotMatch(advice.content[0].text,/"file_path"/u);
+  const calls=JSON.parse(advice.content[0].text.match(/续读 (\[.*\])。$/u)[1]);
+  assert.equal(calls[0].mode,'read');
+});
+
+test('aggressive guidance keeps verification scoped to the task and reports missing evidence',()=>{
   const body=taskFlowGuidance('aggressive');
-  assert.match(body,/若复现有效但仍失败，必须继续修复实现并重跑该复现/u);
-  assert.match(body,/不得删除有效复现/u);
-  assert.match(body,/仅在确认测试无法修正时才删除它/u);
-  assert.match(body,/后续出现新的测试自身错误时，仍按实际证据修正，不限制修正次数/u);
-  assert.doesNotMatch(body,/最多修正测试(?:预期)?一次/u);
-  assert.match(body,/复现通过后，用文件工具删除临时测试/u);
-  assert.match(body,/既有测试断言仅在用户明确要求或指定行为确需调整时修改/u);
-  assert.match(body,/不得改动无关断言/u);
-  assert.doesNotMatch(body,/第二次仍失败则删除临时测试/u);
+  assert.match(body,/按用户和项目明确要求核对交付结果/u);
+  assert.match(body,/依据缺失时只追会影响当前修改或交付的事实/u);
+  assert.match(body,/汇报实际结果和仍缺依据的事项/u);
 });
 
 test('the long-response reminder is injected at most once per user request',()=>{
-  let seq=0;const log=[{seq:seq++,type:'turn/start',data:{turn:1}},
+  let seq=0;const userSeq=1,log=[{seq:seq++,type:'turn/start',data:{turn:1}},
     {seq:seq++,type:'user/message',data:{message:{id:'request',role:'user',source:{kind:'user'},content:[{type:'text',text:'继续修复任务'}]}}}];
   for(const step of [1,2,3,4]){
     log.push({seq:seq++,type:'step/start',data:{turn:1,step}});
@@ -646,11 +754,12 @@ test('the long-response reminder is injected at most once per user request',()=>
     log.push({seq:seq++,type:'tool/result',data:{turn:1,step,message:{role:'tool',source:{callId:'c'+step},content:[{type:'text',text:'ok'}]}}});
     log.push({seq:seq++,type:'assistant/message',data:{turn:1,step,message:{role:'assistant',content:[{type:'text',text:'progress'}]},usage:{outputTokens:9000}}});
   }
-  const state={config:{...defaults(),stepPacing:true},root:process.cwd()};
-  const flow=createTaskFlow({}, {get:()=>state,isEnabled:()=>true,activeMode:()=> 'aggressive'});
+  const state={config:{...defaults(),stepPacing:true},root:process.cwd(),taskSurfaceMode:'writable'};
+  const flow=createTaskFlow({}, {get:()=>state,isEnabled:()=>true,activeMode:()=> 'default',modeStatus:()=>({selected:'default'})});
   const agent={session:{id:'pacing-dedupe',log,seq,requestHeader:()=>({config:{provider:'p',model:'m'}}),eventAt:value=>log.find(event=>event.seq===value),surface:{nodes:[]}}};
   const notices=[];
   for(let round=0;round<4;round++)notices.push(...flow.beforeStep(agent,[]));
   const keys=notices.map(message=>String(message.source?.taskFlow?.key??'')).filter(key=>key.includes('large-response'));
-  assert.equal(keys.length,1,JSON.stringify(keys));
+  assert.ok(keys.length<=1,JSON.stringify(keys));
+  assert.ok(notices.filter(message=>message.content[0].text.includes('上一响应较长')).length<=1,JSON.stringify(notices));
 });

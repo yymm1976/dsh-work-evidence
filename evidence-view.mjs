@@ -37,22 +37,43 @@ function includesValue(value,expected,depth=0){
   return Object.values(value).some(child=>includesValue(child,expected,depth+1));
 }
 function proofFor(options,state){
-  const proof=new Map(),messages=options.messages;
+  const proof=new Map();
+  if(!state.records.length)return proof;
+  const roots=new Set(state.records.flatMap(record=>record.roots));
+  const messagesByRoot=new Map(),calls=new Map(),messageIds=new Map();
+  for(const message of options.messages){
+    if(message.id)messageIds.set(message.id,(messageIds.get(message.id)??0)+1);
+    if(message.role==='assistant'&&message.source?.kind==='model'){
+      for(const block of message.content??[]){
+        if(block.type!=='tool-call'||!roots.has(block.id))continue;
+        const prior=calls.get(block.id);
+        calls.set(block.id,{name:block.name,count:(prior?.count??0)+1});
+      }
+    }
+    const root=message.toolCallId;
+    if(message.role!=='tool'||message.isError||!message.id||message.source?.kind!=='tool'||message.source.callId!==root||!roots.has(root))continue;
+    const call=calls.get(root);
+    if(call?.count===1&&['run_code','project_evidence'].includes(call.name)){
+      const candidates=messagesByRoot.get(root)??[];
+      candidates.push(message);
+      messagesByRoot.set(root,candidates);
+    }
+  }
   for(const record of state.records){
-    for(const message of messages){
-      if(message.role!=='tool'||message.isError||!message.id||message.source?.kind!=='tool'||message.source.callId!==message.toolCallId||!record.roots.includes(message.toolCallId))continue;
-      if(messages.filter(item=>item.id===message.id).length!==1)continue;
-      const preceding=messages.slice(0,messages.indexOf(message));
-      const calls=preceding.flatMap(item=>item.role==='assistant'&&item.source?.kind==='model'?(item.content||[]).filter(block=>block.type==='tool-call'&&block.id===message.toolCallId):[]);
-      if(calls.length!==1||!['run_code','project_evidence'].includes(calls[0].name))continue;
-      if((message.content||[]).some(block=>block.type==='text'&&block.text.length<=2_000_000&&includesValue(block.text,record.body))){proof.set(record,{messageId:message.id,callId:message.toolCallId});break;}
+    const candidates=record.roots.flatMap(root=>messagesByRoot.get(root)??[]);
+    for(const message of candidates){
+      if(messageIds.get(message.id)!==1)continue;
+      if((message.content||[]).some(block=>block.type==='text'&&block.text.length<=2_000_000&&
+        (includesValue(block.text,record.body)||record.renderedBody&&includesValue(block.text,record.renderedBody)))){
+        proof.set(record,{messageId:message.id,callId:message.toolCallId});break;
+      }
     }
   }
   return proof;
 }
 
 /** Only explicit views may omit a body; current source authority is checked by the reader first. */
-export function createEvidenceViews(ctx,runtime){
+export function createEvidenceViews(ctx,runtime,{needsCurrentBody=()=>false}={}){
   const states=new Map();
   const current=agent=>{
     const s=runtime.get(agent),gen=generation(agent),old=states.get(s.id);
@@ -92,7 +113,7 @@ export function createEvidenceViews(ctx,runtime){
   ctx.on('agent/disposed',({agent})=>states.delete(agent.session.id));
   ctx.on('session/disposed',session=>states.delete(session.id));
   ctx.on('dispose',()=>states.clear());
-  return {async present(facts,args,exec){
+  return {async present(facts,args,exec,renderText=JSON.stringify){
     if(!['read','archive','source'].includes(args.mode))return facts;
     const s=runtime.get(exec.agent),state=current(exec.agent);
     const configuredView=s?.sessionDefaultResponseView??s?.config?.defaultResponseView??'full';
@@ -106,11 +127,12 @@ export function createEvidenceViews(ctx,runtime){
       return args.responseView?{...facts,responseView:{kind:'full',bodyEmbedded:!!bodyEmbedded(facts),requestedBodiesComplete:facts.sources.length>0&&facts.sources.every(completeSource),reason:'disabled-or-context-generation-unavailable'}}:facts;
     }
     const eligible=facts.sources.length>0&&facts.sources.every(completeSource)&&!facts.budgetTruncated&&!facts.references?.truncated;
+    const writtenSource=facts.sources.some(source=>needsCurrentBody(exec.agent,source.path));
     const requestKey=stable(Object.fromEntries(Object.entries(args).filter(([key])=>key!=='responseView')));
     const sourceKey=JSON.stringify(facts.sources.map(source=>[source.path,source.archive||null,source.entry||null]));
     const signature=stable({requestKey,facts});
     let identity=null;
-    if(eligible)try{identity=await identities(facts.sources,facts.workspace,exec);}catch{ /* No identity proof means full delivery. */ }
+    if(eligible&&!writtenSource)try{identity=await identities(facts.sources,facts.workspace,exec);}catch{ /* No identity proof means full delivery. */ }
     const prior=identity&&[...state.proof].find(([record])=>record.signature===signature&&record.identity===identity);
     if(view==='reference-if-visible'&&prior){
       const [record,proof]=prior;
@@ -120,8 +142,9 @@ export function createEvidenceViews(ctx,runtime){
           ...(source.requestedRange?{requestedRange:source.requestedRange}:{}),
           retrieveCurrent:{tool:'project_evidence',arguments:{...args,...(args.mode==='read'?{files:[args.files[index]]}:{}),responseView:'full'}}})),
         coverage:'Exact prior full receipt remains in the current model request. Re-read current source with responseView full. Historical text is separate evidence, not the current file.'};
-      if(measureText(result).stringUnits<measureText(facts).stringUnits&&(!runtime.effects||runtime.effects.benefit(exec.agent,'evidenceView',JSON.stringify(facts),JSON.stringify(result)))){
-        runtime.effects?.snippet(exec.agent,{callIds:[exec.callId,exec.rootCallId],feature:'evidenceView',beforeText:JSON.stringify(facts),afterText:JSON.stringify(result)});
+      const beforeText=renderText(facts),afterText=renderText(result);
+      if(afterText.length<beforeText.length&&(!runtime.effects||runtime.effects.benefit(exec.agent,'evidenceView',beforeText,afterText))){
+        runtime.effects?.snippet(exec.agent,{callIds:[exec.callId,exec.rootCallId],feature:'evidenceView',beforeText,afterText});
         runtime.effects?.decide(exec.agent,'evidenceView','applied','current-request-proof');
         observeDefault('applied','configured-reference-if-visible');
         s.metrics.evidenceReferenceViews++;s.metrics.evidenceViewOutputChars+=measureText(result).stringUnits;s.dirty=true;return result;
@@ -132,14 +155,17 @@ export function createEvidenceViews(ctx,runtime){
     const missingReason=previous
       ?previous.identity!==identity?'source-identity-changed':previous.signature!==signature?'source-or-selection-changed':previous.everVisible?'body-no-longer-visible':'body-not-confirmed-visible'
       :sameSource?'range-or-arguments-changed':state.resetReason||'first-delivery';
-    const reason=view==='full'?(args.responseView==='full'?'explicit-full-view':'default-full-view'):!eligible?'incomplete-source':!identity?'identity-unavailable':!prior?missingReason:'reference-not-smaller';
+    const reason=view==='full'?(args.responseView==='full'?'explicit-full-view':'default-full-view'):writtenSource?'current-body-after-write':!eligible?'incomplete-source':!identity?'identity-unavailable':!prior?missingReason:'reference-not-smaller';
     s.metrics.evidenceFullViews++;if(view==='reference-if-visible')s.metrics.evidenceReferenceMisses++;    s.evidenceViewReasons[reason]=(s.evidenceViewReasons[reason]||0)+1;
     const id=randomUUID(),result={...facts,responseView:{kind:'full',receiptId:id,bodyEmbedded:!!bodyEmbedded(facts),requestedBodiesComplete:eligible,reason}};
-    s.metrics.evidenceViewOutputChars+=measureText(result).stringUnits;s.dirty=true;
+    const rendered=renderText(result);
+    s.metrics.evidenceViewOutputChars+=rendered.length;s.dirty=true;
     observeDefault(view==='full'?'applied':'not-applicable',view==='full'?'configured-full-view':'reference-precondition-not-met',{reason});
     if(eligible&&identity){
-      state.records.push({id,requestKey,sourceKey,signature,identity,everVisible:false,body:JSON.stringify(result),observedAt:facts.observedAt,roots:[...new Set([exec.callId,exec.rootCallId].filter(Boolean))]});
-      while(state.records.length>48||state.records.reduce((sum,record)=>sum+record.body.length,0)>1_000_000){const removed=state.records.shift();state.proof.delete(removed);}
+      const body=JSON.stringify(result);
+      state.records.push({id,requestKey,sourceKey,signature,identity,everVisible:false,body,
+        renderedBody:rendered===body?null:rendered,observedAt:facts.observedAt,roots:[...new Set([exec.callId,exec.rootCallId].filter(Boolean))]});
+      while(state.records.length>48||state.records.reduce((sum,record)=>sum+record.body.length+(record.renderedBody?.length??0),0)>1_000_000){const removed=state.records.shift();state.proof.delete(removed);}
     }
     return result;
   }};

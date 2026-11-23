@@ -53,10 +53,20 @@ export function textTokens(text){
   const wide=(text.match(/[\u2e80-\u9fff\uac00-\ud7af\uff00-\uffef]/g)??[]).length;
   return Math.ceil(wide+(text.length-wide)/3.5);
 }
+const textBlockWeights=new WeakMap();
+function textBlockTokens(block){
+  const text=block.text;
+  if(typeof text!=='string')return textTokens(text);
+  const cached=textBlockWeights.get(block);
+  if(cached?.text===text)return cached.tokens;
+  const tokens=textTokens(text);
+  textBlockWeights.set(block,{text,tokens});
+  return tokens;
+}
 export function messageTokens(message){
   let total=4;
   for(const block of message.content??[]){
-    if(block.type==='text'||block.type==='reasoning')total+=textTokens(block.text);
+    if(block.type==='text'||block.type==='reasoning')total+=textBlockTokens(block);
     else if(block.type==='tool-call')total+=textTokens(JSON.stringify({name:block.name,arguments:block.arguments,id:block.id}));
     else total+=textTokens(JSON.stringify(block));
   }
@@ -77,23 +87,31 @@ const forecastRoute=route=>Object.fromEntries(['provider','model','reasoningEffo
   [key,typeof route?.[key]==='string'&&route[key].trim()?route[key]:null]));
 const successfulFinish=new Set(['stop','tool-calls','max-tokens','length']);
 
+function suffixWeightForId(observation,id){
+  if(!observation.suffixWeights){
+    const weights=new Map();
+    let suffix=0;
+    for(let index=observation.ids.length-1;index>=0;index--){
+      suffix+=observation.weights[index];
+      weights.set(observation.ids[index],suffix);
+    }
+    observation.suffixWeights=weights;
+  }
+  return observation.suffixWeights.get(id)??null;
+}
+
 // The shipped default config leaves projectionPricing empty, so every price-gated
 // rewrite answered route-pricing-unavailable: historyHygiene alone was blocked
 // 10,112 times across measured sessions while the switch read "on". DeepSeek
 // publishes one off-peak rate card for the V4.1 Flash family, so use it as a
 // fallback for that family only, and label the source so an operator can tell a
 // published rate from an exact route setting.
-const PUBLISHED_PRICES=new Map([
-  // Family aliases that identify the same published rate card: the gateway routes
-  // spell out the family, while DeepSeek's own API documents `deepseek-flash`.
-  ['deepseek-v4.1-flash',{input:1,cacheRead:0.02,cacheWrite:0,output:4,currency:'CNY'}],
-  ['deepseek-flash',{input:1,cacheRead:0.02,cacheWrite:0,output:4,currency:'CNY'}],
-]);
+const PUBLISHED_FLASH_PRICE={input:1,cacheRead:0.02,cacheWrite:0,output:4,currency:'CNY'};
+export const isDeepSeekV41Flash=model=>typeof model==='string'&&/deepseek-v4[._-]1-flash/iu.test(model);
 function publishedPrice(route){
   const model=typeof route?.model==='string'?route.model.toLowerCase():'';
-  if(!model)return null;
-  for(const [family,price] of PUBLISHED_PRICES)if(model.includes(family))return {...price,publishedRate:true};
-  return null;
+  return isDeepSeekV41Flash(model)||model.includes('deepseek-flash')
+    ?{...PUBLISHED_FLASH_PRICE,publishedRate:true}:null;
 }
 
 export function createContextEconomics(ctx,runtime){
@@ -104,7 +122,7 @@ export function createContextEconomics(ctx,runtime){
       missingUsage:0,missingCacheUsage:0,pricedRequests:0,publishedRateUsed:false,costByCurrency:Object.create(null),auxiliaryRequests:0,compactionRequests:0,mainFinished:0,
       surfaceChanges:0,cacheResetCount:0,uncachedInputAtReset:0,resetTaxByCurrency:Object.create(null),
       effortChanges:0,cacheResetAfterEffortChange:0,effortResetExposureByCurrency:Object.create(null),
-      pendingReviews:[],reviewedOutcomes:[],
+      taskProgress:null,pendingReviews:[],reviewedOutcomes:[],
       };states.set(agent.session.id,state);}
     return state;
   };
@@ -122,33 +140,17 @@ export function createContextEconomics(ctx,runtime){
     const rawSaving=messages&&proposedMessages
       ?messages.reduce((sum,message)=>sum+messageTokens(message),0)-proposedMessages.reduce((sum,message)=>sum+messageTokens(message),0)
       :finite(savedTokensEstimate)?savedTokensEstimate:Math.ceil(Math.max(0,savedChars)/3.5);
-    const firstReplayAssistant=Boolean(same&&changedMessageId&&!old.ids.includes(changedMessageId)&&
-      messages?.some(message=>message.id===changedMessageId&&message.role==='assistant'));
+    const firstReplayAssistant=Boolean(same&&changedMessageId&&
+      messages?.some(message=>message.id===changedMessageId&&message.role==='assistant')&&!old.ids.includes(changedMessageId));
     const beforeOutput=firstReplayAssistant?messages.reduce((sum,message)=>sum+messageTokens(message),0):null;
     const factor=firstReplayAssistant&&finite(old.usage?.outputTokens)
       ?Math.max(.25,Math.min(8,old.usage.outputTokens/Math.max(1,beforeOutput))):same?old.factor:1;
     const savedTokens=Math.max(0,Math.floor(rawSaving*factor));
-    // The horizon is how many further requests this saving keeps paying out on. A
-    // fixed 16 understated it on every measured run: the 屎山 arms issued 209–416
-    // tool calls over 209–388 steps, so at step 109 a rewrite whose break-even was
-    // 60 steps was rejected by the forecast while the session went on for 200 more.
-    // That made historyHygiene decide 919 times and apply zero times.
-    //
-    // Estimate the remainder from the session's own length so far: a run that has
-    // already issued this many requests plausibly issues about as many again.
-    // `projectionHorizonSteps` is the FLOOR here, not a cap — the estimate grows past
-    // it with the session and is bounded only by the 64-step ceiling. An explicit
-    // caller horizon still wins, and a costly refill is still refused.
-    const declaredHorizon=horizon??config.projectionHorizonSteps;
-    // The horizon estimates how many more MAIN steps will reuse this history, so it counts
-    // main requests only. `state.requests` also counts auxiliary and compaction calls, which
-    // never contain the history being rewritten: one main request followed by 63 auxiliary
-    // ones raised the horizon to its 64 cap and turned a refusal into an approval with no
-    // additional reuse at all.
-    const mainOnly=Math.max(0,(state.requests??0)-(state.auxiliaryRequests??0)-(state.compactionRequests??0));
-    const remainingSteps=horizon!==undefined
-      ?Math.max(1,Math.min(64,horizon))
-      :Math.max(1,Math.min(64,Math.max(declaredHorizon,mainOnly)));
+    // A new human request gives no evidence that it will run as long as the previous one.
+    // Completed main steps can raise the configured estimate only within their own task.
+    const requestId=runtime.currentRequest?.(agent)?.id;
+    const completedSteps=requestId&&state.taskProgress?.requestId===requestId?state.taskProgress.completedSteps:0;
+    const remainingSteps=Math.max(1,Math.min(64,horizon??Math.max(config.projectionHorizonSteps,completedSteps)));
     let cachedSuffixTokens=null,prefixMessages=0,oldSuffixTokens=null,exposureMethod='conservative previous-request prompt';
     // An aborted/errored attempt reports zero usage. Its zero cache read is an
     // absence of evidence, not proof that no cached prefix exists; treating it
@@ -190,15 +192,23 @@ export function createContextEconomics(ctx,runtime){
         exposureMethod='rewritten surviving suffix plus new replacements; unchanged unsent tail excluded; existing baseline exposure subtracted only when the current request is a complete continuation of the previous request';
       }else if(proposedMessages){cachedSuffixTokens=cached;}
       else if(changedMessageId||Number.isSafeInteger(changedSeq)){
-        const nodes=agent.session.surface.nodes,index=nodes.indexOf(changedSeq);
-        if(changedMessageId||index>=0){
-          const ids=changedMessageId?new Set([changedMessageId]):new Set(nodes.slice(index).map(seq=>{
-            const event=agent.session.eventAt(seq);return (event?.data?.message??event?.data)?.id;
-          }).filter(Boolean));
-          const first=old.ids.findIndex(id=>ids.has(id));
-          oldSuffixTokens=first<0?null:Math.ceil(Math.min(cached,old.weights.slice(first).reduce((sum,value)=>sum+value,0)*old.factor));
+        let weight=null,located=Boolean(changedMessageId);
+        if(changedMessageId)weight=suffixWeightForId(old,changedMessageId);
+        else{
+          const nodes=agent.session.surface.nodes,index=nodes.indexOf(changedSeq);
+          if(index>=0){
+            located=true;
+            const ids=new Set(nodes.slice(index).map(seq=>{
+              const event=agent.session.eventAt(seq);return (event?.data?.message??event?.data)?.id;
+            }).filter(Boolean));
+            const first=old.ids.findIndex(id=>ids.has(id));
+            if(first>=0)weight=suffixWeightForId(old,old.ids[first]);
+          }
+        }
+        if(located){
+          oldSuffixTokens=weight===null?null:Math.ceil(Math.min(cached,weight*old.factor));
           cachedSuffixTokens=oldSuffixTokens===null?null:Math.max(0,oldSuffixTokens-savedTokens);
-          exposureMethod=first<0?'history location not found in previous prompt; exposure unproven':'previously sent suffix less net removed tokens; pointer overhead included in net saving';
+          exposureMethod=weight===null?'history location not found in previous prompt; exposure unproven':'previously sent suffix less net removed tokens; pointer overhead included in net saving';
         }
       }
     }
@@ -325,6 +335,10 @@ export function createContextEconomics(ctx,runtime){
     if(total!==null&&total>0){state.reportedMainPromptTokens+=total;state.mainPromptRequests++;}
     const successfulMain=record.settled&&!record.aborted&&!record.failureCode&&successfulFinish.has(record.finishReason),
       completeSuccess=successfulMain&&canonical.complete&&total>0;
+    if(successfulMain&&record.taskRequestId){
+      if(state.taskProgress?.requestId!==record.taskRequestId)state.taskProgress={requestId:record.taskRequestId,completedSteps:0};
+      state.taskProgress.completedSteps++;
+    }
     state.mainAttempts.push({at:record.at??new Date().toISOString(),provider:options.provider,model:options.model,
       reasoningEffort:options.reasoningEffort??null,completeSuccess,promptTokens:total,
       // The usage travels with the attempt so a per-route query reads that route's
@@ -371,7 +385,7 @@ export function createContextEconomics(ctx,runtime){
     // count and a positive prompt size.
     if(usage&&finite(usage.cacheReadTokens)&&(total>0||usage.inputTokens>0)){
       state.previousMeasured={provider:options.provider,model:options.model,reasoningEffort:options.reasoningEffort,
-        envelope,cacheReadTokens:usage.cacheReadTokens,inputTokens:usage.inputTokens};}
+        envelope,cacheReadTokens:usage.cacheReadTokens,inputTokens:usage.inputTokens,sourceSeq:record.sourceSeq??null,ordinal:record.ordinal??null};}
     const previous=previousBaseline,same=previous&&sameRoute(previous,options);
     const effortChanged=same&&effortKey(previous.reasoningEffort)!==effortKey(options.reasoningEffort);
     // An incomplete observation can leave cacheReadTokens null. `null < x*.5` is
@@ -443,10 +457,26 @@ export function createContextEconomics(ctx,runtime){
       envelope,keys:options.messages.map(modelKey),ids:options.messages.map(message=>message.id),weights,
       systemTokens,toolSchemaTokens,envelopeTokens,
       factor:Math.max(0.25,Math.min(8,total/Math.max(1,weights.reduce((sum,value)=>sum+value,0)+envelopeTokens))),
-      finishReason:record.finishReason,at:record.at};
+      finishReason:record.finishReason,at:record.at,measurement:state.previousMeasured};
     else state.lastUnusable={reason:record.failureCode?'failed-attempt':record.aborted?'aborted':
         !usageComplete?'incomplete-usage':!finishAccepted?'unusable-finish-reason':'no-prompt-usage',
       finishReason:record.finishReason??null,at:record.at??null};
+    if(resetComparable&&usage.cacheReadTokens<resetPrevious.cacheReadTokens&&
+      finite(usage.inputTokens)&&finite(resetPrevious.inputTokens)&&usage.inputTokens>resetPrevious.inputTokens&&
+      runtime.get(agent).config.requestAccounting){
+      let messagePrefix=null;
+      // The exposure view skips failed attempts. Use its message keys only when
+      // they describe the same measured attempt as the usage comparison.
+      if(usableForExposure&&previous?.measurement===resetPrevious){
+        const before=previous.keys,after=state.last.keys;
+        let equalMessages=0;
+        while(equalMessages<before.length&&equalMessages<after.length&&before[equalMessages]===after[equalMessages])equalMessages++;
+        messagePrefix={equalMessages,previousMessages:before.length,currentMessages:after.length};
+      }
+      record.cacheReadDrop={previousSourceSeq:resetPrevious.sourceSeq,previousOrdinal:resetPrevious.ordinal,
+        envelopeChanged:resetEnvelopeChanged,effortChanged:effortKey(resetPrevious.reasoningEffort)!==effortKey(options.reasoningEffort),
+        messagePrefix,scope:'assembled system, tools, message role and content; provider transport and replay metadata unobserved'};
+    }
     const reviews=reviewOutcomes(agent);
     for(const review of reviews)runtime.effects?.decide(agent,'projection',
       review.plausible===false?'review-implausible':review.plausible===null?'review-unavailable':'reviewed','projection-outcome',review);
@@ -460,8 +490,6 @@ export function createContextEconomics(ctx,runtime){
     const latestPrompt=state.latestPrompt&&sameObservedRoute(state.latestPrompt,header)?state.latestPrompt:null;
     const last=state.last&&sameObservedRoute(state.last,header)?state.last:null;
     const observed=latestPrompt??last,reported=promptTokens(observed?.usage);
-    let measured=null;
-    try{const measurement=(ctx.get?ctx.get('tokenMeter'):ctx.tokenMeter)?.measure(agent.session);measured=measurement?.totalTokens??measurement?.projectedTokens??null;}catch{}
     const projected=runtime.projectedMessages?.(agent);
     let tokens,method;
     if(projected){
@@ -484,7 +512,15 @@ export function createContextEconomics(ctx,runtime){
         tokens=Math.max(0,reported+(current-previous)*factor);
       }else tokens=Math.max(reported??0,current);
       method='actual-request usage plus estimated effective-view growth; original surface meter excluded';
-    }else{tokens=Math.max(reported??0,measured??0);method='actual usage and host surface meter';}
+    }else{
+      let measured=null;
+      try{
+        const measurement=(ctx.get?ctx.get('tokenMeter'):ctx.tokenMeter)?.measure(agent.session);
+        measured=measurement?.totalTokens??measurement?.projectedTokens??null;
+      }catch{}
+      tokens=Math.max(reported??0,measured??0);
+      method='actual usage and host surface meter';
+    }
     const reserve=maxTokens??agent.session.requestHeader()?.config?.maxTokens??0;
     return {emergency:finite(limit)&&limit>0&&(tokens>=limit*0.9||tokens+reserve>=limit*0.95),
       tokens:tokens||null,limit:limit??null,reserveTokens:reserve,method};

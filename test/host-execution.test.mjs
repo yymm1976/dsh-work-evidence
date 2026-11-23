@@ -405,6 +405,20 @@ test('retained computation blocks direct filesystem writes as well as omitting w
   }finally{await host.close();}
 });
 
+test('malformed response is retried once and never dispatches a tool',async()=>{
+  let failures=0;
+  const malformed=()=>{failures++;return [{kind:'malformed'}];};
+  const host=await startHost({script:(_o,n)=>n===1?malformed():[text('完成。')]});
+  try{
+    const agent=await host.createAgent('max');
+    await host.send(agent,'继续任务。');
+    assert.equal(failures,1);
+    assert.equal(host.events.some(event=>event.type==='tool/call'),false);
+    const reports=host.events.filter(event=>event.type==='assistant/message');
+    assert.equal(reports.length,1,'the second request completes after one bounded retry');
+  }finally{await host.close();}
+});
+
 test('a mixed interpreter declaration keeps the required path instead of falling back to PATH',async()=>{
   const missing='C:/definitely-missing-work-evidence/node.exe';
   const host=await startHost({script:(o,n)=>n===1?
