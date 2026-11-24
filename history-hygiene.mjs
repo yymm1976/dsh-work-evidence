@@ -292,7 +292,7 @@ export function createHistoryHygiene(runtime,taskFlow,{isProtected=()=>false,ret
   function get(agent){
     let state=states.get(agent.session.id);
     if(!state){state={cursor:0,step:0,results:new Map(),failures:new Set(),pinnedCalls:new Set(),pinnedResults:new Set(),retainedSources:new Set(),
-      outputPlans:new Map(),candidatePlans:new Map(),hiddenResults:new Set(),omittedSources:new Set(),liveReads:new Map(),liveGrepViews:new Map(),observedPaths:new Map(),commands:new Map(),toolCalls:new Map(),fullOutputRequested:false,requests:0,outputs:0,chars:0,testOutputViews:0,testOutputChars:0,restores:0,rereadPromotions:0};states.set(agent.session.id,state);}
+      outputPlans:new Map(),candidatePlans:new Map(),hiddenResults:new Set(),omittedSources:new Set(),liveReads:new Map(),liveGrepViews:new Map(),observedPaths:new Map(),commands:new Map(),toolCalls:new Map(),fullOutputRequested:false,requests:0,outputs:0,chars:0,testOutputViews:0,testOutputChars:0,restores:0,rereadPromotions:0,definitionSummaryCalls:0,definitionSummaryCompactedChars:0,definitionSummaryInjectedChars:0};states.set(agent.session.id,state);}
     return state;
   }
   function rememberRead(state,root,read){
@@ -308,8 +308,14 @@ export function createHistoryHygiene(runtime,taskFlow,{isProtected=()=>false,ret
     if(result.isError||hasPruneProblem(result.content??[],result.value))state.failures.add(root);
     else if(exec.name==='grep'&&!exec.parent&&result.content?.length===1&&result.content[0].type==='text'){
       const before=result.content[0].text;
-      const after=grepDefinitionSummary(compactNativeGrepPreviews(before,result.value?.matches,argsOf(exec.arguments).pattern));
+      const compacted=compactNativeGrepPreviews(before,result.value?.matches,argsOf(exec.arguments).pattern);
+      const after=grepDefinitionSummary(compacted);
       if(after!==before){
+        if(compacted!==before)state.definitionSummaryCompactedChars+=Math.max(0,before.length-compacted.length);
+        if(after!==compacted){
+          state.definitionSummaryCalls++;
+          state.definitionSummaryInjectedChars+=Math.max(0,after.length-compacted.length);
+        }
         if(state.liveGrepViews.size>=64)state.liveGrepViews.delete(state.liveGrepViews.keys().next().value);
         state.liveGrepViews.set(exec.callId,{before,after});
       }
@@ -454,6 +460,7 @@ export function createHistoryHygiene(runtime,taskFlow,{isProtected=()=>false,ret
         const reduction=entry.textLength-entry.testDigest.length;
         if(reduction>=MIN_SAVING){
           const after={...message,content:[{type:'text',text:entry.testDigest}]};
+          if(!allowed('historyTestOutput',message,after,entry.seq,entry,Math.max(0,messageTokens(message)-messageTokens(after))))return message;
           outputs++;saved+=reduction;testViews++;testSaved+=reduction;hidden.add(entry.seq);
           if(record){
             state.outputPlans.set(entry.seq,{test:true,content:after.content});
@@ -544,6 +551,7 @@ export function createHistoryHygiene(runtime,taskFlow,{isProtected=()=>false,ret
     retainsSource(agent,file){return get(agent).retainedSources.has(fileKey(runtime.get(agent).root,file));},
     summary(agent){const s=sync(agent),references=referenceContext?.summary(agent)??null;return {enabled:runtime.isEnabled(agent)&&runtime.get(agent).config.historyHygiene,requestViews:s.requests,outputViews:s.outputs,testOutputViews:s.testOutputViews,
       charsRemovedAcrossViews:s.chars+(references?.charsRemovedAcrossViews??0),toolOutputCharsRemovedAcrossViews:s.chars-s.testOutputChars,testOutputCharsRemoved:s.testOutputChars,
+      definitionSummary:{calls:s.definitionSummaryCalls,compactedChars:s.definitionSummaryCompactedChars,injectedChars:s.definitionSummaryInjectedChars,netChars:s.definitionSummaryCompactedChars-s.definitionSummaryInjectedChars},
       explicitRecoveries:s.restores,rereadPromotions:s.rereadPromotions,retainedCalls:s.pinnedCalls.size,retainedResults:s.pinnedResults.size,suspended:!!s.suspended,
       referenceContext:references,reasoning:'unchanged',canonicalHistory:'unchanged'};},
     disposeAgent(agent){referenceContext?.disposeAgent(agent);states.delete(agent.session.id);},dispose(){referenceContext?.dispose();states.clear();}};

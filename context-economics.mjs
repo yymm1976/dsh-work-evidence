@@ -120,6 +120,7 @@ export function createContextEconomics(ctx,runtime){
     let state=states.get(agent.session.id);
     if(!state){state={last:null,latestPrompt:null,previousAttempt:null,lastSuccessfulMain:null,mainHistory:[],mainAttempts:[],decisions:[],skips:{},requests:0,reportedPromptTokens:0,reportedMainPromptTokens:0,mainPromptRequests:0,reportedOutputTokens:0,
       missingUsage:0,missingCacheUsage:0,pricedRequests:0,publishedRateUsed:false,costByCurrency:Object.create(null),auxiliaryRequests:0,compactionRequests:0,mainFinished:0,
+      failedKnownCostByCurrency:Object.create(null),failedKnownCostRequests:0,
       surfaceChanges:0,cacheResetCount:0,uncachedInputAtReset:0,resetTaxByCurrency:Object.create(null),
       effortChanges:0,cacheResetAfterEffortChange:0,effortResetExposureByCurrency:Object.create(null),
       taskProgress:null,pendingReviews:[],reviewedOutcomes:[],
@@ -317,13 +318,19 @@ export function createContextEconomics(ctx,runtime){
     if(finite(usage?.outputTokens))state.reportedOutputTokens+=usage.outputTokens;
     const billingComplete=record.settled&&['stop','tool-calls','max-tokens','length'].includes(record.finishReason);
     const cacheWritePriced=usage?.cacheWriteTokens===0||finite(price?.cacheWrite);
-    if(price&&canonical.complete&&usage&&total!==null&&finite(usage.outputTokens)&&billingComplete&&cacheWritePriced){
-      state.costByCurrency[price.currency]=(state.costByCurrency[price.currency]??0)+(usage.inputTokens*price.input+(usage.cacheReadTokens??0)*price.cacheRead+
-        usage.cacheWriteTokens*(price.cacheWrite??0)+usage.outputTokens*price.output)/1e6;
+    const knownCost=price&&usage&&total!==null&&finite(usage.inputTokens)&&finite(usage.cacheReadTokens)&&
+      finite(usage.outputTokens)&&cacheWritePriced
+      ?(usage.inputTokens*price.input+usage.cacheReadTokens*price.cacheRead+
+        usage.cacheWriteTokens*(price.cacheWrite??0)+usage.outputTokens*price.output)/1e6:null;
+    if(knownCost!==null&&canonical.complete&&billingComplete){
+      state.costByCurrency[price.currency]=(state.costByCurrency[price.currency]??0)+knownCost;
       state.pricedRequests++;
       // An operator has to be able to tell a published family rate from an exact route
       // setting: only the latter is a real charge, and the summary labelled both the same.
       if(price.publishedRate===true)state.publishedRateUsed=true;
+    }else if(knownCost!==null){
+      state.failedKnownCostByCurrency[price.currency]=(state.failedKnownCostByCurrency[price.currency]??0)+knownCost;
+      state.failedKnownCostRequests++;
     }else if(price){const reason=!billingComplete?'incomplete-request-billing':!cacheWritePriced?'cache-write-price-unavailable':'missing-usage-fields';state.skips[reason]=(state.skips[reason]??0)+1;}
     if(requestKind!=='main')return;
     state.mainFinished++;
@@ -539,6 +546,8 @@ export function createContextEconomics(ctx,runtime){
       missingUsageRequests:state.missingUsage,missingCacheUsageRequests:state.missingCacheUsage,pricedRequests:state.pricedRequests,
       lastUnusableAttempt:state.lastUnusable??null,
       reportedCost:currencies.length===1&&state.pricedRequests===state.requests?state.costByCurrency[currencies[0]]:null,knownReportedCost:currencies.length===1?state.costByCurrency[currencies[0]]:null,costComplete:state.pricedRequests===state.requests,costByCurrency:{...state.costByCurrency},
+      failedKnownCostRequests:state.failedKnownCostRequests,failedKnownCostByCurrency:{...state.failedKnownCostByCurrency},
+      failedKnownCostLowerBound:Object.keys(state.failedKnownCostByCurrency).length===1?Object.values(state.failedKnownCostByCurrency)[0]:null,
       costObservation:{basis:state.publishedRateUsed?'published-family-rate':'configured-reference-prices',actualCharge:null,allowanceConsumption:null,budgetEnforcement:'none'},
       currency:currencies.length===1?currencies[0]:null,skips:{...state.skips},recentDecisions:state.decisions.slice(-6),
       projectionReviews:state.reviewedOutcomes.slice(-6),pendingProjectionReviews:state.pendingReviews.length,

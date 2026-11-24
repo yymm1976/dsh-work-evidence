@@ -16,7 +16,8 @@ const READ=/^(?:read|grep|glob|project_evidence|web_fetch|web_search|fetch|searc
 const WRITE=/^(?:write|edit|str_replace_editor|verified_exec)$/;
 const INTERNAL=new Set(['work_status','work_state','work_report','work_probe','compress','decompress','search_context','acp_status','acp_cache','acp_rule']);
 const messageOf=event=>event?.data?.message??(event?.data?.role?event.data:null);
-const normalizeText=text=>String(text??'').replaceAll('\\','/').toLowerCase();
+const caseInsensitivePaths=process.platform==='win32';
+const normalizeText=text=>{const value=String(text??'').replaceAll('\\','/');return caseInsensitivePaths?value.toLowerCase():value;};
 const touchesFile=(dependency,changed)=>dependency===changed||dependency.startsWith(changed+'!/');
 const messageText=message=>(message.content??[]).filter(block=>block.type==='text'||block.type==='tool-call')
   .map(block=>block.type==='text'?block.text:typeof block.arguments==='string'?block.arguments:JSON.stringify(block.arguments??{})).join('\n');
@@ -44,7 +45,7 @@ function resource(root,value,kind='file'){
   const outside=relative==='..'||relative.startsWith('..'+path.sep)||path.isAbsolute(relative);
   if(outside){const display=absolute.replaceAll('\\','/')+(parts.length>1?'!/'+parts.slice(1).join('!/').replaceAll('\\','/'):'');return {kind:'file',key:normalizeText(display),display,absolute:normalizeText(display)};}
   const display=relative.replaceAll('\\','/')+(parts.length>1?'!/'+parts.slice(1).join('!/').replaceAll('\\','/'):'');
-  return {kind:'file',key:normalizeText(display),display,absolute:normalizeText(absolute)+(parts.length>1?'!/'+parts.slice(1).join('!/').replaceAll('\\','/').toLowerCase():'')};
+  return {kind:'file',key:normalizeText(display),display,absolute:normalizeText(absolute)+(parts.length>1?'!/'+normalizeText(parts.slice(1).join('!/')):'')};
 }
 function dependencies(root,value,stats=null){
   const out=new Map(),seen=new WeakSet();let budget=1024;
@@ -244,12 +245,16 @@ export function createRequestWorkingSet(ctx,runtime,economics,taskFlow){
   function restore(agent,state,messages){
     // Each hidden entry has its own restore anchor; a new user message can need
     // another entry before the host emits the next step/start event.
-    const visible=new Set(messages.filter(message=>message.role==='tool'&&!state.hidden.has(state.resultIds.get(message.id))&&!message.isError).map(message=>resultText(message.content)));
+    const evidenceKey=info=>info?JSON.stringify({tool:info.tool??null,args:info.args??null,
+      dependencies:(info.dependencies??[]).map(dep=>dep.kind+':'+dep.key).sort()}):null;
+    const visible=messages.filter(message=>message.role==='tool'&&!state.hidden.has(state.resultIds.get(message.id))&&!message.isError)
+      .map(message=>{const info=state.results.get(state.resultIds.get(message.id));return {body:resultText(message.content),evidence:evidenceKey(info)};});
     const reasonsBySeq=new Map();
     const seqs=[...state.hidden.values()].filter(entry=>{
       if(state.restored.has(entry.seq)||!needed(state,entry))return false;
       const reasons=needReasons(state,entry),body=resultText(agent.session.eventAt(entry.seq)?.data?.message?.content);
-      if(!reasons.includes('explicit-event-reference')&&visible.has(body)){
+      const evidence=evidenceKey(state.results.get(entry.seq));
+      if(!reasons.includes('explicit-event-reference')&&evidence&&visible.some(item=>item.body===body&&item.evidence===evidence)){
         runtime.effects?.decide(agent,'restoration','not-applicable','equivalent-body-already-visible',{seq:entry.seq});return false;
       }
       reasonsBySeq.set(entry.seq,reasons);

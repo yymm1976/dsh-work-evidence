@@ -64,7 +64,7 @@ export function createEffectObserver(ctx,runtime){
   const states=new Map();
   const nativeAttempts=new WeakMap();
   const storageFor=agent=>{const s=runtime.get(agent);return s.telemetryDir===undefined?s.dir:s.telemetryDir;};
-  const get=agent=>{let state=states.get(agent.session.id);if(!state){state={agent,features:Object.create(null),effects:new Map(),decisions:[],pendingDecisions:[],pendingOverflow:[],decisionSeq:0,overflowWriting:false,overflowQueue:Promise.resolve(),recentRequests:[],requests:0,mainRequests:0,auxiliaryRequests:0,compactionRequests:0,completeUsageRequests:0,missingUsage:0,unknownConsumption:0,reported:{inputTokens:0,cacheReadTokens:0,cacheWriteTokens:0,outputTokens:0,totalTokens:0},rawReported:{inputTokens:0,cacheReadTokens:0,cacheWriteTokens:0,outputTokens:0,totalTokens:0},totals:{directTokensEstimate:0,directChars:0,instructionTokensEstimate:0,systemTokensEstimate:0,messageTokensEstimate:0,toolSchemaTokensEstimate:0,requestReconstructionMisses:0},queue:Promise.resolve(),writeErrors:[],effectBytes:0,loaded:false,snippets:new Map(),needsLeadingNewline:new Set()};states.set(agent.session.id,state);}return state;};
+  const get=agent=>{let state=states.get(agent.session.id);if(!state){state={agent,features:Object.create(null),effects:new Map(),decisions:[],pendingDecisions:[],pendingOverflow:[],decisionSeq:0,overflowWriting:false,overflowQueue:Promise.resolve(),pendingRequestRows:[],requestRowWriting:false,requestRowQueue:Promise.resolve(),recentRequests:[],requests:0,mainRequests:0,auxiliaryRequests:0,compactionRequests:0,completeUsageRequests:0,missingUsage:0,unknownConsumption:0,reported:{inputTokens:0,cacheReadTokens:0,cacheWriteTokens:0,outputTokens:0,totalTokens:0},rawReported:{inputTokens:0,cacheReadTokens:0,cacheWriteTokens:0,outputTokens:0,totalTokens:0},totals:{directTokensEstimate:0,directChars:0,instructionTokensEstimate:0,systemTokensEstimate:0,messageTokensEstimate:0,toolSchemaTokensEstimate:0,requestReconstructionMisses:0},queue:Promise.resolve(),writeErrors:[],effectBytes:0,loaded:false,snippets:new Map(),needsLeadingNewline:new Set()};states.set(agent.session.id,state);}return state;};
   function feature(state,name){return state.features[name]??=( {decisions:0,applied:0,deferred:0,notApplicable:0,unavailable:0,failed:0,requestsAffected:0,directTokensEstimate:0,directChars:0,reasons:Object.create(null)} );}
   function decide(agent,name,status,reason,details={}){
     const state=get(agent),item=feature(state,name),at=new Date().toISOString(),step=runtime.get(agent).step,seq=++state.decisionSeq;
@@ -203,6 +203,23 @@ export function createEffectObserver(ctx,runtime){
       return ok;
     }).catch(()=>{state.overflowWriting=false;return false;});
   }
+  function flushRequestRows(state,agent){
+    if(state.requestRowWriting||!state.pendingRequestRows.length)return;
+    state.requestRowWriting=true;
+    state.requestRowQueue=state.requestRowQueue.catch(()=>{}).then(async()=>{
+      while(state.pendingRequestRows.length){
+        const row=state.pendingRequestRows[0],ok=await queue(state,agent,row);
+        if(!ok)break;
+        state.pendingRequestRows.shift();
+        const carried=row.decisions??[];
+        if(carried.length){
+          const ids=new Set(carried.map(item=>item?.id));
+          state.pendingDecisions=state.pendingDecisions.filter(item=>!ids.has(item?.id));
+        }
+      }
+      state.requestRowWriting=false;
+    }).catch(()=>{state.requestRowWriting=false;});
+  }
   function begin(agent,options,{auxiliary=false,requestKind}={}){
     requestKind=requestKindOf({purpose:options.purpose,auxiliary,requestKind});
     const main=requestKind==='main',state=get(agent),byFeature={},used=new Set();let misses=0,delta=0,charDelta=0;
@@ -333,6 +350,7 @@ export function createEffectObserver(ctx,runtime){
   }
   function finish(agent,row){
     const state=get(agent);normalizeRow(row);accumulate(state,row);
+    flushRequestRows(state,agent);
     // The row carries a copy of the pending decisions, so they are only removed once
     // the append succeeded. A failed append keeps them for the cleanup flush and for a
     // later retry instead of dropping everything recorded for this request.
@@ -342,7 +360,12 @@ export function createEffectObserver(ctx,runtime){
         const ids=new Set(carried.map(item=>item?.id));
         state.pendingDecisions=state.pendingDecisions.filter(item=>!ids.has(item?.id));
       }
-    }).catch(()=>{});
+      if(!ok){
+        state.pendingRequestRows.push(row);
+        state.pendingRequestRows=state.pendingRequestRows.slice(-32);
+        flushRequestRows(state,agent);
+      }
+    }).catch(()=>{state.pendingRequestRows.push(row);state.pendingRequestRows=state.pendingRequestRows.slice(-32);flushRequestRows(state,agent);});
     runtime.get(agent).dirty=true;
   }
   async function load(agent){

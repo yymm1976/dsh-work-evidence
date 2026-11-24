@@ -59,7 +59,9 @@ export function looksLikeSourceBody(text){
     try{
       const parsed=JSON.parse(trimmed);
       const transport=parsed&&typeof parsed==='object'&&!Array.isArray(parsed)&&
-        ('stdout' in parsed||'stderr' in parsed)&&!('scripts' in parsed)&&!('dependencies' in parsed);
+        ('stdout' in parsed||'stderr' in parsed)&&!('scripts' in parsed)&&!('dependencies' in parsed)&&
+        ['stdout','stderr'].every(key=>parsed[key]===undefined||
+          (parsed[key]&&typeof parsed[key]==='object'&&typeof parsed[key].text==='string'));
       if(!transport)return true;
     }catch{/* not a JSON document */}
   }
