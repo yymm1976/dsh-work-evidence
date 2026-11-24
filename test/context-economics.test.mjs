@@ -261,13 +261,36 @@ test('a DeepSeek V4.1 Flash route is priced from the published rate when no exac
   assert.equal(economics.pricingFor(agent,{provider:'magpie',model:'group/qwen3.8flash'}),null);
 });
 
-test('the published card also prices the official deepseek-flash model id',()=>{
+test('the published card does not infer pricing from a generic deepseek-flash name',()=>{
   const {agent,economics}=harness();
   const price=economics.pricingFor(agent,{provider:'deepseek',model:'deepseek-flash'});
-  assert.ok(price,'the documented API model id must resolve to the published card');
-  assert.equal(price.publishedRate,true);
+  assert.equal(price,null,'only a recognized V4.1 Flash family id may use the reference card');
   // A model name that merely contains no known family stays unpriced.
   assert.equal(economics.pricingFor(agent,{provider:'x',model:'deepseek-chat'}),null);
+});
+
+test('a reference rate cannot approve a normal compression decision without an exact route price',()=>{
+  const state={step:0,config:{projectionPricing:[],projectionHorizonSteps:16}};
+  const agent={session:{id:'reference-gate',surface:{nodes:[]},requestHeader:()=>({config:{provider:'opendesign',model:'deepseek-v4.1-flash-eco'}})}};
+  const economics=createContextEconomics({tokenMeter:{measure:()=>({totalTokens:1000})}},{get:()=>state});
+  const options={provider:'opendesign',model:'deepseek-v4.1-flash-eco',messages:[{id:'u',role:'user',content:[{type:'text',text:'request'}]}]};
+  economics.requestFinished(agent,options,{usage:{inputTokens:1000,cacheReadTokens:500,cacheWriteTokens:0,outputTokens:100,totalTokens:1600},
+    settled:true,finishReason:'stop',usageComplete:true,usageConsistent:true});
+  const decision=economics.assess(agent,{savedChars:8000,savedTokensEstimate:1000});
+  assert.equal(decision.allowed,false);
+  assert.equal(decision.reason,'reference-rate-without-exact-route');
+  assert.equal(decision.pricingSource,'reference-rate');
+});
+
+test('a partial usage observation records a priced lower bound instead of dropping the known fields',()=>{
+  const {agent,economics,options,state}=harness();
+  state.config.projectionPricing=[{provider:'p',model:'m',currency:'USD',input:1,cacheRead:.02,cacheWrite:0,output:4}];
+  economics.requestFinished(agent,options,{usage:{inputTokens:1000000,cacheReadTokens:0,cacheWriteTokens:0,outputTokens:null},
+    settled:true,finishReason:'stop',usageComplete:false,usageConsistent:true});
+  const summary=economics.summary(agent);
+  assert.equal(summary.knownReportedCost,null);
+  assert.equal(summary.costLowerBound,1);
+  assert.equal(summary.costLowerBoundRequests,1);
 });
 
 test('the forecast horizon follows the current task and resets at the next human request',()=>{
@@ -494,9 +517,11 @@ test('a published family rate is reported separately from an exact-route charge'
   economics.requestFinished(agent,options,{usage:{inputTokens:1000000,cacheReadTokens:0,cacheWriteTokens:0,outputTokens:100000,totalTokens:1100000},
     settled:true,finishReason:'stop',usageComplete:true,usageConsistent:true});
   const exact=economics.summary(agent);
-  assert.equal(exact.costObservation.basis,'exact-route');
+  assert.equal(exact.costObservation.basis,'mixed','mixed exact/reference requests are not reported as one exact basis');
   assert.equal(exact.knownReportedCost,1.4);
   assert.equal(exact.costComplete,false,'one reference-only request is still unpriced');
+  assert.deepEqual(exact.costObservation.coverage,{requests:2,exactRoute:1,referenceRate:1,failedKnown:0,
+    lowerBound:1,referenceLowerBound:1,unpriced:0});
 });
 
 test('an incomplete usage observation cannot leave the reset comparison point behind',()=>{

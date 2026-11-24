@@ -18,7 +18,8 @@ export function createNativeFiles(ctx){
       const target=await fs.resolve(lexical,{cwd:root,signal});
       if(!fs.contains(workspace,target))throw Object.assign(new Error('Path resolves outside the current workspace'),{code:'FS_OUTSIDE_WORKSPACE'});
       const info=await fs.stat(target,signal);
-      return {path:lexical,target,exists:info!==undefined,type:info?.type??null,version:info?.version??null,bytes:info?.size??null,info};
+      return {path:lexical,target,targetKey:target?.targetKey??null,exists:info!==undefined,
+        type:info?.type??null,version:info?.version??null,bytes:info?.size??null,info};
     }catch(error){throw failure(error);}
   }
   async function readBytes(root,file,signal,maxBytes,{requireKnownSize=false}={}){
@@ -34,9 +35,11 @@ export function createNativeFiles(ctx){
     if(Number.isSafeInteger(before.bytes)&&before.bytes>=0&&bytes.length!==before.bytes)
       throw Object.assign(new Error('Native byte read did not return the complete recorded file size.'),{code:'FS_READ_INCOMPLETE'});
     const after=await stat(root,file,signal);
-    if(!after.exists||after.type!=='file'||(before.version!==null&&before.version!==after.version)||before.bytes!==after.bytes)
+    if(!after.exists||after.type!=='file'||before.targetKey!==after.targetKey||
+      (before.version!==null&&before.version!==after.version)||before.bytes!==after.bytes)
       throw Object.assign(new Error('Source changed during the native read; request it again.'),{code:'SOURCE_CHANGED'});
-    return {path:before.path,bytes,version:before.version,bytesLength:bytes.length,versioned:before.version!==null&&before.version===after.version};
+    return {path:before.path,bytes,version:before.version,targetKey:before.targetKey,
+      bytesLength:bytes.length,versioned:before.version!==null&&before.version===after.version};
   }
   async function list(root,file,signal){
     const directory=await stat(root,file,signal);

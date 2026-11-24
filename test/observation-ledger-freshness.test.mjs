@@ -1,5 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import fs from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
 import {createObservationLedger} from '../observation-ledger.mjs';
 
 // A direct read dispatches at mutation count 0. A write lands before its
@@ -8,9 +11,9 @@ import {createObservationLedger} from '../observation-ledger.mjs';
 // count (the old behaviour) equals the current count and calls the body fresh.
 const body='alpha\nbeta\ngamma';
 
-function fixture(){
+function fixture(root='C:/workspace'){
   const hooks=new Map();
-  const state={dir:null,telemetryDir:null,root:'C:/workspace',step:1,viewEpoch:1,dirty:false,
+  const state={dir:null,telemetryDir:null,root,step:1,viewEpoch:1,dirty:false,
     config:{ledgerReceipt:false,ledgerUnresolved:true,stateLedger:false,evidenceViews:false},
     metrics:{ledgerObservations:0,ledgerReceipts:0,ledgerReceiptCharsSaved:0,ledgerStale:0},problems:[]};
   const runtime={get:()=>state,isEnabled:()=>true,problem:()=>{},effects:null};
@@ -84,4 +87,29 @@ test('a case-distinct sibling file keeps its own observation identity',async()=>
   const [observation]=f.ledger.detail(f.agent).observations;
   assert.equal(observation.path,'src/parser.js');
   assert.equal(observation.stale,false,'Parser.js and parser.js are distinct identities');
+});
+
+test('a write through a physical alias invalidates the observed target',async t=>{
+  const root=await fs.mkdtemp(path.join(os.tmpdir(),'we-ledger-alias-'));
+  t.after(()=>fs.rm(root,{recursive:true,force:true}));
+  const real=path.join(root,'real.txt');
+  await fs.writeFile(real,'alpha\nbeta\ngamma');
+  let alias=path.join(root,'REAL.txt');
+  const caseAlias=await fs.stat(alias).then(()=>true,()=>false);
+  if(!caseAlias){
+    alias=path.join(root,'alias.txt');
+    try{await fs.symlink(real,alias,'file');}
+    catch(error){t.skip('The host cannot create a file alias for this check: '+error.code);return;}
+  }
+  const f=fixture(root);
+  await f.post({agent:f.agent,name:'read',callId:'read-real',arguments:{file_path:real},mutationCountAtDispatch:0},
+    {isError:false,content:[{type:'text',text:body}],value:{path:real,lines:[
+      {line:1,text:'alpha'},{line:2,text:'beta'},{line:3,text:'gamma'}]}});
+  await f.post({agent:f.agent,name:'write',callId:'write-alias',arguments:{file_path:alias},mutationCountAtDispatch:0},
+    {isError:false,value:{path:alias},content:[]});
+  f.agent.session.surface.nodes.push(11);
+  f.sessionEvent({seq:11,type:'tool/result',data:{turn:1,step:1,message:{role:'tool',
+    source:{callId:'read-real'},isError:false,content:[{type:'text',text:body}]}}});
+  const [observation]=f.ledger.detail(f.agent).observations;
+  assert.equal(observation.stale,true,'the observed real target must be invalidated by a write through its alias');
 });

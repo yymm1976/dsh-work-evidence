@@ -13,6 +13,7 @@
   "scripts": {
     "check": "node scripts/check-syntax.mjs",
     "profile": "node scripts/profile-default-path.mjs",
+    "profile:host": "node scripts/profile-host-path.mjs",
     "test": "node --test"
   },
   "engines": {
@@ -22,6 +23,7 @@
   "files": [
     "scripts/check-syntax.mjs",
     "scripts/profile-default-path.mjs",
+    "scripts/profile-host-path.mjs",
     "index.mjs",
     "task-intent.mjs",
     "tool-execution.mjs",

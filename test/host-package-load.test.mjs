@@ -9,7 +9,7 @@ import {startHost,text,tool,APP} from './helpers/host.mjs';
 
 const source=path.resolve(import.meta.dirname,'..');
 const FEATURE_KEYS=['enabled','aggressiveMode','selfIndex','stateLedger','stateInform','completionNotice',
-  'archiveReadRouting','readArgumentRecovery','requestAccounting','evidenceViews','memberParsing','mavenSourceBinding','contextProtocol',
+  'archiveReadRouting','readArgumentRecovery','requestAccounting','strictObservability','evidenceViews','memberParsing','mavenSourceBinding','contextProtocol',
   'historyHygiene','nativeVerifiedEdits','fileProfiling','structuredJson','ledgerReceipt','ledgerUnresolved','swLedger','swEviction','requestProjection','projectionRestore',
   'compressionControl','deferPressureCompaction','stubSummary','executionTriage','nativeProgramReuse','hostNodeFallback','nativeShellScriptReuse','probeReplay','structuredCalls','nativeReasoningReplay',
   'stageWorkingSet','stepPacing','retainedCompute','finalJsonGuard','finalJsonResultGuard','qualityReview','boundedPatch','qualityReviewEffort',

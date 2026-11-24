@@ -16,6 +16,7 @@ const DEFINITIONS=[
   ['archiveReadRouting','归档读取','将归档路径转入准确来源读取'],
   ['readArgumentRecovery','读取参数纠错','修正明确的读取参数别名'],
   ['requestAccounting','用量记录','区分主请求、压缩和辅助调用'],
+  ['strictObservability','严格遥测','严格实验要求请求账本持久化，普通运行允许降级'],
   ['evidenceViews','来源视图','按实际可见正文提供来源引用'],
   ['memberParsing','源码成员','定位准确的类和方法范围'],
   ['mavenSourceBinding','Maven 来源','核对依赖坐标与源码归属'],

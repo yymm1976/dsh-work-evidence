@@ -62,7 +62,11 @@ export function looksLikeSourceBody(text,{transport=false}={}){
         ('stdout' in parsed||'stderr' in parsed)&&!('scripts' in parsed)&&!('dependencies' in parsed)&&
         ['stdout','stderr'].every(key=>parsed[key]===undefined||
           (parsed[key]&&typeof parsed[key]==='object'&&typeof parsed[key].text==='string'));
-      if(!envelope)return true;
+      if(envelope){
+        const carriers=[parsed.stdout?.text,parsed.stderr?.text,parsed.content,parsed.value,parsed.text]
+          .filter(value=>typeof value==='string'&&value.length>=2000);
+        if(carriers.some(value=>looksLikeSourceBody(value)||looksLikeSourceBody(stripLineNumbers(value))))return true;
+      }else return true;
     }catch{/* not a JSON document */}
   }
   // Fall back to assignment density: at least half of the non-empty lines assign.

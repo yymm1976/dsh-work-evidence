@@ -1,5 +1,5 @@
 import {createHash,randomUUID} from 'node:crypto';
-import fs from 'node:fs';
+import fs,{realpathSync} from 'node:fs';
 import path from 'node:path';
 import {parseResult,resultHasProblem,resultReference} from './visible-results.mjs';
 import {renderSourceEvidence} from './evidence.mjs';
@@ -35,7 +35,9 @@ function relativePath(root,value){
   if(relative==='..'||relative.startsWith('..'+path.sep)||path.isAbsolute(relative))return null;
   const entry=separator<0?'':value.slice(separator+1).replaceAll('\\','/').replace(/^\/+/,''),
     display=(relative.replaceAll('\\','/')||'.')+(entry?'!/'+entry:'');
-  return {full,display,key:fileKey(display)};
+  let physical=full;
+  try{physical=realpathSync.native(full);}catch{}
+  return {full,display,key:fileKey(physical.replaceAll('\\','/')+(entry?'!/'+entry:''))};
 }
 
 function pathsFromArguments(args={}){

@@ -39,7 +39,7 @@ function checkedSessionPolicy(value){
 export function defaults(raw={}){
   const config={enabled:true,aggressiveMode:true,mode:'aggressive',selfIndex:true,modelTimeoutMs:20000,modelMaxTokens:1200,modelRoute:null,
     fastEditPython:path.join(import.meta.dirname,'.fastedit-venv','Scripts','python.exe'),
-    stateLedger:true,stateInform:true,completionNotice:false,archiveReadRouting:true,readArgumentRecovery:true,requestAccounting:true,evidenceViews:true,memberParsing:true,mavenSourceBinding:true,
+    stateLedger:true,stateInform:true,completionNotice:false,archiveReadRouting:true,readArgumentRecovery:true,requestAccounting:true,strictObservability:false,evidenceViews:true,memberParsing:true,mavenSourceBinding:true,
     contextProtocol:true,contextPruningPolicy:'forecast',historyHygiene:true,definitionSummary:'off',contextPruneMinChars:8000,contextPruneHeadChars:4096,contextPruneTailChars:1024,
     ledgerReceipt:true,ledgerUnresolved:true,nativeVerifiedEdits:false,fileProfiling:false,structuredJson:false,
     swLedger:false,swEviction:false,swEvictionSteps:3,
@@ -55,7 +55,7 @@ export function defaults(raw={}){
   if(config.mode==='default'&&raw.aggressiveMode===undefined)config.aggressiveMode=false;
   // Retired keys stay accepted so a workspace file written before their removal
   // still loads; the tombstone loop below forces them to false.
-  const known=new Set(['enabled','aggressiveMode','mode','selfIndex','modelTimeoutMs','modelMaxTokens','modelRoute','fastEditPython','stateLedger','stateInform','archiveReadRouting','readArgumentRecovery','requestAccounting','evidenceViews','memberParsing','mavenSourceBinding',
+  const known=new Set(['enabled','aggressiveMode','mode','selfIndex','modelTimeoutMs','modelMaxTokens','modelRoute','fastEditPython','stateLedger','stateInform','archiveReadRouting','readArgumentRecovery','requestAccounting','strictObservability','evidenceViews','memberParsing','mavenSourceBinding',
     'contextProtocol','contextPruningPolicy','historyHygiene','definitionSummary','programHistory','reasoningHistory','retainedCompute','contextPruneMinChars','contextPruneHeadChars','contextPruneTailChars','completionNotice','opsAdapters','fastEditEnabled',
     'ledgerReceipt','ledgerUnresolved','nativeVerifiedEdits','fileProfiling','structuredJson','ledgerFoldPlan','ledgerFoldWrite','defaultResponseView','swLedger','swEviction','swEvictionSteps','nativeProgramReuse','hostNodeFallback','nativeShellScriptReuse','probeReplay','structuredCalls','nativeReasoningReplay',
     'requestProjection','projectionRestore','compressionControl','compactionTiming','deferPressureCompaction','stubSummary','cacheOrderedStub','archiveEntries','executionTriage','executionAdvice','stageWorkingSet','finishAdvice','stepPacing','taskEffort','finalJsonGuard','finalJsonResultGuard','qualityReview','qualityReviewEffort','qualityReviewScope','boundedPatch','nativeReadView','nativeExecutionEvidence','projectionMinChars','projectionRecentSteps','projectionStableSteps','projectionHorizonSteps','projectionPricing','toolSurface']);
@@ -72,7 +72,7 @@ export function defaults(raw={}){
   if(!['off','on'].includes(config.definitionSummary))throw new Error('Invalid definitionSummary');
   if(!['native','adaptive'].includes(config.compactionTiming))throw new Error('Invalid compactionTiming');
   config.compactionTiming='native';
-  for(const key of ['enabled','aggressiveMode','selfIndex','stateLedger','stateInform','archiveReadRouting','readArgumentRecovery','requestAccounting','evidenceViews','memberParsing','mavenSourceBinding','contextProtocol','historyHygiene','programHistory','reasoningHistory',
+  for(const key of ['enabled','aggressiveMode','selfIndex','stateLedger','stateInform','archiveReadRouting','readArgumentRecovery','requestAccounting','strictObservability','evidenceViews','memberParsing','mavenSourceBinding','contextProtocol','historyHygiene','programHistory','reasoningHistory',
     'ledgerReceipt','ledgerUnresolved','nativeVerifiedEdits','fileProfiling','structuredJson','ledgerFoldPlan','ledgerFoldWrite','swLedger','swEviction','requestProjection','projectionRestore','compressionControl','deferPressureCompaction','stubSummary','cacheOrderedStub','archiveEntries','executionTriage','nativeProgramReuse','hostNodeFallback','nativeShellScriptReuse','probeReplay','structuredCalls','nativeReasoningReplay','executionAdvice','stageWorkingSet','finishAdvice','stepPacing','retainedCompute','taskEffort','finalJsonGuard','finalJsonResultGuard','qualityReview','boundedPatch','nativeReadView','nativeExecutionEvidence','completionNotice'])if(typeof config[key]!=='boolean')throw new Error('Invalid '+key);
   if(!Number.isInteger(config.swEvictionSteps)||config.swEvictionSteps<3||config.swEvictionSteps>50)throw new Error('Invalid swEvictionSteps');
   if(config.sourceReadDefaultLines!==null&&(!Number.isInteger(config.sourceReadDefaultLines)||config.sourceReadDefaultLines<40||config.sourceReadDefaultLines>1000))

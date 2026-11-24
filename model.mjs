@@ -46,61 +46,149 @@ const counters=value=>!!value&&typeof value==='object'&&!Array.isArray(value)&&N
 function budgetStop(message,code,cause){
   const error=new Error(message);error.auxiliaryCode=code;error.auxiliaryDispatched=false;if(cause)error.cause=cause;return error;
 }
+function budgetMeta(budget){
+  budget.meta??={};
+  if(!budget.meta||typeof budget.meta!=='object'||Array.isArray(budget.meta))throw budgetStop('Invalid auxiliary budget record','auxiliary-budget-invalid');
+  for(const key of ['inFlight','limits','retired']){
+    budget.meta[key]??={scopes:{},tasks:{}};
+    const value=budget.meta[key];
+    if(!value||typeof value!=='object'||Array.isArray(value)||
+      !value.scopes||typeof value.scopes!=='object'||Array.isArray(value.scopes)||
+      !value.tasks||typeof value.tasks!=='object'||Array.isArray(value.tasks))
+      throw budgetStop('Invalid auxiliary budget record','auxiliary-budget-invalid');
+  }
+  return budget.meta;
+}
+async function writeBudgetAtomic(file,budget){
+  const directory=path.dirname(file),temporary=path.join(directory,'.'+path.basename(file)+'.'+process.pid+'.'+randomUUID()+'.tmp');
+  await fs.mkdir(directory,{recursive:true});
+  try{
+    await fs.writeFile(temporary,JSON.stringify(budget),'utf8');
+    await fs.rename(temporary,file);
+  }catch(error){
+    await fs.rm(temporary,{force:true}).catch(()=>{});
+    throw error;
+  }
+}
+async function withBudgetLock(file,operation){
+  const lock=file+'.lock',started=Date.now();
+  try{await fs.mkdir(path.dirname(file),{recursive:true});}
+  catch(error){throw budgetStop('Auxiliary budget record could not be saved: '+error.message,'auxiliary-budget-unavailable',error);}
+  for(;;){
+    let handle;
+    try{handle=await fs.open(lock,'wx');}
+    catch(error){
+      if(error.code!=='EEXIST')throw error;
+      try{
+        const info=await fs.stat(lock);
+        if(Date.now()-info.mtimeMs>30_000){await fs.rm(lock,{force:true});continue;}
+      }catch{}
+      if(Date.now()-started>5_000)throw Object.assign(new Error('Auxiliary budget file is locked by another process'),{code:'EBUSY'});
+      await new Promise(resolve=>setTimeout(resolve,25));
+      continue;
+    }
+    try{
+      await handle.writeFile(JSON.stringify({pid:process.pid,at:new Date().toISOString()}),'utf8');
+      return await operation();
+    }finally{
+      await handle.close().catch(()=>{});
+      await fs.rm(lock,{force:true}).catch(()=>{});
+    }
+  }
+}
+function pruneTerminalBudget(budget,meta,group,inFlight,limits,retired){
+  const keys=Object.keys(budget[group]);
+  if(keys.length<=32)return;
+  const candidates=keys.filter(key=>{
+    if(inFlight[key])return false;
+    const entry=budget[group][key],limit=limits[key];
+    return entry.failed===true||Boolean(limit&&limit.callLimit&&entry.calls>=limit.callLimit);
+  });
+  for(const key of candidates){
+    if(Object.keys(budget[group]).length<=32)break;
+    retired[key]={...(retired[key]??{}),...budget[group][key],retiredAt:new Date().toISOString(),
+      reason:budget[group][key].failed?'prior-failure':'call-limit-reached'};
+    delete budget[group][key];delete inFlight[key];delete limits[key];
+  }
+}
 async function reserveBudget(runtime,agent,estimate,tokenLimit=32000,scope=null,callLimit=2,
   {taskScope=null,taskTokenLimit=null,taskCallLimit=null}={}){
   const s=runtime.get(agent);
   return budgetOperation(s,async()=>{
     if(!s.telemetryDir)throw budgetStop('Auxiliary budget requires persistent session storage','auxiliary-budget-unavailable');
     const file=path.join(s.telemetryDir,s.id+'.auxiliary-budget.json');
-    if(!s.auxiliaryBudget){
-      try{s.auxiliaryBudget=JSON.parse(await fs.readFile(file,'utf8'));}
+    if(!s.auxiliaryBudget)s.auxiliaryBudget={general:{calls:0,tokens:0,failed:false},scopes:{},tasks:{}};
+    return withBudgetLock(file,async()=>{
+      let budget;
+      try{budget=JSON.parse(await fs.readFile(file,'utf8'));}
       catch(error){
-        if(error.code==='ENOENT')s.auxiliaryBudget={};
+        if(error.code==='ENOENT')budget={};
         else if(error instanceof SyntaxError)throw budgetStop('Auxiliary budget record is not readable JSON: '+error.message,'auxiliary-budget-invalid',error);
         else throw budgetStop('Auxiliary budget record could not be read: '+error.message,'auxiliary-budget-unavailable',error);
       }
-    }
-    const budget=s.auxiliaryBudget;
-    // A record that is not a plain object cannot carry the counters: an array would accept
-    // them as properties but serialize back to "[]", losing every later write.
-    if(!budget||typeof budget!=='object'||Array.isArray(budget))throw budgetStop('Invalid auxiliary budget record','auxiliary-budget-invalid');
-    if(budget.scopes!==undefined&&(!budget.scopes||typeof budget.scopes!=='object'||Array.isArray(budget.scopes)))throw budgetStop('Invalid auxiliary budget record','auxiliary-budget-invalid');
-    budget.scopes??={};
-    if(budget.tasks!==undefined&&(!budget.tasks||typeof budget.tasks!=='object'||Array.isArray(budget.tasks)))throw budgetStop('Invalid auxiliary budget record','auxiliary-budget-invalid');
-    budget.tasks??={};
-    // Per-request features (final quality review) keep their own allowance so a long
-    // session is not limited to two reviews in total, and calls without a scope keep
-    // their own allowance so reviews can never consume it. An old record counted every
-    // auxiliary call in one top-level field and cannot say how many were unscoped, so
-    // the new field starts fresh rather than reinterpreting that total. The old facts stay
-    // recorded as they were: unknown unscoped consumption is neither dropped nor claimed
-    // as a known zero, and it is never read back as consumption.
-    if(budget.general===undefined){
-      if(budget.calls!==undefined||budget.tokens!==undefined||budget.failed!==undefined){
-        budget.legacyMixedCounters={calls:budget.calls,tokens:budget.tokens,failed:budget.failed,
-          note:'totals recorded before budget scopes existed counted every auxiliary call together; unscoped consumption is not reconstructable'};
-        delete budget.calls;delete budget.tokens;delete budget.failed;
+      if(!budget||typeof budget!=='object'||Array.isArray(budget))throw budgetStop('Invalid auxiliary budget record','auxiliary-budget-invalid');
+      if(budget.scopes!==undefined&&(!budget.scopes||typeof budget.scopes!=='object'||Array.isArray(budget.scopes)))throw budgetStop('Invalid auxiliary budget record','auxiliary-budget-invalid');
+      budget.scopes??={};
+      if(budget.tasks!==undefined&&(!budget.tasks||typeof budget.tasks!=='object'||Array.isArray(budget.tasks)))throw budgetStop('Invalid auxiliary budget record','auxiliary-budget-invalid');
+      budget.tasks??={};
+      if(budget.general===undefined){
+        if(budget.calls!==undefined||budget.tokens!==undefined||budget.failed!==undefined){
+          budget.legacyMixedCounters={calls:budget.calls,tokens:budget.tokens,failed:budget.failed,
+            note:'totals recorded before budget scopes existed counted every auxiliary call together; unscoped consumption is not reconstructable'};
+          delete budget.calls;delete budget.tokens;delete budget.failed;
+        }
+        budget.general={calls:0,tokens:0,failed:false};
       }
-      budget.general={calls:0,tokens:0,failed:false};
-    }
-    if(!counters(budget.general)||Object.entries(budget.scopes).some(([key,entry])=>!key||!counters(entry))||
-      Object.entries(budget.tasks).some(([key,entry])=>!key||!counters(entry)))throw budgetStop('Invalid auxiliary budget record','auxiliary-budget-invalid');
-    const entry=scope?(budget.scopes[scope]??={calls:0,tokens:0,failed:false}):budget.general;
-    const task=taskScope?(budget.tasks[taskScope]??={calls:0,tokens:0,failed:false}):null;
-    if(entry.failed)throw budgetStop(scope?'Auxiliary calls for '+scope+' stopped after a prior failure':'Auxiliary calls without a budget scope stopped after a prior failure','auxiliary-scope-stopped');
-    if(entry.calls>=callLimit||entry.tokens+estimate>tokenLimit)throw budgetStop(scope?'Auxiliary budget exhausted for '+scope+' ('+callLimit+' calls / '+tokenLimit+' tokens)':'Auxiliary budget exhausted for calls without a budget scope ('+callLimit+' calls / '+tokenLimit+' tokens)','auxiliary-budget-exhausted');
-    if(task&&task.failed)throw budgetStop('Auxiliary calls for task '+taskScope+' stopped after a prior failure','auxiliary-task-stopped');
-    if(task&&(task.calls>=taskCallLimit||task.tokens+estimate>taskTokenLimit))
-      throw budgetStop('Auxiliary task budget exhausted for '+taskScope+' ('+taskCallLimit+' calls / '+taskTokenLimit+' tokens)','auxiliary-budget-exhausted');
-    entry.calls++;entry.tokens+=estimate;
-    if(task){task.calls++;task.tokens+=estimate;}
-    const keys=Object.keys(budget.scopes);if(keys.length>32)delete budget.scopes[keys[0]];
-    const taskKeys=Object.keys(budget.tasks);if(taskKeys.length>32)delete budget.tasks[taskKeys[0]];
-    // Nothing was dispatched when the record cannot be saved, so the allowance is handed back.
-    try{await fs.mkdir(s.telemetryDir,{recursive:true});await fs.writeFile(file,JSON.stringify(budget),'utf8');}
-    catch(error){entry.calls--;entry.tokens-=estimate;if(task){task.calls--;task.tokens-=estimate;}
-      throw budgetStop('Auxiliary budget record could not be saved: '+error.message,'auxiliary-budget-unavailable',error);}
-    return {file,estimate,entry,task};
+      if(!counters(budget.general)||Object.entries(budget.scopes).some(([key,entry])=>!key||!counters(entry))||
+        Object.entries(budget.tasks).some(([key,entry])=>!key||!counters(entry)))throw budgetStop('Invalid auxiliary budget record','auxiliary-budget-invalid');
+      const meta=budgetMeta(budget);
+      if(scope&&meta.retired.scopes[scope])throw budgetStop('Auxiliary calls for '+scope+' are retired after a terminal state','auxiliary-scope-stopped');
+      if(taskScope&&meta.retired.tasks[taskScope])throw budgetStop('Auxiliary calls for task '+taskScope+' are retired after a terminal state','auxiliary-task-stopped');
+      const entry=scope?(budget.scopes[scope]??={calls:0,tokens:0,failed:false}):budget.general;
+      const task=taskScope?(budget.tasks[taskScope]??={calls:0,tokens:0,failed:false}):null;
+      if(entry.failed)throw budgetStop(scope?'Auxiliary calls for '+scope+' stopped after a prior failure':'Auxiliary calls without a budget scope stopped after a prior failure','auxiliary-scope-stopped');
+      if(entry.calls>=callLimit||entry.tokens+estimate>tokenLimit)throw budgetStop(scope?'Auxiliary budget exhausted for '+scope+' ('+callLimit+' calls / '+tokenLimit+' tokens)':'Auxiliary budget exhausted for calls without a budget scope ('+callLimit+' calls / '+tokenLimit+' tokens)','auxiliary-budget-exhausted');
+      if(task&&task.failed)throw budgetStop('Auxiliary calls for task '+taskScope+' stopped after a prior failure','auxiliary-task-stopped');
+      if(task&&(task.calls>=taskCallLimit||task.tokens+estimate>taskTokenLimit))
+        throw budgetStop('Auxiliary task budget exhausted for '+taskScope+' ('+taskCallLimit+' calls / '+taskTokenLimit+' tokens)','auxiliary-budget-exhausted');
+      entry.calls++;entry.tokens+=estimate;
+      if(task){task.calls++;task.tokens+=estimate;}
+      if(scope){meta.limits.scopes[scope]={callLimit,tokenLimit};meta.inFlight.scopes[scope]=(meta.inFlight.scopes[scope]??0)+1;}
+      if(taskScope){meta.limits.tasks[taskScope]={callLimit:taskCallLimit,tokenLimit:taskTokenLimit};
+        meta.inFlight.tasks[taskScope]=(meta.inFlight.tasks[taskScope]??0)+1;}
+      pruneTerminalBudget(budget,meta,'scopes',meta.inFlight.scopes,meta.limits.scopes,meta.retired.scopes);
+      pruneTerminalBudget(budget,meta,'tasks',meta.inFlight.tasks,meta.limits.tasks,meta.retired.tasks);
+      s.auxiliaryBudget=budget;
+      try{await writeBudgetAtomic(file,budget);}
+      catch(error){entry.calls--;entry.tokens-=estimate;if(task){task.calls--;task.tokens-=estimate;}
+        if(scope&&meta.inFlight.scopes[scope])meta.inFlight.scopes[scope]--;
+        if(taskScope&&meta.inFlight.tasks[taskScope])meta.inFlight.tasks[taskScope]--;
+        throw budgetStop('Auxiliary budget record could not be saved: '+error.message,'auxiliary-budget-unavailable',error);}
+      s.auxiliaryBudget=budget;
+      return {file,estimate,entry,task,budget,meta,scopeKey:scope,taskKey:taskScope,
+        async settle({tokens=null,failed=false,notDispatched=false}={}){
+          return budgetOperation(s,async()=>{
+            if(notDispatched){
+              entry.calls--;entry.tokens-=estimate;
+              if(task){task.calls--;task.tokens-=estimate;}
+            }else if(tokens!==null){
+              entry.tokens+=tokens-estimate;if(task)task.tokens+=tokens-estimate;
+            }else{
+              entry.failed=true;if(task)task.failed=true;
+            }
+            if(failed)entry.failed=true;
+            if(scope&&meta.inFlight.scopes[scope])meta.inFlight.scopes[scope]--;
+            if(taskScope&&meta.inFlight.tasks[taskScope])meta.inFlight.tasks[taskScope]--;
+            try{await writeBudgetAtomic(file,budget);}
+            catch(error){
+              entry.failed=true;if(task)task.failed=true;
+              runtime.problem(s,'auxiliary-budget-persist',error.message);
+            }
+            s.auxiliaryBudget=budget;
+            return {notDispatched,complete:tokens!==null};
+          });
+        }};
+    });
   });
 }
 
@@ -112,15 +200,21 @@ export async function modelJson(ctx,runtime,agent,signal,system,payload,{maxToke
   const reservation=await reserveBudget(runtime,agent,textTokens(system)+textTokens(input)+outputLimit+64,tokenLimit,budgetScope,budgetCalls,
     taskBudgetScope?{taskScope:taskBudgetScope,taskTokenLimit:taskTokenLimit??tokenLimit,taskCallLimit:taskCallLimit??budgetCalls}:{});
   const joined=AbortSignal.any([signal,AbortSignal.timeout(timeoutMs||s.config.modelTimeoutMs)]);
-  let text='',usage=null,reportedUsage=null,finish=null,failed=false;
+  let text='',usage=null,reportedUsage=null,finish=null,failed=false,telemetryBlocked=false,dispatchAttempted=false,notDispatched=false;
   const began=performance.now();
   s.auxiliarySignals.add(joined);
   s.metrics.auxiliaryCalls++;s.dirty=true;
   try{
     const effort=reasoningEffort??(inheritConfiguredEffort?s.config.modelRoute?.reasoningEffort:undefined);
-    for await(const chunk of ctx.llm.stream({provider:route.provider,model:route.model,...(effort?{reasoningEffort:effort}:{}),
+    joined.throwIfAborted();
+    const stream=ctx.llm.stream({provider:route.provider,model:route.model,...(effort?{reasoningEffort:effort}:{}),
       system,messages:[{role:'user',content:[{type:'text',text:input}]}],tools:[],maxTokens:outputLimit,
-      signal:joined,sessionId:agent.session.id,purpose})){
+      signal:joined,sessionId:agent.session.id,purpose});
+    // Creating the native stream is the last point at which this caller can prove
+    // no request left the process. Once iteration starts, an error has an unknown
+    // upstream outcome even if no usage chunk arrived.
+    dispatchAttempted=true;
+    for await(const chunk of stream){
       if(chunk.type==='block-end'&&chunk.block.type==='text')text+=chunk.block.text;
       if(chunk.type==='usage'&&chunk.usage&&typeof chunk.usage==='object'){
         usage??={};
@@ -138,30 +232,22 @@ export async function modelJson(ctx,runtime,agent,signal,system,payload,{maxToke
     // The native adapter emits initialized zero counters even for an HTTP error
     // whose body contains no usage. Keep those values as diagnostics, not payment facts.
     if(finish?.kind!=='stop'&&usage&&Object.values(usage).every(value=>value===0)){reportedUsage=usage;usage=null;}
-    failed=true;s.metrics.auxiliaryFailures++;runtime.problem(s,'auxiliary-model',e.message);
-    e.auxiliaryUsage=usage;e.auxiliaryReportedUsage=reportedUsage;e.auxiliaryFinish=finish;e.auxiliaryTextChars=text.length;e.auxiliaryDispatched=true;
+    telemetryBlocked=cause?.code==='EFFECT_PERSISTENCE_UNAVAILABLE'&&cause?.effectsDispatched===false;
+    notDispatched=telemetryBlocked||!dispatchAttempted;
+    failed=!notDispatched;s.metrics.auxiliaryFailures++;runtime.problem(s,'auxiliary-model',e.message);
+    e.auxiliaryUsage=usage;e.auxiliaryReportedUsage=reportedUsage;e.auxiliaryFinish=finish;e.auxiliaryTextChars=text.length;
+    e.auxiliaryDispatched=!notDispatched;e.auxiliaryDispatchState=notDispatched?'not-dispatched':'dispatched';
     e.auxiliaryElapsedMs=Math.round(performance.now()-began);throw e;
   }
   finally{
     if(usage)for(const [key,value]of Object.entries(usage))if(Number.isSafeInteger(value)&&value>=0)s.metrics.auxiliaryUsage[key]=(s.metrics.auxiliaryUsage[key]||0)+value;
-    await budgetOperation(s,async()=>{
-      const canonical=canonicalUsage(usage),tokens=canonical.complete?canonical.usage.totalTokens:null;
-      const entries=[reservation.entry,...(reservation.task?[reservation.task]:[])];
-      if(tokens!==null)for(const entry of entries)entry.tokens+=tokens-reservation.estimate;
-      else{
-        for(const entry of entries)entry.failed=true;
-        s.metrics.auxiliaryUnknownCalls=(s.metrics.auxiliaryUnknownCalls??0)+1;
-        runtime.problem(s,'auxiliary-usage-unavailable','Auxiliary consumption is incomplete; the reservation is retained and further auxiliary calls'+
-          (budgetScope?' for '+budgetScope:' without a budget scope')+' are stopped.');
-      }
-      // A failed request with known consumption is settled, and its own scope stops so
-      // a malformed response is not retried against the same allowance. The shared task
-      // budget continues: a parse failure or a declared finish reason is not evidence
-      // that the task's total consumption is unknown or that all passes must stop.
-      if(failed)reservation.entry.failed=true;
-      try{await fs.writeFile(reservation.file,JSON.stringify(s.auxiliaryBudget),'utf8');}
-      catch(error){for(const entry of entries)entry.failed=true;runtime.problem(s,'auxiliary-budget-persist',error.message);}
-    });
+    const canonical=canonicalUsage(usage),tokens=canonical.complete?canonical.usage.totalTokens:null;
+    if(!notDispatched&&tokens===null){
+      s.metrics.auxiliaryUnknownCalls=(s.metrics.auxiliaryUnknownCalls??0)+1;
+      runtime.problem(s,'auxiliary-usage-unavailable','Auxiliary consumption is incomplete; the reservation is retained and further auxiliary calls'+
+        (budgetScope?' for '+budgetScope:' without a budget scope')+' are stopped.');
+    }
+    await reservation.settle({tokens,failed,notDispatched});
     s.auxiliarySignals.delete(joined);s.metrics.auxiliaryMs+=Math.round(performance.now()-began);s.dirty=true;
   }
 }

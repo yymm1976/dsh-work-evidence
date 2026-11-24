@@ -144,10 +144,13 @@ export async function startHost({script,auxiliary=()=>[text('{}')],pluginConfig=
   }
   const events=[];
   ctx.on('session/event',(_session,event)=>events.push(event));
-  async function createAgent(effort='max'){
+  async function createAgentHandle(effort='max'){
     const handle=await ctx.agents.create({sessionId:'we-test-'+randomUUID().slice(0,8),agentOptions:{provider:'scripted',model:'scripted-model',reasoningEffort:effort},meta:{cwd}});
     handle.agent.session.append('sandbox/mode',{mode:'danger-full-access',workspaceRoot:cwd});
-    return handle.agent;
+    return handle;
+  }
+  async function createAgent(effort='max'){
+    return (await createAgentHandle(effort)).agent;
   }
   async function send(agent,message){
     agent.followup(llm.createUserMessage({content:[{type:'text',text:message}],source:{kind:'user'}}));
@@ -172,7 +175,7 @@ export async function startHost({script,auxiliary=()=>[text('{}')],pluginConfig=
     try{await ctx.fiber?.dispose?.();}catch{}
     await fs.rm(cwd,{recursive:true,force:true,maxRetries:3});
   }
-  return {ctx,cwd,requests,auxiliaryRequests,events,createAgent,send,startSubagent,waitForSubagents,command,close,llm};
+  return {ctx,cwd,requests,auxiliaryRequests,events,createAgent,createAgentHandle,send,startSubagent,waitForSubagents,command,close,llm};
 }
 
 export const systemOf=options=>{

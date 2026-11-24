@@ -1,0 +1,544 @@
+{
+  "schema": "work-evidence.host-profile.v1",
+  "generatedAt": "2026-11-24T19:50:10.387Z",
+  "node": "v22.19.0",
+  "platform": "win32",
+  "rounds": 3,
+  "scope": "real scripted host loop with native read/pwsh tools; model provider wait is zero by construction",
+  "caveat": "This measures local plugin and host processing. It does not measure provider latency, provider billing or causal task savings. No online model request is made.",
+  "task": {
+    "requestsPerRun": 12,
+    "promptChars": 34,
+    "fixtureFiles": 6,
+    "fixtureLinesPerFile": 140
+  },
+  "modes": [
+    {
+      "name": "plugin-off",
+      "samples": [
+        {
+          "bootMs": 521.29,
+          "createMs": 2.7,
+          "initMs": null,
+          "sendMs": 96.5,
+          "disposeMs": 7.27,
+          "meanStepMs": 8.34,
+          "requests": 12,
+          "toolResults": 11,
+          "stepP50Ms": 8.34,
+          "stepP95Ms": 16.19,
+          "requestChars": 940183,
+          "maxRequestChars": 143783,
+          "maxMessages": 25,
+          "telemetry": null,
+          "providerScriptedWaitMs": 0
+        },
+        {
+          "bootMs": 20.97,
+          "createMs": 2.31,
+          "initMs": null,
+          "sendMs": 74.74,
+          "disposeMs": 12.78,
+          "meanStepMs": 6.48,
+          "requests": 12,
+          "toolResults": 11,
+          "stepP50Ms": 6.66,
+          "stepP95Ms": 8.47,
+          "requestChars": 940183,
+          "maxRequestChars": 143783,
+          "maxMessages": 25,
+          "telemetry": null,
+          "providerScriptedWaitMs": 0
+        },
+        {
+          "bootMs": 19.52,
+          "createMs": 2.09,
+          "initMs": null,
+          "sendMs": 77.06,
+          "disposeMs": 12.68,
+          "meanStepMs": 6.62,
+          "requests": 12,
+          "toolResults": 11,
+          "stepP50Ms": 6.68,
+          "stepP95Ms": 9.36,
+          "requestChars": 940183,
+          "maxRequestChars": 143783,
+          "maxMessages": 25,
+          "telemetry": null,
+          "providerScriptedWaitMs": 0
+        }
+      ],
+      "summary": {
+        "bootMs": {
+          "p50Ms": 20.97,
+          "p95Ms": 521.29,
+          "value": null
+        },
+        "createMs": {
+          "p50Ms": 2.31,
+          "p95Ms": 2.7,
+          "value": null
+        },
+        "initMs": {
+          "p50Ms": null,
+          "p95Ms": null,
+          "value": null
+        },
+        "sendMs": {
+          "p50Ms": 77.06,
+          "p95Ms": 96.5,
+          "value": null
+        },
+        "disposeMs": {
+          "p50Ms": 12.68,
+          "p95Ms": 12.78,
+          "value": null
+        },
+        "meanStepMs": {
+          "p50Ms": 6.62,
+          "p95Ms": 8.34,
+          "value": null
+        },
+        "stepP50Ms": {
+          "p50Ms": 6.68,
+          "p95Ms": 8.34,
+          "value": null
+        },
+        "stepP95Ms": {
+          "p50Ms": 9.36,
+          "p95Ms": 16.19,
+          "value": null
+        },
+        "requests": {
+          "p50Ms": null,
+          "p95Ms": null,
+          "value": 12
+        },
+        "toolResults": {
+          "p50Ms": null,
+          "p95Ms": null,
+          "value": 11
+        },
+        "requestChars": {
+          "p50Ms": null,
+          "p95Ms": null,
+          "value": 940183
+        },
+        "maxRequestChars": {
+          "p50Ms": null,
+          "p95Ms": null,
+          "value": 143783
+        },
+        "maxMessages": {
+          "p50Ms": null,
+          "p95Ms": null,
+          "value": 25
+        }
+      }
+    },
+    {
+      "name": "plugin-default",
+      "samples": [
+        {
+          "bootMs": 103.67,
+          "createMs": 6.06,
+          "initMs": 15.7,
+          "sendMs": 908.44,
+          "disposeMs": 3.17,
+          "meanStepMs": 80.26,
+          "requests": 12,
+          "toolResults": 11,
+          "stepP50Ms": 30.32,
+          "stepP95Ms": 589.6,
+          "requestChars": 940886,
+          "maxRequestChars": 144486,
+          "maxMessages": 25,
+          "telemetry": {
+            "bytes": 43181,
+            "rows": 36,
+            "complete": true
+          },
+          "providerScriptedWaitMs": 0
+        },
+        {
+          "bootMs": 25.74,
+          "createMs": 5.62,
+          "initMs": 5.22,
+          "sendMs": 867.86,
+          "disposeMs": 3.43,
+          "meanStepMs": 77.14,
+          "requests": 12,
+          "toolResults": 11,
+          "stepP50Ms": 27.83,
+          "stepP95Ms": 575.28,
+          "requestChars": 940886,
+          "maxRequestChars": 144486,
+          "maxMessages": 25,
+          "telemetry": {
+            "bytes": 43181,
+            "rows": 36,
+            "complete": true
+          },
+          "providerScriptedWaitMs": 0
+        },
+        {
+          "bootMs": 23.02,
+          "createMs": 6.42,
+          "initMs": 5.22,
+          "sendMs": 854.11,
+          "disposeMs": 3.15,
+          "meanStepMs": 75.9,
+          "requests": 12,
+          "toolResults": 11,
+          "stepP50Ms": 25.11,
+          "stepP95Ms": 572.29,
+          "requestChars": 940886,
+          "maxRequestChars": 144486,
+          "maxMessages": 25,
+          "telemetry": {
+            "bytes": 43181,
+            "rows": 36,
+            "complete": true
+          },
+          "providerScriptedWaitMs": 0
+        }
+      ],
+      "summary": {
+        "bootMs": {
+          "p50Ms": 25.74,
+          "p95Ms": 103.67,
+          "value": null
+        },
+        "createMs": {
+          "p50Ms": 6.06,
+          "p95Ms": 6.42,
+          "value": null
+        },
+        "initMs": {
+          "p50Ms": 5.22,
+          "p95Ms": 15.7,
+          "value": null
+        },
+        "sendMs": {
+          "p50Ms": 867.86,
+          "p95Ms": 908.44,
+          "value": null
+        },
+        "disposeMs": {
+          "p50Ms": 3.17,
+          "p95Ms": 3.43,
+          "value": null
+        },
+        "meanStepMs": {
+          "p50Ms": 77.14,
+          "p95Ms": 80.26,
+          "value": null
+        },
+        "stepP50Ms": {
+          "p50Ms": 27.83,
+          "p95Ms": 30.32,
+          "value": null
+        },
+        "stepP95Ms": {
+          "p50Ms": 575.28,
+          "p95Ms": 589.6,
+          "value": null
+        },
+        "requests": {
+          "p50Ms": null,
+          "p95Ms": null,
+          "value": 12
+        },
+        "toolResults": {
+          "p50Ms": null,
+          "p95Ms": null,
+          "value": 11
+        },
+        "requestChars": {
+          "p50Ms": null,
+          "p95Ms": null,
+          "value": 940886
+        },
+        "maxRequestChars": {
+          "p50Ms": null,
+          "p95Ms": null,
+          "value": 144486
+        },
+        "maxMessages": {
+          "p50Ms": null,
+          "p95Ms": null,
+          "value": 25
+        }
+      }
+    },
+    {
+      "name": "core-only",
+      "samples": [
+        {
+          "bootMs": 23.48,
+          "createMs": 5.03,
+          "initMs": 5.01,
+          "sendMs": 813.09,
+          "disposeMs": 3.54,
+          "meanStepMs": 72.15,
+          "requests": 12,
+          "toolResults": 11,
+          "stepP50Ms": 22.64,
+          "stepP95Ms": 566.04,
+          "requestChars": 940886,
+          "maxRequestChars": 144486,
+          "maxMessages": 25,
+          "telemetry": {
+            "bytes": 40210,
+            "rows": 36,
+            "complete": true
+          },
+          "providerScriptedWaitMs": 0
+        },
+        {
+          "bootMs": 21.89,
+          "createMs": 5.23,
+          "initMs": 5.24,
+          "sendMs": 811.06,
+          "disposeMs": 2.8,
+          "meanStepMs": 72.18,
+          "requests": 12,
+          "toolResults": 11,
+          "stepP50Ms": 21.94,
+          "stepP95Ms": 569.38,
+          "requestChars": 940886,
+          "maxRequestChars": 144486,
+          "maxMessages": 25,
+          "telemetry": {
+            "bytes": 40210,
+            "rows": 36,
+            "complete": true
+          },
+          "providerScriptedWaitMs": 0
+        },
+        {
+          "bootMs": 23.86,
+          "createMs": 5.19,
+          "initMs": 4.83,
+          "sendMs": 825.67,
+          "disposeMs": 3.29,
+          "meanStepMs": 73.5,
+          "requests": 12,
+          "toolResults": 11,
+          "stepP50Ms": 22.48,
+          "stepP95Ms": 575.51,
+          "requestChars": 940886,
+          "maxRequestChars": 144486,
+          "maxMessages": 25,
+          "telemetry": {
+            "bytes": 40210,
+            "rows": 36,
+            "complete": true
+          },
+          "providerScriptedWaitMs": 0
+        }
+      ],
+      "summary": {
+        "bootMs": {
+          "p50Ms": 23.48,
+          "p95Ms": 23.86,
+          "value": null
+        },
+        "createMs": {
+          "p50Ms": 5.19,
+          "p95Ms": 5.23,
+          "value": null
+        },
+        "initMs": {
+          "p50Ms": 5.01,
+          "p95Ms": 5.24,
+          "value": null
+        },
+        "sendMs": {
+          "p50Ms": 813.09,
+          "p95Ms": 825.67,
+          "value": null
+        },
+        "disposeMs": {
+          "p50Ms": 3.29,
+          "p95Ms": 3.54,
+          "value": null
+        },
+        "meanStepMs": {
+          "p50Ms": 72.18,
+          "p95Ms": 73.5,
+          "value": null
+        },
+        "stepP50Ms": {
+          "p50Ms": 22.48,
+          "p95Ms": 22.64,
+          "value": null
+        },
+        "stepP95Ms": {
+          "p50Ms": 569.38,
+          "p95Ms": 575.51,
+          "value": null
+        },
+        "requests": {
+          "p50Ms": null,
+          "p95Ms": null,
+          "value": 12
+        },
+        "toolResults": {
+          "p50Ms": null,
+          "p95Ms": null,
+          "value": 11
+        },
+        "requestChars": {
+          "p50Ms": null,
+          "p95Ms": null,
+          "value": 940886
+        },
+        "maxRequestChars": {
+          "p50Ms": null,
+          "p95Ms": null,
+          "value": 144486
+        },
+        "maxMessages": {
+          "p50Ms": null,
+          "p95Ms": null,
+          "value": 25
+        }
+      }
+    },
+    {
+      "name": "accounting-off",
+      "samples": [
+        {
+          "bootMs": 23,
+          "createMs": 5,
+          "initMs": 4.7,
+          "sendMs": 750.63,
+          "disposeMs": 2.63,
+          "meanStepMs": 66.88,
+          "requests": 12,
+          "toolResults": 11,
+          "stepP50Ms": 16.97,
+          "stepP95Ms": 561.47,
+          "requestChars": 940886,
+          "maxRequestChars": 144486,
+          "maxMessages": 25,
+          "telemetry": {
+            "missing": true,
+            "error": "ENOENT"
+          },
+          "providerScriptedWaitMs": 0
+        },
+        {
+          "bootMs": 22.93,
+          "createMs": 4.66,
+          "initMs": 4.69,
+          "sendMs": 755.74,
+          "disposeMs": 2.64,
+          "meanStepMs": 67.3,
+          "requests": 12,
+          "toolResults": 11,
+          "stepP50Ms": 15.92,
+          "stepP95Ms": 571.68,
+          "requestChars": 940886,
+          "maxRequestChars": 144486,
+          "maxMessages": 25,
+          "telemetry": {
+            "missing": true,
+            "error": "ENOENT"
+          },
+          "providerScriptedWaitMs": 0
+        },
+        {
+          "bootMs": 24.82,
+          "createMs": 4.82,
+          "initMs": 5.03,
+          "sendMs": 749.17,
+          "disposeMs": 2.36,
+          "meanStepMs": 66.65,
+          "requests": 12,
+          "toolResults": 11,
+          "stepP50Ms": 16.68,
+          "stepP95Ms": 563.25,
+          "requestChars": 940886,
+          "maxRequestChars": 144486,
+          "maxMessages": 25,
+          "telemetry": {
+            "missing": true,
+            "error": "ENOENT"
+          },
+          "providerScriptedWaitMs": 0
+        }
+      ],
+      "summary": {
+        "bootMs": {
+          "p50Ms": 23,
+          "p95Ms": 24.82,
+          "value": null
+        },
+        "createMs": {
+          "p50Ms": 4.82,
+          "p95Ms": 5,
+          "value": null
+        },
+        "initMs": {
+          "p50Ms": 4.7,
+          "p95Ms": 5.03,
+          "value": null
+        },
+        "sendMs": {
+          "p50Ms": 750.63,
+          "p95Ms": 755.74,
+          "value": null
+        },
+        "disposeMs": {
+          "p50Ms": 2.63,
+          "p95Ms": 2.64,
+          "value": null
+        },
+        "meanStepMs": {
+          "p50Ms": 66.88,
+          "p95Ms": 67.3,
+          "value": null
+        },
+        "stepP50Ms": {
+          "p50Ms": 16.68,
+          "p95Ms": 16.97,
+          "value": null
+        },
+        "stepP95Ms": {
+          "p50Ms": 563.25,
+          "p95Ms": 571.68,
+          "value": null
+        },
+        "requests": {
+          "p50Ms": null,
+          "p95Ms": null,
+          "value": 12
+        },
+        "toolResults": {
+          "p50Ms": null,
+          "p95Ms": null,
+          "value": 11
+        },
+        "requestChars": {
+          "p50Ms": null,
+          "p95Ms": null,
+          "value": 940886
+        },
+        "maxRequestChars": {
+          "p50Ms": null,
+          "p95Ms": null,
+          "value": 144486
+        },
+        "maxMessages": {
+          "p50Ms": null,
+          "p95Ms": null,
+          "value": 25
+        }
+      }
+    }
+  ],
+  "peakRssBytes": 160108544,
+  "heapUsedBytes": 50557048
+}

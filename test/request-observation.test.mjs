@@ -64,3 +64,37 @@ test('host compaction, plugin review and main requests are counted separately wi
   assert.equal(effects.requests.providerReported.totalTokens,450);
   await runtime.effects.dispose();
 });
+
+test('request observation preserves degraded start intent and marks a failed stream outcome unknown',async()=>{
+  const hooks=new Map(),agent={session:{id:'degraded-dispatch',seq:0,surface:{nodes:[],contentGeneration:0},requestHeader:()=>({config:{provider:'p',model:'m'}})}};
+  let row=null,release=null;
+  const state={telemetryDir:null,config:{...defaults(),strictObservability:false},
+    metrics:{contextRequests:0,contextRequestChars:0,contextModelTextChars:0},requestObservations:[],auxiliarySignals:new WeakSet()};
+  const ctx={on:(name,fn)=>{hooks.set(name,fn);return ()=>{};},agents:{get:()=>agent}};
+  const runtime={get:()=>state,init:async()=>state,sync:()=>state,isEnabled:()=>true,modeStatus:()=>({selected:'aggressive'}),
+    effects:{load:async()=>{},begin:()=>row={requestId:'degraded'},async start(_agent,value){value.dispatchState='dispatch-intent-degraded';},
+      finish:()=>{},snapshot:()=>({})},contextControl:{requestFinished:()=>{}}};
+  observeRequests(ctx,runtime);
+  const options={sessionId:agent.session.id,provider:'p',model:'m',signal:new AbortController().signal,
+    messages:[{role:'user',content:[{type:'text',text:'request'}]}],tools:[]};
+  const iterator=hooks.get('llm/stream')(options,async function*(){
+    await new Promise(resolve=>{release=resolve;});
+    yield {type:'usage',usage:{inputTokens:10,outputTokens:2,totalTokens:12}};
+    yield {type:'finish',reason:{kind:'stop'}};
+  });
+  const pending=iterator.next();
+  await new Promise(resolve=>setImmediate(resolve));
+  assert.equal(row.dispatchState,'dispatch-intent-degraded','a failed start record is not upgraded before dispatch');
+  release();
+  await pending;
+  for await(const _chunk of iterator){}
+  assert.equal(row.dispatchState,'settled');
+
+  row=null;
+  const failing=hooks.get('llm/stream')(options,async function*(){
+    yield {type:'text-delta',text:'partial'};
+    throw new Error('stream failed after dispatch');
+  });
+  await assert.rejects(async()=>{for await(const _chunk of failing){}},/stream failed after dispatch/);
+  assert.equal(row.dispatchState,'outcome-unknown','an errored dispatched stream is not reported as settled');
+});

@@ -1,4 +1,5 @@
 import fs from 'node:fs/promises';
+import {realpathSync} from 'node:fs';
 import path from 'node:path';
 import {createHash} from 'node:crypto';
 
@@ -8,6 +9,12 @@ export function within(root,file){
   const full=path.resolve(root,file),relative=path.relative(root,full);
   if(relative==='..'||relative.startsWith('..'+path.sep)||path.isAbsolute(relative))throw new Error('Path must remain inside the current workspace');
   return full;
+}
+/** Physical identity for an existing path; lexical identity only when the physical target cannot be resolved. */
+export function physicalPathKey(root,file){
+  const lexical=path.resolve(root??'.',String(file??''));
+  try{return realpathSync.native(lexical).replaceAll('\\','/');}
+  catch{return lexical.replaceAll('\\','/');}
 }
 export async function assertExistingFileWithin(root,file){
   const rootReal=await fs.realpath(root),fileReal=await fs.realpath(file);

@@ -107,6 +107,8 @@ test('definition summaries are counted as candidates but only sent when opted in
   assert.equal(onView.candidateCalls,1);
   assert.equal(onView.sentCalls,1);
   assert.equal(onView.injectedChars,onView.candidateInjectedChars);
-  assert.equal(onView.cumulativeInjectedChars,onView.injectedChars);
+  assert.equal(onView.projectedInjectedChars,onView.injectedChars);
+  assert.equal(onView.cumulativeInjectedChars,onView.projectedInjectedChars);
+  assert.equal(onView.projectionCalls,1);
   assert.equal(onView.netChars,onView.compactedChars-onView.injectedChars);
 });

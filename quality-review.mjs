@@ -6,7 +6,7 @@ import {canonicalUsage} from './context-economics.mjs';
 import {modelJson} from './model.mjs';
 import {isUserRequestMessage,textOf,argsOf} from './runtime.mjs';
 import {requestPausesContinuation} from './completion-notice.mjs';
-import {textWindow} from './evidence.mjs';
+import {physicalPathKey,textWindow} from './evidence.mjs';
 import {recordedProcessCompletion as completionObservation} from './execution-evidence.mjs';
 
 const SOURCE='work-evidence-quality-review',VERSION='quality-review-v18';
@@ -159,7 +159,7 @@ function requestSourceSections(events,request,assistant,root,fileCall){
   const requestText=textOf(messageOf(request)),quoted=[...requestText.matchAll(/“([^”\r\n]{1,128})”|"([^"\r\n]{1,128})"|`([^`\r\n]{1,128})`/gu)]
     .map(match=>(match[1]??match[2]??match[3]).trim()).filter(Boolean);
   if(!quoted.length||!root)return [];
-  const groups=new Map(),ambiguous=new Set(),fileKey=file=>path.resolve(root,file).replaceAll('\\','/');
+  const groups=new Map(),ambiguous=new Set(),fileKey=file=>physicalPathKey(root,file);
   const heading=text=>/^(#{1,6})\s+(.+?)\s*#*\s*$/u.exec(text);
   for(const event of events){
     if(event.seq<=request.seq||event.seq>=assistant.seq||event.surfaceOp?.op==='replace')continue;
@@ -255,7 +255,7 @@ function payloadFor(current,review,root){
   // the request. Prefer already-recorded reads of the changed files, not fresh reads.
   const fileKey=value=>{
     if(typeof value!=='string')return null;
-    return path.resolve(root??'.',value).replaceAll('\\','/');
+    return physicalPathKey(root??'.',value);
   };
   const fileCall=event=>{
     const data=event.data??{};

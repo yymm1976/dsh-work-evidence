@@ -46,6 +46,17 @@ export function usageCost(usage,price){
     usage.cacheWriteTokens*(price.cacheWrite??0)+usage.outputTokens*price.output)/1e6;
   return finite(cost)?cost:null;
 }
+export function usageCostLowerBound(usage,price){
+  if(!price||!usage)return null;
+  let cost=0,known=0;
+  for(const [usageKey,priceKey] of [['inputTokens','input'],['cacheReadTokens','cacheRead'],
+    ['cacheWriteTokens','cacheWrite'],['outputTokens','output']]){
+    if(!finite(usage[usageKey])||usage[usageKey]===0)continue;
+    if(!finite(price[priceKey]))continue;
+    cost+=usage[usageKey]*price[priceKey]/1e6;known++;
+  }
+  return known?cost:null;
+}
 
 // Estimates guide a decision; only adapter usage is reported as observed tokens.
 export function textTokens(text){
@@ -110,7 +121,7 @@ const PUBLISHED_FLASH_PRICE={input:1,cacheRead:0.02,cacheWrite:0,output:4,curren
 export const isDeepSeekV41Flash=model=>typeof model==='string'&&/deepseek-v4[._-]1-flash/iu.test(model);
 function publishedPrice(route){
   const model=typeof route?.model==='string'?route.model.toLowerCase():'';
-  return isDeepSeekV41Flash(model)||model.includes('deepseek-flash')
+  return isDeepSeekV41Flash(model)
     ?{...PUBLISHED_FLASH_PRICE,publishedRate:true,basis:'reference-rate'}:null;
 }
 
@@ -122,6 +133,8 @@ export function createContextEconomics(ctx,runtime){
       missingUsage:0,missingCacheUsage:0,pricedRequests:0,publishedRateUsed:false,costByCurrency:Object.create(null),auxiliaryRequests:0,compactionRequests:0,mainFinished:0,
       failedKnownCostByCurrency:Object.create(null),failedKnownCostRequests:0,
       referenceCostByCurrency:Object.create(null),referencePricedRequests:0,referenceRateUsed:false,
+      costLowerBoundByCurrency:Object.create(null),costLowerBoundRequests:0,
+      referenceLowerBoundByCurrency:Object.create(null),referenceLowerBoundRequests:0,
       surfaceChanges:0,cacheResetCount:0,uncachedInputAtReset:0,resetTaxByCurrency:Object.create(null),
       effortChanges:0,cacheResetAfterEffortChange:0,effortResetExposureByCurrency:Object.create(null),
       taskProgress:null,pendingReviews:[],reviewedOutcomes:[],
@@ -138,7 +151,8 @@ export function createContextEconomics(ctx,runtime){
     auxiliaryUsage=null,auxiliaryMargin=1.5,revisitCostTokens=0}={}){
     const state=get(agent),config=runtime.get(agent).config;
     route??=agent.session.requestHeader()?.config??{};
-    const old=state.last,price=pricing(agent,route),same=old&&sameObservedRoute(old,route);
+    const old=state.last,observedPrice=pricing(agent,route),price=observedPrice?.basis==='exact-route'?observedPrice:null,
+      same=old&&sameObservedRoute(old,route);
     const rawSaving=messages&&proposedMessages
       ?messages.reduce((sum,message)=>sum+messageTokens(message),0)-proposedMessages.reduce((sum,message)=>sum+messageTokens(message),0)
       :finite(savedTokensEstimate)?savedTokensEstimate:Math.ceil(Math.max(0,savedChars)/3.5);
@@ -248,6 +262,7 @@ export function createContextEconomics(ctx,runtime){
         reason=allowed?'predicted-cache-cost-positive':'predicted-cache-cost-insufficient';
       }
     }else if(!previousAttemptUsable)reason='prior-observation-unusable';
+    else if(observedPrice?.basis==='reference-rate')reason='reference-rate-without-exact-route';
     else if(cachedSuffixTokens!==null)reason='route-pricing-unavailable';
     return {allowed,reason,savedTokensEstimate:savedTokens,cachedSuffixTokensEstimate:cachedSuffixTokens,
       oldSuffixTokensEstimate:oldSuffixTokens,
@@ -255,8 +270,8 @@ export function createContextEconomics(ctx,runtime){
       horizonSteps:remainingSteps,refillCostEstimate:refillCost,futureSavingEstimate:futureSaving,breakEvenStepsEstimate:breakEvenSteps,
       revisitCostTokensEstimate:Math.max(0,revisitCostTokens),
       auxiliaryCostEstimate:auxiliaryCost,auxiliaryMargin:auxiliaryUsage?auxiliaryMargin:null,
-      currency:price?.currency??null,
-      pricingSource:!price?'unavailable':price.basis==='reference-rate'?'reference-rate':'exact-route',
+      currency:observedPrice?.currency??null,
+      pricingSource:!observedPrice?'unavailable':observedPrice.basis==='reference-rate'?'reference-rate':'exact-route',
       tokenMethod:firstReplayAssistant?'text-density calibrated to previous generated output':same?'text-density calibrated to previous adapter usage':'text-density estimate',
       forecast:true,emergency,route:forecastRoute(route)};
   }
@@ -319,21 +334,29 @@ export function createContextEconomics(ctx,runtime){
     if(finite(usage?.outputTokens))state.reportedOutputTokens+=usage.outputTokens;
     const billingComplete=record.settled&&['stop','tool-calls','max-tokens','length'].includes(record.finishReason);
     const cacheWritePriced=usage?.cacheWriteTokens===0||finite(price?.cacheWrite);
-    const knownCost=price&&usage&&total!==null&&finite(usage.inputTokens)&&finite(usage.cacheReadTokens)&&
-      finite(usage.outputTokens)&&cacheWritePriced
+    const usageFieldsComplete=usage&&['inputTokens','cacheReadTokens','cacheWriteTokens','outputTokens'].every(key=>finite(usage[key]));
+    const knownCost=price&&usage&&usageFieldsComplete&&cacheWritePriced
       ?(usage.inputTokens*price.input+usage.cacheReadTokens*price.cacheRead+
         usage.cacheWriteTokens*(price.cacheWrite??0)+usage.outputTokens*price.output)/1e6:null;
+    const lowerBound=price&&usage?usageCostLowerBound(usage,price):null;
     const exactPrice=price?.basis==='exact-route';
     if(knownCost!==null&&exactPrice&&canonical.complete&&billingComplete){
       state.costByCurrency[price.currency]=(state.costByCurrency[price.currency]??0)+knownCost;
       state.pricedRequests++;
-    }else if(knownCost!==null&&price?.basis==='reference-rate'){
+    }else if(knownCost!==null&&canonical.complete&&billingComplete&&price?.basis==='reference-rate'){
       state.referenceCostByCurrency[price.currency]=(state.referenceCostByCurrency[price.currency]??0)+knownCost;
       state.referencePricedRequests++;state.referenceRateUsed=true;
     }else if(knownCost!==null){
       state.failedKnownCostByCurrency[price.currency]=(state.failedKnownCostByCurrency[price.currency]??0)+knownCost;
       state.failedKnownCostRequests++;
     }else if(price){const reason=!billingComplete?'incomplete-request-billing':!cacheWritePriced?'cache-write-price-unavailable':'missing-usage-fields';state.skips[reason]=(state.skips[reason]??0)+1;}
+    if(lowerBound!==null){
+      if(exactPrice){state.costLowerBoundByCurrency[price.currency]=(state.costLowerBoundByCurrency[price.currency]??0)+lowerBound;state.costLowerBoundRequests++;}
+      else if(price?.basis==='reference-rate'){
+        state.referenceLowerBoundByCurrency[price.currency]=(state.referenceLowerBoundByCurrency[price.currency]??0)+lowerBound;
+        state.referenceLowerBoundRequests++;
+      }
+    }
     if(requestKind!=='main')return;
     state.mainFinished++;
     // Only a positive prompt count is an observation of the request's size. A
@@ -550,9 +573,19 @@ export function createContextEconomics(ctx,runtime){
       reportedCost:currencies.length===1&&state.pricedRequests===state.requests?state.costByCurrency[currencies[0]]:null,knownReportedCost:currencies.length===1?state.costByCurrency[currencies[0]]:null,costComplete:state.pricedRequests===state.requests,costByCurrency:{...state.costByCurrency},
       failedKnownCostRequests:state.failedKnownCostRequests,failedKnownCostByCurrency:{...state.failedKnownCostByCurrency},
       failedKnownCostLowerBound:Object.keys(state.failedKnownCostByCurrency).length===1?Object.values(state.failedKnownCostByCurrency)[0]:null,
+      costLowerBoundByCurrency:{...state.costLowerBoundByCurrency},costLowerBound:
+        Object.keys(state.costLowerBoundByCurrency).length===1?Object.values(state.costLowerBoundByCurrency)[0]:null,
+      costLowerBoundRequests:state.costLowerBoundRequests,
+      referenceLowerBoundByCurrency:{...state.referenceLowerBoundByCurrency},referenceLowerBound:
+        Object.keys(state.referenceLowerBoundByCurrency).length===1?Object.values(state.referenceLowerBoundByCurrency)[0]:null,
+      referenceLowerBoundRequests:state.referenceLowerBoundRequests,
       referencePricedRequests:state.referencePricedRequests,referenceCostByCurrency:{...state.referenceCostByCurrency},
       referenceCostLowerBound:Object.keys(state.referenceCostByCurrency).length===1?Object.values(state.referenceCostByCurrency)[0]:null,
-      costObservation:{basis:state.pricedRequests?'exact-route':state.referencePricedRequests?'reference-rate':'unavailable',
+      costObservation:{basis:state.pricedRequests&&state.referencePricedRequests?'mixed':
+        state.pricedRequests?'exact-route':state.referencePricedRequests?'reference-rate':'unavailable',
+        coverage:{requests:state.requests,exactRoute:state.pricedRequests,referenceRate:state.referencePricedRequests,
+          failedKnown:state.failedKnownCostRequests,lowerBound:state.costLowerBoundRequests,referenceLowerBound:state.referenceLowerBoundRequests,
+          unpriced:Math.max(0,state.requests-state.pricedRequests-state.referencePricedRequests-state.failedKnownCostRequests)},
         actualCharge:null,allowanceConsumption:null,budgetEnforcement:'none'},
       currency:currencies.length===1?currencies[0]:null,skips:{...state.skips},recentDecisions:state.decisions.slice(-6),
       projectionReviews:state.reviewedOutcomes.slice(-6),pendingProjectionReviews:state.pendingReviews.length,

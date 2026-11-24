@@ -43,15 +43,15 @@ test('shared segment counters are attributed to their own settings',()=>{
   assert.equal(featureSetting('blockDedup'),null);
 });
 
-test('every feature entry exposes a dedicated effect counter except the two global gates',async()=>{
+test('every feature entry exposes a dedicated effect counter except the global gates',async()=>{
   const host=await startHost({script:()=>[text('done')]});
   try{
     const agent=await host.createAgent('max');
     const view=await host.command(agent,'features');
     const unmapped=view.features.filter(item=>item.effect.lastReason==='no-dedicated-effect-counter').map(item=>item.key).sort();
-    // Only the two global gates lack a dedicated effect counter; the removed
+    // Only global gates lack a dedicated effect counter; the removed
     // opsAdapters gate is no longer a feature entry at all.
-    assert.deepEqual(unmapped,['aggressiveMode','enabled']);
+    assert.deepEqual(unmapped,['aggressiveMode','enabled','strictObservability']);
     assert.ok(view.features.every(item=>item.effect.status&&item.entry&&item.scope==='workspace'));
   }finally{await host.close();}
 });

@@ -13,7 +13,7 @@ const numberedSourceRows=text=>[...text.matchAll(/^([1-9]\d*): ([^\r\n]*)$/gmu)]
 import path from 'node:path';
 import fs from 'node:fs/promises';
 import {randomUUID} from 'node:crypto';
-import {limits,within,literal,textWindow,references} from "./evidence.mjs";
+import {limits,within,literal,textWindow,references,physicalPathKey} from "./evidence.mjs";
 import {createRuntime,VERSION,argsOf,eventLog,textOf,isUserRequestMessage} from "./runtime.mjs";
 import {createSelfIndex} from './self-index.mjs';
 import {createCandidates} from './candidates.mjs';
@@ -221,7 +221,7 @@ export function apply(ctx,config={}){
     preserveContextResults.add(sessionId+':'+callId);
   };
   const sourceKey=(agent,file)=>{
-    return path.resolve(state(agent).root??'.',file).replaceAll('\\','/');
+    return physicalPathKey(state(agent).root??'.',file);
   };
   function retainRecalledSources(agent,seq){
     const retained=contextRetainedSources.get(agent.session.id)??new Set();

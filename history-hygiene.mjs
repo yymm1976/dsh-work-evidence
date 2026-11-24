@@ -3,8 +3,9 @@ import {argsOf,eventLog} from './runtime.mjs';
 import {isSourceBodyPath,isSourceBody,planContextPrune,readDispatch,hasPruneProblem,sourceBodyPaths} from './context-pruning.mjs';
 import {resultText,surfaceReferences} from './visible-results.mjs';
 import {renderedReads} from './observation-ledger.mjs';
-import {messageTokens} from './context-economics.mjs';
+import {messageTokens,textTokens} from './context-economics.mjs';
 import {reportedCheckFailure} from './recovery.mjs';
+import {physicalPathKey} from './evidence.mjs';
 
 const AGE=2,MIN_SAVING=512,MAX_CANDIDATE_PLANS=32;
 const TEST_MIN_CHARS=4000,TEST_TAIL_CHARS=1800,TEST_DIGEST_MAX=4000,TOOL_MIN_CHARS=12000,TOOL_DIGEST_MAX=5000;
@@ -122,8 +123,7 @@ export function fullOutputRequest(event){
 }
 const callIdOf=message=>message?.source?.callId??message?.toolCallId;
 const fileKey=(root,file)=>{
-  const value=path.resolve(root??'.',file).replaceAll('\\','/');
-  return value;
+  return physicalPathKey(root,file);
 };
 
 export function recallCall(agent,{seq,offset=0,maxChars=16000}={}){
@@ -292,7 +292,7 @@ export function createHistoryHygiene(runtime,taskFlow,{isProtected=()=>false,ret
   function get(agent){
     let state=states.get(agent.session.id);
     if(!state){state={cursor:0,step:0,results:new Map(),failures:new Set(),pinnedCalls:new Set(),pinnedResults:new Set(),retainedSources:new Set(),
-      outputPlans:new Map(),candidatePlans:new Map(),hiddenResults:new Set(),omittedSources:new Set(),liveReads:new Map(),liveGrepViews:new Map(),observedPaths:new Map(),commands:new Map(),toolCalls:new Map(),fullOutputRequested:false,requests:0,outputs:0,chars:0,testOutputViews:0,testOutputChars:0,restores:0,rereadPromotions:0,definitionSummaryCalls:0,definitionSummaryCandidateCalls:0,definitionSummarySentCalls:0,definitionSummaryCompactedChars:0,definitionSummaryCandidateInjectedChars:0,definitionSummaryInjectedChars:0,definitionSummaryCumulativeInjectedChars:0};states.set(agent.session.id,state);}
+      outputPlans:new Map(),candidatePlans:new Map(),hiddenResults:new Set(),omittedSources:new Set(),liveReads:new Map(),liveGrepViews:new Map(),observedPaths:new Map(),commands:new Map(),toolCalls:new Map(),fullOutputRequested:false,requests:0,outputs:0,chars:0,testOutputViews:0,testOutputChars:0,restores:0,rereadPromotions:0,definitionSummaryCalls:0,definitionSummaryCandidateCalls:0,definitionSummarySentCalls:0,definitionSummaryCompactedChars:0,definitionSummaryCandidateInjectedChars:0,definitionSummaryInjectedChars:0,definitionSummaryObservedInjectedChars:0,definitionSummaryProjectedInjectedChars:0,definitionSummaryProjectionCalls:0};states.set(agent.session.id,state);}
     return state;
   }
   function rememberRead(state,root,read){
@@ -322,11 +322,11 @@ export function createHistoryHygiene(runtime,taskFlow,{isProtected=()=>false,ret
         state.definitionSummarySentCalls=(state.definitionSummarySentCalls??0)+1;
         const injected=Math.max(0,after.length-compacted.length);
         state.definitionSummaryInjectedChars+=injected;
-        state.definitionSummaryCumulativeInjectedChars+=injected;
+        state.definitionSummaryObservedInjectedChars+=injected;
       }
       if(after!==before){
         if(state.liveGrepViews.size>=64)state.liveGrepViews.delete(state.liveGrepViews.keys().next().value);
-        state.liveGrepViews.set(exec.callId,{before,after});
+        state.liveGrepViews.set(exec.callId,{before,after,definitionSummaryInjectedChars:Math.max(0,after.length-compacted.length)});
       }
     }
   }
@@ -384,7 +384,7 @@ export function createHistoryHygiene(runtime,taskFlow,{isProtected=()=>false,ret
         const toolDigest=textOnly&&!digest&&!failed&&call?toolOutputDigest(call.name,text,{seq:event.seq,command,truncated:event.data?.meta?.truncated===true}):null;
         state.commands.delete(id);
         let initialOutputView=textOnly&&!failed&&grepView?.before===text?
-          {text:grepView.after,reason:'native-grep-match-excerpt'}:null;
+          {text:grepView.after,reason:'native-grep-match-excerpt',definitionSummaryInjectedChars:grepView.definitionSummaryInjectedChars??0}:null;
         if(textOnly&&!failed&&call?.name==='pwsh'&&event.data?.meta?.truncated!==true){
           const root=runtime.get(agent).root;
           const matches=compactPowerShellMatchPaths(text,root,command);
@@ -454,18 +454,33 @@ export function createHistoryHygiene(runtime,taskFlow,{isProtected=()=>false,ret
       // A surface replacement may retain the message id while changing the body.
       // Receipts and prune plans describe only the captured canonical result.
       if(!original||message.isError!==original.isError||message.content!==original.content&&JSON.stringify(message.content)!==JSON.stringify(original.content))return message;
-      if(entry.initialOutputView&&(entry.initialOutputProjected||state.step-entry.step===1)){
-        const {text,reason}=entry.initialOutputView;
+      if(entry.initialOutputView&&(entry.initialOutputProjected||state.step-entry.step<=1)){
+        const {text,reason,definitionSummaryInjectedChars=0}=entry.initialOutputView;
         const planned=state.outputPlans.get(entry.seq);
         const content=planned?.initial?planned.content:[{type:'text',text}];
         const after={...message,content};
         const reduction=entry.textLength-text.length;
+        const firstSend=!entry.initialOutputProjected&&state.step-entry.step<=1;
+        const optedInSummary=config.definitionSummary==='on'&&reason==='native-grep-match-excerpt'&&
+          definitionSummaryInjectedChars>0;
+        if(reduction<=0&&!optedInSummary)return message;
+        if(!planned?.initial&&!firstSend){
+          const approved=allowed('historyOutput',message,after,entry.seq,entry,Math.max(0,textTokens(message)-textTokens(after)));
+          if(!approved)return message;
+        }
         outputs++;saved+=reduction;hidden.add(entry.seq);
         if(record&&!planned?.initial&&!entry.initialOutputProjected){
           entry.initialOutputProjected=true;
           state.outputPlans.set(entry.seq,{initial:true,content});
           runtime.effects?.rewrite(agent,{feature:'historyOutput',afterMessage:after,beforeMessages:[message],sourceSeqs:[entry.seq]});
-          runtime.effects?.decide(agent,'historyOutput','applied',reason,{seq:entry.seq,savedChars:reduction});
+          runtime.effects?.decide(agent,'historyOutput','applied',
+            firstSend?(optedInSummary?'initial-opted-in-definition-summary':'initial-unsent-output-view'):reason,
+            {seq:entry.seq,savedChars:reduction,
+              economics:firstSend?{allowed:true,reason:optedInSummary?'initial-opted-in-definition-summary':'initial-unsent-output-view',refillCostEstimate:0}:undefined});
+        }
+        if(definitionSummaryInjectedChars>0){
+          state.definitionSummaryProjectionCalls++;
+          state.definitionSummaryProjectedInjectedChars+=definitionSummaryInjectedChars;
         }
         return after;
       }
@@ -569,9 +584,11 @@ export function createHistoryHygiene(runtime,taskFlow,{isProtected=()=>false,ret
       charsRemovedAcrossViews:s.chars+(references?.charsRemovedAcrossViews??0),toolOutputCharsRemovedAcrossViews:s.chars-s.testOutputChars,testOutputCharsRemoved:s.testOutputChars,
       definitionSummary:{enabled:runtime.get(agent).config.definitionSummary==='on',calls:s.definitionSummaryCalls,candidateCalls:s.definitionSummaryCandidateCalls,sentCalls:s.definitionSummarySentCalls,
         compactedChars:s.definitionSummaryCompactedChars,candidateInjectedChars:s.definitionSummaryCandidateInjectedChars,injectedChars:s.definitionSummaryInjectedChars,
-        cumulativeInjectedChars:s.definitionSummaryCumulativeInjectedChars,
+        observedInjectedChars:s.definitionSummaryObservedInjectedChars,projectedInjectedChars:s.definitionSummaryProjectedInjectedChars,
+        projectionCalls:s.definitionSummaryProjectionCalls,
+        cumulativeInjectedChars:s.definitionSummaryProjectedInjectedChars,
         netChars:s.definitionSummaryCompactedChars-s.definitionSummaryInjectedChars,
-        note:'information organization, not a token-saving guarantee; netChars is local text length, not provider savings'},
+        note:'observedInjectedChars is measured when the tool result is observed; projectedInjectedChars counts the summary in actual request views. Neither proves provider token use or savings.'},
       explicitRecoveries:s.restores,rereadPromotions:s.rereadPromotions,retainedCalls:s.pinnedCalls.size,retainedResults:s.pinnedResults.size,suspended:!!s.suspended,
       referenceContext:references,reasoning:'unchanged',canonicalHistory:'unchanged'};},
     disposeAgent(agent){referenceContext?.disposeAgent(agent);states.delete(agent.session.id);},dispose(){referenceContext?.dispose();states.clear();}};

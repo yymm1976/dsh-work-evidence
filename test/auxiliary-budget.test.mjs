@@ -13,11 +13,14 @@ async function start({usage=OBSERVED,finishKind='stop',answer='{"ok":true}',effe
   const id='session-aux';
   const file=path.join(dir,id+'.auxiliary-budget.json');
   const dispatched=[],control={usage,finishKind,answer};
-  const ctx={llm:{async *stream(request){
+  const ctx={llm:{stream(request){
+    if(control.streamThrows)throw new Error('native stream was not created');
     dispatched.push(request);
-    yield {type:'block-end',block:{type:'text',text:control.answer}};
-    if(control.usage!==null)yield {type:'usage',usage:control.usage};
-    yield {type:'finish',reason:{kind:control.finishKind}};
+    return (async function*(){
+      yield {type:'block-end',block:{type:'text',text:control.answer}};
+      if(control.usage!==null)yield {type:'usage',usage:control.usage};
+      yield {type:'finish',reason:{kind:control.finishKind}};
+    })();
   }}};
   const state={id,dir,telemetryDir:dir,config:{modelMaxTokens:1200,modelTimeoutMs:20000,modelRoute:null},
     metrics:{auxiliaryCalls:0,auxiliaryFailures:0,auxiliaryUnknownCalls:0,auxiliaryUsage:{},auxiliaryMs:0},
@@ -201,6 +204,21 @@ test('a budget that cannot be read or saved stops before dispatch and hands the 
   }finally{await unsavable.close();}
 });
 
+test('a stream creation failure before dispatch hands the reservation back',async()=>{
+  const {state,dispatched,control,run,budget,close}=await start();
+  try{
+    control.streamThrows=true;
+    await assert.rejects(()=>run('pre-dispatch'),error=>error.auxiliaryDispatched===false&&
+      error.auxiliaryDispatchState==='not-dispatched');
+    assert.equal(dispatched.length,0);
+    assert.equal(state.metrics.auxiliaryFailures,1);
+    assert.equal(state.metrics.auxiliaryUnknownCalls,0);
+    assert.deepEqual((await budget()).scopes['pre-dispatch'],{calls:0,tokens:0,failed:false});
+    control.streamThrows=false;
+    assert.equal((await run('pre-dispatch')).value.ok,true);
+  }finally{await close();}
+});
+
 test('a malformed budget record is rejected before any dispatch',async()=>{
   for(const record of [
     null,
@@ -300,6 +318,35 @@ test('task consumption survives a new observer process',async()=>{
       error.auxiliaryCode==='auxiliary-budget-exhausted'&&error.auxiliaryDispatched===false);
     assert.equal(dispatched.length,1);
   }finally{await fs.rm(dir,{recursive:true,force:true});}
+});
+
+test('more than 32 live scopes are retained and an old scope is not reset',async()=>{
+  const {run,budget,close}=await start();
+  try{
+    for(let index=0;index<40;index++)assert.equal((await run('scope-'+index,2)).value.ok,true);
+    const first=await budget();
+    assert.equal(Object.keys(first.scopes).length,40);
+    assert.equal(first.scopes['scope-0'].calls,1);
+    assert.equal((await run('scope-0',2)).value.ok,true);
+    const second=await budget();
+    assert.equal(second.scopes['scope-0'].calls,2,'a reused scope keeps its prior consumption');
+  }finally{await close();}
+});
+
+test('concurrent reservations cannot spend one allowance twice',async()=>{
+  const h=await start();
+  try{
+    const results=await Promise.allSettled([
+      h.run('concurrent-scope',1),
+      h.run('concurrent-scope',1),
+      h.run('concurrent-scope',1),
+    ]);
+    assert.equal(results.filter(item=>item.status==='fulfilled').length,1);
+    assert.equal(results.filter(item=>item.status==='rejected'&&
+      item.reason?.auxiliaryCode==='auxiliary-budget-exhausted').length,2);
+    assert.equal(h.dispatched.length,1);
+    assert.deepEqual((await h.budget()).scopes['concurrent-scope'],{calls:1,tokens:150,failed:false});
+  }finally{await h.close();}
 });
 
 const taskTaskOptions=task=>({taskBudgetScope:task.scope,taskTokenLimit:task.tokenLimit,taskCallLimit:task.calls});
