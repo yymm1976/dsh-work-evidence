@@ -215,6 +215,17 @@ test('a scoped replacement of the native write tool deopts before it can write',
   }finally{await host.close();}
 });
 
+test('a filesystem without the conditional write seam is reported unavailable, not guessed from its version',async()=>{
+  const host=await startHost({script:()=>[text('probe')]});
+  try{
+    const write=host.ctx.tools.get('write');
+    const ctx={on:()=>{},tools:host.ctx.tools,get:name=>name==='fs'?{}:host.ctx.get(name)};
+    const cas=createNativeCas(ctx,{get:()=>({root:process.cwd()}),execFor:()=>({})},write,write.execute);
+    assert.equal(await cas.available({session:{}}),false,
+      'an unknown filesystem implementation must not be treated as a conditional-write backend');
+  }finally{await host.close();}
+});
+
 test('native cross-file partial effects retain the first write when a later policy conflicts',async()=>{
   const host=await startHost({workspace:{toolSurface:'full',nativeVerifiedEdits:true},script:()=>[text('Ready.')]});
   try{

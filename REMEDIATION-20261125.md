@@ -7,14 +7,15 @@
 | 项 | 结果 |
 |---|---|
 | 语法检查 | `npm run check`，192 个 JavaScript 文件通过 |
-| 全量单测 | `npm test`，1091 项，1090 通过，0 失败，1 项按宿主能力跳过 |
+| 全量单测 | `npm test`，1092 项，1091 通过，0 失败，1 项按宿主能力跳过 |
 | 跳过原因 | 当前宿主三包均为 `0.2.2-rc.1`，条件写入后端可用；只描述“后端缺失”的用例按设计跳过 |
 | 打包安装 | `test/package-install.test.mjs` 通过；离线安装不拉宿主 peer，安装副本可加载 |
 | 声明文件加载 | `test/host-package-load.test.mjs` 通过；95 个声明文件，45 个功能项，无阻塞项 |
 | 宿主兼容 | `test/host-compatibility.test.mjs` 通过；声明与宿主运行时一致 |
 | 宿主路径性能 | `evidence/profile-host-path-20261125.json`；3 轮，覆盖插件关闭、默认插件、核心机制消融和统计关闭 |
 | 本地微基准 | `evidence/profile-default-path-20261125.json`；30 轮，仅本地函数分段 |
-| 远端同步 | `origin/feat/v04-windows-bash` 与本地 `HEAD` 均为 `04d3fac` |
+| 条件写入负例 | 未知文件服务按不可用返回，不进入读取或写入；见 `test/native-cas.test.mjs` |
+| 远端同步 | 文档提交 `5ea21d2` 已推送 `origin/feat/v04-windows-bash`；本记录所述代码行为仍对应 `04d3fac` |
 
 ## 反向验证
 
