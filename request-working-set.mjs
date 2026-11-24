@@ -16,8 +16,7 @@ const READ=/^(?:read|grep|glob|project_evidence|web_fetch|web_search|fetch|searc
 const WRITE=/^(?:write|edit|str_replace_editor|verified_exec)$/;
 const INTERNAL=new Set(['work_status','work_state','work_report','work_probe','compress','decompress','search_context','acp_status','acp_cache','acp_rule']);
 const messageOf=event=>event?.data?.message??(event?.data?.role?event.data:null);
-const caseInsensitivePaths=process.platform==='win32';
-const normalizeText=text=>{const value=String(text??'').replaceAll('\\','/');return caseInsensitivePaths?value.toLowerCase():value;};
+const normalizeText=text=>String(text??'').replaceAll('\\','/');
 const touchesFile=(dependency,changed)=>dependency===changed||dependency.startsWith(changed+'!/');
 const messageText=message=>(message.content??[]).filter(block=>block.type==='text'||block.type==='tool-call')
   .map(block=>block.type==='text'?block.text:typeof block.arguments==='string'?block.arguments:JSON.stringify(block.arguments??{})).join('\n');
@@ -158,6 +157,9 @@ export function createRequestWorkingSet(ctx,runtime,economics,taskFlow){
           if(problem){if(message.isError||!nested.some(item=>item.problem&&item.problemText&&item.problemText===resultIdentity(message.content)))state.errors.set(key,[...deps.values()]);}else state.errors.delete(key);
           if(ownMutation)for(const dep of dependencies(root,call.args))if(dep.kind==='file')state.mutations.set(dep.key,{seq:event.seq,step:state.step});
           state.results.set(event.seq,{seq:event.seq,id:message.id,tool:call.name,args:call.args,step:state.step,
+            callId:callId??null,
+            revision:parsed?.data?.revision??parsed?.revision??null,
+            complete:parsed?.data?.complete??parsed?.complete??null,
             dependencies:[...deps.values()].slice(0,32),dependencyTotal:deps.size,
             dependencySourceOmitted:depStats.sourceOmitted,dependencyScanIncomplete:depStats.scanIncomplete,problem,write,
             observable:!INTERNAL.has(call.name)&&(READ.test(call.name)||call.name==='run_code'&&(nested.length>0||collectReadWindows(parsed).length>0)),
@@ -245,8 +247,17 @@ export function createRequestWorkingSet(ctx,runtime,economics,taskFlow){
   function restore(agent,state,messages){
     // Each hidden entry has its own restore anchor; a new user message can need
     // another entry before the host emits the next step/start event.
-    const evidenceKey=info=>info?JSON.stringify({tool:info.tool??null,args:info.args??null,
-      dependencies:(info.dependencies??[]).map(dep=>dep.kind+':'+dep.key).sort()}):null;
+    const evidenceKey=info=>{
+      if(!info)return null;
+      const command=['run_code','pwsh','bash','work_exec','verified_exec'].includes(info.tool);
+      return JSON.stringify({tool:info.tool??null,args:info.args??null,
+        dependencies:(info.dependencies??[]).map(dep=>dep.kind+':'+dep.key).sort(),
+        revision:info.revision??null,complete:info.complete??null,
+        // A command execution is a time-and-environment fact even when its text and
+        // arguments repeat. Only the same recorded event may stand in for it. A file
+        // read with no native version is likewise not equivalent evidence.
+        ...(command||!info.revision||info.complete!==true?{callId:info.callId??null,seq:info.seq??null}:{})});
+    };
     const visible=messages.filter(message=>message.role==='tool'&&!state.hidden.has(state.resultIds.get(message.id))&&!message.isError)
       .map(message=>{const info=state.results.get(state.resultIds.get(message.id));return {body:resultText(message.content),evidence:evidenceKey(info)};});
     const reasonsBySeq=new Map();

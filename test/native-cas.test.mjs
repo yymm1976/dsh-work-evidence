@@ -16,11 +16,12 @@ async function invoke(host,agent,input){
   assert.equal(result.isError,false,output(result));return result.value??JSON.parse(output(result));
 }
 const require=createRequire(path.join(APP,'package.json'));
-// Must match native.available() in native-cas.mjs: all three packages at
-// 0.2.2-rc.2. Checking only dsh-tools asserted success on a host that correctly
-// deopts with cas-file-tools-unavailable.
-const nativeSupported=['@deepseek-ai/dsh-tools','@deepseek-ai/dsh-fs-local','@deepseek-ai/dsh-tool-fs']
-  .every(name=>JSON.parse(readFileSync(require.resolve(name+'/package.json'),'utf8')).version==='0.2.2-rc.2');
+// Must match native.available() in native-cas.mjs: all three packages on the same
+// supported rc.1/rc.2 kernel. Both expose the conditional write-intent seam.
+const nativeVersions=['@deepseek-ai/dsh-tools','@deepseek-ai/dsh-fs-local','@deepseek-ai/dsh-tool-fs']
+  .map(name=>JSON.parse(readFileSync(require.resolve(name+'/package.json'),'utf8')).version);
+const nativeSupported=['0.2.2-rc.1','0.2.2-rc.2'].includes(nativeVersions[0])&&
+  nativeVersions.every(version=>version===nativeVersions[0]);
 
 test('native edits capture file tools registered after plugin activation and preserve the sandbox filesystem fence',async()=>{
   const host=await startHost({mountPlugin:false,filesystem:nativeSupported?'dsh-fs-sandbox':'dsh-fs-local',fileTools:{write:false},
@@ -85,8 +86,11 @@ test('native conditional editing applies multiple exact changes without OPS and 
   const off=await startHost({workspace:{toolSurface:'full',nativeVerifiedEdits:false},script:()=>[text('Ready.')]});
   try{
     const agent=await off.createAgent();
-    const result=await invoke(off,agent,{summary:'Do not activate the candidate implicitly',apply:true,edits:[{file:'new.txt',mode:'create',content:'new'}]});
-    assert.equal(result.status,'deopt');assert.equal(result.reason,'cas-file-tools-unavailable');
+    assert.equal(off.ctx.tools.get('verified_exec',agent),undefined,'a disabled native edit feature must not publish verified_exec');
+    const unavailable=await off.ctx.tools.execute({name:'verified_exec',arguments:{summary:'Do not activate the candidate implicitly',apply:true,
+      edits:[{file:'new.txt',mode:'create',content:'new'}]},callId:'disabled-native-edit',rootCallId:'disabled-native-edit',agent,signal:AbortSignal.timeout(20000)});
+    assert.equal(unavailable.isError,true);
+    assert.match(output(unavailable),/unknown tool|unavailable/iu);
     await assert.rejects(fs.stat(path.join(off.cwd,'new.txt')),error=>error.code==='ENOENT');
   }finally{await off.close();}
 });

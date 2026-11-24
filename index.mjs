@@ -140,7 +140,6 @@ export function apply(ctx,config={}){
   });
   if(isBatchToolHost(ctx))patchSystemPromptTools(ctx,(result,context)=>{
     const agent=context?.agent;
-    if(agent&&boundedPatch.result(agent)?.done===true&&Array.isArray(result.tools)){result.tools=[];return;}
     if(agent&&runtime.isEnabled(agent)&&state(agent).config.toolSurface==='compact'&&['read-only','minimal'].includes(taskSurfaceModes.get(agent.session.id))&&Array.isArray(result.tools))
       result.tools=result.tools.filter(tool=>tool?.name!=='work_exec');
   });
@@ -222,8 +221,7 @@ export function apply(ctx,config={}){
     preserveContextResults.add(sessionId+':'+callId);
   };
   const sourceKey=(agent,file)=>{
-    const key=path.resolve(state(agent).root??'.',file).replaceAll('\\','/');
-    return process.platform==='win32'?key.toLowerCase():key;
+    return path.resolve(state(agent).root??'.',file).replaceAll('\\','/');
   };
   function retainRecalledSources(agent,seq){
     const retained=contextRetainedSources.get(agent.session.id)??new Set();
@@ -682,28 +680,19 @@ export function apply(ctx,config={}){
     const section=_assembly.sections.find(section=>section.name==='work-evidence:task-flow');
     if(section){
       section.text='';
-      if(boundedResult?.done)section.text=boundedPatch.guidance(boundedResult);
+      if(boundedResult?.patchStatus)section.text=boundedPatch.guidance(boundedResult);
       else if(agent&&runtime.isEnabled(agent)){
         const request=claimedRequest??runtime.currentRequest(agent);
         const config=state(agent).config,text=textOf(request);
         if(taskPacingAllowed(config,text))section.text=taskFlowGuidance(runtime.activeMode(agent),taskSurfaceModes.get(agent.session.id),config,text);
-        if(boundedResult?.partial)section.text=[boundedPatch.guidance(boundedResult),section.text].filter(Boolean).join('\n');
       }
     }
     if(agent)effects.instructions(agent,section?.text??'');
-    if(boundedResult?.done&&Array.isArray(_assembly.tools))_assembly.tools=[];
     if(agent&&runtime.isEnabled(agent)&&state(agent).config.toolSurface==='compact'&&['read-only','minimal'].includes(taskSurfaceModes.get(agent.session.id))&&Array.isArray(_assembly.tools))
       _assembly.tools=_assembly.tools.filter(tool=>tool?.name!=='work_exec');
     const assembled=await next();
-    if(boundedResult?.done&&Array.isArray(assembled?.tools))assembled.tools=[];
     return assembled;
   },{prepend:true});
-  ctx.on('system-prompt/assemble',async(_assembly,context,next)=>{
-    const assembled=await next();
-    const agent=context?.agent??activeAgent??ctx.agents?.list?.()?.[0]??null;
-    if(agent&&boundedPatch.result(agent)?.done===true&&Array.isArray(assembled?.tools))assembled.tools=[];
-    return assembled;
-  });
   const featureControl=createFeatureControl(ctx,runtime,{available,canRecall,workingSet,qualityReview,compactionHandoff,retainedCompute,effects,verifiedExec,contextEconomics});
   registerPluginCommand({ctx,runtime,state,effects,available,featureControl,capabilityDiagnostic,contextEconomics,taskFlow,taskHandoff,finalJson,boundedPatch,qualityReview,executionEvidence,refreshExecutionEvidence,workingSet,compressionControl,compactionHandoff,contextWindow,observationLedger,historyCoordinator,clearPluginState,applyToolSurface});
   const nested=new Set();
@@ -766,7 +755,7 @@ export function apply(ctx,config={}){
     for(const match of matches){
       if(typeof match.path!=='string')continue;
       const file=within(root,match.path),line=Number.isInteger(match.lineNumber)&&match.lineNumber>0?match.lineNumber:1;
-      const key=process.platform==='win32'?file.toLowerCase():file;
+      const key=file;
       const window={file,key,line,offset:Math.max(1,line-8)};
       if(files.has(key))remaining.push(window);
       else{files.add(key);windows.push(window);}
@@ -974,8 +963,7 @@ export function apply(ctx,config={}){
     // calling maintenance once gives one emission on either surface.
     const s=state(payload.agent),queued=s.queuedMessages??[];
     s.queuedMessages=[];
-    const patchDone=boundedPatch.result(payload.agent)?.done===true;
-    const messages=[...queued,...(patchDone?[]:await maintenance(payload)),...(patchDone?[]:taskFlow.beforeStep(payload.agent,decision.messages,locations))];
+    const messages=[...queued,...await maintenance(payload),...taskFlow.beforeStep(payload.agent,decision.messages,locations)];
     return messages.length?{...decision,messages:[...decision.messages,...messages]}:decision;
   },{prepend:true});
   ctx.on('agent/disposed',({agent})=>disposal.agentDisposed(agent.session.id,async()=>{await Promise.allSettled([...pendingSaves]);try{toolSurfaceDisposers.get(agent.session.id)?.dispose?.();}catch{}toolSurfaceDisposers.delete(agent.session.id);pendingContextPrunes.delete(agent.session.id);contextRetainedSources.delete(agent.session.id);editedSources.delete(agent.session.id);supersededCache.delete(agent.session.id);readCountsCache.delete(agent.session.id);for(const key of contextReadCalls.keys())if(key.startsWith(agent.session.id+':'))contextReadCalls.delete(key);for(const key of preserveContextResults)if(key.startsWith(agent.session.id+':'))preserveContextResults.delete(key);try{await retainedCompute.disposeAgent(agent);}catch(error){runtime.problem(state(agent),'retained-compute-cleanup',error.message);}boundedPatch.dispose(agent);await effects.disposeAgent(agent);historyCoordinator.disposeAgent(agent);workingSet.disposeAgent(agent);historyHygiene.disposeAgent(agent);contextEconomics.clear(agent);taskFlow.disposeAgent(agent);executionEvidence.disposeAgent(agent);runtime.dispose(agent.session.id);}));

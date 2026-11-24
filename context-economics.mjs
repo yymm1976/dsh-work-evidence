@@ -111,7 +111,7 @@ export const isDeepSeekV41Flash=model=>typeof model==='string'&&/deepseek-v4[._-
 function publishedPrice(route){
   const model=typeof route?.model==='string'?route.model.toLowerCase():'';
   return isDeepSeekV41Flash(model)||model.includes('deepseek-flash')
-    ?{...PUBLISHED_FLASH_PRICE,publishedRate:true}:null;
+    ?{...PUBLISHED_FLASH_PRICE,publishedRate:true,basis:'reference-rate'}:null;
 }
 
 export function createContextEconomics(ctx,runtime){
@@ -121,6 +121,7 @@ export function createContextEconomics(ctx,runtime){
     if(!state){state={last:null,latestPrompt:null,previousAttempt:null,lastSuccessfulMain:null,mainHistory:[],mainAttempts:[],decisions:[],skips:{},requests:0,reportedPromptTokens:0,reportedMainPromptTokens:0,mainPromptRequests:0,reportedOutputTokens:0,
       missingUsage:0,missingCacheUsage:0,pricedRequests:0,publishedRateUsed:false,costByCurrency:Object.create(null),auxiliaryRequests:0,compactionRequests:0,mainFinished:0,
       failedKnownCostByCurrency:Object.create(null),failedKnownCostRequests:0,
+      referenceCostByCurrency:Object.create(null),referencePricedRequests:0,referenceRateUsed:false,
       surfaceChanges:0,cacheResetCount:0,uncachedInputAtReset:0,resetTaxByCurrency:Object.create(null),
       effortChanges:0,cacheResetAfterEffortChange:0,effortResetExposureByCurrency:Object.create(null),
       taskProgress:null,pendingReviews:[],reviewedOutcomes:[],
@@ -131,7 +132,7 @@ export function createContextEconomics(ctx,runtime){
     const configured=runtime.get(agent).config.projectionPricing.find(row=>sameRoute(row,route));
     // An explicit exact-route row always wins; the published rate card is only a
     // fallback, and its source stays distinguishable in the returned object.
-    return configured??publishedPrice(route);
+    return configured?{...configured,basis:'exact-route'}:publishedPrice(route);
   }
   function assess(agent,{messages,proposedMessages,savedChars=0,savedTokensEstimate=null,changedSeq=null,changedMessageId=null,route=null,tools,system,emergency=false,horizon,
     auxiliaryUsage=null,auxiliaryMargin=1.5,revisitCostTokens=0}={}){
@@ -255,7 +256,7 @@ export function createContextEconomics(ctx,runtime){
       revisitCostTokensEstimate:Math.max(0,revisitCostTokens),
       auxiliaryCostEstimate:auxiliaryCost,auxiliaryMargin:auxiliaryUsage?auxiliaryMargin:null,
       currency:price?.currency??null,
-      pricingSource:!price?'unavailable':price.publishedRate===true?'published-family-rate':'explicit-exact-route-setting',
+      pricingSource:!price?'unavailable':price.basis==='reference-rate'?'reference-rate':'exact-route',
       tokenMethod:firstReplayAssistant?'text-density calibrated to previous generated output':same?'text-density calibrated to previous adapter usage':'text-density estimate',
       forecast:true,emergency,route:forecastRoute(route)};
   }
@@ -322,12 +323,13 @@ export function createContextEconomics(ctx,runtime){
       finite(usage.outputTokens)&&cacheWritePriced
       ?(usage.inputTokens*price.input+usage.cacheReadTokens*price.cacheRead+
         usage.cacheWriteTokens*(price.cacheWrite??0)+usage.outputTokens*price.output)/1e6:null;
-    if(knownCost!==null&&canonical.complete&&billingComplete){
+    const exactPrice=price?.basis==='exact-route';
+    if(knownCost!==null&&exactPrice&&canonical.complete&&billingComplete){
       state.costByCurrency[price.currency]=(state.costByCurrency[price.currency]??0)+knownCost;
       state.pricedRequests++;
-      // An operator has to be able to tell a published family rate from an exact route
-      // setting: only the latter is a real charge, and the summary labelled both the same.
-      if(price.publishedRate===true)state.publishedRateUsed=true;
+    }else if(knownCost!==null&&price?.basis==='reference-rate'){
+      state.referenceCostByCurrency[price.currency]=(state.referenceCostByCurrency[price.currency]??0)+knownCost;
+      state.referencePricedRequests++;state.referenceRateUsed=true;
     }else if(knownCost!==null){
       state.failedKnownCostByCurrency[price.currency]=(state.failedKnownCostByCurrency[price.currency]??0)+knownCost;
       state.failedKnownCostRequests++;
@@ -548,7 +550,10 @@ export function createContextEconomics(ctx,runtime){
       reportedCost:currencies.length===1&&state.pricedRequests===state.requests?state.costByCurrency[currencies[0]]:null,knownReportedCost:currencies.length===1?state.costByCurrency[currencies[0]]:null,costComplete:state.pricedRequests===state.requests,costByCurrency:{...state.costByCurrency},
       failedKnownCostRequests:state.failedKnownCostRequests,failedKnownCostByCurrency:{...state.failedKnownCostByCurrency},
       failedKnownCostLowerBound:Object.keys(state.failedKnownCostByCurrency).length===1?Object.values(state.failedKnownCostByCurrency)[0]:null,
-      costObservation:{basis:state.publishedRateUsed?'published-family-rate':'configured-reference-prices',actualCharge:null,allowanceConsumption:null,budgetEnforcement:'none'},
+      referencePricedRequests:state.referencePricedRequests,referenceCostByCurrency:{...state.referenceCostByCurrency},
+      referenceCostLowerBound:Object.keys(state.referenceCostByCurrency).length===1?Object.values(state.referenceCostByCurrency)[0]:null,
+      costObservation:{basis:state.pricedRequests?'exact-route':state.referencePricedRequests?'reference-rate':'unavailable',
+        actualCharge:null,allowanceConsumption:null,budgetEnforcement:'none'},
       currency:currencies.length===1?currencies[0]:null,skips:{...state.skips},recentDecisions:state.decisions.slice(-6),
       projectionReviews:state.reviewedOutcomes.slice(-6),pendingProjectionReviews:state.pendingReviews.length,
       note:'Observed usage and configured-price cost are totals, not causal savings; forecast decisions predict reuse and do not prove a global cost optimum.'};

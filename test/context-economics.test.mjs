@@ -255,7 +255,7 @@ test('a DeepSeek V4.1 Flash route is priced from the published rate when no exac
   const {agent,economics}=harness();
   for(const model of ['opendesign/deepseek-v4.1-flash-eco','3/deepseek-v4-1-flash-1017','3/deepseek-v4_1-flash']){
     const price=economics.pricingFor(agent,{provider:'magpie',model});
-    assert.deepEqual(price,{input:1,cacheRead:0.02,cacheWrite:0,output:4,currency:'CNY',publishedRate:true},model);
+    assert.deepEqual(price,{input:1,cacheRead:0.02,cacheWrite:0,output:4,currency:'CNY',publishedRate:true,basis:'reference-rate'},model);
   }
   // An unrelated route stays unpriceable so the gate keeps refusing it.
   assert.equal(economics.pricingFor(agent,{provider:'magpie',model:'group/qwen3.8flash'}),null);
@@ -471,9 +471,32 @@ test('the cost basis distinguishes a published family rate from an exact route r
     return economics.summary(agent).costObservation.basis;
   };
   assert.equal(basisFor([{provider:'p',model:'m',currency:'USD',input:.15,cacheRead:.003,output:.6}],'m'),
-    'configured-reference-prices','an exact route row is a configured reference price');
+    'exact-route','an explicitly configured route is the only exact-route basis');
   assert.equal(basisFor([],'deepseek-v4.1-flash'),
-    'published-family-rate','the shipped card is a published family rate');
+    'reference-rate','the shipped card is a reference rate, not a provider charge');
+});
+
+test('a published family rate is reported separately from an exact-route charge',()=>{
+  const state={step:0,config:{projectionPricing:[],projectionHorizonSteps:16}};
+  const agent={session:{id:'reference-cost',surface:{nodes:[]},requestHeader:()=>({config:{provider:'opendesign',model:'deepseek-v4.1-flash-eco'}})}};
+  const economics=createContextEconomics({tokenMeter:{measure:()=>({totalTokens:9000})}},{get:()=>state});
+  const options={provider:'opendesign',model:'deepseek-v4.1-flash-eco',messages:[{id:'u',role:'user',content:[{type:'text',text:'r'}]}]};
+  economics.requestFinished(agent,options,{usage:{inputTokens:1000000,cacheReadTokens:0,cacheWriteTokens:0,outputTokens:100000,totalTokens:1100000},
+    settled:true,finishReason:'stop',usageComplete:true,usageConsistent:true});
+  const reference=economics.summary(agent);
+  assert.equal(reference.costObservation.basis,'reference-rate');
+  assert.equal(reference.knownReportedCost,null);
+  assert.equal(reference.costComplete,false);
+  assert.equal(reference.referenceCostLowerBound,1.4);
+  assert.equal(reference.referencePricedRequests,1);
+
+  state.config.projectionPricing=[{provider:'opendesign',model:'deepseek-v4.1-flash-eco',currency:'CNY',input:1,cacheRead:.02,output:4}];
+  economics.requestFinished(agent,options,{usage:{inputTokens:1000000,cacheReadTokens:0,cacheWriteTokens:0,outputTokens:100000,totalTokens:1100000},
+    settled:true,finishReason:'stop',usageComplete:true,usageConsistent:true});
+  const exact=economics.summary(agent);
+  assert.equal(exact.costObservation.basis,'exact-route');
+  assert.equal(exact.knownReportedCost,1.4);
+  assert.equal(exact.costComplete,false,'one reference-only request is still unpriced');
 });
 
 test('an incomplete usage observation cannot leave the reset comparison point behind',()=>{

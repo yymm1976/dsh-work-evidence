@@ -310,6 +310,10 @@ export function createVerifiedExec(ctx,runtime,call,options={}){
       return {status:'deopt',reason:record.reason,error:error.message,reportPath,effectState:'none'};
     }
     const missing=[];
+    // The reason token is a historical compatibility identifier for "no usable
+    // conditional-write backend". It does not mean only rc.2 qualifies: the backend
+    // now accepts a consistent rc.1/rc.2 kernel, and this marker also covers
+    // 0.2.1-rc.4 or a mixed installation.
     if(!native||!await native.available(agent))missing.push('rc2-native-conditional-write');
     if(missing.length){
       record.status='deopt';record.reason='cas-file-tools-unavailable';record.missing=missing;s.metrics.verifiedExecDeopts++;await save();

@@ -25,7 +25,7 @@ const hashOf=value=>createHash('sha256').update(String(value)).digest('hex');
 const shortHash=value=>hashOf(value).slice(0,24);
 const isObject=value=>value!==null&&typeof value==='object'&&!Array.isArray(value);
 const lineNumber=row=>Number.isInteger(row?.line)?row.line:Number.isInteger(row?.number)?row.number:null;
-const fileKey=value=>process.platform==='win32'?value.toLowerCase():value;
+const fileKey=value=>String(value??'');
 
 function relativePath(root,value){
   if(typeof value!=='string'||!value.trim()||!root)return null;

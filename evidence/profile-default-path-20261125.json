@@ -1,0 +1,80 @@
+{
+  "generatedAt": "2026-11-24T17:34:41.071Z",
+  "root": "D:\\dsh-work-2026\\runs\\v04-rd\\repo",
+  "rounds": 30,
+  "hostVersion": null,
+  "node": "v22.19.0",
+  "platform": "win32",
+  "results": [
+    {
+      "name": "runtime.get",
+      "rounds": 30,
+      "meanMs": 0.01710666666666801,
+      "p50Ms": 0.0006999999999948159,
+      "p95Ms": 0.10330000000000439,
+      "maxMs": 0.3719999999999999
+    },
+    {
+      "name": "history-hygiene source key set",
+      "rounds": 30,
+      "meanMs": 0.1900333333333317,
+      "p50Ms": 0.13160000000000593,
+      "p95Ms": 0.6508999999999929,
+      "maxMs": 0.7550999999999988
+    },
+    {
+      "name": "request payload JSON serialization",
+      "rounds": 30,
+      "meanMs": 0.046326666666668834,
+      "p50Ms": 0.043600000000012074,
+      "p95Ms": 0.05379999999999541,
+      "maxMs": 0.11050000000000182
+    },
+    {
+      "name": "local text token estimate",
+      "rounds": 30,
+      "meanMs": 0.0016133333333343102,
+      "p50Ms": 0.0002000000000066393,
+      "p95Ms": 0.002600000000001046,
+      "maxMs": 0.03840000000000998
+    },
+    {
+      "name": "effect snapshot without storage",
+      "rounds": 30,
+      "meanMs": 0.06721999999999848,
+      "p50Ms": 0.04259999999999309,
+      "p95Ms": 0.13689999999999714,
+      "maxMs": 0.654900000000012
+    },
+    {
+      "name": "context economics summary",
+      "rounds": 30,
+      "meanMs": 0.017663333333333735,
+      "p50Ms": 0.00190000000000623,
+      "p95Ms": 0.06550000000000011,
+      "maxMs": 0.26129999999999143
+    },
+    {
+      "name": "native file provider construction",
+      "rounds": 30,
+      "meanMs": 0.0014433333333319827,
+      "p50Ms": 0.00039999999999906777,
+      "p95Ms": 0.0033999999999991815,
+      "maxMs": 0.01820000000000732
+    },
+    {
+      "name": "bounded patch construction",
+      "rounds": 30,
+      "meanMs": 0.005563333333334223,
+      "p50Ms": 0.0018999999999920192,
+      "p95Ms": 0.007699999999999818,
+      "maxMs": 0.10429999999999495
+    },
+    {
+      "name": "readSourceBundle source tree",
+      "rounds": 1,
+      "note": "asynchronous native/Node filesystem read",
+      "resolved": true
+    }
+  ]
+}

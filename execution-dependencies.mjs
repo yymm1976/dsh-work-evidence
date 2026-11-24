@@ -2,7 +2,7 @@ import path from 'node:path';
 
 const SCHEMA='work-evidence.declared-files.v1';
 const SCOPE='caller-declared-files-only';
-const key=value=>process.platform==='win32'?path.resolve(value).toLowerCase():path.resolve(value);
+const key=value=>path.resolve(value);
 const versioned=value=>value?.exists===true&&value.type==='file'&&typeof value.version==='string'&&value.version.length>0&&value.version.length<=1024;
 
 export function declaredFileSources(sources=[]){

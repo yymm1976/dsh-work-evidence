@@ -7,15 +7,18 @@ import {createRequire} from 'node:module';
 import {startHost,text,tool,APP} from './helpers/host.mjs';
 
 const resultsOf=host=>host.events.filter(e=>e.type==='tool/result').map(e=>JSON.parse(e.data.message.content.map(b=>b.text??'').join('')));
-// The native conditional-write backend is pinned to 0.2.2-rc.2. On an older but
-// still declared-supported host (0.2.1-rc.4 / 0.2.2-rc.1) verified_exec must
-// deopt explicitly instead of falling back to an unversioned write.
+// The native conditional-write backend requires the same rc.1 or rc.2 kernel
+// across dsh-tools, dsh-fs-local and dsh-tool-fs. On 0.2.1-rc.4 or a mixed
+// installation verified_exec must deopt explicitly instead of falling back to
+// an unversioned write.
 const require=createRequire(path.join(APP,'package.json'));
-// Must match native.available() in native-cas.mjs: all three packages at
-// 0.2.2-rc.2. Checking only dsh-tools asserted success on a host that correctly
-// deopts with cas-file-tools-unavailable.
-const nativeSupported=['@deepseek-ai/dsh-tools','@deepseek-ai/dsh-fs-local','@deepseek-ai/dsh-tool-fs']
-  .every(name=>JSON.parse(readFileSync(require.resolve(name+'/package.json'),'utf8')).version==='0.2.2-rc.2');
+// Must match native.available() in native-cas.mjs: all three packages on the
+// same supported kernel. Checking only dsh-tools asserted success on a host
+// that correctly deopts with cas-file-tools-unavailable.
+const nativeVersions=['@deepseek-ai/dsh-tools','@deepseek-ai/dsh-fs-local','@deepseek-ai/dsh-tool-fs']
+  .map(name=>JSON.parse(readFileSync(require.resolve(name+'/package.json'),'utf8')).version);
+const nativeSupported=['0.2.2-rc.1','0.2.2-rc.2'].includes(nativeVersions[0])&&
+  nativeVersions.every(version=>version===nativeVersions[0]);
 
 // verified_exec edits now have one backend: the native conditional-write CAS under
 // nativeVerifiedEdits. This file is its end-to-end host suite.
@@ -47,7 +50,7 @@ test('verified_exec previews, applies through native revisions and deopts on a s
   }
   assert.equal(results[0].status,'previewed');
   assert.equal(results[1].status,'applied');
-  assert.equal(results[1].files[0].changed,1);
+  assert.equal(results[1].files[0].changed,true);
   assert.equal(read['a.txt'],'world\n');
   assert.notEqual(results[2].status,'applied','a missing old_text must not report success');
   assert.equal(results[3].status,'applied');

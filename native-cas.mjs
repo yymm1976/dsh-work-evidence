@@ -3,6 +3,10 @@ import {createNativeFiles} from './native-files.mjs';
 
 const sha=text=>createHash('sha256').update(text).digest('hex');
 const normalize=text=>text.replaceAll('\r\n','\n');
+// Both rc.1 and rc.2 expose the same conditional write-intent seam this backend
+// consumes. Availability is still gated on the concrete services and tool identity
+// below; the version check only rules out kernels whose API predates the seam.
+const CONDITIONAL_WRITE_HOSTS=new Set(['0.2.2-rc.1','0.2.2-rc.2']);
 
 /** Conditional writes still pass through the native write tool's permission resolution. */
 export function createNativeCas(ctx,runtime,registeredWrite=ctx.tools.get('write'),registeredExecute=registeredWrite?.execute){
@@ -36,9 +40,10 @@ export function createNativeCas(ctx,runtime,registeredWrite=ctx.tools.get('write
       if(!supported){
         const [{SandboxedFileSystem},{default:metadata}]=await Promise.all([
           import('@deepseek-ai/dsh-fs-sandbox'),import('@deepseek-ai/dsh-fs-sandbox/package.json',{with:{type:'json'}})]);
-        supported=metadata.version==='0.2.2-rc.2'&&Object.getPrototypeOf(filesystem)===SandboxedFileSystem.prototype;
+        supported=CONDITIONAL_WRITE_HOSTS.has(metadata.version)&&Object.getPrototypeOf(filesystem)===SandboxedFileSystem.prototype;
       }
-      return [version,local.version,toolFs.version].every(value=>value==='0.2.2-rc.2')&&ctx.tools instanceof ToolsService
+      const versions=[version,local.version,toolFs.version];
+      return versions.every(value=>value===versions[0]&&CONDITIONAL_WRITE_HOSTS.has(value))&&ctx.tools instanceof ToolsService
         &&supported&&!!registeredWrite&&ctx.tools.get('write')===registeredWrite
         &&ctx.tools.get('write',agent)===registeredWrite&&registeredWrite.execute===registeredExecute;
     }catch{return false;}
@@ -70,25 +75,25 @@ export function createNativeCas(ctx,runtime,registeredWrite=ctx.tools.get('write
       result=await ctx.tools.execute({name:'write',arguments:{file_path:file,content:group.expectedText},
         agent,callId,rootCallId:active.rootCallId??callId,parent:active.token,signal});
     }catch(error){
-      return {ok:false,status:'error',effectState:state.guarded?'unknown':'none',...(state.denied?{permissionDenied:true}:{}),error:{message:String(error.message??error).slice(0,1200)}};
+      return {ok:false,status:'error',callId,effectState:state.guarded?'unknown':'none',...(state.denied?{permissionDenied:true}:{}),error:{message:String(error.message??error).slice(0,1200)}};
     }finally{pending.delete(callId);}
     if(result.isError){
       const prepublication=result.error?.info?.name==='FsError'&&['FS_STALE_VERSION','FS_NOT_OBSERVED'].includes(result.error.info.code);
-      return {ok:false,status:'error',effectState:state.denied||!state.guarded||prepublication?'none':result.error?.info?.effectState??'unknown',
+      return {ok:false,status:'error',callId,effectState:state.denied||!state.guarded||prepublication?'none':result.error?.info?.effectState??'unknown',
         ...(state.denied?{permissionDenied:true}:{}),error:result.error??{message:'Native write failed.'}};
     }
     const value=result.value;
-    if(!state.guarded||!value||value.after!==normalize(group.expectedText))return {ok:false,status:'unknown',effectState:'unknown',
+    if(!state.guarded||!value||value.after!==normalize(group.expectedText))return {ok:false,status:'unknown',callId,effectState:'unknown',
       error:{message:!state.guarded?'Native write did not consume the conditional intent.':'Native write returned content different from the planned edit.'}};
     try{
       const after=await stat(agent,file,signal);
-      if(!after.ok||!after.exists)return {ok:false,status:'partial',effectState:'applied',error:after.error??{message:'Applied file is unavailable.'}};
+      if(!after.ok||!after.exists)return {ok:false,status:'partial',callId,effectState:'applied',error:after.error??{message:'Applied file is unavailable.'}};
       const observed=await read(agent,file,after.revision,signal);
-      if(!observed.ok||observed.sha256!==sha(group.expectedText))return {ok:false,status:'partial',effectState:'applied',
+      if(!observed.ok||observed.sha256!==sha(group.expectedText))return {ok:false,status:'partial',callId,effectState:'applied',
         error:observed.error??{message:'Post-write content does not match the conditional edit.'}};
-      return {ok:true,status:'completed',effectState:'applied',revision:after.revision,contentHash:observed.sha256,
+      return {ok:true,status:'completed',callId,effectState:'applied',revision:after.revision,contentHash:observed.sha256,
         bytes:after.bytes,lineCount:observed.totalLines,changed:group.mode==='create'||group.beforeHash!==observed.sha256,versionKind:'native-opaque',guarded:true};
-    }catch(error){return {ok:false,status:'partial',effectState:'applied',error:{message:'Native write completed; readback failed: '+String(error.message??error).slice(0,1100)}};}
+    }catch(error){return {ok:false,status:'partial',callId,effectState:'applied',error:{message:'Native write completed; readback failed: '+String(error.message??error).slice(0,1100)}};}
   }
   return {available,stat,read,apply};
 }

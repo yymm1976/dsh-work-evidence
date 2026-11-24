@@ -60,7 +60,8 @@ const ALLOWANCE='但|但是|不过|然而|而是|反而|只|仅|需要|允许|�
 // "Use work_exec to run ..." request in the next sentence. The Chinese nouns need no
 // boundary; they are already whole words.
 const TARGET='[\\w./\\\\-]+\\.[a-z0-9]{1,8}|[\\w-]*\\/[\\w.-]+|文件|代码|函数|方法|类|模块|程序|脚本|实现|逻辑|配置|测试|用例|单测|回归|'+
-  '(?<![A-Za-z0-9_])(?:file|files|code|function|method|class|module|program|script|config|test|tests|spec|specs|suite|fixture|anything|everything)(?![A-Za-z0-9_])'+
+  '项目|仓库|代码库|工作区|工作目录|库|'+
+  '(?<![A-Za-z0-9_])(?:file|files|code|function|method|class|module|program|script|config|test|tests|spec|specs|suite|fixture|project|repository|repo|workspace|codebase|library|anything|everything)(?![A-Za-z0-9_])'+
   '|任何|一切';
 // An ALL-CAPS identifier (README, MAKEFILE) is a target too. It is matched separately
 // because a case-insensitive verb pattern cannot also be case-sensitive about its object.
@@ -355,4 +356,31 @@ export function isReadOnlyTaskRequest(request){
   // (运行/run) is outside this classifier's vocabulary, and hiding the edit tools from it is
   // the harmful direction. Only an explicit read-only instruction decides in that case.
   return markerPresent;
+}
+
+/**
+ * Separate "this request can authorize a write" from "bounded patch applies".
+ *
+ * `isReadOnlyTaskRequest` answers the asymmetric tool-visibility question: it says
+ * read-only only when it can prove every write verb is denied. A request with no
+ * write verb at all also returns false, which is not write authorization. Automatic
+ * source rewriting needs the stronger positive fact, so this classifier reuses the
+ * same sentence scan and reports whether at least one write sentence survived its
+ * denial checks.
+ */
+export function classifyTaskIntent(request){
+  const text=String(request??'');
+  if(isReadOnlyTaskRequest(text))return {readOnly:true,writeAuthorized:false,reason:'read-only-or-denied-write'};
+  for(const sentence of splitSentences(text)){
+    if(!sentence.trim())continue;
+    const prose=stripPaths(sentence);
+    if(!verbProbe.test(prose)&&!sentenceImplements(prose))continue;
+    if(!sentenceNamesTarget(sentence)&&!sentenceImplements(sentence))continue;
+    if(sentenceIsWritable(prose,sentence))return {readOnly:false,writeAuthorized:true,reason:'affirmative-write-request'};
+  }
+  return {readOnly:false,writeAuthorized:false,reason:'no-affirmative-write-request'};
+}
+
+export function hasWriteAuthorization(request){
+  return classifyTaskIntent(request).writeAuthorized;
 }

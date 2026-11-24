@@ -290,7 +290,7 @@ PTC 程序只在内部读取、输出省略或分页不全时，保留原快照�
 测试/检查命令（pytest、ruff、compileall、node --test、gradlew/gradle/mvn）输出完整且超过 4,000 个 UTF-16 单元时，后续请求视图使用有界的测试回执：命令、退出/失败计数、最多 8 个失败用例、关键错误行和尾部；规范事件保留完整输出，可用 `work_recall` 取回。`node --test` 只接受带完整 `# tests`、`# pass`、`# fail` 摘要的 TAP 输出，摘要缺失时保留规范正文。输出被宿主截断或 spill 到临时文件、没有可解析的失败/计数、用户要求完整输出、或历史取回不可用时，不做回执。
 
 原生 `grep` 搜索普通词或用 `|` 分隔的备选词时，宿主的长行预览可能省掉实际匹配。若同一次调用还返回完整匹配行，插件可在请求中显示匹配词附近的原文。文件、行号、结果数量和其他匹配照常交付。摘录标明长行仍有省略。宿主原始结果可按原方式取回。该处理不重新搜索或读取文件。
-定义摘要是信息组织，不自动算作省费；`definitionSummary` 分别记录压缩字符、注入字符和净字符，供后续判断。
+定义摘要默认关闭（`definitionSummary:"off"`，可选 `"on"`）。开启后仍是信息组织，不自动算作省费；`definitionSummary` 分别记录候选与发送次数、压缩字符、候选注入字符、实际注入字符和净字符，供后续判断。
 
 状态中的 `historyHygiene.referenceContext` 列出当前要求、追踪页、采用的来源、字符差和保留原因。
 `charsRemovedAcrossViews` 按请求视图累计，不能当成单次减少量或费用收益。
@@ -621,11 +621,11 @@ stubSummary 保留问题处理标记、事件指针和原文取回。
 index.mjs 负责组装和会话事件。
 plugin-command.mjs 负责命令；source-tools.mjs 负责源码和报告入口；management-tools.mjs 负责执行、状态与管理入口。
 
-当前开发版已在本机桌面宿主运行时独立加载声明的发布文件，并完成来源读取、结构化调用、保留计算、程序引用、精确编辑、交接及关闭后的原生读取。`node --test test/host-package-load.test.mjs test/host-workflow-combinations.test.mjs` 覆盖这些路径；`node --test test/trajectory-audit.test.mjs` 覆盖审计行为。宿主核对使用脚本化模型，需要本机 DSH Desktop 运行时和配套 Python 环境，不调用在线模型。`test/helpers/host.mjs` 可用 `DSH_APP` 指定桌面运行时目录。当前结果不表示桌面目录已加载开发版，也不证明每项模型质量和费用效果。
+当前开发版已在本机桌面宿主运行时独立加载声明的发布文件，并完成来源读取、结构化调用、保留计算、程序引用、精确编辑、交接及关闭后的原生读取。`node --test test/host-package-load.test.mjs test/host-workflow-combinations.test.mjs` 覆盖这些路径；`node --test test/trajectory-audit.test.mjs` 覆盖审计行为。`npm test` 当前为 1065 项，1064 通过，1 项按宿主能力跳过。默认路径分段测量用 `npm run profile`，只测本地处理，不包含模型等待或工具执行。宿主核对使用脚本化模型，需要本机 DSH Desktop 运行时和配套 Python 环境，不调用在线模型。`test/helpers/host.mjs` 可用 `DSH_APP` 指定桌面运行时目录。当前结果不表示桌面目录已加载开发版，也不证明每项模型质量和费用效果。
 
-运行完整测试时，源码成员解析和 `verified_exec` 宿主检查需要 `requirements-source-members.txt` 所列依赖的 Python。将 `DSH_TEST_FASTEDIT_PYTHON` 设置为该解释器的绝对路径；未设置或设为空时，测试使用开发目录的 `.fastedit-venv/Scripts/python.exe`。`verified_exec` 的原生条件写入固定要求宿主 0.2.2-rc.2；更早的受支持宿主按 `cas-file-tools-unavailable` 明确 deopt，不做无版本条件的替代写入。
+运行完整测试时，源码成员解析和 `verified_exec` 宿主检查需要 `requirements-source-members.txt` 所列依赖的 Python。将 `DSH_TEST_FASTEDIT_PYTHON` 设置为该解释器的绝对路径；未设置或设为空时，测试使用开发目录的 `.fastedit-venv/Scripts/python.exe`。`verified_exec` 的原生条件写入要求 `dsh-tools`、`dsh-fs-local`、`dsh-tool-fs` 位于同一 0.2.2-rc.1 或 0.2.2-rc.2 版本，并注入官方本地或沙箱文件服务。0.2.1-rc.4 或混合版本按 `cas-file-tools-unavailable` 明确 deopt，不做无版本条件的替代写入。
 
-`dsh-tools@0.2.2` 已移除 `mode` 配置。1.1.2 保留 `tool-execution.mjs` 的批量执行兼容与 `toolModeFor`，测试宿主按版本挂载拆分执行器；旧运行时保持原行为。支持版本为 `0.2.1-rc.4`、`0.2.2-rc.1` 和 `0.2.2-rc.2`。原生条件编辑仅支持已识别的 rc.2 文件服务；不支持时明确返回不可用。历史版本的检查结果不能替代当前候选的完整验收。
+`dsh-tools@0.2.2` 已移除 `mode` 配置。1.1.2 保留 `tool-execution.mjs` 的批量执行兼容与 `toolModeFor`，测试宿主按版本挂载拆分执行器；旧运行时保持原行为。支持版本为 `0.2.1-rc.4`、`0.2.2-rc.1` 和 `0.2.2-rc.2`。原生条件编辑仅支持已识别的 rc.1/rc.2 文件服务；不支持时明确返回不可用。历史版本的检查结果不能替代当前候选的完整验收。
 
 1.1.0 修复了无版本归档的同长度陈旧缓存、归档解码截断和本地头不一致，乱序/重复事件、非法参数崩溃、未结束写入的证据失效，以及会话状态回收。归档读取使用受限原生 deflate 解码并核对实际解压长度、压缩长度、CRC、目录和本地头；双宿主最终结果见集成分支验收记录。1.1.0 不宣称历史去除建议带来的 Token 净收益，不把测试通过或字符缩减当作发布效果。
 

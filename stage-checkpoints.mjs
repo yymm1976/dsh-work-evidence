@@ -130,7 +130,8 @@ function anchoredPrefix(region,checkpointIndex,log,record,maxChars,pins){
       // non-source result may lose its body here, and there is no per-session evidence in
       // this builder to decide that a later read supersedes it.
       const plan=planContextPrune(message,programRead?reads:[],{seq:event.seq,thresholdChars:8000,headChars:4096,tailChars:1024,
-        retainSource:file=>isSourceBodyPath(file)});
+        retainSource:file=>isSourceBodyPath(file),
+        transport:!!call&&['pwsh','bash','run_code','work_exec'].includes(call.name)});
       if(plan){
         const anchor={...message,content:plan.content,seq:event.seq};chars+=JSON.stringify(anchor).length+1;
         if(chars>maxChars)return {reason:'exact-prefix-anchors-too-large'};

@@ -63,7 +63,7 @@ test('declared package files independently load all retained controls and preser
     assert.ok(features.tools.every(item=>item.exposed===true),JSON.stringify(features.tools.filter(item=>!item.exposed)));
     assert.ok(features.features.filter(item=>typeof item.configured==='boolean').every(item=>item.configured));
     assert.equal(features.features.find(item=>item.key==='nativeReasoningReplay').status,'waiting');
-    const nativeHost=JSON.parse(await fs.readFile(createRequire(path.join(APP,'package.json')).resolve('@deepseek-ai/dsh-tools/package.json'),'utf8')).version==='0.2.2-rc.2';
+    const nativeHost=['0.2.2-rc.1','0.2.2-rc.2'].includes(JSON.parse(await fs.readFile(createRequire(path.join(APP,'package.json')).resolve('@deepseek-ai/dsh-tools/package.json'),'utf8')).version);
     assert.deepEqual(features.features.filter(item=>item.status==='blocked').map(item=>item.key),nativeHost?[]:['nativeVerifiedEdits']);
     assert.ok(JSON.stringify(sourceValue).includes('package-load-marker'));
     await host.command(agent,'off');await host.send(agent,'读取 source.txt，保持 Work Evidence 关闭。');

@@ -161,12 +161,17 @@ test('a serialized shell envelope carrying source is not pruned in the flat bran
   const source=Array.from({length:300},(_,i)=>
     `    value_${String(i).padStart(3,'0')} = compute_value(${i}, options=self._options)`).join('\n');
   const envelope=body=>JSON.stringify({stdout:{text:body},stderr:{text:''}});
-  const options={seq:9,thresholdChars:8000,headChars:4096,tailChars:1024,retainSource:()=>false};
+  const options={seq:9,thresholdChars:8000,headChars:4096,tailChars:1024,retainSource:()=>false,transport:true};
   const plan=body=>planContextPrune({role:'tool',content:[{type:'text',text:envelope(body)}]},[],options);
   assert.ok(envelope(source).length>=8000,'the fixture clears thresholdChars');
   assert.equal(plan(source),null,'escaped source is retained');
   const log=Array.from({length:400},(_,i)=>`build step ${i} completed in ${i}ms`).join('\n');
   assert.ok(plan(log),'a log in the same envelope is still reduced');
+  const unattributed={...options,transport:false};
+  assert.equal(planContextPrune({role:'tool',content:[{type:'text',text:envelope(source)}]},[],unattributed),null,
+    'without a transport origin the same body is conservatively retained');
+  assert.equal(planContextPrune({role:'tool',content:[{type:'text',text:envelope(log)}]},[],unattributed),null,
+    'and a transport-shaped log is not cut when provenance is unknown');
 });
 
 test('a rendered line-number prefix cannot hide a source body from the classifier',()=>{
@@ -236,12 +241,31 @@ test('a compact JSON document is source, and a shell envelope is not',()=>{
   assert.equal(isSourceBody(compact),true);
   assert.equal(isSourceBody(`<path>build.log</path>\n<content>\n${compact}\n</content>`),true,
     'and a non-source name does not change that');
-  // The negative control that matters: a shell envelope is also valid JSON, so a bare parse
-  // would have classified every shell result as configuration and disabled the receipt branch.
-  const envelope=JSON.stringify({stdout:{text:'build step 1 ok'},stderr:{text:''}});
-  assert.equal(isSourceBody(envelope),false,'the transport envelope is not configuration');
+  // A transport envelope is also valid JSON, so a bare parse would classify every shell
+  // result as configuration and disable the receipt branch. Provenance decides: the same
+  // large envelope is retained when unattributed and treated as a log when it came from a
+  // proven shell execution. The short control below never reaches the JSON rule at all.
+  const transportBody=JSON.stringify({stdout:{text:'build step '.repeat(900)},stderr:{text:''}});
+  assert.ok(transportBody.length>=8000);
+  assert.equal(isSourceBody(transportBody),true,'an unattributed transport-shaped body is conservatively retained');
+  assert.equal(isSourceBody(transportBody,{transport:true}),false,'a proven transport envelope is not configuration');
+  assert.equal(isSourceBody(JSON.stringify({stdout:{text:'ok'},stderr:{text:''}})),false,
+    'a short body stays below the source-shape threshold');
   // And prose wrapped in braces must not parse.
   assert.equal(looksLikeSourceBody('{'+'this is prose, not json. '.repeat(500)+'}'),false);
+});
+
+test('a real configuration that happens to contain stdout and stderr keys is retained without provenance',()=>{
+  // Review finding: shape alone classified this valid configuration as a shell transport
+  // envelope and allowed its middle to be replaced. Provenance comes first; content shape
+  // is only a conservative fallback when no transport origin is established.
+  const config=JSON.stringify({stdout:{enabled:true,format:'json'},stderr:{enabled:true},
+    ...Object.fromEntries(Array.from({length:400},(_,i)=>['option_'+i,{enabled:true,value:i}]))},null,2);
+  assert.ok(config.length>=8000,'the fixture clears thresholdChars');
+  assert.equal(isSourceBody(config),true,'unattributed JSON configuration is kept');
+  assert.equal(looksLikeSourceBody(config),true,'unattributed JSON configuration is source-shaped');
+  assert.equal(isSourceBody(config,{transport:true}),true,
+    'even with a possible transport origin, stdout objects without a text field are not a transport envelope');
 });
 
 test('prefix stripping preserves the content indentation',()=>{

@@ -5,16 +5,19 @@ import path from 'node:path';
 import {createRequire} from 'node:module';
 import {startHost,text,tool,APP} from './helpers/host.mjs';
 
-// The conditional-write backend exists only on 0.2.2-rc.2, so an edit must apply
-// there; the cas-file-tools-unavailable expectations below only describe hosts
-// that lack it. The gate has to match native.available() in native-cas.mjs, which
-// requires all three packages at 0.2.2-rc.2: checking only dsh-tools asserted
-// success on a host that correctly deopts with cas-file-tools-unavailable.
+// The conditional-write backend exists on 0.2.2-rc.1 and 0.2.2-rc.2, so an edit
+// must apply there; the cas-file-tools-unavailable expectations below only
+// describe hosts that lack it. The gate has to match native.available() in
+// native-cas.mjs, which requires all three packages on the same supported
+// kernel: checking only dsh-tools asserted success on a host that correctly
+// deopts with cas-file-tools-unavailable.
 const nativeSupported=(()=>{
   try{
     const require=createRequire(path.join(APP,'package.json'));
-    return ['@deepseek-ai/dsh-tools','@deepseek-ai/dsh-fs-local','@deepseek-ai/dsh-tool-fs']
-      .every(name=>require(name+'/package.json').version==='0.2.2-rc.2');
+    const versions=['@deepseek-ai/dsh-tools','@deepseek-ai/dsh-fs-local','@deepseek-ai/dsh-tool-fs']
+      .map(name=>require(name+'/package.json').version);
+    return ['0.2.2-rc.1','0.2.2-rc.2'].includes(versions[0])&&
+      versions.every(version=>version===versions[0]);
   }catch{return false;}
 })();
 
@@ -65,10 +68,10 @@ test('structured calls, retained data, exact program references, editing and han
         edits:[{file:'orders.json',mode:'replace_exact',old_text:'"amount":1200',new_text:'"amount":1300'}]})];}
       if(n===7){
         editApplied=valueOf(options).status==='applied';
-        // On the rc.2 conditional-write host this edit must actually apply; the
-        // deopt path below only describes hosts without that backend.
-        if(nativeSupported)assert.equal(editApplied,true,'expected verified_exec to apply on the rc.2 conditional-write backend: '+JSON.stringify(valueOf(options)));
-        // On a host without the rc.2 conditional write the edit cannot run, so the
+        // On the rc.1/rc.2 conditional-write host this edit must actually apply;
+        // the deopt path below only describes hosts without that backend.
+        if(nativeSupported)assert.equal(editApplied,true,'expected verified_exec to apply on the supported conditional-write backend: '+JSON.stringify(valueOf(options)));
+        // On a host without the conditional write the edit cannot run, so the
         // retained computation must NOT be invalidated; assert the honest deopt.
         if(!editApplied){
           assert.equal(valueOf(options).reason,'cas-file-tools-unavailable',JSON.stringify(valueOf(options)));
@@ -126,7 +129,7 @@ test('structured calls, retained data, exact program references, editing and han
   }finally{await host.close();}
 });
 
-test('PTC exact editing reports the missing native conditional-write backend without changing the file',{skip:nativeSupported?'rc.2 host provides the conditional-write backend':false},async()=>{
+test('PTC exact editing reports the missing native conditional-write backend without changing the file',{skip:nativeSupported?'supported host provides the conditional-write backend':false},async()=>{
   let result;
   const host=await startHost({toolMode:'ptc',workspace:{toolSurface:'full',nativeVerifiedEdits:true},extraMounts:[['dsh-ptc-runtime-node']],script:(options,n)=>{
     if(n===1)return [tool('run_code',{code:'console.log(JSON.stringify(await tools.verified_exec('+JSON.stringify({summary:'Change the exact amount',apply:true,

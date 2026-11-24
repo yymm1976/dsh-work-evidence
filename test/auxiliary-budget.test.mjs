@@ -24,8 +24,9 @@ async function start({usage=OBSERVED,finishKind='stop',answer='{"ok":true}',effe
     problems:[],dirty:true,auxiliarySignals:new WeakSet()};
   const runtime={get:()=>state,effects,problem:(item,kind,message)=>item.problems.push({kind,message}),modeStatus:()=>({selected:'aggressive'})};
   const agent={session:{id,seq:0,requestHeader:()=>({config:{provider:'p',model:'m'}})}};
-  const run=(scope,budgetCalls=2)=>modelJson(ctx,runtime,agent,new AbortController().signal,'system',{payload:1},
-    {route:{provider:'p',model:'m'},tokenLimit:32000,budgetScope:scope,budgetCalls});
+  const run=(scope,budgetCalls=2,task=null)=>modelJson(ctx,runtime,agent,new AbortController().signal,'system',{payload:1},
+    {route:{provider:'p',model:'m'},tokenLimit:32000,budgetScope:scope,budgetCalls,
+      ...(task?{taskBudgetScope:task.scope,taskTokenLimit:task.tokenLimit,taskCallLimit:task.calls}:{})});
   const budget=async()=>JSON.parse(await fs.readFile(file,'utf8'));
   const close=async()=>{await fs.rm(dir,{recursive:true,force:true,maxRetries:3});};
   return {state,dispatched,control,run,budget,file,close};
@@ -231,3 +232,74 @@ test('budget record text that is not JSON is identified as an invalid record',as
     assert.equal(dispatched.length,0);
   }finally{await close();}
 });
+
+test('a shared task budget spans scopes and stops before dispatch',async()=>{
+  const {dispatched,run,budget,close}=await start();
+  try{
+    const task={scope:'bounded-patch:req-1',tokenLimit:32000,calls:2};
+    assert.equal((await run('bounded-patch:req-1:1',1,task)).value.ok,true);
+    assert.equal((await run('bounded-patch:req-1:2',1,task)).value.ok,true);
+    await assert.rejects(()=>run('bounded-patch:req-1:3',1,task),error=>
+      error.auxiliaryCode==='auxiliary-budget-exhausted'&&error.auxiliaryDispatched===false&&
+      /Auxiliary task budget exhausted/.test(error.message));
+    assert.equal(dispatched.length,2,'the third scope never reaches the provider');
+    const record=await budget();
+    assert.deepEqual(record.tasks['bounded-patch:req-1'],{calls:2,tokens:300,failed:false});
+  }finally{await close();}
+});
+
+test('known-usage failures settle the task budget while unknown usage stops it',async()=>{
+  const known=await start({finishKind:'length'});
+  try{
+    const task={scope:'known-task',tokenLimit:32000,calls:4};
+    await assert.rejects(()=>known.run('known-task:a',1,task),/did not finish/);
+    known.control.finishKind='stop';
+    assert.equal((await known.run('known-task:b',1,task)).value.ok,true,
+      'a known-usage failure consumes the shared budget but does not stop later scopes');
+    const record=await known.budget();
+    assert.equal(record.tasks['known-task'].failed,false);
+    assert.equal(record.tasks['known-task'].calls,2);
+  }finally{await known.close();}
+
+  const unknown=await start();
+  try{
+    const task={scope:'unknown-task',tokenLimit:32000,calls:4};
+    unknown.control.usage=null;
+    assert.equal((await unknown.run('unknown-task:a',1,task)).value.ok,true);
+    await assert.rejects(()=>unknown.run('unknown-task:b',1,task),error=>
+      error.auxiliaryCode==='auxiliary-task-stopped'&&error.auxiliaryDispatched===false);
+    assert.equal(unknown.dispatched.length,1);
+    assert.equal((await unknown.budget()).tasks['unknown-task'].failed,true);
+  }finally{await unknown.close();}
+});
+
+test('task consumption survives a new observer process',async()=>{
+  const dir=await fs.mkdtemp(path.join(os.tmpdir(),'we-aux-task-'));
+  const state={
+    id:'session-aux-task',dir,telemetryDir:dir,
+    config:{modelMaxTokens:1200,modelTimeoutMs:20000,modelRoute:null},
+    metrics:{auxiliaryCalls:0,auxiliaryFailures:0,auxiliaryUnknownCalls:0,auxiliaryUsage:{},auxiliaryMs:0},
+    problems:[],dirty:true,auxiliarySignals:new WeakSet(),
+  };
+  const dispatched=[];
+  const ctx={llm:{async *stream(request){
+    dispatched.push(request);
+    yield {type:'block-end',block:{type:'text',text:'{"ok":true}'}};
+    yield {type:'usage',usage:OBSERVED};
+    yield {type:'finish',reason:{kind:'stop'}};
+  }}};
+  const runtime={get:()=>state,effects:null,problem:()=>{},modeStatus:()=>({selected:'aggressive'})};
+  const agent={session:{id:state.id,seq:0,requestHeader:()=>({config:{provider:'p',model:'m'}})}};
+  const task={scope:'restart-task',tokenLimit:32000,calls:1};
+  try{
+    await modelJson(ctx,runtime,agent,new AbortController().signal,'s',{x:1},
+      {route:{provider:'p',model:'m'},budgetScope:'restart-task:a',budgetCalls:1,...taskTaskOptions(task)});
+    delete state.auxiliaryBudget;
+    await assert.rejects(()=>modelJson(ctx,runtime,agent,new AbortController().signal,'s',{x:2},
+      {route:{provider:'p',model:'m'},budgetScope:'restart-task:b',budgetCalls:1,...taskTaskOptions(task)}),error=>
+      error.auxiliaryCode==='auxiliary-budget-exhausted'&&error.auxiliaryDispatched===false);
+    assert.equal(dispatched.length,1);
+  }finally{await fs.rm(dir,{recursive:true,force:true});}
+});
+
+const taskTaskOptions=task=>({taskBudgetScope:task.scope,taskTokenLimit:task.tokenLimit,taskCallLimit:task.calls});

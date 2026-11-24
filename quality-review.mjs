@@ -89,7 +89,7 @@ export function scopeReviewSources(payload,root,configured='auto'){
   const full={...payload,sourceReview:{mode:'all-supplied',files,omittedFiles:[],requestSourceFiles,
     coverage:'Supplied historical snippets only; no complete current files were reconstructed.'}};
   if(configured==='full'||files.length<2||JSON.stringify(payload).length<=24000)return full;
-  const key=file=>{const value=path.resolve(root??'.',file).replaceAll('\\','/');return process.platform==='win32'?value.toLowerCase():value;};
+  const key=file=>path.resolve(root??'.',file).replaceAll('\\','/');
   const artifacts=payload.observed.artifacts;
   const sources=[...artifacts].reverse().filter(item=>!/(?:\.(?:md|mdx|rst|adoc)|\bREADME(?:\.[^/]*)?)$/iu.test(item.path));
   const isCheck=file=>/(?:^|\/)(?:tests?|__tests__)(?:\/|$)|(?:^|\/)(?:test|check)[_-][^/]+\.(?:[cm]?js|tsx?|py)$|\.(?:test|spec)\.[^/]+$/iu.test(file.replaceAll('\\','/'));
@@ -159,7 +159,7 @@ function requestSourceSections(events,request,assistant,root,fileCall){
   const requestText=textOf(messageOf(request)),quoted=[...requestText.matchAll(/“([^”\r\n]{1,128})”|"([^"\r\n]{1,128})"|`([^`\r\n]{1,128})`/gu)]
     .map(match=>(match[1]??match[2]??match[3]).trim()).filter(Boolean);
   if(!quoted.length||!root)return [];
-  const groups=new Map(),ambiguous=new Set(),fileKey=file=>{const value=path.resolve(root,file).replaceAll('\\','/');return process.platform==='win32'?value.toLowerCase():value;};
+  const groups=new Map(),ambiguous=new Set(),fileKey=file=>path.resolve(root,file).replaceAll('\\','/');
   const heading=text=>/^(#{1,6})\s+(.+?)\s*#*\s*$/u.exec(text);
   for(const event of events){
     if(event.seq<=request.seq||event.seq>=assistant.seq||event.surfaceOp?.op==='replace')continue;
@@ -255,7 +255,7 @@ function payloadFor(current,review,root){
   // the request. Prefer already-recorded reads of the changed files, not fresh reads.
   const fileKey=value=>{
     if(typeof value!=='string')return null;
-    const key=path.resolve(root??'.',value).replaceAll('\\','/');return process.platform==='win32'?key.toLowerCase():key;
+    return path.resolve(root??'.',value).replaceAll('\\','/');
   };
   const fileCall=event=>{
     const data=event.data??{};

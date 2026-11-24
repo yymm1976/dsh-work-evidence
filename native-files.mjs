@@ -38,5 +38,26 @@ export function createNativeFiles(ctx){
       throw Object.assign(new Error('Source changed during the native read; request it again.'),{code:'SOURCE_CHANGED'});
     return {path:before.path,bytes,version:before.version,bytesLength:bytes.length,versioned:before.version!==null&&before.version===after.version};
   }
-  return {stat,readBytes,processPath:target=>backend().processPath(target)};
+  async function list(root,file,signal){
+    const directory=await stat(root,file,signal);
+    if(!directory.exists)throw Object.assign(new Error('Source directory is unavailable'),{code:'FS_NOT_FOUND'});
+    if(directory.type!=='directory')throw Object.assign(new Error('Source path is not a directory'),{code:'FS_NOT_DIRECTORY'});
+    const entries=await backend().listDir(directory.target,signal);
+    const result=[];
+    for(const entry of entries){
+      signal?.throwIfAborted();
+      const relative=String(file).replaceAll('\\','/').replace(/\/+$/u,'');
+      const lexical=!relative||relative==='.'?entry.name:relative+'/'+entry.name;
+      let type=entry.type??'other';
+      try{
+        const pathInfo=await backend().lstat(lexical,{cwd:root},signal);
+        if(pathInfo?.type==='symlink')type='symlink';
+      }catch(error){
+        if(signal?.aborted)throw error;
+      }
+      result.push({name:entry.name,type,bytes:entry.size??null,version:entry.version??null,target:entry.target});
+    }
+    return result;
+  }
+  return {stat,readBytes,list,processPath:target=>backend().processPath(target)};
 }

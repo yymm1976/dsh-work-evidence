@@ -60,11 +60,11 @@ const NOTICE_FEATURES=new Map([
 export const featureSetting=name=>FEATURES[name]??null;
 
 /** Measures changes on the same task trajectory. Provider usage is never attributed by subtraction. */
-export function createEffectObserver(ctx,runtime){
+export function createEffectObserver(ctx,runtime,{io=fs}={}){
   const states=new Map();
   const nativeAttempts=new WeakMap();
   const storageFor=agent=>{const s=runtime.get(agent);return s.telemetryDir===undefined?s.dir:s.telemetryDir;};
-  const get=agent=>{let state=states.get(agent.session.id);if(!state){state={agent,features:Object.create(null),effects:new Map(),decisions:[],pendingDecisions:[],pendingOverflow:[],decisionSeq:0,overflowWriting:false,overflowQueue:Promise.resolve(),pendingRequestRows:[],requestRowWriting:false,requestRowQueue:Promise.resolve(),recentRequests:[],requests:0,mainRequests:0,auxiliaryRequests:0,compactionRequests:0,completeUsageRequests:0,missingUsage:0,unknownConsumption:0,reported:{inputTokens:0,cacheReadTokens:0,cacheWriteTokens:0,outputTokens:0,totalTokens:0},rawReported:{inputTokens:0,cacheReadTokens:0,cacheWriteTokens:0,outputTokens:0,totalTokens:0},totals:{directTokensEstimate:0,directChars:0,instructionTokensEstimate:0,systemTokensEstimate:0,messageTokensEstimate:0,toolSchemaTokensEstimate:0,requestReconstructionMisses:0},queue:Promise.resolve(),writeErrors:[],effectBytes:0,loaded:false,snippets:new Map(),needsLeadingNewline:new Set()};states.set(agent.session.id,state);}return state;};
+  const get=agent=>{let state=states.get(agent.session.id);if(!state){state={agent,features:Object.create(null),effects:new Map(),decisions:[],pendingDecisions:[],pendingOverflow:[],decisionSeq:0,overflowWriting:false,overflowQueue:Promise.resolve(),pendingStartRows:[],pendingRequestRows:[],requestRowWriting:false,requestRowQueue:Promise.resolve(),pendingLinkRows:[],linkWriting:false,linkQueue:Promise.resolve(),finishQueue:Promise.resolve(),finishFailed:false,persistenceUnavailable:false,persistenceConflict:false,recoveredRequestStarts:0,recoveredRequestLinks:0,unsettledRequestStarts:0,recentRequests:[],requests:0,mainRequests:0,auxiliaryRequests:0,compactionRequests:0,completeUsageRequests:0,missingUsage:0,unknownConsumption:0,reported:{inputTokens:0,cacheReadTokens:0,cacheWriteTokens:0,outputTokens:0,totalTokens:0},rawReported:{inputTokens:0,cacheReadTokens:0,cacheWriteTokens:0,outputTokens:0,totalTokens:0},totals:{directTokensEstimate:0,directChars:0,instructionTokensEstimate:0,systemTokensEstimate:0,messageTokensEstimate:0,toolSchemaTokensEstimate:0,requestReconstructionMisses:0},queue:Promise.resolve(),writeErrors:[],effectBytes:0,loaded:false,snippets:new Map(),needsLeadingNewline:new Set()};states.set(agent.session.id,state);}return state;};
   function feature(state,name){return state.features[name]??=( {decisions:0,applied:0,deferred:0,notApplicable:0,unavailable:0,failed:0,requestsAffected:0,directTokensEstimate:0,directChars:0,reasons:Object.create(null)} );}
   function decide(agent,name,status,reason,details={}){
     const state=get(agent),item=feature(state,name),at=new Date().toISOString(),step=runtime.get(agent).step,seq=++state.decisionSeq;
@@ -115,7 +115,7 @@ export function createEffectObserver(ctx,runtime){
     state.needsLeadingNewline.add(kind);
     let raw;
     // A missing file has a clean boundary: the first append creates it.
-    try{raw=await fs.readFile(file);}catch(error){
+    try{raw=await io.readFile(file);}catch(error){
       // A missing file has a clean boundary: the first append creates it, so the marker
       // this call set must be cleared or the next append reports a repair failure that
       // never happened and prepends a newline to an empty file.
@@ -152,9 +152,9 @@ export function createEffectObserver(ctx,runtime){
     try{
       if(keep!==null){
         const keepBytes=Buffer.byteLength(keep,'utf8');
-        await fs.truncate(file,boundary+keepBytes);
-        await fs.appendFile(file,'\n','utf8');
-      }else await fs.truncate(file,boundary);
+        await io.truncate(file,boundary+keepBytes);
+        await io.appendFile(file,'\n','utf8');
+      }else await io.truncate(file,boundary);
       state.needsLeadingNewline.delete(kind);
       return true;
     }catch(error){
@@ -167,10 +167,11 @@ export function createEffectObserver(ctx,runtime){
   function queue(state,agent,row,kind='observability'){
     const dir=storageFor(agent);if(!dir){state.writeErrors.push('Observability storage outside the workspace is unavailable');state.writeErrors=state.writeErrors.slice(-8);return Promise.resolve(false);}
     if(!/^[-a-zA-Z0-9_][-.a-zA-Z0-9_]{0,127}$/.test(agent.session.id)){state.writeErrors.push('Invalid session ID for observability record');return Promise.resolve(false);}
+    if(state.persistenceConflict){state.writeErrors.push('Observability persistence is stopped after a conflicting stable identity');state.writeErrors=state.writeErrors.slice(-8);return Promise.resolve(false);}
     const file=path.join(dir,agent.session.id+'.'+kind+'.jsonl');
     // Boundary inspection and repair stay in this same queue, so a later row cannot
     // overtake recovery and turn a partial append into a corrupt persistent ledger.
-    state.queue=state.queue.catch(()=>{}).then(async()=>{await fs.mkdir(dir,{recursive:true});
+    state.queue=state.queue.catch(()=>{}).then(async()=>{await io.mkdir(dir,{recursive:true});
       // A repair that failed last time left the boundary unknown. Retry it before
       // appending: if it still fails, appending would seal the fragment and destroy the
       // joined row, so the row stays pending instead.
@@ -179,9 +180,33 @@ export function createEffectObserver(ctx,runtime){
         state.writeErrors=state.writeErrors.slice(-8);
         if(!await repairAppendBoundary(state,file,kind))return false;
       }
-      await fs.appendFile(file,(state.needsLeadingNewline.has(kind)?'\n':'')+JSON.stringify(row)+'\n','utf8');
+      await io.appendFile(file,(state.needsLeadingNewline.has(kind)?'\n':'')+JSON.stringify(row)+'\n','utf8');
       state.needsLeadingNewline.delete(kind);return true;}).catch(async error=>{
       state.writeErrors.push(String(error.message).slice(0,240));state.writeErrors=state.writeErrors.slice(-8);
+      // appendFile may publish a complete row and still reject. Retrying by schema
+      // and stable request identity then becomes idempotent instead of duplicating
+      // the record. Pending-decision batches have no requestId, so only an exact
+      // serialized row proves the earlier append landed.
+      const serialized=JSON.stringify(row);
+      let conflicting=null;
+      try{
+        const raw=await io.readFile(file,'utf8');
+        for(const line of raw.split('\n')){
+          if(!line)continue;
+          if(line===serialized)return true;
+          if(!row.requestId)continue;
+          try{
+            const item=JSON.parse(line);
+            if(item.schema===row.schema&&item.requestId===row.requestId)conflicting=line;
+          }catch{}
+        }
+      }catch{}
+      if(conflicting!==null){
+        state.persistenceConflict=true;
+        state.writeErrors.push('Conflicting '+row.schema+' row retained for request '+row.requestId+'; the pending row was not dropped');
+        state.writeErrors=state.writeErrors.slice(-8);
+        return false;
+      }
       await repairAppendBoundary(state,file,kind);return false;});
     return state.queue;
   }
@@ -204,11 +229,14 @@ export function createEffectObserver(ctx,runtime){
     }).catch(()=>{state.overflowWriting=false;return false;});
   }
   function flushRequestRows(state,agent){
-    if(state.requestRowWriting||!state.pendingRequestRows.length)return;
+    if(state.requestRowWriting)return state.requestRowQueue;
+    if(!state.pendingRequestRows.length)return Promise.resolve(true);
     state.requestRowWriting=true;
     state.requestRowQueue=state.requestRowQueue.catch(()=>{}).then(async()=>{
+      let ok=true;
       while(state.pendingRequestRows.length){
-        const row=state.pendingRequestRows[0],ok=await queue(state,agent,row);
+        const row=state.pendingRequestRows[0];
+        ok=await queue(state,agent,row);
         if(!ok)break;
         state.pendingRequestRows.shift();
         const carried=row.decisions??[];
@@ -218,7 +246,24 @@ export function createEffectObserver(ctx,runtime){
         }
       }
       state.requestRowWriting=false;
-    }).catch(()=>{state.requestRowWriting=false;});
+      if(!state.pendingRequestRows.length)state.finishFailed=false;
+      return ok;
+    }).catch(()=>{state.requestRowWriting=false;return false;});
+    return state.requestRowQueue;
+  }
+  function flushLinkRows(state,agent){
+    if(state.linkWriting)return state.linkQueue;
+    if(!state.pendingLinkRows.length)return Promise.resolve(true);
+    state.linkWriting=true;
+    state.linkQueue=state.linkQueue.catch(()=>{}).then(async()=>{
+      while(state.pendingLinkRows.length){
+        const row=state.pendingLinkRows[0],ok=await queue(state,agent,row);
+        if(!ok){state.linkWriting=false;return false;}
+        state.pendingLinkRows.shift();
+      }
+      state.linkWriting=false;return true;
+    }).catch(()=>{state.linkWriting=false;return false;});
+    return state.linkQueue;
   }
   function begin(agent,options,{auxiliary=false,requestKind}={}){
     requestKind=requestKindOf({purpose:options.purpose,auxiliary,requestKind});
@@ -284,9 +329,34 @@ export function createEffectObserver(ctx,runtime){
       decisions:rowDecisions,sourceSeq:agent.session.seq,step:runtime.get(agent).step};
   }
   async function start(agent,row){
-    row.startRecorded=await queue(get(agent),agent,{schema:'work-evidence.request-start.v1',sessionId:agent.session.id,
+    const state=get(agent);
+    if(!storageFor(agent)){
+      row.startRecorded=false;
+      state.persistenceUnavailable=true;
+      state.writeErrors.push('request-start not persisted: session storage is unavailable');
+      state.writeErrors=state.writeErrors.slice(-8);
+      return;
+    }
+    await state.finishQueue;
+    await flushRequestRows(state,agent);
+    await flushLinkRows(state,agent);
+    for(const pending of state.pendingStartRows.slice()){
+      if(!await queue(state,agent,pending))break;
+      state.pendingStartRows=state.pendingStartRows.filter(item=>item!==pending);
+    }
+    if(state.pendingStartRows.length||state.pendingRequestRows.length||state.finishFailed){
+      const error=new Error('Effect ledger could not persist the preceding request record; the next request was not dispatched.');
+      error.code='EFFECT_PERSISTENCE_UNAVAILABLE';error.effectsDispatched=false;throw error;
+    }
+    const startRow={schema:'work-evidence.request-start.v1',sessionId:agent.session.id,
       requestId:row.requestId,at:row.at,sourceSeq:row.sourceSeq,requestKind:row.requestKind,purpose:row.purpose,
-      provider:row.provider,model:row.model,reasoningEffort:row.reasoningEffort,nativeAttempt:row.nativeAttempt});
+      provider:row.provider,model:row.model,reasoningEffort:row.reasoningEffort,nativeAttempt:row.nativeAttempt};
+    row.startRecorded=await queue(state,agent,startRow);
+    if(!row.startRecorded){
+      state.pendingStartRows.push(startRow);
+      const error=new Error('Effect ledger could not persist the request-start record; the request was not dispatched.');
+      error.code='EFFECT_PERSISTENCE_UNAVAILABLE';error.effectsDispatched=false;throw error;
+    }
   }
   function normalizeRow(row){
     row.requestKind=requestKindOf(row);row.auxiliary=row.requestKind==='auxiliary';
@@ -350,60 +420,89 @@ export function createEffectObserver(ctx,runtime){
   }
   function finish(agent,row){
     const state=get(agent);normalizeRow(row);accumulate(state,row);
-    flushRequestRows(state,agent);
+    if(!storageFor(agent)){
+      state.persistenceUnavailable=true;
+      state.writeErrors.push('request-effects not persisted: session storage is unavailable');
+      state.writeErrors=state.writeErrors.slice(-8);
+      state.pendingRequestRows.push(row);
+      runtime.get(agent).dirty=true;
+      return;
+    }
     // The row carries a copy of the pending decisions, so they are only removed once
     // the append succeeded. A failed append keeps them for the cleanup flush and for a
     // later retry instead of dropping everything recorded for this request.
     const carried=row.decisions??[];
-    queue(state,agent,row).then(ok=>{
+    state.finishQueue=state.finishQueue.catch(()=>{}).then(async()=>{
+      await flushRequestRows(state,agent);
+      let ok=false;
+      try{ok=await queue(state,agent,row);}
+      catch{ok=false;}
+      state.finishFailed=!ok;
       if(ok&&carried.length){
         const ids=new Set(carried.map(item=>item?.id));
         state.pendingDecisions=state.pendingDecisions.filter(item=>!ids.has(item?.id));
       }
       if(!ok){
         state.pendingRequestRows.push(row);
-        state.pendingRequestRows=state.pendingRequestRows.slice(-32);
-        flushRequestRows(state,agent);
+        await flushRequestRows(state,agent);
       }
-    }).catch(()=>{state.pendingRequestRows.push(row);state.pendingRequestRows=state.pendingRequestRows.slice(-32);flushRequestRows(state,agent);});
+      return ok;
+    });
     runtime.get(agent).dirty=true;
   }
   async function load(agent){
     const state=get(agent);if(state.loaded)return;if(state.loading)return state.loading.catch(()=>{});
     const dir=storageFor(agent);if(!dir)return;
     state.loading=(async()=>{
+      const startedRequests=new Set(),settledRequests=new Set();
       for(const kind of ['attribution','observability']){
         const file=path.join(dir,agent.session.id+'.'+kind+'.jsonl');let raw;
         try{
-          try{await fs.access(file);}catch(error){
+          try{await io.access(file);}catch(error){
             if(error.code!=='ENOENT')throw error;
             const legacyDir=runtime.get(agent).dir;
             if(!legacyDir||legacyDir===dir)throw error;
             const legacy=path.join(legacyDir,agent.session.id+'.'+kind+'.jsonl');
-            if((await fs.stat(legacy)).size>64*1024*1024)throw new Error('Legacy observability file exceeds 64 MiB load limit');
-            await fs.mkdir(dir,{recursive:true});
-            try{await fs.writeFile(file,await fs.readFile(legacy),{flag:'wx',mode:0o600});}catch(copyError){if(copyError.code!=='EEXIST')throw copyError;}
+            if((await io.stat(legacy)).size>64*1024*1024)throw new Error('Legacy observability file exceeds 64 MiB load limit');
+            await io.mkdir(dir,{recursive:true});
+            try{await io.writeFile(file,await io.readFile(legacy),{flag:'wx',mode:0o600});}catch(copyError){if(copyError.code!=='EEXIST')throw copyError;}
           }
-          if((await fs.stat(file)).size>64*1024*1024)throw new Error('Observability file exceeds 64 MiB load limit');raw=await fs.readFile(file,'utf8');
+          if((await io.stat(file)).size>64*1024*1024)throw new Error('Observability file exceeds 64 MiB load limit');raw=await io.readFile(file,'utf8');
         }catch(error){if(error.code!=='ENOENT')state.writeErrors.push('load: '+error.message);continue;}
         if(raw&&!raw.endsWith('\n')){try{
           const repaired=await repairAppendBoundary(state,file,kind);
-          if(repaired)raw=await fs.readFile(file,'utf8');
+          if(repaired)raw=await io.readFile(file,'utf8');
           else{state.needsLeadingNewline.add(kind);state.writeErrors.push('newline repair: '+(state.lastRepairError??'boundary not repairable'));}
         }catch(error){state.needsLeadingNewline.add(kind);state.writeErrors.push('newline repair: '+String(error.message??error).slice(0,200));}}
-        const seen=new Set(),decisionIds=new Set();for(const line of raw.split('\n').filter(Boolean))try{
+        const seen=new Set(),seenRows=new Map(),decisionIds=new Set();for(const line of raw.split('\n').filter(Boolean))try{
           const item=JSON.parse(line);
-          if(kind==='observability'&&!['work-evidence.request-effects.v1','work-evidence.pending-decisions.v1'].includes(item.schema))continue;
+          if(kind==='observability'&&!['work-evidence.request-start.v1','work-evidence.request-effects.v1',
+            'work-evidence.request-link.v1','work-evidence.pending-decisions.v1'].includes(item.schema))continue;
           if(item.sessionId!==undefined&&item.sessionId!==agent.session.id)throw new Error('Observability row belongs to another session');
-          const id=kind==='observability'?item.requestId:item.id;if(id!==undefined){if(seen.has(id))continue;seen.add(id);}
+          const id=kind==='observability'
+            ? item.schema==='work-evidence.pending-decisions.v1'?undefined:`${item.schema}:${item.requestId??item.at??''}`
+            : item.id;
+          if(kind==='observability'&&id!==undefined){
+            const prior=seenRows.get(id);
+            if(prior!==undefined){
+              if(prior!==line){state.persistenceConflict=true;state.writeErrors.push('Conflicting persistent row retained: '+id);}
+              continue;
+            }
+            seenRows.set(id,line);
+          }else if(id!==undefined){if(seen.has(id))continue;seen.add(id);}
           if(kind==='attribution'&&item.schema==='work-evidence.attribution.v1'&&typeof item.messageId==='string'&&Array.isArray(item.before)){
             if(state.effectBytes+(item.bytes??0)>16*1024*1024){state.writeErrors.push('attribution restore exceeds memory limit');break;}
             const list=state.effects.get(item.messageId)??[];if(!list.some(effect=>effect.id===item.id)){list.push(item);state.effects.set(item.messageId,list);state.effectBytes+=item.bytes??0;}
+          }else if(kind==='observability'&&item.schema==='work-evidence.request-start.v1'&&typeof item.requestId==='string'){
+            startedRequests.add(item.requestId);state.recoveredRequestStarts++;
+          }else if(kind==='observability'&&item.schema==='work-evidence.request-link.v1'&&typeof item.requestId==='string'){
+            state.recoveredRequestLinks++;
           }else if(kind==='observability'&&item.schema==='work-evidence.request-effects.v1'){
             // A persisted row keeps the verdicts stored with it; only rows written before
             // that field existed are canonicalized here, and only once.
             normalizeRow(item);
             accumulate(state,item);
+            if(typeof item.requestId==='string')settledRequests.add(item.requestId);
             for(const decision of item.decisions??[])if(decision&&typeof decision.id==='string'&&!decisionIds.has(decision.id)){
               decisionIds.add(decision.id);restoreDecision(state,decision,item.at,item.step);
             }
@@ -417,6 +516,7 @@ export function createEffectObserver(ctx,runtime){
           }
         }catch(error){state.writeErrors.push('Unreadable '+kind+' row retained: '+error.message);}
       }
+      state.unsettledRequestStarts=[...startedRequests].filter(requestId=>!settledRequests.has(requestId)).length;
     })().finally(()=>{state.writeErrors=state.writeErrors.slice(-8);state.loaded=true;});
     try{await state.loading;}
     catch(error){state.writeErrors.push('load: '+String(error.message??error).slice(0,200));}
@@ -443,7 +543,15 @@ export function createEffectObserver(ctx,runtime){
       scope:'local same-trajectory text estimate; savedTokensEstimate is gross of the overheads listed in spentTokensEstimate; not a provider billing measurement'};
     const full={version:1,schema:'work-evidence.observability.v1',requests:{count:state.requests,main:state.mainRequests,compaction:state.compactionRequests,auxiliary:state.auxiliaryRequests,missingUsage:state.missingUsage,unknownConsumption:state.unknownConsumption,completeUsageRequests:state.completeUsageRequests,providerReported:{...state.reported},providerReportedRaw:{...state.rawReported}},
       totals:{...state.totals,balance},features,recentRequests:state.recentRequests.slice(),decisions:state.decisions.slice(-24),
-      persistence:{file:storageFor(agent)?path.join(storageFor(agent),agent.session.id+'.observability.jsonl'):null,writeErrors:state.writeErrors.slice(),scope:'session-local start/settlement records and native event links outside workspace discovery; no prompt bodies; survives rolling status window'},
+      persistence:{file:storageFor(agent)?path.join(storageFor(agent),agent.session.id+'.observability.jsonl'):null,writeErrors:state.writeErrors.slice(),
+        pendingStartRows:state.pendingStartRows.length,pendingRequestRows:state.pendingRequestRows.length,pendingLinkRows:state.pendingLinkRows.length,
+        pendingDecisions:state.pendingDecisions.length,pendingOverflow:state.pendingOverflow.length,finishFailed:state.finishFailed,
+        storageAvailable:!!storageFor(agent),persistenceUnavailable:state.persistenceUnavailable,persistenceConflict:state.persistenceConflict,
+        recoveredRequestStarts:state.recoveredRequestStarts,recoveredRequestLinks:state.recoveredRequestLinks,unsettledRequestStarts:state.unsettledRequestStarts,
+        complete:state.pendingStartRows.length===0&&state.pendingRequestRows.length===0&&state.pendingLinkRows.length===0&&
+          state.pendingDecisions.length===0&&state.pendingOverflow.length===0&&!state.finishFailed&&
+          !state.persistenceUnavailable&&!state.persistenceConflict&&state.unsettledRequestStarts===0,
+        scope:'session-local start/settlement records and native event links outside workspace discovery; no prompt bodies; survives rolling status window'},
       interpretation:'providerReported totals include only complete, internally consistent adapter counts; providerReportedRaw retains finite fields from all rows for diagnosis and does not establish complete consumption. Main, compaction and auxiliary requests are separate. Direct feature token deltas are local estimates on the same trajectory, including visible guidance overhead; they are not measured task savings. Unmapped or evicted attribution remains unavailable.'};
     if(options.detail!==false)return full;
     const summaryFeatures={};for(const [name,item]of Object.entries(features)){const {reasons,...summary}=item;summaryFeatures[name]=summary;}
@@ -469,15 +577,32 @@ export function createEffectObserver(ctx,runtime){
     if(!active||active.attemptId!==frame.attemptId)return;
     nativeAttempts.delete(agent);
     if(!active.requestId)return;
-    queue(get(agent),agent,{schema:'work-evidence.request-link.v1',sessionId:agent.session.id,requestId:active.requestId,
+    const state=get(agent),row={schema:'work-evidence.request-link.v1',sessionId:agent.session.id,requestId:active.requestId,
       nativeAttempt:{attemptId:active.attemptId,turn:active.turn,step:active.step},at:new Date().toISOString(),
-      outcome:frame.outcome?.kind??'unknown',eventType:frame.outcome?.eventType??null,sourceSeq:frame.outcome?.seq??null});
+      outcome:frame.outcome?.kind??'unknown',eventType:frame.outcome?.eventType??null,sourceSeq:frame.outcome?.seq??null};
+    state.pendingLinkRows.push(row);flushLinkRows(state,agent);
   });
-  return {decide,rewrite,benefit,begin,start,finish,load,snippet,snapshot,instructions:(agent,text)=>{get(agent).instructionText=text;},flush:async agent=>{const state=get(agent);await state.overflowQueue;await state.queue;},
+  async function flushAll(state,agent){
+    await state.finishQueue;await state.overflowQueue;await state.queue;
+    await flushRequestRows(state,agent);await flushLinkRows(state,agent);
+    for(const pending of state.pendingStartRows.slice()){
+      if(!await queue(state,agent,pending))break;
+      state.pendingStartRows=state.pendingStartRows.filter(item=>item!==pending);
+    }
+    const complete=!state.pendingStartRows.length&&!state.pendingRequestRows.length&&!state.pendingLinkRows.length&&
+      !state.pendingOverflow.length&&!state.pendingDecisions.length&&!state.finishFailed&&
+      !state.persistenceUnavailable&&!state.persistenceConflict;
+    return {complete,pendingStartRows:state.pendingStartRows.length,pendingRequestRows:state.pendingRequestRows.length,
+      pendingLinkRows:state.pendingLinkRows.length,pendingDecisions:state.pendingDecisions.length,pendingOverflow:state.pendingOverflow.length};
+  }
+  return {decide,rewrite,benefit,begin,start,finish,load,snippet,snapshot,instructions:(agent,text)=>{get(agent).instructionText=text;},flush:async agent=>flushAll(get(agent),agent),
     async disposeAgent(agent){
       const state=get(agent);
-      await state.overflowQueue;
-      await state.queue;
+      await state.finishQueue;await flushRequestRows(state,agent);await flushLinkRows(state,agent);
+      for(const pending of state.pendingStartRows.slice()){
+        if(!await queue(state,agent,pending))return;
+        state.pendingStartRows=state.pendingStartRows.filter(item=>item!==pending);
+      }
       if(state.pendingOverflow.length){
         const decisions=state.pendingOverflow.slice();
         const ok=await queue(state,agent,{schema:'work-evidence.pending-decisions.v1',sessionId:agent.session.id,
@@ -506,7 +631,8 @@ export function createEffectObserver(ctx,runtime){
       // can arrive while these appends are in flight. Both are checked after the flush:
       // deleting the state with either still non-empty would drop records that never
       // reached disk.
-      if(state.pendingOverflow.length||state.pendingDecisions.length)return;
+      if(state.pendingOverflow.length||state.pendingDecisions.length||state.pendingStartRows.length||
+        state.pendingRequestRows.length||state.pendingLinkRows.length||state.finishFailed)return;
       nativeAttempts.delete(agent);states.delete(agent.session.id);
     },async dispose(){
       for(const stop of [unsubscribe,unsubscribeStreams])if(typeof stop==='function')stop();
@@ -515,8 +641,13 @@ export function createEffectObserver(ctx,runtime){
       // the telemetry directory through runtime.get(agent), so a fabricated agent has no
       // directory and queue() would silently fail, losing exactly what this keeps.
       await Promise.allSettled([...states.entries()].map(async([id,state])=>{
-        await state.overflowQueue;await state.queue;
+        await state.finishQueue;await state.overflowQueue;await state.queue;
         const agent=state.agent;
+        if(agent){await flushRequestRows(state,agent);await flushLinkRows(state,agent);
+          for(const pending of state.pendingStartRows.slice()){
+            if(!await queue(state,agent,pending))break;
+            state.pendingStartRows=state.pendingStartRows.filter(item=>item!==pending);
+          }}
         if(agent&&(state.pendingDecisions.length||state.pendingOverflow.length)){
           const pending=[...state.pendingOverflow,...state.pendingDecisions];
           const decisions=pending.slice();
@@ -532,6 +663,7 @@ export function createEffectObserver(ctx,runtime){
       // chance: a failed append keeps its decisions on the state object, and clearing the
       // map here is what discards them. States that still hold unpersisted records are
       // kept so a later dispose attempt can retry them.
-      const remaining=[...states.entries()].filter(([,state])=>state.pendingOverflow.length||state.pendingDecisions.length);
+      const remaining=[...states.entries()].filter(([,state])=>state.pendingOverflow.length||state.pendingDecisions.length||
+        state.pendingStartRows.length||state.pendingRequestRows.length||state.pendingLinkRows.length||state.finishFailed);
       if(!remaining.length)states.clear();}};
 }

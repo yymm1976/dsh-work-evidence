@@ -63,7 +63,7 @@ function createProjectContext(rootReal,exec){
   }
   function stamp(display,real,stat){
     if(!stat)return;
-    const key=process.platform==='win32'?String(real).toLowerCase():real;
+    const key=String(real);
     if(!metadata.has(key))metadataOrder.push(key);
     metadata.set(key,{
       path:posix(display),
@@ -624,7 +624,7 @@ async function loadMaven(project,versionPropertyNames,versions,dependencies){
     }
     state.files[file]=loaded.state;
     if(loaded.state!=='observed')continue;
-    const key=process.platform==='win32'?loaded.real.toLowerCase():loaded.real;
+    const key=loaded.real;
     if(seen.has(key))continue;
     seen.add(key);
     try{

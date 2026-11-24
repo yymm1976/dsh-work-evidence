@@ -1,10 +1,13 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
+import os from 'node:os';
 import {randomUUID} from 'node:crypto';
 import {spawn} from 'node:child_process';
-import {isAgentLoopRequest,markAgentLoopRequest} from '@deepseek-ai/dsh-llm';
 import {modelJson} from './model.mjs';
 import {isUserRequestMessage,textOf} from './runtime.mjs';
+import {createNativeFiles} from './native-files.mjs';
+import {createNativeCas} from './native-cas.mjs';
+import {classifyTaskIntent} from './task-intent.mjs';
 
 const SOURCE_ONLY = /(?:只能|仅可|仅能|只允许|只通过|仅依据|仅使用)[^。\r\n]{0,60}(?:源码|源代码|文件代码|静态代码)[^。\r\n]{0,50}(?:定位|排查|判断|核对|修改|修复)|(?:source inspection only|inspect source only|source-only|without running tests|static source analysis)[^\r\n.]{0,80}(?:inspect|locate|reason|fix|repair)/iu;
 const MUTATION = /(?:修复|修改|补齐|补全|实现|解决|整改|fix|repair|modify|implement|resolve)/iu;
@@ -39,11 +42,6 @@ const LIMITS = Object.freeze({
 const posix = value => String(value).replaceAll('\\', '/');
 const escapeRegExp = value => value.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&');
 const cleanFile = value => posix(String(value ?? '')).replace(/^(?:\.\/)+/u, '');
-const relativeInside = (root, target) => {
-  const relative = path.relative(root, target);
-  return relative && relative !== '..' && !relative.startsWith('..' + path.sep) && !path.isAbsolute(relative);
-};
-
 function sourceExt(file) {
   return path.extname(file).toLowerCase();
 }
@@ -55,11 +53,17 @@ function sourceFile(name) {
 
 export function sourceOnlyMaintenanceTask(text) {
   const request = String(text ?? '');
+  const intent = classifyTaskIntent(request);
+  if (intent.readOnly || !intent.writeAuthorized) return false;
   if (!SOURCE_ONLY.test(request) || !MUTATION.test(request)) return false;
   const symptoms = new Set([...request.matchAll(SYMPTOM)].map(match => match.index));
   const numbered = new Set([...request.matchAll(NUMBERED_ITEM)].map(match => match.index));
   return symptoms.size >= 6 || numbered.size >= 6 || PROBLEM_COUNT.test(request) ||
     /(?:多个|若干|系列|various|multiple)[^。\r\n]{0,20}(?:问题|故障|缺陷|bugs?|issues?|defects?)/iu.test(request);
+}
+
+export function failedPatchStatus({aborted = false, applied = 0} = {}) {
+  return aborted ? 'aborted' : applied ? 'partial' : 'failed';
 }
 
 function excludedTopLevelName(name, request) {
@@ -79,7 +83,8 @@ export function forbiddenSourceFile(file, request) {
 
 export function selectSourceDirectory(text, entries) {
   const request = String(text ?? '');
-  const directories = entries.filter(entry => typeof entry.isDirectory === 'function' ? entry.isDirectory() : entry.directory).map(entry => entry.name);
+  const directories = entries.filter(entry => typeof entry.isDirectory === 'function'
+    ? entry.isDirectory() : entry.directory || entry.type === 'directory').map(entry => entry.name);
   const namedAfterWorkspace = /(?:工作目录|项目目录|仓库|代码库|workspace|project|repository)[^。\r\n]{0,24}(?:中的|里的|under|in)\s*[`"'“]?([A-Za-z0-9_.-]{2,80})/iu.exec(request)?.[1];
   if (namedAfterWorkspace) {
     const exact = directories.find(name => name.toLowerCase() === namedAfterWorkspace.toLowerCase());
@@ -90,11 +95,32 @@ export function selectSourceDirectory(text, entries) {
   return writable.length === 1 ? writable[0] : '.';
 }
 
-async function readDirectory(root, relativeRoot, budget) {
+async function listEntries(root, relativeRoot, files, signal) {
+  if (files?.list) return files.list(root, relativeRoot, signal);
   const directory = path.join(root, relativeRoot);
+  const entries = await fs.readdir(directory, {withFileTypes: true});
+  return entries.map(entry => ({name: entry.name, type: entry.isDirectory() ? 'directory'
+    : entry.isSymbolicLink() ? 'symlink' : entry.isFile() ? 'file' : 'other'}));
+}
+
+async function readSourceFile(root, relative, files, signal) {
+  if (files?.stat && files?.readBytes) {
+    const info = await files.stat(root, relative, signal);
+    if (!info.exists || info.type !== 'file') throw new Error('Source is not a regular file.');
+    const read = await files.readBytes(root, relative, signal, LIMITS.fileBytes, {requireKnownSize: true});
+    return {bytes: read.bytes, version: read.version ?? info.version ?? null, bytesLength: read.bytesLength};
+  }
+  const absolute = path.join(root, relative);
+  const info = await fs.lstat(absolute);
+  if (info.isSymbolicLink() || !info.isFile()) throw new Error('Source is not a regular file.');
+  const bytes = await fs.readFile(absolute);
+  return {bytes, version: null, bytesLength: info.size};
+}
+
+async function readDirectory(root, relativeRoot, budget, {provider = null, signal = null} = {}) {
   let entries;
   try {
-    entries = await fs.readdir(directory, {withFileTypes: true});
+    entries = await listEntries(root, relativeRoot, provider, signal);
   } catch {
     return null;
   }
@@ -107,13 +133,14 @@ async function readDirectory(root, relativeRoot, budget) {
     }
     if (entry.name.startsWith('.') && entry.name !== '.env.example') continue;
     const relative = relativeRoot === '.' ? entry.name : posix(path.join(relativeRoot, entry.name));
-    if (entry.isSymbolicLink()) {
+    if (entry.type === 'symlink') {
+      budget.complete = false;
       budget.skipped.push({path: relative, reason: 'symbolic-link'});
       continue;
     }
-    if (entry.isDirectory()) {
+    if (entry.type === 'directory') {
       if (SKIP_DIRECTORIES.has(entry.name)) continue;
-      const nested = await readDirectory(root, relative, budget);
+      const nested = await readDirectory(root, relative, budget, {provider, signal});
       if (nested === null) {
         budget.complete = false;
         budget.skipped.push({path: relative, reason: 'directory-read-failed'});
@@ -122,61 +149,78 @@ async function readDirectory(root, relativeRoot, budget) {
       files.push(...nested);
       continue;
     }
-    if (!entry.isFile() || !sourceFile(entry.name)) continue;
-    const absolute = path.join(root, relative);
-    let info;
-    try {
-      info = await fs.stat(absolute);
-    } catch {
-      budget.skipped.push({path: relative, reason: 'stat-unavailable'});
+    if (entry.type !== 'file') {
+      budget.complete = false;
+      budget.skipped.push({path: relative, reason: 'unsupported-entry'});
       continue;
     }
-    if (info.size > LIMITS.fileBytes || budget.bytes + info.size > LIMITS.sourceBytes) {
+    if (!sourceFile(entry.name)) continue;
+    let read;
+    try {
+      read = await readSourceFile(root, relative, provider, signal);
+    } catch (error) {
+      budget.complete = false;
+      const code = String(error?.code ?? '');
+      budget.skipped.push({path: relative, reason: code === 'FS_READ_BUDGET' || code === 'FS_TOO_LARGE'
+        ? 'size-budget' : code === 'SOURCE_CHANGED' ? 'source-changed-during-read' : 'read-unavailable'});
+      continue;
+    }
+    if (read.bytesLength > LIMITS.fileBytes || budget.bytes + read.bytesLength > LIMITS.sourceBytes) {
+      budget.complete = false;
       budget.skipped.push({path: relative, reason: 'size-budget'});
+      continue;
+    }
+    if (read.bytes.includes(0)) {
+      budget.complete = false;
+      budget.skipped.push({path: relative, reason: 'binary'});
       continue;
     }
     let text;
     try {
-      const bytes = await fs.readFile(absolute);
-      if (bytes.includes(0)) {
-        budget.skipped.push({path: relative, reason: 'binary'});
-        continue;
-      }
-      text = new TextDecoder('utf-8', {fatal: true}).decode(bytes);
+      text = new TextDecoder('utf-8', {fatal: true}).decode(read.bytes);
     } catch {
-      budget.skipped.push({path: relative, reason: 'decode-or-read-failed'});
+      budget.complete = false;
+      budget.skipped.push({path: relative, reason: 'decode-failed'});
       continue;
     }
     budget.files++;
     budget.bytes += Buffer.byteLength(text);
-    files.push({path: relative, text});
+    budget.versions.set(relative, read.version ?? null);
+    files.push({path: relative, text, version: read.version ?? null, bytes: read.bytesLength});
   }
   return files;
 }
 
-export async function readSourceBundle(root, requestText) {
-  const realRoot = await fs.realpath(root);
+export async function readSourceBundle(root, requestText, {files: provider = null, signal = null} = {}) {
   let entries;
   try {
-    entries = await fs.readdir(realRoot, {withFileTypes: true});
+    entries = await listEntries(root, '.', provider, signal);
   } catch {
     return null;
   }
   const selected = selectSourceDirectory(requestText, entries);
-  const sourceRoot = selected === '.' ? realRoot : path.join(realRoot, selected);
-  let sourceReal;
-  try {
-    sourceReal = await fs.realpath(sourceRoot);
-  } catch {
-    return null;
+  if (!selected || selected === '..' || selected.includes('/') || selected.includes('\\')) return null;
+  let workspaceRoot = root;
+  if (!provider) {
+    try {
+      workspaceRoot = await fs.realpath(root);
+    } catch {
+      return null;
+    }
   }
-  if (sourceReal !== realRoot && !relativeInside(realRoot, sourceReal)) return null;
-  const budget = {files: 0, bytes: 0, skipped: [], complete: true, budgetExceeded: false};
-  const files = await readDirectory(sourceReal, '.', budget);
+  const sourceRoot = selected === '.' ? workspaceRoot : path.join(workspaceRoot, selected);
+  const budget = {files: 0, bytes: 0, skipped: [], complete: true, budgetExceeded: false, versions: new Map()};
+  const files = await readDirectory(sourceRoot, '.', budget, {provider, signal});
   if (!files || files.length < 3) return null;
-  return {workspaceRoot: realRoot, sourceRoot: sourceReal, sourceRelative: posix(path.relative(realRoot, sourceReal)) || '.', files,
-    complete: budget.complete !== false, budgetExceeded: budget.budgetExceeded === true,
-    skipped: budget.skipped.slice(0, 64)};
+  const reasons = Object.create(null);
+  for (const item of budget.skipped) reasons[item.reason] = (reasons[item.reason] ?? 0) + 1;
+  const complete = budget.complete !== false;
+  return {workspaceRoot, sourceRoot, sourceRelative: selected, files,
+    complete, coverageStatus: complete ? 'complete' : 'partial',
+    includedFiles: files.map(file => file.path), includedCount: files.length,
+    omittedCount: budget.skipped.length, omittedReasons: reasons,
+    omittedExamples: budget.skipped.slice(0, 16), versions: Object.fromEntries(budget.versions),
+    budgetExceeded: budget.budgetExceeded === true, skipped: budget.skipped.slice(0, 64)};
 }
 
 function publishedSourceFiles(bundle) {
@@ -208,8 +252,13 @@ function sourceView(bundle, task, followup) {
   const extra = focusedBundle({...bundle, files: omitted}, followup, [])?.files ?? [];
   const files = [...published, ...extra];
   const provided = new Set(extra.map(file => file.path));
+  const omittedFiles = omitted.filter(file => !provided.has(file.path));
   return {...bundle, files, extraPaths: extra.map(file => file.path),
-    availableFiles: omitted.filter(file => !provided.has(file.path)).map(file => file.path)};
+    availableFiles: omittedFiles.map(file => file.path),
+    complete: false, coverageStatus: 'published-view-partial',
+    omittedCount: (bundle.omittedCount ?? 0) + omittedFiles.length,
+    omittedReasons: {...(bundle.omittedReasons ?? {}), 'published-manifest-exclusion': omittedFiles.length},
+    omittedExamples: [...(bundle.omittedExamples ?? []), ...omittedFiles.slice(0, 16).map(file => ({path: file.path, reason: 'published-manifest-exclusion'}))].slice(0, 24)};
 }
 
 function patchSystem(pass) {
@@ -303,88 +352,117 @@ function runSyntaxCheck(command, args, input) {
   });
 }
 
-async function syntaxIssue(target, text, python) {
+async function syntaxCheck(target, text, python) {
   const extension = path.extname(target).toLowerCase();
   if (extension === '.json') {
     try {
       JSON.parse(text);
-      return null;
+      return {status: 'passed'};
     } catch (error) {
-      return String(error?.message ?? error).slice(0, 300);
+      return {status: 'failed', message: String(error?.message ?? error).slice(0, 300)};
     }
   }
-  if (extension === '.py' && python) {
+  if (extension === '.py') {
+    if (!python) return {status: 'unavailable', message: 'A Python interpreter is not configured.'};
     const result = await runSyntaxCheck(python, ['-I', '-c', 'import ast,sys; ast.parse(sys.stdin.buffer.read().decode("utf-8"))'], text);
-    return result.skipped || result.ok ? null : (result.message || 'Python syntax check failed');
+    if (result.skipped) return {status: 'unavailable', message: result.message || 'Python interpreter is unavailable.'};
+    return result.ok ? {status: 'passed'} : {status: 'failed', message: result.message || 'Python syntax check failed'};
   }
   if (['.js', '.mjs', '.cjs'].includes(extension)) {
     const esm = /^\s*(?:import|export)\b/mu.test(text);
-    const temporary = path.join(path.dirname(target), `.bounded-check-${randomUUID()}${esm ? '.mjs' : '.cjs'}`);
+    let directory;
     try {
+      directory = await fs.mkdtemp(path.join(os.tmpdir(), 'we-bounded-syntax-'));
+      const temporary = path.join(directory, `check-${randomUUID()}${esm ? '.mjs' : '.cjs'}`);
       await fs.writeFile(temporary, text, {encoding: 'utf8', flag: 'wx'});
       const result = await runSyntaxCheck(process.execPath, ['--check', temporary]);
-      return result.skipped || result.ok ? null : (result.message || 'JavaScript syntax check failed');
-    } catch {
-      return null;
+      if (result.skipped) return {status: 'unavailable', message: result.message || 'JavaScript checker is unavailable.'};
+      return result.ok ? {status: 'passed'} : {status: 'failed', message: result.message || 'JavaScript syntax check failed'};
+    } catch (error) {
+      return {status: 'unavailable', message: String(error?.message ?? error).slice(0, 300)};
     } finally {
-      await fs.rm(temporary, {force: true}).catch(() => {});
+      if (directory) await fs.rm(directory, {recursive: true, force: true}).catch(() => {});
     }
   }
-  return null;
+  return {status: 'unsupported', message: 'No deterministic syntax checker is available for this file type.'};
 }
 
-async function writeChangedFiles(bundle, states, signal, python, {agent = null, writeText = null, onApplied = null} = {}) {
+async function writeChangedFiles(bundle, states, signal, python, {agent = null, cas = null, task = '', onApplied = null} = {}) {
   const applied = [];
   const rejected = [];
   for (const [file, state] of states) {
     signal.throwIfAborted();
     if (!state.replacements || state.text === state.original) continue;
-    const target = path.join(bundle.sourceRoot, file);
-    let current;
+    if (bundle.forbidden?.includes(file) || forbiddenSourceFile(file, task)) {
+      rejected.push({file, reason: 'forbidden-scope'});
+      continue;
+    }
+    if (!agent || !cas) {
+      rejected.push({file, reason: 'native-cas-unavailable'});
+      continue;
+    }
+    const workspaceFile = bundle.sourceRelative === '.' ? file : posix(path.join(bundle.sourceRelative, file));
+    let observation;
     try {
-      if ((await fs.lstat(target)).isSymbolicLink()) throw new Error('Symbolic-link targets are not edited');
-      const real = await fs.realpath(target);
-      if (!relativeInside(bundle.sourceRoot, real)) throw new Error('Path leaves the selected source directory');
-      current = await fs.readFile(real, 'utf8');
+      observation = await cas.stat(agent, workspaceFile, signal);
     } catch (error) {
       rejected.push({file, reason: 'source-unavailable', message: String(error.message).slice(0, 200)});
       continue;
     }
-    if (current !== state.original) {
+    if (!observation.ok || !observation.exists || observation.type !== 'file' || typeof observation.revision !== 'string' || !observation.revision) {
+      rejected.push({file, reason: 'source-version-unavailable',
+        message: observation.error?.message ?? 'A native file version is required for a conditional write.'});
+      continue;
+    }
+    let source;
+    try {
+      source = await cas.read(agent, workspaceFile, observation.revision, signal);
+    } catch (error) {
+      rejected.push({file, reason: 'source-read-failed', message: String(error.message).slice(0, 200)});
+      continue;
+    }
+    if (!source.ok) {
+      rejected.push({file, reason: 'source-read-failed', message: source.error?.message ?? 'Source read failed.'});
+      continue;
+    }
+    if (source.text !== state.original) {
       rejected.push({file, reason: 'source-changed'});
       continue;
     }
-    const issue = await syntaxIssue(target, state.text, python);
-    if (issue) {
-      rejected.push({file, reason: 'syntax-invalid', message: issue});
+    const syntax = await syntaxCheck(file, state.text, python);
+    if (syntax.status === 'failed') {
+      rejected.push({file, reason: 'syntax-invalid', message: syntax.message});
       continue;
     }
-    const workspaceFile = posix(path.relative(bundle.workspaceRoot, target));
-    if (!agent || !writeText) {
-      rejected.push({file, reason: 'native-write-unavailable'});
-      continue;
-    }
+    let effect;
     try {
-      await writeText(agent, workspaceFile, state.text, signal);
-      const appliedItem = {file, workspaceFile, edits: state.replacements};
+      effect = await cas.apply(agent, {full: workspaceFile, file: workspaceFile, mode: 'replace',
+        expectedText: state.text, beforeHash: source.sha256}, observation, signal);
+    } catch (error) {
+      effect = {ok: false, status: 'error', effectState: 'unknown',
+        error: {message: String(error.message ?? error).slice(0, 400)}};
+    }
+    const appliedItem = {file, workspaceFile, edits: state.replacements,
+      effectState: effect.effectState ?? 'unknown', verified: effect.ok === true,
+      beforeRevision: observation.revision, afterRevision: effect.revision ?? null,
+      contentHash: effect.contentHash ?? null, callId: effect.callId ?? null,
+      syntaxStatus: syntax.status ?? 'unsupported'};
+    if (effect.effectState === 'applied' || effect.ok) {
       applied.push(appliedItem);
       onApplied?.(appliedItem);
-      if (await fs.readFile(target, 'utf8') !== state.text) {
-        appliedItem.verified = false;
-        onApplied?.(appliedItem);
-        rejected.push({file, reason: 'native-write-content-mismatch'});
-        continue;
-      }
-      appliedItem.verified = true;
-      onApplied?.(appliedItem);
-    } catch (error) {
-      rejected.push({file, reason: 'native-write-failed', message: String(error.message).slice(0, 200)});
+    }
+    if (!effect.ok) {
+      const reason = effect.permissionDenied ? 'permission-denied'
+        : effect.effectState === 'none' ? 'native-write-rejected'
+          : effect.effectState === 'applied' ? 'post-write-verification-failed' : 'native-write-effect-unknown';
+      rejected.push({file, reason, effectState: effect.effectState ?? 'unknown',
+        message: effect.error?.message ?? 'Conditional write did not complete.'});
     }
   }
   return {applied, rejected};
 }
 
-export async function applyPatchProposal(proposal, bundle, signal, {python = null, agent = null, writeText = null, onApplied = null} = {}) {
+export async function applyPatchProposal(proposal, bundle, signal, {python = null, agent = null, cas = null, task = '', onApplied = null} = {}) {
   const allowed = new Set(bundle.files.map(file => file.path));
   const normalized = proposal?.normalized === true ? proposal : normalizeProposal(proposal, allowed);
   const validationRejections = normalized.rejections ?? [];
@@ -409,7 +487,7 @@ export async function applyPatchProposal(proposal, bundle, signal, {python = nul
     states.set(edit.file, state);
     staged.push({index: index + 1, file: edit.file, old: edit.old, replacement: edit.replacement});
   }
-  const written = await writeChangedFiles(bundle, states, signal, python, {agent, writeText, onApplied});
+  const written = await writeChangedFiles(bundle, states, signal, python, {agent, cas, task, onApplied});
   const appliedFiles = new Set(written.applied.map(item => item.file));
   const changes = staged.filter(item => appliedFiles.has(item.file)).map(item => ({
     index: item.index,
@@ -432,6 +510,12 @@ function payloadFor(task, bundle, pass, previous, followup = []) {
     sourceRoot: bundle.sourceRelative,
     files: bundle.files.map(file => ({path: file.path, content: file.text})),
     sourceComplete: bundle.complete !== false,
+    coverageStatus: bundle.coverageStatus ?? (bundle.complete === false ? 'partial' : 'complete'),
+    includedFiles: bundle.files.map(file => file.path),
+    omittedCount: bundle.omittedCount ?? (bundle.skipped?.length ?? 0),
+    omittedReasons: bundle.omittedReasons ?? {},
+    omittedExamples: bundle.omittedExamples ?? (bundle.skipped ?? []).slice(0, 16),
+    budgetExceeded: bundle.budgetExceeded === true,
     sourceSkipped: bundle.skipped ?? [],
     readOnlyFiles: bundle.forbidden ?? [],
     ...(bundle.availableFiles ? {availableFiles: bundle.availableFiles, referenceOnlyFiles: bundle.extraPaths} : {}),
@@ -445,21 +529,54 @@ function focusedBundle(bundle, followup, changedFiles) {
   for (const item of followup) for (const file of item.files) wanted.add(file);
   for (const file of changedFiles) wanted.add(file);
   const byPath = new Map(bundle.files.map(file => [file.path, file]));
+  const reasons = Object.create(null);
+  const omitted = [];
+  const note = (reason, path) => {
+    reasons[reason] = (reasons[reason] ?? 0) + 1;
+    if (omitted.length < 16) omitted.push({path, reason});
+  };
   const files = [];
   let bytes = 0;
   for (const file of wanted) {
     const item = byPath.get(file);
-    if (!item || files.length >= LIMITS.followupFiles) continue;
+    if (!item) {
+      note('focused-file-unavailable', file);
+      continue;
+    }
+    if (files.length >= LIMITS.followupFiles) {
+      note('focused-file-limit', file);
+      continue;
+    }
     const size = Buffer.byteLength(item.text);
-    if (bytes + size > LIMITS.focusedBytes) continue;
+    if (bytes + size > LIMITS.focusedBytes) {
+      note('focused-byte-budget', file);
+      continue;
+    }
     files.push(item);
     bytes += size;
   }
-  return files.length ? {...bundle, files} : null;
+  if (!files.length) return null;
+  for (const file of bundle.files) if (!wanted.has(file.path)) note('outside-focused-scope', file.path);
+  const coverageReasons = {...(bundle.omittedReasons ?? {})};
+  for (const [reason, count] of Object.entries(reasons)) coverageReasons[reason] = (coverageReasons[reason] ?? 0) + count;
+  return {...bundle, files, complete: false, coverageStatus: 'focused-partial',
+    includedCount: files.length,
+    omittedCount: (bundle.omittedCount ?? 0) + bundle.files.length - files.length,
+    omittedReasons: coverageReasons,
+    omittedExamples: [...(bundle.omittedExamples ?? []), ...omitted].slice(0, 24)};
 }
 
 export function createBoundedPatch(ctx, runtime, {effects}) {
   const states = new Map();
+  const nativeFiles = createNativeFiles(ctx);
+  let nativeCas = null;
+  const getCas = () => {
+    if (nativeCas) return nativeCas;
+    const registeredWrite = ctx.tools.get('write');
+    if (!registeredWrite) return null;
+    nativeCas = createNativeCas(ctx, runtime, registeredWrite, registeredWrite.execute);
+    return nativeCas;
+  };
   const get = agent => {
     let state = states.get(agent.session.id);
     if (!state) {
@@ -495,6 +612,11 @@ export function createBoundedPatch(ctx, runtime, {effects}) {
       decide(agent, 'unavailable', 'native-write-tool-unavailable');
       return null;
     }
+    const cas = getCas();
+    if (!cas || !await cas.available(agent)) {
+      decide(agent, 'unavailable', 'native-conditional-write-unavailable');
+      return null;
+    }
     const request = suppliedRequest ?? requestFor(agent);
     if (!request) {
       decide(agent, 'not-applicable', 'current-request-unavailable');
@@ -515,7 +637,7 @@ export function createBoundedPatch(ctx, runtime, {effects}) {
         decide(agent, 'unavailable', 'workspace-root-unavailable');
         return null;
       }
-      let bundle = await readSourceBundle(root, task);
+      let bundle = await readSourceBundle(root, task, {files: nativeFiles, signal});
       if (!bundle) {
         decide(agent, 'not-applicable', 'source-bundle-not-bounded');
         return null;
@@ -523,6 +645,11 @@ export function createBoundedPatch(ctx, runtime, {effects}) {
       const constrained = value => ({...value,
         forbidden: value.files.filter(file => forbiddenSourceFile(file.path, task)).map(file => file.path)});
       bundle = constrained(bundle);
+      const refreshBundle = async () => {
+        const refreshed = await readSourceBundle(root, task, {files: nativeFiles, signal});
+        if (!refreshed) throw new Error('Source bundle refresh failed after a bounded edit; refusing to reuse the pre-edit snapshot.');
+        return constrained(refreshed);
+      };
       const sourceBytes = bundle.files.reduce((sum, file) => sum + Buffer.byteLength(file.text), 0);
       if (bundle.files.length < 20 || sourceBytes < 200_000) {
         decide(agent, 'not-applicable', 'source-tree-below-bounded-mode-threshold',
@@ -531,30 +658,13 @@ export function createBoundedPatch(ctx, runtime, {effects}) {
       }
       const previous = [];
       const applied = [];
-      const recordedMutations = new Set();
       let followup = [];
       const selection = runtime.currentSelection(agent);
       const reasoningEffort = agent.options?.reasoningEffort ?? runtime.get(agent).config.modelRoute?.reasoningEffort ?? selection?.reasoningEffort;
       const route = selection?.provider && selection?.model ? {provider: selection.provider, model: selection.model, ...(reasoningEffort ? {reasoningEffort} : {})} : null;
       if (!route) throw new Error('No native model route is available');
       const python = runtime.get(agent).config.fastEditPython ?? null;
-      const nativeWrite = async (targetAgent, file, text, signal) => {
-        const active = runtime.execFor(targetAgent, signal);
-        const callId = 'work-evidence:bounded-patch:' + randomUUID();
-        const result = await ctx.tools.execute({
-          name: 'write',
-          arguments: {file_path: file, content: text},
-          agent: targetAgent,
-          callId,
-          rootCallId: active?.rootCallId ?? callId,
-          parent: active?.token,
-          signal,
-        });
-        if (result?.isError) throw new Error(String(result.error?.message ?? 'Native write failed.'));
-        return result?.value ?? null;
-      };
       const boundedBudgetScope = `bounded-patch:${requestId}`;
-      let boundedAuxiliaryTokens = 0;
       const requestProposal = async (system, payload, options) => {
         let lastError;
         for (let attempt = 1; attempt <= 2; attempt++) {
@@ -562,17 +672,13 @@ export function createBoundedPatch(ctx, runtime, {effects}) {
           try {
             const instruction = attempt === 1 ? system
               : system + ' The previous attempt did not return a complete JSON object. Return only one JSON object now, with no prose.';
-            const response = await modelJson(ctx, runtime, agent, signal, instruction, payload, {...options, budgetScope: scope});
-            const usage = response.usage ?? {};
-            const tokens = Number.isSafeInteger(usage.totalTokens) ? usage.totalTokens
-              : (usage.inputTokens ?? 0) + (usage.cacheReadTokens ?? 0) + (usage.cacheWriteTokens ?? 0) + (usage.outputTokens ?? 0);
-            boundedAuxiliaryTokens += Number.isFinite(tokens) ? tokens : 0;
-            if (boundedAuxiliaryTokens > 1_500_000) throw new Error('bounded-patch auxiliary total budget exceeded');
-            return response;
+            return await modelJson(ctx, runtime, agent, signal, instruction, payload,
+              {...options, budgetScope: scope, taskBudgetScope: boundedBudgetScope,
+                taskTokenLimit: 1_500_000, taskCallLimit: 6});
           } catch (error) {
             lastError = error;
             if (signal.aborted || String(error?.auxiliaryCode ?? '').startsWith('auxiliary-budget') ||
-                error?.auxiliaryCode === 'auxiliary-scope-stopped') break;
+                ['auxiliary-scope-stopped', 'auxiliary-task-stopped'].includes(error?.auxiliaryCode)) break;
           }
         }
         throw lastError;
@@ -598,14 +704,8 @@ export function createBoundedPatch(ctx, runtime, {effects}) {
             const existing = applied.find(entry => entry.pass === pass && entry.file === item.file && entry.workspaceFile === item.workspaceFile);
             if (existing) Object.assign(existing, item, {pass});
             else applied.push({...item, pass});
-            const mutationKey = `${pass}:${item.workspaceFile}`;
-            if (item.workspaceFile && !recordedMutations.has(mutationKey)) {
-              recordedMutations.add(mutationKey);
-              runtime.recordMutation?.(agent, {tool: 'write', file: item.workspaceFile,
-                callId: `bounded-patch:${requestId}:${pass}:${item.file}`, seq: null});
-            }
           };
-          const result = await applyPatchProposal(proposal, bundle, signal, {python, agent, writeText: nativeWrite, onApplied});
+          const result = await applyPatchProposal(proposal, bundle, signal, {python, agent, cas, task, onApplied});
           followup = result.followup;
           previous.push({pass, requestedEdits: proposal.edits.length, applied: result.applied,
             rejected: result.rejections, followup, changes: result.changes});
@@ -613,10 +713,10 @@ export function createBoundedPatch(ctx, runtime, {effects}) {
             result.applied.length ? `pass-${pass}-source-patch` : `pass-${pass}-no-supported-edit`,
             {pass, edits: result.applied.reduce((sum, item) => sum + item.edits, 0), files: result.applied.length,
               requested: proposal.edits.length, rejected: result.rejections.length});
-          if (pass === 1) bundle = constrained(await readSourceBundle(root, task) ?? bundle);
+          if (pass === 1) bundle = await refreshBundle();
         }
         if (followup.length) {
-          bundle = constrained(await readSourceBundle(root, task) ?? bundle);
+          bundle = await refreshBundle();
           const changed = new Set(applied.map(item => item.file));
           const reviewView = constrained(sourceView(bundle, task, []));
           const published = reviewView.availableFiles ? new Set(reviewView.files.map(file => file.path)) : null;
@@ -644,14 +744,9 @@ export function createBoundedPatch(ctx, runtime, {effects}) {
                 const existing = applied.find(entry => entry.pass === 3 && entry.file === item.file && entry.workspaceFile === item.workspaceFile);
                 if (existing) Object.assign(existing, item, {pass: 3});
                 else applied.push({...item, pass: 3});
-                const mutationKey = `3:${item.workspaceFile}`;
-                if (item.workspaceFile && !recordedMutations.has(mutationKey)) {
-                  recordedMutations.add(mutationKey);
-                  runtime.recordMutation?.(agent, {tool: 'write', file: item.workspaceFile,
-                    callId: `bounded-patch:${requestId}:3:${item.file}`, seq: null});
-                }
               };
-              const result = await applyPatchProposal(filtered, focused, signal, {python, agent, writeText: nativeWrite, onApplied});
+              const result = await applyPatchProposal(filtered, focused, signal, {python, agent, cas, task, onApplied});
+              followup = result.followup;
               previous.push({pass: 3, requestedEdits: filtered.edits.length, applied: result.applied,
                 rejected: result.rejections, followup: result.followup, changes: result.changes});
               decide(agent, result.applied.length ? 'applied' : 'not-applicable',
@@ -661,29 +756,57 @@ export function createBoundedPatch(ctx, runtime, {effects}) {
             }
           }
         }
-        if (!applied.length) {
+        const files = [...new Set(applied.map(item => item.file))];
+        const rejected = previous.flatMap(item => (item.rejected ?? []).map(entry => ({pass: item.pass, ...entry})));
+        if (!applied.length && !previous.some(item => (item.requestedEdits ?? 0) > 0)) {
           decide(agent, 'unavailable', 'no-supported-source-edits');
           return null;
         }
-        const result = {done: true, requestId, applied, passes: previous,
-          files: [...new Set(applied.map(item => item.file))]};
-        decide(agent, 'applied', 'bounded-source-maintenance-complete',
-          {passes: previous.length, edits: result.applied.reduce((sum, item) => sum + item.edits, 0), files: result.files.length});
+        const patchStatus = !applied.length ? 'failed'
+          : rejected.length || followup.length ? 'partial' : 'completed';
+        const result = {done: patchStatus === 'completed', patchStatus, taskStatus: 'unknown',
+          requestId, applied, passes: previous, files, followup, rejected,
+          unverified: applied.filter(item => item.verified !== true).map(item => item.file),
+          sourceCoverage: {status: bundle.coverageStatus ?? 'unknown', includedCount: bundle.files.length,
+            omittedCount: bundle.omittedCount ?? 0, omittedReasons: bundle.omittedReasons ?? {},
+            budgetExceeded: bundle.budgetExceeded === true}};
+        decide(agent, applied.length ? 'applied' : 'unavailable',
+          applied.length ? 'bounded-source-maintenance-applied' : 'bounded-source-maintenance-no-edit',
+          {patchStatus, passes: previous.length, edits: result.applied.reduce((sum, item) => sum + item.edits, 0),
+            files: result.files.length, rejected: rejected.length, followup: followup.length,
+            unverified: result.unverified.length});
         state.result = result;
         return result;
       } catch (error) {
+        const files = [...new Set(applied.map(item => item.file))];
+        const rejected = previous.flatMap(item => (item.rejected ?? []).map(entry => ({pass: item.pass, ...entry})));
+        const warning = String(error.message ?? error).slice(0, 400);
+        const aborted = signal?.aborted === true || error?.name === 'AbortError' || error?.code === 'ABORT_ERR';
+        const patchStatus = failedPatchStatus({aborted, applied: applied.length});
         if (applied.length) {
-          const result = {done: false, partial: true, requestId, applied, passes: previous,
-            files: [...new Set(applied.map(item => item.file))], warning: String(error.message ?? error).slice(0, 240)};
-          decide(agent, 'applied', 'bounded-source-maintenance-partial',
-            {passes: previous.length, edits: result.applied.reduce((sum, item) => sum + item.edits, 0), files: result.files.length, partial: true,
+          const result = {done: false, patchStatus, taskStatus: 'unknown', partial: patchStatus === 'partial',
+            requestId, applied, passes: previous, files, followup, rejected, warning,
+            unverified: applied.filter(item => item.verified !== true).map(item => item.file),
+            sourceCoverage: {status: bundle?.coverageStatus ?? 'unknown', includedCount: bundle?.files?.length ?? 0,
+              omittedCount: bundle?.omittedCount ?? 0, omittedReasons: bundle?.omittedReasons ?? {},
+              budgetExceeded: bundle?.budgetExceeded === true}};
+          decide(agent, 'applied', patchStatus === 'aborted' ? 'bounded-source-maintenance-aborted' : 'bounded-source-maintenance-partial',
+            {passes: previous.length, edits: result.applied.reduce((sum, item) => sum + item.edits, 0), files: result.files.length,
+              partial: patchStatus === 'partial', aborted: patchStatus === 'aborted',
               warning: result.warning});
           state.result = result;
           return result;
         }
-        decide(agent, 'failed', 'bounded-source-maintenance-failed', {message: String(error.message ?? error).slice(0, 240)});
-        runtime.problem?.(runtime.get(agent), 'bounded-patch', String(error.message ?? error).slice(0, 240));
-        return null;
+        const result = {done: false, patchStatus, taskStatus: 'unknown', requestId,
+          applied, passes: previous, files, followup, rejected, warning, unverified: [],
+          sourceCoverage: {status: bundle?.coverageStatus ?? 'unknown', includedCount: bundle?.files?.length ?? 0,
+            omittedCount: bundle?.omittedCount ?? 0, omittedReasons: bundle?.omittedReasons ?? {},
+            budgetExceeded: bundle?.budgetExceeded === true}};
+        decide(agent, 'failed', patchStatus === 'aborted' ? 'bounded-source-maintenance-aborted' : 'bounded-source-maintenance-failed',
+          {message: warning, aborted: patchStatus === 'aborted'});
+        runtime.problem?.(runtime.get(agent), 'bounded-patch', warning);
+        state.result = result;
+        return result;
       }
     })().finally(() => { state.promise = null; });
     return state.promise;
@@ -700,40 +823,42 @@ export function createBoundedPatch(ctx, runtime, {effects}) {
       return state.result;
     },
     guidance(result) {
-      if (!result?.done && !result?.partial) return '';
-      if (result.partial) return '[Work Evidence bounded source maintenance] A bounded source-only repair flow applied '
-        + result.applied.reduce((sum, item) => sum + item.edits, 0) + ' exact source edits across '
-        + result.files.length + ' files, but stopped before the bounded flow completed. Keep the native tools available. '
-        + 'Inspect the applied files with native reads and continue the unresolved work. Do not claim completion. Warning: '
-        + (result.warning ?? 'none') + '. Applied files: ' + JSON.stringify(result.files) + '.';
-      return '[Work Evidence bounded source maintenance] A bounded source-only repair flow has applied '
-        + result.applied.reduce((sum, item) => sum + item.edits, 0) + ' exact source edits across '
-        + result.files.length + ' files in ' + result.passes.length + ' bounded passes. Return the requested concise completion report now. Do not request tools, do not claim tests were run, and disclose any bounded-pass warning: '
-        + (result.warning ?? 'none') + '. Applied files: ' + JSON.stringify(result.files) + '.';
+      if (!result?.patchStatus) return '';
+      const edits = result.applied.reduce((sum, item) => sum + item.edits, 0);
+      const rejected = (result.rejected ?? []).slice(0, 8).map(item =>
+        `${item.file ?? 'unknown'}:${item.reason ?? 'rejected'}`).join(', ');
+      const followup = (result.followup ?? []).slice(0, 4).map(item => item.scope).join('; ');
+      const coverage = result.sourceCoverage?.status === 'complete' ? 'complete'
+        : `partial (${result.sourceCoverage?.omittedCount ?? 'unknown'} omitted)`;
+      const base = '[Work Evidence bounded source maintenance] Bounded patch phase: ' + result.patchStatus
+        + '; task completion is unknown. ' + edits + ' exact source edits across ' + result.files.length
+        + ' files. Native tools remain available.';
+      const action = result.patchStatus === 'completed'
+        ? ' Verify the applied behavior with native evidence and continue any remaining user-visible work. Do not claim tests were run unless you run them.'
+        : result.patchStatus === 'partial'
+          ? ' Inspect the applied and unverified files with native tools, handle the rejected edits or follow-up, and do not claim completion.'
+          : result.patchStatus === 'aborted'
+            ? ' The bounded patch was aborted. Inspect the applied files with native tools, then report the interruption without claiming completion.'
+          : ' No source edit was applied. Use native tools to inspect the current source or report the concrete blocker.';
+      return base + action + ' Source coverage: ' + coverage + '.'
+        + (rejected ? ' Rejected: ' + rejected + '.' : '')
+        + (followup ? ' Follow-up: ' + followup + '.' : '')
+        + (result.unverified?.length ? ' Unverified effects: ' + JSON.stringify(result.unverified) + '.' : '')
+        + (result.warning ? ' Warning: ' + result.warning + '.' : '');
     },
     summary(agent) {
       const state = get(agent);
       return {enabled: runtime.isEnabled(agent) && !!runtime.get(agent).config.boundedPatch,
-        result: state.result ? {requestId: state.result.requestId, done: state.result.done, partial: state.result.partial === true,
+        result: state.result ? {requestId: state.result.requestId, done: state.result.done,
+          patchStatus: state.result.patchStatus, taskStatus: state.result.taskStatus ?? 'unknown',
+          partial: state.result.partial === true, rejected: state.result.rejected?.length ?? 0,
+          followup: state.result.followup?.length ?? 0, coverage: state.result.sourceCoverage ?? null,
           edits: state.result.applied.reduce((sum, item) => sum + item.edits, 0), files: state.result.files.length,
           passes: state.result.passes.length, warning: state.result.warning ?? null} : null,
         scope:'large source-only multi-symptom maintenance; source coverage is bounded by count and bytes and may report sourceComplete:false'};
     },
     requestView(options) {
-      const state = states.get(options?.sessionId);
-      if (!state?.result?.done || !Array.isArray(options?.tools)) return options;
-      let agent = null;
-      try { agent = ctx.agents?.get?.(options.sessionId) ?? null; } catch {}
-      if (agent) {
-        try {
-          if (!runtime.isEnabled(agent) || !runtime.get(agent).config.boundedPatch) return options;
-          const request = requestFor(agent);
-          if (!request || state.requestId !== (request.id ?? String(request.seq))) return options;
-        } catch { return options; }
-      } else return options;
-      const view = {...options, tools: []};
-      if (isAgentLoopRequest(options)) markAgentLoopRequest(view);
-      return Object.isFrozen(options) ? Object.freeze(view) : view;
+      return options;
     },
     dispose(agent) {
       states.delete(agent.session.id);

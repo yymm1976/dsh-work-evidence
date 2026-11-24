@@ -142,7 +142,7 @@ export const operationKey=(call,cwd)=>{
     Object.fromEntries(Object.keys(value).sort().map(key=>[key,value[key]])):value);
 };
 const bounded=(map,key,value,max=64)=>{map.set(key,value);if(map.size>max)map.delete(map.keys().next().value);};
-const normalize=value=>String(value).replaceAll('\\','/').toLowerCase();
+const normalize=value=>String(value).replaceAll('\\','/');
 const streamText=value=>typeof value==='string'?value:typeof value?.text==='string'?value.text:'';
 const executionJobId=layers=>{
   const source=layers.findLast(node=>node?.jobId||node?.job_id||node?.job?.id);
@@ -155,7 +155,7 @@ function sourcePath(root,file){
   if(!root||typeof file!=='string'||!SOURCE_FILE.test(file)||/[\u0000-\u001f\u007f]/u.test(file))return null;
   try{return path.relative(root,within(root,file)).replaceAll('\\','/');}catch{return null;}
 }
-const sourcePathKey=file=>process.platform==='win32'?file.toLowerCase():file;
+const sourcePathKey=file=>file;
 function rememberSourceLocations(root,pacing,step,call,event){
   const meta=event.data?.meta;
   if(call.name==='grep'){
@@ -1351,7 +1351,7 @@ export function createTaskFlow(ctx,runtime,{nativeFiles,call,executionDependenci
         const artifact=state.artifacts.get(normalize(frame.path));
         if(!artifact||artifact.effectState!=='applied'||artifact.userSeq!==state.lastUser.seq)continue;
         const artifactPath=path.resolve(root,artifact.path);
-        if(process.platform==='win32'?normalize(artifactPath)!==normalize(frame.path):artifactPath!==frame.path)continue;
+        if(artifactPath!==frame.path)continue;
         const key=JSON.stringify([state.lastUser.seq,'file-failure-source',artifact.argumentsSeq,frame.path,frame.line]);
         if(state.diagnosticAdvised.has(key))continue;
         let event;try{event=exec.agent.session.eventAt(artifact.argumentsSeq??artifact.seq);}catch{}

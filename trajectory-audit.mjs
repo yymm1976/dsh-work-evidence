@@ -46,7 +46,7 @@ const normalizeFile=value=>{
   const windows=/^[A-Za-z]:[\\/]/u.test(value)||value.includes('\\');
   const flavor=windows?path.win32:path.posix;
   const absolute=flavor.isAbsolute(value);value=flavor.normalize(value);
-  return {value:(windows?value.toLowerCase():value).replaceAll('\\','/'),absolute};
+  return {value:value.replaceAll('\\','/'),absolute};
 };
 // Commands whose result says nothing about the source by itself. ops_bash is
 // here for saved histories: the adapter is gone from the live surface, but an

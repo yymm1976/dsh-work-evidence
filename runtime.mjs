@@ -40,7 +40,7 @@ export function defaults(raw={}){
   const config={enabled:true,aggressiveMode:true,mode:'aggressive',selfIndex:true,modelTimeoutMs:20000,modelMaxTokens:1200,modelRoute:null,
     fastEditPython:path.join(import.meta.dirname,'.fastedit-venv','Scripts','python.exe'),
     stateLedger:true,stateInform:true,completionNotice:false,archiveReadRouting:true,readArgumentRecovery:true,requestAccounting:true,evidenceViews:true,memberParsing:true,mavenSourceBinding:true,
-    contextProtocol:true,contextPruningPolicy:'forecast',historyHygiene:true,contextPruneMinChars:8000,contextPruneHeadChars:4096,contextPruneTailChars:1024,
+    contextProtocol:true,contextPruningPolicy:'forecast',historyHygiene:true,definitionSummary:'off',contextPruneMinChars:8000,contextPruneHeadChars:4096,contextPruneTailChars:1024,
     ledgerReceipt:true,ledgerUnresolved:true,nativeVerifiedEdits:false,fileProfiling:false,structuredJson:false,
     swLedger:false,swEviction:false,swEvictionSteps:3,
     requestProjection:false,projectionRestore:false,compressionControl:true,compactionTiming:'native',
@@ -56,7 +56,7 @@ export function defaults(raw={}){
   // Retired keys stay accepted so a workspace file written before their removal
   // still loads; the tombstone loop below forces them to false.
   const known=new Set(['enabled','aggressiveMode','mode','selfIndex','modelTimeoutMs','modelMaxTokens','modelRoute','fastEditPython','stateLedger','stateInform','archiveReadRouting','readArgumentRecovery','requestAccounting','evidenceViews','memberParsing','mavenSourceBinding',
-    'contextProtocol','contextPruningPolicy','historyHygiene','programHistory','reasoningHistory','retainedCompute','contextPruneMinChars','contextPruneHeadChars','contextPruneTailChars','completionNotice','opsAdapters','fastEditEnabled',
+    'contextProtocol','contextPruningPolicy','historyHygiene','definitionSummary','programHistory','reasoningHistory','retainedCompute','contextPruneMinChars','contextPruneHeadChars','contextPruneTailChars','completionNotice','opsAdapters','fastEditEnabled',
     'ledgerReceipt','ledgerUnresolved','nativeVerifiedEdits','fileProfiling','structuredJson','ledgerFoldPlan','ledgerFoldWrite','defaultResponseView','swLedger','swEviction','swEvictionSteps','nativeProgramReuse','hostNodeFallback','nativeShellScriptReuse','probeReplay','structuredCalls','nativeReasoningReplay',
     'requestProjection','projectionRestore','compressionControl','compactionTiming','deferPressureCompaction','stubSummary','cacheOrderedStub','archiveEntries','executionTriage','executionAdvice','stageWorkingSet','finishAdvice','stepPacing','taskEffort','finalJsonGuard','finalJsonResultGuard','qualityReview','qualityReviewEffort','qualityReviewScope','boundedPatch','nativeReadView','nativeExecutionEvidence','projectionMinChars','projectionRecentSteps','projectionStableSteps','projectionHorizonSteps','projectionPricing','toolSurface']);
   known.add('sourceReadDefaultLines');
@@ -69,6 +69,7 @@ export function defaults(raw={}){
   checkedMode(config.mode);
   if(!['forecast','online-batch'].includes(config.contextPruningPolicy))throw new Error('Invalid contextPruningPolicy');
   config.contextPruningPolicy='forecast';
+  if(!['off','on'].includes(config.definitionSummary))throw new Error('Invalid definitionSummary');
   if(!['native','adaptive'].includes(config.compactionTiming))throw new Error('Invalid compactionTiming');
   config.compactionTiming='native';
   for(const key of ['enabled','aggressiveMode','selfIndex','stateLedger','stateInform','archiveReadRouting','readArgumentRecovery','requestAccounting','evidenceViews','memberParsing','mavenSourceBinding','contextProtocol','historyHygiene','programHistory','reasoningHistory',
@@ -379,8 +380,8 @@ export function createRuntime(ctx,call,initial={}){
   // session can outlive a symlink retarget, and a cached target would keep attributing
   // observations and mutations to the old file.
   const realKeyOf=full=>{
-    let key=process.platform==='win32'?full.toLowerCase():full;
-    try{const real=realpathSync.native(full);key=process.platform==='win32'?real.toLowerCase():real;}catch{/* not on disk: keep the lexical key */}
+    let key=full;
+    try{const real=realpathSync.native(full);key=real;}catch{/* not on disk: keep the lexical key */}
     return key;
   };
   function ledgerPath(s,value){
@@ -681,14 +682,14 @@ export function createRuntime(ctx,call,initial={}){
     enabled:effective,workspaceDefaultEnabled:s.config.enabled,session:{enabled:effective,override:s.sessionEnabledOverride,source:s.sessionEnabledOverride===null?'workspace-setting':'session-setting',defaultResponseView:s.sessionDefaultResponseView??s.config.defaultResponseView,
       policyPath:s.sessionPolicyPath,loaded:s.sessionPolicyLoaded,settingsRetainedInMemory:s.sessionFileMissing},
     telemetry:{directory:s.telemetryDir,scope:s.telemetryScope,workspaceConfiguration:s.dir},workspaceConfigValid:s.workspaceConfigValid,workspaceSettingsRetainedInMemory:s.workspaceFileMissing,
-      features:{enabled:s.config.enabled,aggressiveMode:s.config.aggressiveMode,selfIndex:s.config.selfIndex,completionNotice:s.config.completionNotice,ptcPatterns:true,ptcFastpath:true,verifiedExec:true,contextProtocol:s.config.contextProtocol,historyHygiene:s.config.historyHygiene,
+      features:{enabled:s.config.enabled,aggressiveMode:s.config.aggressiveMode,selfIndex:s.config.selfIndex,completionNotice:s.config.completionNotice,ptcPatterns:true,ptcFastpath:true,verifiedExec:true,contextProtocol:s.config.contextProtocol,historyHygiene:s.config.historyHygiene,definitionSummary:s.config.definitionSummary,
       stateLedger:s.config.stateLedger,stateInform:s.config.stateInform,archiveReadRouting:s.config.archiveReadRouting,readArgumentRecovery:s.config.readArgumentRecovery,requestAccounting:s.config.requestAccounting,evidenceViews:s.config.evidenceViews,memberParsing:s.config.memberParsing,mavenSourceBinding:s.config.mavenSourceBinding,
       ledgerReceipt:s.config.ledgerReceipt,ledgerUnresolved:s.config.ledgerUnresolved,nativeVerifiedEdits:s.config.nativeVerifiedEdits,fileProfiling:s.config.fileProfiling,structuredJson:s.config.structuredJson,
       swLedger:s.config.swLedger,swEviction:s.config.swEviction,swEvictionSteps:s.config.swEvictionSteps,defaultResponseView:s.sessionDefaultResponseView??s.config.defaultResponseView,
       requestProjection:s.config.requestProjection,projectionRestore:s.config.projectionRestore,compressionControl:s.config.compressionControl,compactionTiming:s.config.compactionTiming,deferPressureCompaction:s.config.deferPressureCompaction,stubSummary:s.config.stubSummary,
       executionTriage:s.config.executionTriage,nativeProgramReuse:s.config.nativeProgramReuse,hostNodeFallback:s.config.hostNodeFallback,nativeShellScriptReuse:s.config.nativeShellScriptReuse,probeReplay:s.config.probeReplay,structuredCalls:s.config.structuredCalls,nativeReasoningReplay:s.config.nativeReasoningReplay,stageWorkingSet:s.config.stageWorkingSet,stepPacing:s.config.stepPacing,retainedCompute:s.config.retainedCompute,finalJsonGuard:s.config.finalJsonGuard,finalJsonResultGuard:s.config.finalJsonResultGuard,
       qualityReview:s.config.qualityReview,boundedPatch:s.config.boundedPatch,qualityReviewEffort:s.config.qualityReviewEffort,qualityReviewScope:s.config.qualityReviewScope,toolSurface:s.config.toolSurface},
-    contextSettings:{requestProjection:s.config.requestProjection,projectionRestore:s.config.projectionRestore,compressionControl:s.config.compressionControl,compactionTiming:s.config.compactionTiming,deferPressureCompaction:s.config.deferPressureCompaction,stubSummary:s.config.stubSummary,
+    contextSettings:{requestProjection:s.config.requestProjection,projectionRestore:s.config.projectionRestore,compressionControl:s.config.compressionControl,compactionTiming:s.config.compactionTiming,deferPressureCompaction:s.config.deferPressureCompaction,stubSummary:s.config.stubSummary,definitionSummary:s.config.definitionSummary,
       projectionMinChars:s.config.projectionMinChars,projectionRecentSteps:s.config.projectionRecentSteps,projectionStableSteps:s.config.projectionStableSteps,
       projectionHorizonSteps:s.config.projectionHorizonSteps,projectionPricing:s.config.projectionPricing,toolSurface:s.config.toolSurface,
       contextProtocol:s.config.contextProtocol,contextPruningPolicy:s.config.contextPruningPolicy,contextPruneMinChars:s.config.contextPruneMinChars,

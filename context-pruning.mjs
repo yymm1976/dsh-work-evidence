@@ -41,7 +41,7 @@ const ASSIGNMENT_LINE=/^\s*[A-Za-z_$][\w$.\[\]'"]*\s*=\s*\S/u;
 const CODE_INDENT=/^(?: {4,}|\t+)\S/u;
 const CODE_PUNCTUATION=/[;:,)}\]>]$/u;
 /** Does this body look like source code regardless of where it came from? */
-export function looksLikeSourceBody(text){
+export function looksLikeSourceBody(text,{transport=false}={}){
   const body=String(text??'');
   if(body.length<2000)return false;
   let hits=0;
@@ -58,11 +58,11 @@ export function looksLikeSourceBody(text){
   if((trimmed.startsWith('{')&&trimmed.endsWith('}'))||(trimmed.startsWith('[')&&trimmed.endsWith(']'))){
     try{
       const parsed=JSON.parse(trimmed);
-      const transport=parsed&&typeof parsed==='object'&&!Array.isArray(parsed)&&
+      const envelope=transport&&parsed&&typeof parsed==='object'&&!Array.isArray(parsed)&&
         ('stdout' in parsed||'stderr' in parsed)&&!('scripts' in parsed)&&!('dependencies' in parsed)&&
         ['stdout','stderr'].every(key=>parsed[key]===undefined||
           (parsed[key]&&typeof parsed[key]==='object'&&typeof parsed[key].text==='string'));
-      if(!transport)return true;
+      if(!envelope)return true;
     }catch{/* not a JSON document */}
   }
   // Fall back to assignment density: at least half of the non-empty lines assign.
@@ -99,18 +99,18 @@ export function sourceBodyPaths(text){
  * ANY path it names is source, or — when it names no source path — when the body itself is
  * source-shaped.
  */
-export function isSourceBody(text){
+export function isSourceBody(text,{transport=false}={}){
   const body=String(text??'');
   const named=sourceBodyPaths(body);
   if(named.some(file=>isSourceBodyPath(file)))return true;
   // A named non-source path does not make an unmarked source body a log, and a named source
   // path anywhere in a compound result keeps the whole result. Only the absence of any
   // source path leaves the body itself as the remaining evidence.
-  if(looksLikeSourceBody(body))return true;
+  if(looksLikeSourceBody(body,{transport}))return true;
   // A read result wraps the document in `<path>`/`<content>` markup, so the JSON check inside
   // looksLikeSourceBody never sees a `{` at the start. Ask once on the unwrapped text.
   const content=/<content>\n?([\s\S]*?)\n?<\/content>/u.exec(body)?.[1];
-  if(content&&looksLikeSourceBody(content))return true;
+  if(content&&looksLikeSourceBody(content,{transport}))return true;
   // A native read or `run_code` renders `N: row`, `N | row` or `N\trow`, and every shape
   // detector anchors on a line start, so a real source body with rendered line numbers reads
   // as a log. Measured: a 400-line Python module behind `.txt` markup and `N | ` prefixes was
@@ -120,7 +120,7 @@ export function isSourceBody(text){
   // This has to live HERE, not in the callers: the reads branch already stripped the prefix
   // for its own decision, and the flat branch did not, so the same body got two answers
   // depending on which branch reached it. One body, one answer.
-  if(looksLikeSourceBody(stripLineNumbers(body)))return true;
+  if(looksLikeSourceBody(stripLineNumbers(body),{transport}))return true;
   // A shell result is a serialized envelope: the source sits in `stdout.text` as a JSON
   // string, where every newline is the two characters `\` and `n`. Both detectors look for
   // shapes at LINE STARTS and count assignment rows split on real newlines, so a whole file
@@ -133,7 +133,7 @@ export function isSourceBody(text){
   if(!body.includes('\\n'))return false;
   try{
     const decoded=decodeEscapedNewlines(body);
-    return looksLikeSourceBody(decoded)||looksLikeSourceBody(stripLineNumbers(decoded));
+    return looksLikeSourceBody(decoded,{transport})||looksLikeSourceBody(stripLineNumbers(decoded),{transport});
   }catch{return false;}
 }
 
@@ -386,7 +386,8 @@ export function planContextPrune(message,reads,options){
     // `stdout.text` with newlines escaped, so the line-start detectors see one long line and
     // a whole source file reads as a log.
     const onlyNonSourceNames=named.every(file=>!isSourceBodyPath(file));
-    if(onlyNonSourceNames&&(isSourceBody(original)||looksLikeSourceBody(original)))return null;
+    if(onlyNonSourceNames&&(isSourceBody(original,{transport:options.transport===true})||
+      looksLikeSourceBody(original,{transport:options.transport===true})))return null;
   }
   let content,ranges=[],dedupStats=[];
   if(reads.length){
@@ -419,7 +420,7 @@ export function planContextPrune(message,reads,options){
       // The content check therefore applies only where the path cannot answer: a `.log` or an
       // extensionless name whose body is really source.
       const kept=options.retainSource?.(window.path)||
-        (!isSourceBodyPath(window.path)&&looksLikeSourceBody(stripLineNumbers(body)));
+        (!isSourceBodyPath(window.path)&&looksLikeSourceBody(stripLineNumbers(body),{transport:options.transport===true}));
       const replacement=kept?null:excerpt(body,{...options,offset:from,sourcePath:window.path});      after+=replacement??body;
       if(replacement)ranges.push({path:window.path,offset:from,end:to,startLine:window.lines[0]?.number,endLine:window.lines.at(-1)?.number});
       cursor=end;

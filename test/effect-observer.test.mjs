@@ -39,7 +39,9 @@ async function start(options={}){
   const state={id:SESSION,dir,telemetryDir,step:4,config:{toolSurface:'compact'},dirty:true};
   const runtime={get:()=>state,isEnabled:()=>true,modeStatus:()=>({selected:'aggressive',source:'effort-selection'}),problem:()=>{}};
   const agent={session:{id:SESSION,seq:42,surface:{nodes:[]},log:[]}};
-  return {state,agent,effects:createEffectObserver({on:()=>()=>{}},runtime),telemetryDir};
+  const handlers=new Map();
+  const ctx={on:(event,handler)=>{handlers.set(event,handler);return()=>{};}};
+  return {state,agent,handlers,effects:createEffectObserver(ctx,runtime,{io:options.io}),telemetryDir};
 }
 const stored=async telemetryDir=>(await fs.readFile(path.join(telemetryDir,SESSION+'.observability.jsonl'),'utf8')).split('\n').filter(Boolean).map(line=>JSON.parse(line));
 const remove=telemetryDir=>fs.rm(telemetryDir,{recursive:true,force:true,maxRetries:3});
@@ -153,7 +155,8 @@ test('a failed append after a failed newline repair keeps the next row on its ow
     await fs.chmod(file,0o664);
     await created.effects.finish(created.agent,row('late-row'));
     await created.effects.flush(created.agent);
-    assert.deepEqual((await stored(created.telemetryDir)).map(item=>item.requestId),['restored-row','late-row']);
+    assert.deepEqual((await stored(created.telemetryDir)).map(item=>item.requestId),['restored-row','blocked-row','late-row'],
+      'the recovered blocked row is retried before the later row instead of being dropped');
   }finally{await fs.chmod(file,0o664);await remove(created.telemetryDir);}
 });
 
@@ -178,11 +181,11 @@ test('a partial failed append is isolated before the next persistent row',async(
     await created.effects.flush(created.agent);
     await created.effects.finish(created.agent,row('surviving-row'));
     await created.effects.flush(created.agent);
-    assert.deepEqual((await stored(created.telemetryDir)).map(item=>item.requestId),['chinese-row','surviving-row'],
-      'a non-ASCII row before the partial tail survives the byte-offset truncation');
+    assert.deepEqual((await stored(created.telemetryDir)).map(item=>item.requestId),['chinese-row','partial-row','surviving-row'],
+      'the partial append is repaired, then the pending row is persisted in order');
     const restored=await start({telemetryDir:created.telemetryDir});
     await restored.effects.load(restored.agent);
-    assert.equal(restored.effects.snapshot(restored.agent).requests.count,2);
+    assert.equal(restored.effects.snapshot(restored.agent).requests.count,3);
   }finally{realFs.appendFile=original;await remove(created.telemetryDir);}
 });
 
@@ -214,8 +217,8 @@ test('a failed boundary repair is retried before the next row is appended',async
     assert.equal(repairFailed,true,'the first repair was attempted and failed');
     await created.effects.finish(created.agent,row('surviving-row'));
     await created.effects.flush(created.agent);
-    assert.deepEqual((await stored(created.telemetryDir)).map(item=>item.requestId),['unterminated-row','surviving-row'],
-      'the repair is retried rather than sealed with a newline after the fragment');
+    assert.deepEqual((await stored(created.telemetryDir)).map(item=>item.requestId),['unterminated-row','partial-row','surviving-row'],
+      'the repair is retried, then the pending row is persisted after the retained complete row');
   }finally{realFs.appendFile=append;realFs.truncate=truncate;await remove(created.telemetryDir);}
 });
 
@@ -241,11 +244,11 @@ test('a complete row without a newline survives a following partial append',asyn
     await created.effects.flush(created.agent);
     await created.effects.finish(created.agent,row('surviving-row'));
     await created.effects.flush(created.agent);
-    assert.deepEqual((await stored(created.telemetryDir)).map(item=>item.requestId),['unterminated-row','surviving-row'],
-      'a complete unterminated row is retained and the partial fragment is removed');
+    assert.deepEqual((await stored(created.telemetryDir)).map(item=>item.requestId),['unterminated-row','partial-row','surviving-row'],
+      'the complete unterminated row is retained and the repaired pending row is persisted');
     const restored=await start({telemetryDir:created.telemetryDir});
     await restored.effects.load(restored.agent);
-    assert.equal(restored.effects.snapshot(restored.agent).requests.count,2);
+    assert.equal(restored.effects.snapshot(restored.agent).requests.count,3);
   }finally{realFs.appendFile=original;await remove(created.telemetryDir);}
 });
 
@@ -466,4 +469,172 @@ test('a caller detail reason does not overwrite the decision reason',()=>{
       assert.equal(decision.detailReason,'review-implausible','and the caller reason is kept separately');
     }finally{await remove(created.telemetryDir);}
   });
+});
+
+test('more than 32 failed request rows are retained and flushed in order',async()=>{
+  const telemetryDir=await fs.mkdtemp(path.join(os.tmpdir(),'we-effects-many-'));
+  const file=path.join(telemetryDir,SESSION+'.observability.jsonl');
+  let failing=true;
+  const io={...realFs,appendFile:async(...args)=>{
+    if(failing&&args[0]===file)throw Object.assign(new Error('injected append failure'),{code:'EACCES'});
+    return realFs.appendFile(...args);
+  }};
+  const created=await start({telemetryDir,io});
+  try{
+    for(let index=0;index<40;index++)created.effects.finish(created.agent,row('retained-'+index));
+    await created.effects.flush(created.agent);
+    assert.ok(created.effects.snapshot(created.agent).persistence.pendingRequestRows>=33,
+      'the old slice(-32) would have discarded early rows');
+    failing=false;
+    const flushed=await created.effects.flush(created.agent);
+    assert.equal(flushed.complete,true);
+    const rows=await stored(telemetryDir);
+    assert.equal(rows.length,40);
+    assert.deepEqual(rows.map(item=>item.requestId),Array.from({length:40},(_,index)=>'retained-'+index));
+  }finally{await remove(telemetryDir);}
+});
+
+test('a failed finish blocks the next request-start until the row is persisted',async()=>{
+  const telemetryDir=await fs.mkdtemp(path.join(os.tmpdir(),'we-effects-gate-'));
+  const file=path.join(telemetryDir,SESSION+'.observability.jsonl');
+  let failing=true;
+  const io={...realFs,appendFile:async(...args)=>{
+    if(failing&&args[0]===file)throw Object.assign(new Error('injected append failure'),{code:'EACCES'});
+    return realFs.appendFile(...args);
+  }};
+  const created=await start({telemetryDir,io});
+  try{
+    created.effects.finish(created.agent,row('unsettled-row'));
+    await created.effects.flush(created.agent);
+    const next=row('next-row');
+    await assert.rejects(()=>created.effects.start(created.agent,next),error=>
+      error.code==='EFFECT_PERSISTENCE_UNAVAILABLE'&&error.effectsDispatched===false);
+    failing=false;
+    await created.effects.flush(created.agent);
+    await created.effects.start(created.agent,next);
+    assert.equal(next.startRecorded,true);
+    const schemas=(await stored(telemetryDir)).map(item=>item.schema);
+    assert.ok(schemas.includes('work-evidence.request-effects.v1'));
+    assert.ok(schemas.includes('work-evidence.request-start.v1'));
+  }finally{await remove(telemetryDir);}
+});
+
+test('an append that publishes a complete row and then throws is not duplicated',async()=>{
+  const telemetryDir=await fs.mkdtemp(path.join(os.tmpdir(),'we-effects-published-'));
+  const file=path.join(telemetryDir,SESSION+'.observability.jsonl');
+  let injected=false;
+  const io={...realFs,appendFile:async(...args)=>{
+    if(!injected&&args[0]===file){
+      injected=true;
+      await realFs.appendFile(...args);
+      throw new Error('injected failure after publication');
+    }
+    return realFs.appendFile(...args);
+  }};
+  const created=await start({telemetryDir,io});
+  try{
+    created.effects.finish(created.agent,row('published-once'));
+    const flushed=await created.effects.flush(created.agent);
+    assert.equal(flushed.complete,true);
+    assert.equal((await stored(telemetryDir)).filter(item=>item.requestId==='published-once').length,1);
+  }finally{await remove(telemetryDir);}
+});
+
+test('disposeAgent retries pending request rows before dropping state',async()=>{
+  const telemetryDir=await fs.mkdtemp(path.join(os.tmpdir(),'we-effects-dispose-'));
+  const file=path.join(telemetryDir,SESSION+'.observability.jsonl');
+  let failing=true;
+  const io={...realFs,appendFile:async(...args)=>{
+    if(failing&&args[0]===file)throw Object.assign(new Error('injected append failure'),{code:'EACCES'});
+    return realFs.appendFile(...args);
+  }};
+  const created=await start({telemetryDir,io});
+  try{
+    created.effects.finish(created.agent,row('dispose-row'));
+    await created.effects.flush(created.agent);
+    failing=false;
+    await created.effects.disposeAgent(created.agent);
+    assert.deepEqual((await stored(telemetryDir)).map(item=>item.requestId),['dispose-row']);
+  }finally{await remove(telemetryDir);}
+});
+
+test('a request-link append failure is retained and reported as incomplete',async()=>{
+  const telemetryDir=await fs.mkdtemp(path.join(os.tmpdir(),'we-effects-link-'));
+  const file=path.join(telemetryDir,SESSION+'.observability.jsonl');
+  let failing=true;
+  const io={...realFs,appendFile:async(...args)=>{
+    if(failing&&String(args[1]).includes('request-link'))throw Object.assign(new Error('injected link failure'),{code:'EACCES'});
+    return realFs.appendFile(...args);
+  }};
+  const created=await start({telemetryDir,io});
+  try{
+    const stream=created.handlers.get('agent/assistant-stream');
+    assert.equal(typeof stream,'function');
+    stream({agent:created.agent,frame:{type:'start',attemptId:'attempt-1',turn:1,step:1}});
+    created.effects.begin(created.agent,{provider:'p',model:'m',messages:[],tools:[],system:''},{requestKind:'main'});
+    stream({agent:created.agent,frame:{type:'end',attemptId:'attempt-1',outcome:{kind:'completed',seq:3}}});
+    const before=await created.effects.flush(created.agent);
+    assert.equal(before.complete,false);
+    assert.equal(created.effects.snapshot(created.agent).persistence.pendingLinkRows,1);
+    failing=false;
+    const after=await created.effects.flush(created.agent);
+    assert.equal(after.complete,true);
+    assert.ok((await stored(telemetryDir)).some(item=>item.schema==='work-evidence.request-link.v1'));
+  }finally{await remove(telemetryDir);}
+});
+
+test('a conflicting row with the same stable identity is reported instead of being treated as an idempotent duplicate',async()=>{
+  const telemetryDir=await fs.mkdtemp(path.join(os.tmpdir(),'we-effects-conflict-'));
+  const file=path.join(telemetryDir,SESSION+'.observability.jsonl');
+  let injected=false;
+  const io={...realFs,appendFile:async(...args)=>{
+    if(!injected&&args[0]===file){
+      injected=true;
+      await realFs.appendFile(file,JSON.stringify(row('conflicting-row',COMPLETE,{step:99}))+'\n','utf8');
+      throw new Error('injected failure after writing a different row');
+    }
+    return realFs.appendFile(...args);
+  }};
+  const created=await start({telemetryDir,io});
+  try{
+    const pending=row('conflicting-row',COMPLETE,{step:1});
+    created.effects.finish(created.agent,pending);
+    const flushed=await created.effects.flush(created.agent);
+    assert.equal(flushed.complete,false);
+    assert.equal(created.effects.snapshot(created.agent).persistence.persistenceConflict,true);
+    assert.equal(created.effects.snapshot(created.agent).persistence.pendingRequestRows,1);
+    assert.ok(created.effects.snapshot(created.agent).persistence.writeErrors.some(message=>/Conflicting/u.test(message)));
+    const rows=await stored(telemetryDir);
+    assert.equal(rows.length,1,'the conflicting on-disk row is not overwritten');
+    assert.equal(rows[0].step,99);
+  }finally{await remove(telemetryDir);}
+});
+
+test('a conflicting persisted identity makes load incomplete without double-counting the request',async()=>{
+  const telemetryDir=await fs.mkdtemp(path.join(os.tmpdir(),'we-effects-load-conflict-'));
+  const file=path.join(telemetryDir,SESSION+'.observability.jsonl');
+  const created=await start({telemetryDir});
+  try{
+    await fs.writeFile(file,JSON.stringify(row('duplicate-id'))+'\n'+JSON.stringify(row('duplicate-id',COMPLETE,{step:7}))+'\n','utf8');
+    await created.effects.load(created.agent);
+    const snapshot=created.effects.snapshot(created.agent);
+    assert.equal(snapshot.persistence.persistenceConflict,true);
+    assert.equal(snapshot.persistence.complete,false);
+    assert.equal(snapshot.requests.count,1,'a conflicting duplicate is not counted twice');
+    assert.ok(snapshot.persistence.writeErrors.some(message=>/Conflicting persistent row/u.test(message)));
+  }finally{await remove(telemetryDir);}
+});
+
+test('without session storage, finished request rows stay pending and complete stays false',async()=>{
+  const telemetryDir=await fs.mkdtemp(path.join(os.tmpdir(),'we-effects-no-storage-'));
+  const created=await start({telemetryDir});
+  try{
+    created.state.telemetryDir=null;
+    created.state.dir=null;
+    created.effects.finish(created.agent,row('retained-without-storage'));
+    const flushed=await created.effects.flush(created.agent);
+    assert.equal(flushed.complete,false);
+    assert.equal(flushed.pendingRequestRows,1);
+    assert.equal(created.effects.snapshot(created.agent).persistence.complete,false);
+  }finally{await remove(telemetryDir);}
 });

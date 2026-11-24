@@ -335,7 +335,7 @@ function validateArgs(input){
 export function createPtcPatterns(ctx,runtime){
   async function scan(agent,args,signal){
     const input=validateArgs(args||{}),root=path.resolve(await ctx.workingDirectory.ensure(agent,signal));
-    const workspaceKey=value=>process.platform==='win32'?path.resolve(value).toLowerCase():path.resolve(value);
+    const workspaceKey=value=>path.resolve(value);
     const snapshots=[...(await ctx.sessionPersistence.list({signal}))];
     const allowed=snapshots.filter(snapshot=>typeof snapshot.header.cwd==='string'&&workspaceKey(snapshot.header.cwd)===workspaceKey(root))
       .sort((a,b)=>b.header.createdAt-a.header.createdAt);

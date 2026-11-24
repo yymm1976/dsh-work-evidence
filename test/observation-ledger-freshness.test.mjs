@@ -56,3 +56,32 @@ test('a read issued after the last write stays fresh',async()=>{
   const [observation]=f.ledger.detail(f.agent).observations;
   assert.equal(observation.stale,false,'a read dispatched after the write is current');
 });
+
+test('paths that differ only by case are not merged without a host identity proof',async()=>{
+  const f=fixture();
+  await f.post({agent:f.agent,name:'write',callId:'write-upper',arguments:{file_path:'A.txt'},mutationCountAtDispatch:0},
+    {isError:false,value:{path:'A.txt'},content:[]});
+  await f.post({agent:f.agent,name:'read',callId:'read-lower',arguments:{file_path:'a.txt'},mutationCountAtDispatch:1},
+    {isError:false,content:[{type:'text',text:body}],value:{path:'a.txt',lines:[
+      {line:1,text:'alpha'},{line:2,text:'beta'},{line:3,text:'gamma'}]}});
+  f.agent.session.surface.nodes.push(11);
+  f.sessionEvent({seq:11,type:'tool/result',data:{turn:1,step:1,message:{role:'tool',
+    source:{callId:'read-lower'},isError:false,content:[{type:'text',text:body}]}}});
+  const [observation]=f.ledger.detail(f.agent).observations;
+  assert.equal(observation.stale,false,'a different path spelling cannot inherit another file write');
+});
+
+test('a case-distinct sibling file keeps its own observation identity',async()=>{
+  const f=fixture();
+  await f.post({agent:f.agent,name:'write',callId:'write-parser',arguments:{file_path:'src/Parser.js'},mutationCountAtDispatch:0},
+    {isError:false,value:{path:'src/Parser.js'},content:[]});
+  await f.post({agent:f.agent,name:'read',callId:'read-lower-parser',arguments:{file_path:'src/parser.js'},mutationCountAtDispatch:1},
+    {isError:false,content:[{type:'text',text:body}],value:{path:'src/parser.js',lines:[
+      {line:1,text:'alpha'},{line:2,text:'beta'},{line:3,text:'gamma'}]}});
+  f.agent.session.surface.nodes.push(11);
+  f.sessionEvent({seq:11,type:'tool/result',data:{turn:1,step:1,message:{role:'tool',
+    source:{callId:'read-lower-parser'},isError:false,content:[{type:'text',text:body}]}}});
+  const [observation]=f.ledger.detail(f.agent).observations;
+  assert.equal(observation.path,'src/parser.js');
+  assert.equal(observation.stale,false,'Parser.js and parser.js are distinct identities');
+});
