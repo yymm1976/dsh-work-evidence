@@ -687,6 +687,7 @@ export function apply(ctx,config={}){
         const request=claimedRequest??runtime.currentRequest(agent);
         const config=state(agent).config,text=textOf(request);
         if(taskPacingAllowed(config,text))section.text=taskFlowGuidance(runtime.activeMode(agent),taskSurfaceModes.get(agent.session.id),config,text);
+        if(boundedResult?.partial)section.text=[boundedPatch.guidance(boundedResult),section.text].filter(Boolean).join('\n');
       }
     }
     if(agent)effects.instructions(agent,section?.text??'');

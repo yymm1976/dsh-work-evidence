@@ -303,7 +303,7 @@ async function syntaxIssue(target, text, python) {
   return null;
 }
 
-async function writeChangedFiles(bundle, states, signal, python) {
+async function writeChangedFiles(bundle, states, signal, python, {agent = null, writeText = null} = {}) {
   const applied = [];
   const rejected = [];
   for (const [file, state] of states) {
@@ -329,28 +329,26 @@ async function writeChangedFiles(bundle, states, signal, python) {
       rejected.push({file, reason: 'syntax-invalid', message: issue});
       continue;
     }
-    const temporary = path.join(path.dirname(target), `.bounded-patch-${randomUUID()}.tmp`);
-    const info = await fs.stat(target);
+    const workspaceFile = posix(path.relative(bundle.workspaceRoot, target));
+    if (!agent || !writeText) {
+      rejected.push({file, reason: 'native-write-unavailable'});
+      continue;
+    }
     try {
-      try {
-        await fs.writeFile(temporary, state.text, {encoding: 'utf8', flag: 'wx', mode: info.mode});
-        if (await fs.readFile(target, 'utf8') !== state.original) {
-          rejected.push({file, reason: 'source-changed'});
-          continue;
-        }
-        await fs.rename(temporary, target);
-        applied.push({file, edits: state.replacements});
-      } catch (error) {
-        rejected.push({file, reason: 'source-write-failed', message: String(error.message).slice(0, 200)});
+      await writeText(agent, workspaceFile, state.text, signal);
+      if (await fs.readFile(target, 'utf8') !== state.text) {
+        rejected.push({file, reason: 'native-write-content-mismatch'});
+        continue;
       }
-    } finally {
-      await fs.rm(temporary, {force: true}).catch(() => {});
+      applied.push({file, workspaceFile, edits: state.replacements});
+    } catch (error) {
+      rejected.push({file, reason: 'native-write-failed', message: String(error.message).slice(0, 200)});
     }
   }
   return {applied, rejected};
 }
 
-export async function applyPatchProposal(proposal, bundle, signal, {python = null} = {}) {
+export async function applyPatchProposal(proposal, bundle, signal, {python = null, agent = null, writeText = null} = {}) {
   const allowed = new Set(bundle.files.map(file => file.path));
   const normalized = proposal?.normalized === true ? proposal : normalizeProposal(proposal, allowed);
   const validationRejections = normalized.rejections ?? [];
@@ -375,7 +373,7 @@ export async function applyPatchProposal(proposal, bundle, signal, {python = nul
     states.set(edit.file, state);
     staged.push({index: index + 1, file: edit.file, old: edit.old, replacement: edit.replacement});
   }
-  const written = await writeChangedFiles(bundle, states, signal, python);
+  const written = await writeChangedFiles(bundle, states, signal, python, {agent, writeText});
   const appliedFiles = new Set(written.applied.map(item => item.file));
   const changes = staged.filter(item => appliedFiles.has(item.file)).map(item => ({
     index: item.index,
@@ -446,8 +444,16 @@ export function createBoundedPatch(ctx, runtime, {effects}) {
     try {
       sandboxMode = ctx.get('sandboxPolicy')?.resolve({session: agent.session})?.mode ?? null;
     } catch {}
-    if (sandboxMode && !['workspace-write', 'danger-full-access'].includes(sandboxMode)) {
-      decide(agent, 'not-applicable', 'sandbox-not-writable', {sandboxMode});
+    if (!sandboxMode || !['workspace-write', 'danger-full-access'].includes(sandboxMode)) {
+      decide(agent, 'not-applicable', 'sandbox-writable-policy-unavailable', {sandboxMode});
+      return null;
+    }
+    let nativeWriteAvailable = false;
+    try {
+      nativeWriteAvailable = !!ctx.get('fs') && !!ctx.tools.get('write', agent);
+    } catch {}
+    if (!nativeWriteAvailable) {
+      decide(agent, 'unavailable', 'native-write-tool-unavailable');
       return null;
     }
     const request = suppliedRequest ?? requestFor(agent);
@@ -489,6 +495,21 @@ export function createBoundedPatch(ctx, runtime, {effects}) {
       const route = selection?.provider && selection?.model ? {provider: selection.provider, model: selection.model, ...(reasoningEffort ? {reasoningEffort} : {})} : null;
       if (!route) throw new Error('No native model route is available');
       const python = runtime.get(agent).config.fastEditPython ?? null;
+      const nativeWrite = async (targetAgent, file, text, signal) => {
+        const active = runtime.execFor(targetAgent, signal);
+        const callId = 'work-evidence:bounded-patch:' + randomUUID();
+        const result = await ctx.tools.execute({
+          name: 'write',
+          arguments: {file_path: file, content: text},
+          agent: targetAgent,
+          callId,
+          rootCallId: active?.rootCallId ?? callId,
+          parent: active?.token,
+          signal,
+        });
+        if (result?.isError) throw new Error(String(result.error?.message ?? 'Native write failed.'));
+        return result?.value ?? null;
+      };
       const requestProposal = async (system, payload, options) => {
         let lastError;
         for (let attempt = 1; attempt <= 2; attempt++) {
@@ -521,7 +542,9 @@ export function createBoundedPatch(ctx, runtime, {effects}) {
           const writable = view.files.filter(file => !referenceFiles.has(file.path));
           const proposal = normalizeProposal(response.value, new Set(writable.map(file => file.path)),
             new Set(bundle.files.map(file => file.path)));
-          const result = await applyPatchProposal(proposal, bundle, signal, {python});
+          const result = await applyPatchProposal(proposal, bundle, signal, {python, agent, writeText: nativeWrite});
+          for (const item of result.applied) if (item.workspaceFile)
+            runtime.recordMutation?.(agent, {tool: 'write', file: item.workspaceFile, callId: `bounded-patch:${requestId}:${pass}:${item.file}`, seq: null});
           applied.push(...result.applied.map(item => ({...item, pass})));
           followup = result.followup;
           previous.push({pass, requestedEdits: proposal.edits.length, applied: result.applied,
@@ -556,7 +579,9 @@ export function createBoundedPatch(ctx, runtime, {effects}) {
                 .map(edit => ({file: edit.file, reason: 'outside-focused-scope'}));
               const filtered = {...proposal, edits: proposal.edits.filter(edit => allowed.has(edit.file)),
                 rejections: [...proposal.rejections, ...outside]};
-              const result = await applyPatchProposal(filtered, focused, signal, {python});
+              const result = await applyPatchProposal(filtered, focused, signal, {python, agent, writeText: nativeWrite});
+              for (const item of result.applied) if (item.workspaceFile)
+                runtime.recordMutation?.(agent, {tool: 'write', file: item.workspaceFile, callId: `bounded-patch:${requestId}:3:${item.file}`, seq: null});
               applied.push(...result.applied.map(item => ({...item, pass: 3})));
               previous.push({pass: 3, requestedEdits: filtered.edits.length, applied: result.applied,
                 rejected: result.rejections, followup: result.followup, changes: result.changes});
@@ -579,10 +604,10 @@ export function createBoundedPatch(ctx, runtime, {effects}) {
         return result;
       } catch (error) {
         if (applied.length) {
-          const result = {done: true, requestId, applied, passes: previous,
+          const result = {done: false, partial: true, requestId, applied, passes: previous,
             files: [...new Set(applied.map(item => item.file))], warning: String(error.message ?? error).slice(0, 240)};
           decide(agent, 'applied', 'bounded-source-maintenance-partial',
-            {passes: previous.length, edits: result.applied.reduce((sum, item) => sum + item.edits, 0), files: result.files.length,
+            {passes: previous.length, edits: result.applied.reduce((sum, item) => sum + item.edits, 0), files: result.files.length, partial: true,
               warning: result.warning});
           state.result = result;
           return result;
@@ -606,7 +631,12 @@ export function createBoundedPatch(ctx, runtime, {effects}) {
       return state.result;
     },
     guidance(result) {
-      if (!result?.done) return '';
+      if (!result?.done && !result?.partial) return '';
+      if (result.partial) return '[Work Evidence bounded source maintenance] A bounded source-only repair flow applied '
+        + result.applied.reduce((sum, item) => sum + item.edits, 0) + ' exact source edits across '
+        + result.files.length + ' files, but stopped before the bounded flow completed. Keep the native tools available. '
+        + 'Inspect the applied files with native reads and continue the unresolved work. Do not claim completion. Warning: '
+        + (result.warning ?? 'none') + '. Applied files: ' + JSON.stringify(result.files) + '.';
       return '[Work Evidence bounded source maintenance] A bounded source-only repair flow has applied '
         + result.applied.reduce((sum, item) => sum + item.edits, 0) + ' exact source edits across '
         + result.files.length + ' files in ' + result.passes.length + ' bounded passes. Return the requested concise completion report now. Do not request tools, do not claim tests were run, and disclose any bounded-pass warning: '
@@ -615,7 +645,7 @@ export function createBoundedPatch(ctx, runtime, {effects}) {
     summary(agent) {
       const state = get(agent);
       return {enabled: runtime.isEnabled(agent) && !!runtime.get(agent).config.boundedPatch,
-        result: state.result ? {requestId: state.result.requestId, done: state.result.done,
+        result: state.result ? {requestId: state.result.requestId, done: state.result.done, partial: state.result.partial === true,
           edits: state.result.applied.reduce((sum, item) => sum + item.edits, 0), files: state.result.files.length,
           passes: state.result.passes.length, warning: state.result.warning ?? null} : null,
         scope:'large source-only multi-symptom maintenance; complete project source is bounded by count and bytes'};
