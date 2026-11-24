@@ -210,21 +210,18 @@ test('a budget-truncated single source is never receipted as a visible complete 
 });
 
 test('a new user request clears the prior source continuation',async()=>{
-  const t=await import('./helpers/host.mjs').then(async({startHost,text,tool})=>{
-    const host=await startHost({workspace:{toolSurface:'full'},script:async(_options,index)=>{
-      if(index===1)return [tool('project_evidence',{mode:'read',files:[{path:'a.txt'},{path:'b.txt'}],maxChars:2000})];
-      if(index===2)return [tool('read',{file_path:'a.txt'})];
-      if(index===3)return [tool('read',{file_path:'b.txt'})];
-      return [text('完成。')];
-    }});
-    try{
-      await fs.writeFile(path.join(host.cwd,'a.txt'),'a');
-      await fs.writeFile(path.join(host.cwd,'b.txt'),'b');
-      const agent=await host.createAgent('max');
-      await host.send(agent,'先批量读取。');
-      await host.send(agent,'开始另一个读取任务。');
-      return host.requests.at(-1)?requestText(host.requests.at(-1)):null;
-    }finally{await host.close();}
-  });
-  assert.ok(t);
+  const host=await startHost({workspace:{toolSurface:'full'},script:(_options,index)=>index===1
+    ?[tool('project_evidence',{mode:'read',files:[{path:'a.txt'},{path:'b.txt'}],maxChars:2000})]
+    :[text('完成。')]});
+  const continuations=()=>host.events.filter(event=>event.type==='user/message'&&
+    messageOf(event)?.source?.taskFlow?.key?.includes('"source-followup"'));
+  try{
+    await fs.writeFile(path.join(host.cwd,'a.txt'),'a');
+    await fs.writeFile(path.join(host.cwd,'b.txt'),BODY);
+    const agent=await host.createAgent('max');
+    await host.send(agent,'读取 a.txt 和 b.txt，再修复 b.txt。');
+    assert.equal(continuations().length,1);
+    await host.send(agent,'修改 c.txt。');
+    assert.equal(continuations().length,1,'the second request did not repeat the old continuation');
+  }finally{await host.close();}
 });

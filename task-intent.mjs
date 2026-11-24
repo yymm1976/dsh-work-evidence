@@ -42,7 +42,8 @@ const VERB_EN='modify|fix|implement|write|rewrite|edit|create|delete|replace|upd
 // character that cannot be part of a compound: start of text, punctuation, or a space.
 // 不要/不必/不准 stay in the plain list because a two-character form is unambiguous.
 // A bare 不 only qualifies when it directly negates a known write verb.
-const DENIAL_ZH='不得|不要|不能|无需|不必|不用|不准|不需要|严禁|禁止|不允许|不应|请勿|(?<![分识区特类级告性鉴辨个])别|(?<![请])勿|莫|(?<![得能会])不(?=(?:'+VERB_ZH+'))';
+const DENIAL_ZH='不得|不要|不能|不可|无需|不必|不用|不准|不需要|严禁|禁止|不允许|不应|请勿|(?<![分识区特类级告性鉴辨个])别|(?<![请])勿|莫|(?<![得能会])不(?=(?:'+VERB_ZH+'))';
+const COORDINATED_DENIAL=new RegExp('^(?:(?:'+VERB_ZH+')\\s*(?:或者|以及|并且|或|及|和|与|并|、)\\s*)+$','u');
 const DENIAL_EN="do not|don't|never|must not|mustn't|may not|mayn't|should not|shouldn't|shall not|shan't|cannot|can't|won't|wouldn't|would not|will not|need not|needn't|not allowed to|not supposed to|make sure not to|be sure not to|no need to|there is no need to";
 // A denial that only introduces an idiom does not deny the verb after it.
 const IDIOM='forget|hesitate|fail|neglect|忘记|忘了|犹豫';
@@ -201,10 +202,9 @@ function sentenceIsWritable(prose,raw=prose){
     if(!isVerbUse(prose,verb.at,verb.text,raw))continue;
     // Only the text before this verb can deny it.
     const before=prose.slice(0,verb.at);
-    // A bare 不 governs the attached verb, not a later request in the same clause.
     const prior=denials.filter(denial=>{
       const end=denial.at+denial.text.length;
-      return denial.text==='不'?end===verb.at:end<=verb.at;
+      return end<=verb.at&&(denial.text!=='不'||end===verb.at||COORDINATED_DENIAL.test(prose.slice(end,verb.at)));
     });
     if(!prior.length)return true;
     const last=prior.at(-1);
@@ -309,7 +309,7 @@ function sentenceImplements(sentence){
 // different verb class from "modify": `Do not modify any files. Use work_exec to run ...`
 // forbids edits and requests an execution, so the execution must stay available.
 const EXECUTION_TOOL=/(?<![A-Za-z0-9_])(?:work_exec|verified_exec|work_reason|bash|pwsh)(?![A-Za-z0-9_])/iu;
-const EXECUTION_CLAUSE=/^\s*(?:(?:请|随后|接着|然后|接下来|再|also|then|please)\s*)*(?:运行|执行|跑一下|(?:run|execute)\s+)\s*\S/iu;
+const EXECUTION_CLAUSE=/^\s*(?:(?:请|随后|接着|然后|接下来|再|also|then|please)\s*)*(?:在[^。；;，,\r\n]{1,2048}?(?:中|内)\s*)?(?:运行|执行|跑一下|(?:run|execute)\s+)\s*\S/iu;
 
 export function isReadOnlyTaskRequest(request){
   const text=String(request??'');

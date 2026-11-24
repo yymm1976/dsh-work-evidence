@@ -6,7 +6,7 @@ import {stat} from 'node:fs/promises';
 
 const quote=value=>"'"+String(value).replaceAll("'","''")+"'";
 const bashQuote=value=>"'"+String(value).replaceAll("'","'\\''")+"'";
-const INPUT_KEYS=new Set(['runtime','language','code','scriptRef','edits','executable','interpreter','format','cwd','workdir','timeoutMs','mode','sources']);
+const INPUT_KEYS=new Set(['runtime','language','code','syntaxFiles','scriptRef','edits','executable','interpreter','format','cwd','workdir','timeoutMs','mode','sources']);
 const CALL_EVENT_TYPES=new Set(['tool/call','tool/ptc-dispatch-start','tool/ptc-dispatch','tool/code-dispatch-start','tool/code-dispatch']);
 const RESULT_EVENT_TYPES=new Set(['tool/result','tool/ptc-dispatch','tool/code-dispatch']);
 const validExecutable=value=>typeof value==='string'&&value.trim()&&value.length<=4096&&!/[\0\r\n]/u.test(value);
@@ -23,14 +23,58 @@ export async function sameDeclaredInlineExecutable(left,right){
     return first.isFile()&&second.isFile()&&first.ino!==0n&&first.dev!==0n&&second.dev!==0n&&first.ino===second.ino&&first.dev===second.dev;
   }catch{return false;}
 }
+function pythonSyntaxCode(files){
+  if(!Array.isArray(files)||files.length<1||files.length>32||files.some(file=>
+    typeof file!=='string'||file.length>512||/[\0\r\n:]/u.test(file)||
+    /^[\\/]/u.test(file)||file.split(/[\\/]/u).includes('..')||!/\.pyi?$/iu.test(file)))
+    throw new Error('syntaxFiles requires 1-32 workspace-relative .py or .pyi file paths');
+  const names=[...new Set(files.map(file=>file.replaceAll('\\','/')))];
+  return `import json
+from pathlib import Path
+
+root = Path.cwd().resolve()
+passed = []
+failed = []
+byte_limit = 2_000_000
+for name in ${JSON.stringify(names)}:
+    try:
+        target = (root / name).resolve(strict=True)
+        target.relative_to(root)
+        if not target.is_file():
+            raise ValueError("Not a regular file")
+        with target.open("rb") as source:
+            content = source.read(byte_limit + 1)
+        if len(content) > byte_limit:
+            raise ValueError("Source exceeds 2000000 bytes")
+        compile(content, name, "exec", dont_inherit=True)
+    except SyntaxError as error:
+        failed.append({"file": name, "kind": type(error).__name__, "line": error.lineno,
+                       "column": error.offset, "message": error.msg[:240]})
+    except (OSError, ValueError, RuntimeError) as error:
+        failed.append({"file": name, "kind": type(error).__name__, "message": str(error)[:240]})
+    else:
+        passed.append(name)
+
+print(json.dumps({"passedFiles": passed, "failedFiles": failed}, ensure_ascii=False))
+raise SystemExit(1 if failed else 0)
+`;
+}
 function normalizeInput(input){
   if(!input||typeof input!=='object'||Array.isArray(input))throw new Error('work_exec arguments must be an object');
   for(const key of Object.keys(input))if(!INPUT_KEYS.has(key))throw new Error('Unknown work_exec argument: '+key);
-  const {language,interpreter,cwd,workdir,mode,sources,...normalized}=input;
+  const {language,interpreter,cwd,workdir,mode,sources,syntaxFiles,...normalized}=input;
   if(mode!==undefined&&mode!=='once')throw new Error('scriptRef requires a fresh-process work_exec call');
   for(const [key,value]of [['runtime',language],['executable',interpreter]])if(value!==undefined){
     if(normalized[key]!==undefined&&normalized[key]!==value)throw new Error('Conflicting work_exec '+key+' alias');
     normalized[key]=value;
+  }
+  if(syntaxFiles!==undefined){
+    if(normalized.runtime!==undefined&&normalized.runtime!=='python')
+      throw new Error('syntaxFiles requires the Python runtime');
+    if(['code','scriptRef','edits','format'].some(key=>normalized[key]!==undefined))
+      throw new Error('syntaxFiles cannot be combined with code, scriptRef, edits, or format');
+    normalized.runtime='python';
+    normalized.code=pythonSyntaxCode(syntaxFiles);
   }
   for(const directory of [cwd,workdir])if(directory!==undefined&&!['.','./','.\\'].includes(directory))throw new Error('work_exec runs in the current project; cwd/workdir may only be .');
   if(normalized.timeoutMs!==undefined&&(!Number.isInteger(normalized.timeoutMs)||normalized.timeoutMs<1||normalized.timeoutMs>600000))

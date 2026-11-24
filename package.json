@@ -68,6 +68,7 @@
     "flash-preset-rules.mjs",
     "prepare-flash-preset.mjs",
     "model.mjs",
+    "bounded-patch.mjs",
     "archive-source.mjs",
     "archive-store.mjs",
     "dependency-source.mjs",

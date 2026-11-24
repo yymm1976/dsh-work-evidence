@@ -23,8 +23,11 @@ const INTERNAL=new Set(['work_state','work_status','work_report','work_recall','
 const FINAL_ONLY_REPORTING=/(?:修完|做完|完成|结束)(?:[^，,。；;！？\r\n]{0,24}?后)?[，, \t]*直接(?:汇报|回复|答复)|(?:不要|不必|无需|禁止|不得)(?:在)?(?:中途|过程中)(?:汇报|更新进度|输出)|(?:只|仅)(?:在)?(?:最后|最终|完成后)(?:汇报|回复|输出)|\b(?:no (?:interim|progress) updates|final (?:answer|response) only)\b/iu;
 const SOURCE_ONLY_REQUEST=/(?:只能|仅可|仅能|只允许)[^。\r\n]{0,40}(?:源码|源代码|文件代码)[^。\r\n]{0,30}(?:定位|排查|判断|核对)|\b(?:source inspection only|only inspect (?:the )?source code)\b/iu;
 const FULL_SOURCE_REQUEST=/通读|完整(?:地)?(?:阅读|读取)|(?:阅读|读取)(?:整个|完整)(?:源码|文件)|(?:源[代]?码|文件|文件代码)(?:的)?(?:全文|全量)|\b(?:entire|full|whole) (?:source )?file\b/iu;
+export function taskPacingAllowed(config,request){
+  return !!config.stepPacing&&!(SOURCE_ONLY_REQUEST.test(request)&&FINAL_ONLY_REPORTING.test(request));
+}
 function sourceReadDefault(config,request){
-  return config.stepPacing&&Number.isInteger(config.sourceReadDefaultLines)&&SOURCE_ONLY_REQUEST.test(request)&&!FULL_SOURCE_REQUEST.test(request)?
+  return taskPacingAllowed(config,request)&&Number.isInteger(config.sourceReadDefaultLines)&&SOURCE_ONLY_REQUEST.test(request)&&!FULL_SOURCE_REQUEST.test(request)?
     config.sourceReadDefaultLines:null;
 }
 const SOURCE_ONLY_GUIDANCE='只从源码取得依据。可通过原生工具或 Shell 读取和检索文件。不得启动解释器检查语法、导入或行为。也不得为这些检查寻找运行时。按用户描述的行为逐项处理。先查实际入口和触发条件，源码能解释一个独立问题时可先修这一项。每次读取只补会改变当前修改的缺口，已定位的独立区段同轮读取。涉及重试、刷新、切换或并发时，从源码核对首次操作留下的状态，以及下一次实际使用的对象、范围和状态。改缓存时查时效和失败重取。保留其他已有行为。最终汇报实际修改和仍缺依据的事项。';
@@ -55,13 +58,15 @@ export function taskFlowGuidance(mode,surface='writable',config={},request=''){
     config.structuredJson===true?'structured_json 可直接选择 JSON/JSONL 的值、键、数量和数组页。只需这些字段时优先调用；缺失、null 和 complete:false 分开处理。':''].filter(Boolean).join('\n');
   const readGuidance=nativeReads?nativeReads+'\n上述原生读取适用时不另写解析程序；需要其他计算或工具返回 unavailable 时再用程序，保持任务要求和输入文件不变。\n':'';
   if(surface==='minimal')return readGuidance;
+  const finalOnly=FINAL_ONLY_REPORTING.test(request);
+  if(mode==='aggressive'&&finalOnly)return readGuidance;
   const readOnly=surface==='read-only';
   const sourceOnly=mode==='aggressive'&&SOURCE_ONLY_REQUEST.test(request);
   const readDefault=sourceOnly?sourceReadDefault(config,request):null;
   const sourceReadGuidance=readDefault===null?'':'源码 read 省略 offset 和 limit 时，先返回 '+readDefault+' 行。有后续声明行号时，可按所需声明读取区段。需要更宽的范围时，可显式设置 limit。\n';
   const body=readOnly?READ_ONLY_TASK_FLOW_GUIDANCE+(mode==='quality'?QUALITY_PRIORITY:''):
     sourceOnly?SOURCE_ONLY_GUIDANCE:mode==='quality'?QUALITY_GUIDANCE:mode==='aggressive'?AGGRESSIVE_GUIDANCE:TASK_FLOW_GUIDANCE;
-  const reporting=FINAL_ONLY_REPORTING.test(request)?'':STAGE_GUIDANCE+'\n'+STAGE_CHECKPOINT_GUIDANCE;
+  const reporting=finalOnly?'':STAGE_GUIDANCE+'\n'+STAGE_CHECKPOINT_GUIDANCE;
   return '[Work Evidence mode: '+mode+'; policy: '+MODE_POLICY_VERSION+']\n'+body+'\n'+sourceReadGuidance+readGuidance+reporting;
 }
 const newPacing=()=>({steps:new Set(),operations:0,outputTokens:0,lastOutputTokens:0,missingOutputUsage:0,progressOutputTokens:0,noticeOutputTokens:0,noticeSteps:-1,
@@ -425,12 +430,10 @@ export function createTaskFlow(ctx,runtime,{nativeFiles,call,executionDependenci
       }
     }
     const runtimeState=runtime.get(agent),runtimeConfig=runtimeState.config;
-    const directCommand=String(call.args.command??''),embeddedInterpreter=SHELL.includes(call.name)&&call.name!=='work_exec'&&
-      directCommand.length>=800&&/[\\/](?:python|node)(?:\.exe)?\b|\b(?:python\d*|pypy|node)\b/iu.test(directCommand)&&
-      (directCommand.includes('\n')||/(?:\s-[ce]\s|@['"]|<{1,2}\s*['"]?python)/iu.test(directCommand));
-    if(embeddedInterpreter&&state.lastUser&&event.seq>state.lastUser.seq)
-      state.legacyInterpreterShell={seq,userSeq:state.lastUser.seq,tool:call.name,chars:directCommand.length,
-        ...(runtimeConfig.nativeShellScriptReuse&&nativeShellScript(call.name,call.args,runtimeState.root)?{scriptRef:callId}:{})};
+    if(runtimeConfig.nativeShellScriptReuse&&typeof callId==='string'&&
+      typeof call.args.command==='string'&&call.args.command.length>=800&&
+      state.lastUser&&event.seq>state.lastUser.seq&&nativeShellScript(call.name,call.args,runtimeState.root))
+      state.legacyInterpreterShell={seq,userSeq:state.lastUser.seq,scriptRef:callId};
     if(call.name==='work_exec'&&complete&&Array.isArray(payload?.scriptSourceRefs)){
       const repaired=new Set(payload.scriptSourceRefs.filter(id=>typeof id==='string'));
       for(const [errorKey,error]of state.errors)if(error.tool==='work_exec'&&repaired.has(error.callId))state.errors.delete(errorKey);
@@ -717,8 +720,10 @@ export function createTaskFlow(ctx,runtime,{nativeFiles,call,executionDependenci
   function message(kind,key,text){return {id:randomUUID(),role:'user',source:{kind:SOURCE,taskFlow:{kind,key}},content:[{type:'text',text}]};}
   async function startupPaths(agent,pendingMessages,signal){
     const incoming=pendingMessages.findLast(isUserRequestMessage);
-    if(!incoming||!nativeFiles||!runtime.isEnabled(agent)||!runtime.get(agent).config.stepPacing)return [];
-    const text=resultText(incoming.content),readme=findBareReadme(text);
+    if(!incoming||!nativeFiles||!runtime.isEnabled(agent))return [];
+    const text=resultText(incoming.content);
+    if(!taskPacingAllowed(runtime.get(agent).config,text))return [];
+    const readme=findBareReadme(text);
     const readmeIndex=readme?readme.index+readme[0].length-6:-1;
     const position=file=>file==='README'?readmeIndex:text.indexOf(file);
     const files=[...new Set([...textPaths(text),...(readme?['README']:[])])].sort((a,b)=>position(a)-position(b)).slice(0,6),root=runtime.get(agent).root;
@@ -771,10 +776,13 @@ export function createTaskFlow(ctx,runtime,{nativeFiles,call,executionDependenci
   }
   function beforeStep(agent,pendingMessages=[],knownPaths=[]){
     if(!runtime.isEnabled(agent))return [];
-    const state=sync(agent),runtimeState=runtime.get(agent),config=runtimeState.config,messages=[],surfaceMode=runtimeState.taskSurfaceMode,mode=runtime.activeMode(agent);
+    const state=sync(agent),runtimeState=runtime.get(agent),messages=[],surfaceMode=runtimeState.taskSurfaceMode,mode=runtime.activeMode(agent);
     if(state.calls.size||state.nested.size)return messages;
     if(surfaceMode==='minimal')return messages;
     const user=state.lastUser,text=user?.text??'',key=String(user?.seq);
+    const incoming=pendingMessages.findLast(isUserRequestMessage);
+    const policy=runtimeState.config;
+    const config=taskPacingAllowed(policy,incoming?resultText(incoming.content):text)?policy:{...policy,stepPacing:false};
     const emit=(kind,id,text)=>{
       runtime.effects?.decide(agent,({reuse:'reuseAdvice',cleanup:'cleanupAdvice',pacing:'stepPacing',mode:'stepPacing',compute:'retainedComputeAdvice',validation:'stepPacing',inlineExec:'inlineExecAdvice',diagnostic:'failureAdvice',scriptReuse:'scriptReuseAdvice',scriptVersion:'scriptReuseAdvice',review:'qualityReview',judgment:'stageJudgment'}[kind]??'guidance'),'applied','observed-scene-condition',{noticeId:id});
       const notice=message(kind,id,text);
@@ -791,11 +799,11 @@ export function createTaskFlow(ctx,runtime,{nativeFiles,call,executionDependenci
       notices[0].source.taskFlow.judgment={status:'challenged',reportSeq:row.reportSeq,correctionSeq:row.correctionSeq,reusedSeq:row.reusedSeq,source:row.source};
       return notices;
     };
-    const incoming=pendingMessages.findLast(isUserRequestMessage);
     if(incoming){
       const judgment=judgmentReminder();if(judgment)return judgment;
       const modeKey=JSON.stringify([incoming.id,'pb001-brief']);
-      if(mode==='aggressive'&&surfaceMode!=='read-only'&&config.stepPacing&&!SOURCE_ONLY_REQUEST.test(resultText(incoming.content))&&!state.pacing.notices.has(modeKey)){
+      if(mode==='aggressive'&&surfaceMode!=='read-only'&&config.stepPacing&&!SOURCE_ONLY_REQUEST.test(resultText(incoming.content))&&
+        !FINAL_ONLY_REPORTING.test(resultText(incoming.content))&&!state.pacing.notices.has(modeKey)){
         state.pacing.notices.add(modeKey);
         emit('mode',modeKey,'[work-evidence] 本次使用激进优化。按用户指定的行为和保留条件交付。已有依据时可直接处理当前问题。');
       }
@@ -803,6 +811,13 @@ export function createTaskFlow(ctx,runtime,{nativeFiles,call,executionDependenci
       if(mode==='quality'&&surfaceMode!=='read-only'&&config.stepPacing&&!state.pacing.notices.has(qualityKey)){
         state.pacing.notices.add(qualityKey);
         emit('mode',qualityKey,'[work-evidence] 本次应用质量增强。依据需覆盖用户要求、适用例外和实际失败。');
+      }
+      const scopeKey=JSON.stringify([incoming.id,'pb001-explicit-scope']);
+      if(mode!=='quality'&&surfaceMode!=='read-only'&&config.stepPacing&&
+        FINAL_ONLY_REPORTING.test(resultText(incoming.content))&&!SOURCE_ONLY_REQUEST.test(resultText(incoming.content))&&
+        !state.pacing.notices.has(scopeKey)){
+        rememberPacing(state,scopeKey);
+        return emit('mode',scopeKey,'[work-evidence] 本次请求已列出明确范围，并要求完成后直接汇报。只处理这些明确行为。保留现有模块级状态、公开名称和调用方式；需要替换逻辑时修改实现，不删除现有状态。沿用户描述的实际入口核到输入解析、状态更新和输出。不要为未提出的来源或兼容场景新增回退。每项改动以已有源码为据；已有源码能判断时，不运行验证程序、不重复读取同一文件；只有实际失败或无法判断时才做一次最小验证。全部覆盖后直接汇报。');
       }
       const expandedFor=runtimeState.taskSurfaceExpandedFor;
       if(expandedFor===incoming.id){
@@ -927,12 +942,11 @@ export function createTaskFlow(ctx,runtime,{nativeFiles,call,executionDependenci
         '字符。'+(programFailure.kind==='parse'?'按实际解析错误修正程序。':'先依据原错误定位失败原因，不能仅凭未分发内部工具推断语法错误或程序没有副作用。')+'保留已有实现，只修改实际失败部分。')+reference);
     }
     const legacyShell=state.legacyInterpreterShell,legacyShellKey=JSON.stringify([user?.seq,'legacy-inline-shell']);
-    if(config.executionTriage&&user&&legacyShell?.userSeq===user.seq&&!state.inlineExecAdvised.has(legacyShellKey)&&
+    if(config.executionTriage&&config.nativeShellScriptReuse&&user&&legacyShell?.userSeq===user.seq&&!state.inlineExecAdvised.has(legacyShellKey)&&
       (()=>{try{return !!ctx.tools.get('work_exec',agent);}catch{return false;}})()){
       state.inlineExecAdvised.add(legacyShellKey);
-      if(config.nativeShellScriptReuse&&legacyShell.scriptRef)return emit('inlineExec',legacyShellKey,
+      return emit('inlineExec',legacyShellKey,
         '[work-evidence] 事件'+legacyShell.seq+'的单个字面量解释器程序可用 work_exec('+JSON.stringify({scriptRef:legacyShell.scriptRef,edits:[{before:'唯一原文',after:'替换原文'}]})+') 显式修改并执行。只复用代码及原解释器参数，当前工作目录和权限重新生效。原始执行状态与副作用保留；不自动重放。'+WORK_EXEC_DISCOVERY);
-      return emit('inlineExec',legacyShellKey,'[work-evidence] 可沿用事件'+legacyShell.seq+'的输出。后续确需运行新的独立 Node/Python 程序时，可用 work_exec({runtime,code,executable?}) 直接执行。Python 默认不写字节码。'+(toolModeFor(ctx,agent)==='ptc'?WORK_EXEC_DISCOVERY:''));
     }
     const repeated=state.repeatedExecution;
     if(config.executionTriage&&repeated&&user&&
@@ -1153,7 +1167,7 @@ export function createTaskFlow(ctx,runtime,{nativeFiles,call,executionDependenci
           '[work-evidence] 上一响应较长。下一步只执行仍未决的实际动作，或直接整理已有结果；不要重述分析、重演计算或增加同义检查。用户明确要求或实际错误仍须处理。');
       }
       const strictKey=JSON.stringify([user.seq,'strict']);
-      if(!hasWorkEvidence&&!pacing.notices.has(economyKey)&&!pacing.notices.has(strictKey)&&
+      if(!hasWorkEvidence&&!FINAL_ONLY_REPORTING.test(text)&&!pacing.notices.has(economyKey)&&!pacing.notices.has(strictKey)&&
         (steps>=2&&pacing.lastOutputTokens>=2500||steps>=4&&pacing.outputTokens>=12000)){
         rememberPacing(state,economyKey);
         return emit('pacing',economyKey,'[work-evidence] 若已有结果覆盖当前缺口，直接执行或交付；仍缺读取、解析或独立计算时同轮合并。只在确有新依据时继续调查。');
@@ -1174,7 +1188,8 @@ export function createTaskFlow(ctx,runtime,{nativeFiles,call,executionDependenci
   }
   function summary(agent){
     const state=sync(agent),config=runtime.get(agent).config;
-    return {enabled:runtime.isEnabled(agent),mode:runtime.modeStatus(agent),stageReporting:{...state.stageReporting,enabled:runtime.isEnabled(agent)&&config.stepPacing,delivery:'assistant-text-guidance; content-not-semantically-verified'},executionTriage:config.executionTriage,stageWorkingSet:config.stageWorkingSet,
+    const pacingEnabled=taskPacingAllowed(config,state.lastUser?.text??'');
+    return {enabled:runtime.isEnabled(agent),mode:runtime.modeStatus(agent),stageReporting:{...state.stageReporting,enabled:runtime.isEnabled(agent)&&pacingEnabled,delivery:'assistant-text-guidance; content-not-semantically-verified'},executionTriage:config.executionTriage,stageWorkingSet:config.stageWorkingSet,
       judgmentChallenges:challenges(agent,state),phase:phase(agent),pendingCalls:state.calls.size+state.nested.size,
       userId:state.lastUser?.id??null,userSeq:state.lastUser?.seq??null,lastMutationSeq:state.lastMutation,mutationVersion:state.mutationVersion,
       unresolvedErrors:[...state.errors.values()].slice(-8),pendingJobs:[...state.jobs].slice(-16),
@@ -1182,7 +1197,7 @@ export function createTaskFlow(ctx,runtime,{nativeFiles,call,executionDependenci
       programOutputDiagnostics:state.programOutputDiagnostics.map(item=>({...item})),
       readOutputIssue:state.readOutputIssue?{...state.readOutputIssue,readSeqs:[...state.readOutputIssue.readSeqs]}:null,
       probes:state.probes.map(probe=>({...probe,...dependencyView(state.executions.find(item=>item.probeId===probe.id))})),nativeExecutions:state.executions.map(executionView),inlineExecNotices:state.inlineExecAdvised.size,scriptReuseNotices:state.scriptReuseAdvised.size,diagnosticNotices:state.diagnosticAdvised.size,reuseNotices:state.reuseNotices,cleanupNotices:state.cleanupNotices,
-      transitions:state.transitions.slice(),pacing:{enabled:config.stepPacing,toolBearingRequests:state.pacing.steps.size,operations:state.pacing.operations,
+      transitions:state.transitions.slice(),pacing:{enabled:pacingEnabled,toolBearingRequests:state.pacing.steps.size,operations:state.pacing.operations,
         reportedOutputTokens:state.pacing.outputTokens,lastResponseOutputTokens:state.pacing.lastOutputTokens,missingOutputUsage:state.pacing.missingOutputUsage,retainedComputeCalls:state.pacing.computeCalls,validationAdvised:state.pacing.validationAdvised,
         outputTokensSinceProgress:Math.max(0,state.pacing.outputTokens-state.pacing.progressOutputTokens),
         outputTokensSinceNotice:Math.max(0,state.pacing.outputTokens-state.pacing.noticeOutputTokens),
@@ -1300,7 +1315,9 @@ export function createTaskFlow(ctx,runtime,{nativeFiles,call,executionDependenci
       if(!exec.agent||exec.name!=='pwsh'||exec.signal?.aborted||!runtime.isEnabled(exec.agent)||!runtime.get(exec.agent).config.executionTriage)return null;
       const state=sync(exec.agent),args=argsOf(exec.arguments);
       if(!state.lastUser)return null;
-      const invocation=nativePwshInvocationDiagnostic(args,result),diagnostic=invocation??nativePwshTableDiagnostic(args,result);
+      const invocation=nativePwshInvocationDiagnostic(args,result);
+      const fileSizeRequested=/(?:文件.{0,16}(?:大小|字节数)|(?:大小|字节数).{0,16}文件|\bfiles?\b[^.!?;\r\n]{0,24}\b(?:sizes?|byte counts?)\b|\b(?:sizes?|byte counts?) of (?:the )?files?\b)/iu.test(state.lastUser.text);
+      const diagnostic=invocation??(fileSizeRequested?nativePwshTableDiagnostic(args,result):null);
       if(!diagnostic)return null;
       const key=JSON.stringify(invocation?[state.lastUser.seq,'pwsh-unquoted-executable',invocation.executable]:[state.lastUser.seq,diagnostic.kind]);
       if(state.diagnosticAdvised.has(key))return null;

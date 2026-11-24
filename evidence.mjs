@@ -51,17 +51,20 @@ export function finalizeEvidenceWindow(source,mode){
   }
   const first=source.lines[0].line,last=source.lines.at(-1).line;
   source.observedRange={first,last};
-  const expectedEnd=mode==='archive'
-    ?source.returnedThrough
-    :(Number.isInteger(source.totalLines)?Math.min(source.totalLines,offset+limit-1):offset+limit-1);
+  const expectedEnd=Number.isInteger(source.totalLines)?Math.min(source.totalLines,offset+limit-1)
+    :mode==='archive'?source.returnedThrough:offset+limit-1;
   source.rowRangeComplete=first===offset&&Number.isInteger(expectedEnd)&&last>=expectedEnd;
   source.lineTextComplete=!source.lineTextTruncated&&!source.budgetTruncated;
   source.rangeComplete=source.rowRangeComplete&&source.lineTextComplete;
-  source.fileHasMore=Number.isInteger(source.totalLines)?last<source.totalLines:(mode==='archive'?!!source.hasMore:null);
+  if(mode==='locate'&&source.state==='observed')source.truncated=!source.rangeComplete;
+  source.fileHasMore=Number.isInteger(source.totalLines)?last<source.totalLines:
+    source.responseBudget?.bodyDelivered&&source.fileHasMore===true?true:mode==='archive'?!!source.hasMore:null;
   if(!source.rowRangeComplete&&(source.fileHasMore!==false||mode==='archive'))source.nextOffset=last+1;
   if(!source.lineTextComplete){
     source.contentLimitation=source.lineTextMaximumReached?'line-text-exceeds-maximum':'line_text_or_return_budget_truncated';
-    if(source.lineTextTruncated)delete source.nextOffset;
+    if(Number.isInteger(source.responseBudget?.firstClippedLine)&&!source.responseBudget.lineTextRecoveryLimited)
+      source.nextOffset=source.responseBudget.firstClippedLine;
+    else if(source.lineTextTruncated&&!source.responseBudget?.lineTextRecoveryLimited)delete source.nextOffset;
   }
   return source;
 }
@@ -73,12 +76,14 @@ function numberedSource(source){
     ...(clippedLines.length?{clippedLines}:{})};
 }
 export function renderSourceEvidence(facts){
-  if(facts?.mode!=='read'||facts.readLayout!=='numbered'||!Array.isArray(facts.sources))return JSON.stringify(facts);
+  if(!['read','locate'].includes(facts?.mode)||facts.readLayout!=='numbered'||!Array.isArray(facts.sources))return JSON.stringify(facts);
   return JSON.stringify({...facts,sources:facts.sources.map(numberedSource)});
 }
 export function boundEvidence(facts,maxChars=limits.evidenceChars,{preferWholeSources=false,lineTextLimit,resumeMaxChars,numberedBudget=false}={}){
   const size=value=>Buffer.byteLength(numberedBudget?renderSourceEvidence(value):JSON.stringify(value),'utf8');
   const sourceSize=source=>Buffer.byteLength(JSON.stringify(numberedBudget?numberedSource(source):source),'utf8');
+  const minimumRows=source=>facts.mode==='locate'&&Number.isSafeInteger(source.matchLine)
+    ?source.lines.findIndex(row=>row.line===source.matchLine)+1:0;
   const dedup=items=>{
     const seen=new Set(),unique=[];
     for(const item of items){const key=JSON.stringify(item);if(seen.has(key)){unique.find(entry=>entry.key===key).count++;continue;}seen.add(key);unique.push({key,value:item,count:1});}
@@ -88,8 +93,8 @@ export function boundEvidence(facts,maxChars=limits.evidenceChars,{preferWholeSo
     const before=search.matches.length;search.matches=dedup(search.matches);if(before!==search.matches.length)search.exactDuplicatesRemoved=before-search.matches.length;
   }
   if(Array.isArray(facts.failures))facts.failures=dedup(facts.failures);
-  const resumeArguments=(source,offset=source.requestedRange?.offset??1,limit=source.requestedRange?.limit??(source.archive?160:2000))=>{
-    const options={responseView:'full',...(lineTextLimit===undefined?{}:{lineTextLimit}),
+  const resumeArguments=(source,offset=source.requestedRange?.offset??1,limit=source.requestedRange?.limit??(source.archive?160:2000),textLimit=lineTextLimit)=>{
+    const options={responseView:'full',...(textLimit===undefined?{}:{lineTextLimit:textLimit}),
       ...(resumeMaxChars===undefined?{}:{maxChars:resumeMaxChars})};
     if(source.archive&&source.entry)return {mode:'archive',archive:source.archive,entry:source.entry,
       offset,limit,...options};
@@ -129,7 +134,7 @@ export function boundEvidence(facts,maxChars=limits.evidenceChars,{preferWholeSo
     }
     if(facts.failures?.length>1){facts.failures.pop();facts.omittedFailures=(facts.omittedFailures||0)+1;continue;}
     const search=[facts.search,facts.entryMatches].find(s=>s?.matches?.length);
-    if(search){search.matches.pop();search.truncated=true;search.omittedMatches=(search.omittedMatches||0)+1;continue;}
+    if(search&&facts.mode!=='locate'){search.matches.pop();search.truncated=true;search.omittedMatches=(search.omittedMatches||0)+1;continue;}
     const lookup=facts.missingFileLookups?.find(s=>s.candidates?.length);
     if(lookup){lookup.candidates.pop();lookup.truncated=true;continue;}
     const memberMatches=facts.sources.flatMap(source=>[
@@ -142,7 +147,9 @@ export function boundEvidence(facts,maxChars=limits.evidenceChars,{preferWholeSo
       longest.match.lines.pop();longest.match.complete=false;longest.match.budgetTruncated=true;
       longest.member.budgetTruncated=true;longest.source.budgetTruncated=true;facts.budgetTruncated=true;continue;
     }
-    const source=facts.sources.filter(s=>s.lines?.length).sort((a,b)=>sourceSize(b)-sourceSize(a))[0];
+    const withRows=facts.sources.filter(source=>source.lines?.length);
+    const canTrim=withRows.filter(source=>source.lines.length>minimumRows(source));
+    const source=(canTrim.length?canTrim:withRows).sort((a,b)=>sourceSize(b)-sourceSize(a))[0];
     if(source){
       source.truncated=true;source.budgetTruncated=true;source.rangeComplete=false;source.rowRangeComplete=false;source.lineTextComplete=false;
       source.contentLimitation='response-budget';
@@ -152,13 +159,21 @@ export function boundEvidence(facts,maxChars=limits.evidenceChars,{preferWholeSo
       const useLines=count=>{
         source.lines=lines.slice(0,count);
         const last=source.lines.at(-1)?.line??null;
-        const resumeOffset=last===null?start:last+1,remaining=Math.max(1,start+limit-resumeOffset);
+        const clipped=source.lines.find(row=>row.lineTextTruncated);
+        const currentTextLimit=source.lineTextLimit??lineTextLimit??500;
+        const largerTextLimit=source.nextLineTextLimit??source.lineTextMaximum??12000;
+        const recoveryLimited=!!clipped&&largerTextLimit<=currentTextLimit;
+        const resumeOffset=clipped&&!recoveryLimited?clipped.line:last===null?start:last+1;
+        const remaining=Math.max(1,start+limit-resumeOffset);
+        const textLimit=clipped&&!recoveryLimited?largerTextLimit:lineTextLimit;
+        source.fileHasMore=true;
         if(last===null){delete source.nextOffset;delete source.observedRange;}
         else{source.nextOffset=resumeOffset;source.observedRange={first:source.lines[0].line,last};}
         source.responseBudget={batch:true,bodyDelivered:count>0,truncatedAfterLine:last,
-          resumeTool:'project_evidence',resumeArguments:resumeArguments(source,resumeOffset,remaining)};
+          ...(clipped?{firstClippedLine:clipped.line,...(recoveryLimited?{lineTextRecoveryLimited:true}:{})}:{}),
+          resumeTool:'project_evidence',resumeArguments:resumeArguments(source,resumeOffset,remaining,textLimit)};
       };
-      let low=0,high=lines.length-1;
+      let low=canTrim.length?minimumRows(source):0,high=lines.length-1;
       while(low<high){
         const mid=Math.ceil((low+high)/2);
         useLines(mid);
@@ -168,6 +183,7 @@ export function boundEvidence(facts,maxChars=limits.evidenceChars,{preferWholeSo
       useLines(low);
       continue;
     }
+    if(search){search.matches.pop();search.truncated=true;search.omittedMatches=(search.omittedMatches||0)+1;continue;}
     const compact={mode:facts.mode,workspace:facts.workspace,observedAt:facts.observedAt,...(facts.readLayout?{readLayout:facts.readLayout}:{}),
       ...(facts.selectionState?{selectionState:facts.selectionState,selected:facts.selected}:{}),
       sources:facts.sources.map(missing),truncated:true,budgetTruncated:true,

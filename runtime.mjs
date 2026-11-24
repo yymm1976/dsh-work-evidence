@@ -45,7 +45,7 @@ export function defaults(raw={}){
     swLedger:false,swEviction:false,swEvictionSteps:3,
     requestProjection:false,projectionRestore:false,compressionControl:true,compactionTiming:'native',
     deferPressureCompaction:false,stubSummary:false,
-    executionTriage:true,nativeProgramReuse:false,hostNodeFallback:false,nativeShellScriptReuse:false,probeReplay:false,structuredCalls:false,nativeReasoningReplay:false,stageWorkingSet:true,stepPacing:true,retainedCompute:true,finalJsonGuard:true,finalJsonResultGuard:false,qualityReview:false,qualityReviewEffort:'auto',qualityReviewScope:'auto',
+    executionTriage:true,nativeProgramReuse:false,hostNodeFallback:false,nativeShellScriptReuse:false,probeReplay:false,structuredCalls:false,nativeReasoningReplay:false,stageWorkingSet:true,stepPacing:true,retainedCompute:true,finalJsonGuard:true,finalJsonResultGuard:false,qualityReview:false,qualityReviewEffort:'auto',qualityReviewScope:'auto',boundedPatch:false,
     projectionMinChars:64000,projectionRecentSteps:6,projectionStableSteps:8,projectionHorizonSteps:16,projectionPricing:[],
     sourceReadDefaultLines:null,
     toolSurface:'compact',
@@ -58,7 +58,7 @@ export function defaults(raw={}){
   const known=new Set(['enabled','aggressiveMode','mode','selfIndex','modelTimeoutMs','modelMaxTokens','modelRoute','fastEditPython','stateLedger','stateInform','archiveReadRouting','readArgumentRecovery','requestAccounting','evidenceViews','memberParsing','mavenSourceBinding',
     'contextProtocol','contextPruningPolicy','historyHygiene','programHistory','reasoningHistory','retainedCompute','contextPruneMinChars','contextPruneHeadChars','contextPruneTailChars','completionNotice','opsAdapters','fastEditEnabled',
     'ledgerReceipt','ledgerUnresolved','nativeVerifiedEdits','fileProfiling','structuredJson','ledgerFoldPlan','ledgerFoldWrite','defaultResponseView','swLedger','swEviction','swEvictionSteps','nativeProgramReuse','hostNodeFallback','nativeShellScriptReuse','probeReplay','structuredCalls','nativeReasoningReplay',
-    'requestProjection','projectionRestore','compressionControl','compactionTiming','deferPressureCompaction','stubSummary','cacheOrderedStub','archiveEntries','executionTriage','executionAdvice','stageWorkingSet','finishAdvice','stepPacing','taskEffort','finalJsonGuard','finalJsonResultGuard','qualityReview','qualityReviewEffort','qualityReviewScope','nativeReadView','nativeExecutionEvidence','projectionMinChars','projectionRecentSteps','projectionStableSteps','projectionHorizonSteps','projectionPricing','toolSurface']);
+    'requestProjection','projectionRestore','compressionControl','compactionTiming','deferPressureCompaction','stubSummary','cacheOrderedStub','archiveEntries','executionTriage','executionAdvice','stageWorkingSet','finishAdvice','stepPacing','taskEffort','finalJsonGuard','finalJsonResultGuard','qualityReview','qualityReviewEffort','qualityReviewScope','boundedPatch','nativeReadView','nativeExecutionEvidence','projectionMinChars','projectionRecentSteps','projectionStableSteps','projectionHorizonSteps','projectionPricing','toolSurface']);
   known.add('sourceReadDefaultLines');
   if(!raw||typeof raw!=='object'||Array.isArray(raw)||Object.keys(raw).some(k=>!known.has(k)))throw new Error('Unknown work-evidence setting');
   // Accept old workspaces without loading removed modules or re-enabling their hooks.
@@ -72,7 +72,7 @@ export function defaults(raw={}){
   if(!['native','adaptive'].includes(config.compactionTiming))throw new Error('Invalid compactionTiming');
   config.compactionTiming='native';
   for(const key of ['enabled','aggressiveMode','selfIndex','stateLedger','stateInform','archiveReadRouting','readArgumentRecovery','requestAccounting','evidenceViews','memberParsing','mavenSourceBinding','contextProtocol','historyHygiene','programHistory','reasoningHistory',
-    'ledgerReceipt','ledgerUnresolved','nativeVerifiedEdits','fileProfiling','structuredJson','ledgerFoldPlan','ledgerFoldWrite','swLedger','swEviction','requestProjection','projectionRestore','compressionControl','deferPressureCompaction','stubSummary','cacheOrderedStub','archiveEntries','executionTriage','nativeProgramReuse','hostNodeFallback','nativeShellScriptReuse','probeReplay','structuredCalls','nativeReasoningReplay','executionAdvice','stageWorkingSet','finishAdvice','stepPacing','retainedCompute','taskEffort','finalJsonGuard','finalJsonResultGuard','qualityReview','nativeReadView','nativeExecutionEvidence','completionNotice'])if(typeof config[key]!=='boolean')throw new Error('Invalid '+key);
+    'ledgerReceipt','ledgerUnresolved','nativeVerifiedEdits','fileProfiling','structuredJson','ledgerFoldPlan','ledgerFoldWrite','swLedger','swEviction','requestProjection','projectionRestore','compressionControl','deferPressureCompaction','stubSummary','cacheOrderedStub','archiveEntries','executionTriage','nativeProgramReuse','hostNodeFallback','nativeShellScriptReuse','probeReplay','structuredCalls','nativeReasoningReplay','executionAdvice','stageWorkingSet','finishAdvice','stepPacing','retainedCompute','taskEffort','finalJsonGuard','finalJsonResultGuard','qualityReview','boundedPatch','nativeReadView','nativeExecutionEvidence','completionNotice'])if(typeof config[key]!=='boolean')throw new Error('Invalid '+key);
   if(!Number.isInteger(config.swEvictionSteps)||config.swEvictionSteps<3||config.swEvictionSteps>50)throw new Error('Invalid swEvictionSteps');
   if(config.sourceReadDefaultLines!==null&&(!Number.isInteger(config.sourceReadDefaultLines)||config.sourceReadDefaultLines<40||config.sourceReadDefaultLines>1000))
     throw new Error('sourceReadDefaultLines must be null or an integer from 40 to 1000');
@@ -331,7 +331,7 @@ export function createRuntime(ctx,call,initial={}){
     const selected=modeStatus(agent);
     s.selectedMode=selected.selected;
     const taskMode={requestId:incoming.id,mode:selected.selected,source:'effort-selection',policyVersion:MODE_POLICY_VERSION};
-    if(s.taskMode?.requestId===incoming.id&&s.taskMode.mode===taskMode.mode&&s.taskMode.source===taskMode.source){s.claimedRequest=null;return modeStatus(s);}
+    if(s.taskModePersisted&&s.taskMode?.requestId===incoming.id&&s.taskMode.mode===taskMode.mode&&s.taskMode.source===taskMode.source){s.claimedRequest=null;return modeStatus(s);}
     s.taskMode=taskMode;s.taskModePersisted=false;s.dirty=true;
     try{
       if(!s.taskModePath)throw new Error('No session storage outside the workspace');
@@ -496,14 +496,6 @@ export function createRuntime(ctx,call,initial={}){
       observations:observations.slice(-24),searches:searches.slice(-16),mutations:mutations.slice(-12),revisitObligations:[]};
   }
   function consumeStateNotice(s){
-    if(!s.pendingStateNotice&&s.pendingDuplicateDefinition&&!s.duplicateDefinitionNotified&&s.step>0){
-      const {pattern,name,pathCount,sample}=s.pendingDuplicateDefinition;
-      // Taken out of the queue here: this notice is delivered once, so leaving it in
-      // place would either re-deliver it or hold up the next obligation behind it.
-      s.pendingDuplicateDefinition=null;
-      s.pendingStateNotice={observations:0,searches:0,files:new Set(),revisions:new Map(),
-        at:new Date().toISOString(),duplicateDefinition:{pattern,name,pathCount,sample}};
-    }
     if(!s.pendingStateNotice&&s.pendingNarrowSearch&&!s.narrowSearchNotified&&s.step>0){
       const {pattern,scope}=s.pendingNarrowSearch;
       s.pendingNarrowSearch=null;
@@ -514,19 +506,6 @@ export function createRuntime(ctx,call,initial={}){
 
     const notice=s.pendingStateNotice;s.pendingStateNotice=null;
     if(notice.contentEditsOnly&&!notice.observations)return null;
-    // A definition found in two or more files is the shape of the lost cases: one
-    // semantic layer was fixed and the other was never located. Say so once, before
-    // the model commits to a single site, and name the files it already has.
-    if(notice.duplicateDefinition){
-      const {name,pathCount,sample}=notice.duplicateDefinition;
-      // One notice per session: a second search for the same or another definition
-      // would otherwise repeat it, and a repeated notice is noise rather than a
-      // decision input.
-      s.duplicateDefinitionNotified=true;
-      const text=`在 ${pathCount} 个文件找到 \`${name}\` 的同名定义（${sample.join('、')}${pathCount>sample.length?' 等':''}）。沿用户描述的入口确认实际调用位置。多个实现会处理该场景时，分别核对哪些条件会走到各处。`;
-      s.metrics.stateNotices++;s.metrics.stateNoticeChars+=text.length;s.dirty=true;
-      return {text,observations:0,searches:0,files:[],extraFiles:0,revisions:[],duplicateDefinition:true};
-    }
     if(notice.narrowSearch){
       const {pattern,scope}=notice.narrowSearch;
       s.narrowSearchNotified=true;
@@ -659,13 +638,7 @@ export function createRuntime(ctx,call,initial={}){
       s.searches.push({tool:exec.name,query:args.pattern||'',scope:args.path||'.',seq,step:s.step,empty:Array.isArray(items)&&!items.length});if(s.searches.length>12)s.searches.shift();
       recordSearch(s,exec,result,seq);
       if(Array.isArray(items)&&!items.length){const key=JSON.stringify([exec.name,args]),prior=s.emptyLookups.get(key),now=Date.now();if(prior&&now-prior.time<120000&&!prior.noted){prior.noted=true;s.pendingLookupFact={tool:exec.name,arguments:args,firstCallId:prior.callId,repeatedCallId:exec.callId};s.active=true;}else if(!prior||now-prior.time>=120000)s.emptyLookups.set(key,{time:now,callId:exec.callId,noted:false});if(s.emptyLookups.size>24)s.emptyLookups.delete(s.emptyLookups.keys().next().value);}
-      // One symbol defined in two files is a real risk: two implementations of the
-      // same capability, where fixing one leaves the other on the old behaviour.
-      // The reminder fires on the search that reveals both sites, before the model
-      // commits to one, because the write-after reminder cannot catch a second site
-      // that is never written.
-      if(exec.name==='grep'&&Array.isArray(items)&&items.length&&
-        (!s.pendingDuplicateDefinition&&!s.duplicateDefinitionNotified||!s.pendingNarrowSearch&&!s.narrowSearchNotified)){
+      if(exec.name==='grep'&&Array.isArray(items)&&items.length&&!s.pendingNarrowSearch&&!s.narrowSearchNotified){
         const pattern=typeof args.pattern==='string'?args.pattern.trim():'';
         // A definition query, not a free-text search: one identifier, optionally the
         // language's definition keyword. Anything wider is a normal search.
@@ -673,8 +646,8 @@ export function createRuntime(ctx,call,initial={}){
           const bareName=pattern.replace(/^[A-Za-z_$][\w$]*\s+/u,'').trim(),name=bareName.split(/\s+/u).at(-1);
           // A match is only a definition site when the matched line declares THIS name.
           // A line that merely starts with a declaration keyword declares something
-          // else, and an import or a call is a reference; calling either a duplicate
-          // implementation would mislead and spend the one notice.
+          // else, and an import or a call is a reference; calling either a definition
+          // would mislead and spend the one notice.
           const declares=line=>{
             const text=typeof line==='string'?line:'';
             if(!text)return false;
@@ -690,9 +663,7 @@ export function createRuntime(ctx,call,initial={}){
             const path=typeof match?.path==='string'?match.path:null;
             if(path&&declares(match.line??match.text??''))sites.set(path,(sites.get(path)??0)+1);
           }
-          if(sites.size>=2&&!s.pendingDuplicateDefinition&&!s.duplicateDefinitionNotified)s.pendingDuplicateDefinition={pattern,name,pathCount:sites.size,
-            sample:[...sites.keys()].slice(0,3).map(file=>file.split(/[\\/]/u).pop())};
-          else if(sites.size===1&&items.length===1&&!s.pendingNarrowSearch&&!s.narrowSearchNotified&&
+          if(sites.size===1&&items.length===1&&!s.pendingNarrowSearch&&!s.narrowSearchNotified&&
             typeof args.path==='string'&&/\.(?:[cm]?[jt]sx?|py|java|rs|go|rb|php|cs|cpp|h)$/iu.test(args.path)){
             s.pendingNarrowSearch={pattern,scope:args.path.split(/[\\/]/u).pop()};
           }
@@ -716,7 +687,7 @@ export function createRuntime(ctx,call,initial={}){
       swLedger:s.config.swLedger,swEviction:s.config.swEviction,swEvictionSteps:s.config.swEvictionSteps,defaultResponseView:s.sessionDefaultResponseView??s.config.defaultResponseView,
       requestProjection:s.config.requestProjection,projectionRestore:s.config.projectionRestore,compressionControl:s.config.compressionControl,compactionTiming:s.config.compactionTiming,deferPressureCompaction:s.config.deferPressureCompaction,stubSummary:s.config.stubSummary,
       executionTriage:s.config.executionTriage,nativeProgramReuse:s.config.nativeProgramReuse,hostNodeFallback:s.config.hostNodeFallback,nativeShellScriptReuse:s.config.nativeShellScriptReuse,probeReplay:s.config.probeReplay,structuredCalls:s.config.structuredCalls,nativeReasoningReplay:s.config.nativeReasoningReplay,stageWorkingSet:s.config.stageWorkingSet,stepPacing:s.config.stepPacing,retainedCompute:s.config.retainedCompute,finalJsonGuard:s.config.finalJsonGuard,finalJsonResultGuard:s.config.finalJsonResultGuard,
-      qualityReview:s.config.qualityReview,qualityReviewEffort:s.config.qualityReviewEffort,qualityReviewScope:s.config.qualityReviewScope,toolSurface:s.config.toolSurface},
+      qualityReview:s.config.qualityReview,boundedPatch:s.config.boundedPatch,qualityReviewEffort:s.config.qualityReviewEffort,qualityReviewScope:s.config.qualityReviewScope,toolSurface:s.config.toolSurface},
     contextSettings:{requestProjection:s.config.requestProjection,projectionRestore:s.config.projectionRestore,compressionControl:s.config.compressionControl,compactionTiming:s.config.compactionTiming,deferPressureCompaction:s.config.deferPressureCompaction,stubSummary:s.config.stubSummary,
       projectionMinChars:s.config.projectionMinChars,projectionRecentSteps:s.config.projectionRecentSteps,projectionStableSteps:s.config.projectionStableSteps,
       projectionHorizonSteps:s.config.projectionHorizonSteps,projectionPricing:s.config.projectionPricing,toolSurface:s.config.toolSurface,

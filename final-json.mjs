@@ -135,7 +135,7 @@ export function finalJsonSyntaxIssue(text,request){
   if(!expectsFinalJson(requestText))return null;
   const trimmed=source.trim();
   if(requiresRawFinalJson(requestDirectives(requestText))){
-    if(!trimmed)return {kind:'missing-final-json',error:'The final response did not contain any JSON text.'};
+    if(!trimmed)return {kind:'missing-final-json',error:'The final response did not contain any JSON text.',rawFinal:true};
     try{JSON.parse(trimmed);}catch(error){return {raw:trimmed,error:String(error.message).slice(0,300),rawFinal:true};}
     return null;
   }
@@ -232,15 +232,10 @@ export function createFinalJsonGuard(ctx,runtime){
     if(signal?.aborted||!runtime.isEnabled(agent)||!runtime.get(agent).config.finalJsonGuard){syntaxRepairing.delete(agent.session.id);return;}
     const current=inspect(agent,turn);
     if(!current.issue){syntaxRepairing.delete(agent.session.id);return;}
-    if(current.issue.kind==='missing-final-json'){
-      syntaxRepairing.delete(agent.session.id);
-      runtime.effects?.decide(agent,'finalJson','failed','missing-final-json',{afterSeq:current.assistant.seq});
-      return;
-    }
     if(syntaxRepairing.get(agent.session.id)?.afterSeq===current.assistant.seq)return;
     const prior=current.events.filter(event=>feedback(event)&&messageOf(event).source.finalJson?.requestSeq===current.request.seq);
     const kind=current.issue.kind??'syntax-repair';
-    if(prior.length>=MAX_REPAIRS||kind==='observed-result-repair'&&prior.some(event=>messageOf(event).source.finalJson.kind===kind)){
+    if(prior.length>=MAX_REPAIRS||kind!=='syntax-repair'&&prior.some(event=>messageOf(event).source.finalJson.kind===kind)){
       syntaxRepairing.delete(agent.session.id);
       runtime.effects?.decide(agent,kind==='observed-result-repair'?'finalJsonResult':'finalJson','failed','final-json-repair-limit',{afterSeq:current.assistant.seq,kind,error:current.issue.error});
       await runtime.receipt?.(agent,signal,true);
@@ -272,6 +267,7 @@ export function createFinalJsonGuard(ctx,runtime){
       :'输出一个紧凑JSON代码块。';
     const notice=kind==='observed-result-repair'
       ?'[work-evidence] 用户要求完整实际执行结果。助手事件'+current.assistant.seq+'的最终JSON与本轮完整可见的原生结果不一致。差异位置（数据）：'+JSON.stringify({sourceSeq:current.issue.sourceSeq,fields:current.issue.fields})+'。只依据该结果原样重写exitCode、stdout、stderr，保留字符串内的全部字符和末尾换行，使用JSON转义。已有结果足够，不重新执行、读取或计算。原答复保留。'
+      :kind==='missing-final-json'? '[work-evidence] 本轮没有输出用户要求的最终 JSON。根据原请求和当前会话已有结果作答，不得编造缺失的数据。'+rawInstruction
       :'[work-evidence] 用户明确要求的最终JSON在助手事件'+current.assistant.seq+'中无法严格解析。解析信息（数据）：'+JSON.stringify(current.issue.error)+'。只使用本会话已经成功取得的实际结果重写这份交付，不重新读取、执行或计算；依据错误只修正语法、转义、括号或漏掉的原有条目，保持相同数据和字段，'+rawInstruction+'只有已有结果本身缺失时才补一个最小必要动作；不要只在说明中承认笔误，也不要只给改动片段。原答复保留，当前只修正这份交付。';
     try{agent.steer({id:randomUUID(),role:'user',source:{kind:SOURCE,finalJson:{kind,requestSeq:current.request.seq,afterSeq:current.assistant.seq}},
       content:[{type:'text',text:notice}]});}
@@ -281,7 +277,7 @@ export function createFinalJsonGuard(ctx,runtime){
       runtime.problem?.(runtime.get(agent),'final-json-steering',String(error?.message??error));
       return;
     }
-    runtime.effects?.decide(agent,kind==='observed-result-repair'?'finalJsonResult':'finalJson','applied',kind==='syntax-repair'?'invalid-final-json-repair-requested':'observed-result-repair-requested',
+    runtime.effects?.decide(agent,kind==='observed-result-repair'?'finalJsonResult':'finalJson','applied',kind==='syntax-repair'?'invalid-final-json-repair-requested':kind==='missing-final-json'?'missing-final-json-repair-requested':'observed-result-repair-requested',
       {afterSeq:current.assistant.seq,error:current.issue.error,...(current.issue.sourceSeq===undefined?{}:{sourceSeq:current.issue.sourceSeq,fields:current.issue.fields})});
   });
   ctx.on('session/event',(session,event)=>{
@@ -296,7 +292,7 @@ export function createFinalJsonGuard(ctx,runtime){
       unresolvedSyntax:current.issue&&!current.issue.kind?{assistantSeq:current.assistant.seq,error:current.issue.error}:null,
       missingFinalJson:current.issue?.kind==='missing-final-json'?{assistantSeq:current.assistant.seq}:null,
       unresolvedResult:current.issue?.kind==='observed-result-repair'?{assistantSeq:current.assistant.seq,sourceSeq:current.issue.sourceSeq,fields:current.issue.fields}:null,
-      syntaxRepairActive:syntaxRepairing.get(agent.session.id)?.kind==='syntax-repair',
+      syntaxRepairActive:['syntax-repair','missing-final-json'].includes(syntaxRepairing.get(agent.session.id)?.kind),
       resultRepairActive:syntaxRepairing.get(agent.session.id)?.kind==='observed-result-repair',
       resultGuardEnabled:runtime.isEnabled(agent)&&runtime.get(agent).config.finalJsonGuard&&!!runtime.get(agent).config.finalJsonResultGuard,
       maxRepairsPerRequest:MAX_REPAIRS,

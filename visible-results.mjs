@@ -5,7 +5,7 @@ export const resultText=content=>(content??[]).filter(block=>block?.type==='text
 export function parseResult(text){
   try{
     const value=JSON.parse(text);
-    if(value?.mode!=='read'||value.readLayout!=='numbered'||!Array.isArray(value.sources))return value;
+    if(!['read','locate'].includes(value?.mode)||value.readLayout!=='numbered'||!Array.isArray(value.sources))return value;
     return {...value,sources:value.sources.map(source=>{
       if(typeof source?.numberedLines!=='string')return source;
       const {numberedLines,clippedLines,...entry}=source;

@@ -172,6 +172,7 @@ test('a revisit cost removes the zero-refill shortcut',()=>{
   // Whatever the free branch decides, a revisit charge must never make it cheaper.
   assert.ok((charged.refillCostEstimate??0)>=(free.refillCostEstimate??0),
     'a revisit cost cannot lower the refill estimate: free='+free.refillCostEstimate+' charged='+charged.refillCostEstimate);
+  assert.ok(charged.refillCostEstimate>0,'a revisit must incur a positive refill cost');
   assert.ok(charged.revisitCostTokensEstimate>0,'the revisit volume reaches the decision');
 });
 

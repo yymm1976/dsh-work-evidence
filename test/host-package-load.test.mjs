@@ -12,7 +12,7 @@ const FEATURE_KEYS=['enabled','aggressiveMode','selfIndex','stateLedger','stateI
   'archiveReadRouting','readArgumentRecovery','requestAccounting','evidenceViews','memberParsing','mavenSourceBinding','contextProtocol',
   'historyHygiene','nativeVerifiedEdits','fileProfiling','structuredJson','ledgerReceipt','ledgerUnresolved','swLedger','swEviction','requestProjection','projectionRestore',
   'compressionControl','deferPressureCompaction','stubSummary','executionTriage','nativeProgramReuse','hostNodeFallback','nativeShellScriptReuse','probeReplay','structuredCalls','nativeReasoningReplay',
-  'stageWorkingSet','stepPacing','retainedCompute','finalJsonGuard','finalJsonResultGuard','qualityReview','qualityReviewEffort',
+  'stageWorkingSet','stepPacing','retainedCompute','finalJsonGuard','finalJsonResultGuard','qualityReview','boundedPatch','qualityReviewEffort',
   'qualityReviewScope','toolSurface','defaultResponseView'];
 const TOOL_NAMES=['project_evidence','work_exec','work_recall','work_status','work_state','work_report','work_probe','evidence_index',
   'candidate_select','ptc_patterns','ptc_fastpath','verified_exec','work_compute','file_profile','structured_json'];

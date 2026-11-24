@@ -79,8 +79,9 @@ export function registerManagementTools({ctx,runtime,state,effects,available,fea
         return retainedCompute.execute(args,exec);
       },{resultSchema:{type:'object',additionalProperties:true,properties:{status:{type:'string'},logs:{type:'array',items:{type:'string'}},
         resetCount:{type:'integer'},resetReason:{type:'string'},error:{type:'object',additionalProperties:true},sandbox:{type:'object',additionalProperties:true}}}});
-  register('work_exec','Run Python or Node code in the project directly. Python defaults to UTF-8 without writing bytecode. Node defaults to ESM; use format:"commonjs" for require. Supply runtime and code, or reuse the returned scriptRef with optional literal edits. Returns native stdout, stderr, and exit or job state. Use edit or write for project source.',
+  register('work_exec','Run Python or Node code in the project directly. For Python syntax only, use syntaxFiles to compile files without importing them or writing bytecode. For programs, supply runtime and code, or reuse a scriptRef. Python defaults to UTF-8 without writing bytecode. Node defaults to ESM; use format:"commonjs" for require. Returns native stdout, stderr, and exit or job state. Use edit or write for project source.',
     {runtime:{type:'string',enum:['python','node'],description:'Required with new code; scriptRef may inherit its explicit runtime.'},code:{type:'string',description:'Complete script up to 64000 characters, or use scriptRef. Relative paths use the project directory.'},
+      syntaxFiles:{type:'array',minItems:1,maxItems:32,items:{type:'string'},description:'Python syntax only: workspace-relative .py or .pyi files, up to 2 MB each. Reports all requested files. Omit code, scriptRef, edits, and format.'},
       scriptRef:{type:'string',description:'Exact same-session version. Use the latest returned scriptEventRef (event:number) or scriptRef. With Shell program reuse enabled, also accepts supported literal Bash or PowerShell stdin calls.'},
       edits:{type:'array',maxItems:16,items:{type:'object',additionalProperties:false,properties:{before:{type:'string',minLength:1},after:{type:'string'}},required:['before','after']},description:'With scriptRef: sequential literal replacements, each matching exactly once. Omit to rerun unchanged.'},
       executable:{type:'string',description:'Exact interpreter path. When omitted, a recognized absolute path from the task is used for new code. With scriptRef, python or node explicitly selects that PATH runtime.'},format:{type:'string',enum:['module','commonjs'],description:'Node only; default module. Omit this field for Python.'},
@@ -94,7 +95,7 @@ export function registerManagementTools({ctx,runtime,state,effects,available,fea
           error:{message:'A read-only session cannot run an unrestricted interpreter process. Use the retained read-only mode for calculations.'}};
       if(args.mode==='retained'){
         if(args.runtime!=='node')throw new Error('retained mode requires runtime: node');
-        if(args.scriptRef!==undefined||args.edits!==undefined||args.executable!==undefined||args.format!==undefined||args.sources!==undefined)
+        if(args.scriptRef!==undefined||args.edits!==undefined||args.executable!==undefined||args.format!==undefined||args.sources!==undefined||args.syntaxFiles!==undefined)
           throw new Error('retained mode accepts code, reset and timeoutMs only');
         preserveContextResult(exec.agent.session.id,exec.rootCallId??exec.callId);
         const result=await retainedCompute.execute({code:args.code,reset:args.reset,timeoutMs:args.timeoutMs},exec);
@@ -102,9 +103,12 @@ export function registerManagementTools({ctx,runtime,state,effects,available,fea
       }
       if(args.reset!==undefined)throw new Error('reset requires mode: retained');
       const sources=declaredFileSources(args.sources);
-      const shell=selectShell(name=>available(exec.agent,name));
+      let shell=selectShell(name=>available(exec.agent,name));
       if(!shell)return {status:'unavailable',reason:`native-${preferredShell()}-unavailable`,executionOccurred:false};
-      if(shell==='bash'&&!prepareShellEnvironment())return {status:'unavailable',reason:'native-shell-env-unavailable',executionOccurred:false};
+      if(shell==='bash'&&!prepareShellEnvironment()){
+        if(!available(exec.agent,'pwsh'))return {status:'unavailable',reason:'native-shell-env-unavailable',executionOccurred:false};
+        shell='pwsh';
+      }
       const root=await ctx.workingDirectory.ensure(exec.agent,exec.signal);
       let script;
       try{script=resolveInlineScript(args,exec.agent.session,exec.signal,{nativeShellScriptReuse:runtime.get(exec.agent).config.nativeShellScriptReuse,root});}catch(error){
@@ -119,6 +123,15 @@ export function registerManagementTools({ctx,runtime,state,effects,available,fea
       const namedExecutable=namedInlineExecutable(exec.agent.session,script.runtime);
       const declaredExecutable=script.executable===undefined?requiredExecutable:null;
       if(declaredExecutable)script={...script,executable:declaredExecutable.executable};
+      if(script.runtime==='python'&&args.executable===undefined&&script.executable===undefined&&!requiredExecutable&&!namedExecutable&&
+        !hasInterpreterConstraint(exec.agent.session)){
+        const configured=runtime.get(exec.agent).config.fastEditPython;
+        if(typeof configured==='string'&&path.isAbsolute(configured)){
+          let usable=false;
+          try{usable=(await stat(configured)).isFile();}catch{}
+          if(usable)script={...script,executable:configured};
+        }
+      }
       if(script.shellSource&&requiredExecutable&&!await sameDeclaredInlineExecutable(requiredExecutable.executable,script.executable))
         return {status:'failed',isError:true,executionOccurred:false,reason:'shell-runtime-conflicts-with-declared-interpreter',
           error:{code:'WORK_EXEC_INTERPRETER_CONSTRAINT',message:'The recorded Shell program used a different interpreter. Select the existing interpreter required by the current task explicitly.'},

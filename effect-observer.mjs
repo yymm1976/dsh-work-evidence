@@ -47,6 +47,7 @@ FEATURES.contextBlockDedup='contextProtocol';
 FEATURES.nativeVerifiedEdit='nativeVerifiedEdits';
 FEATURES.fileProfile='fileProfiling';
 FEATURES.structuredJson='structuredJson';
+FEATURES.boundedPatch='boundedPatch';
 const PLUGIN_TOOLS=new Set(['project_evidence','work_report','work_status','work_state','work_recall','work_exec','work_compute','work_probe','evidence_index','candidate_select','ptc_patterns','ptc_fastpath','verified_exec','file_profile','structured_json']);
 const RETIRED_FEATURES=new Set(['programHistory','ledgerFold','foldPlan','reasoningHistory','executionAdvice','finishAdvice','presentationAdvice','nativeProgramReference','fastEdit']);
 const NOTICE_FEATURES=new Map([
@@ -105,6 +106,7 @@ export function createEffectObserver(ctx,runtime){
     return true;
   }
   async function repairAppendBoundary(state,file,kind){
+    state.lastRepairError=null;
     // appendFile is not transactional: a rejected append can leave a JSON prefix at EOF.
     // The next newline alone cannot repair that prefix, so retain complete rows and remove
     // only the unparseable tail before any later append. A complete unterminated row only
@@ -118,6 +120,7 @@ export function createEffectObserver(ctx,runtime){
       // this call set must be cleared or the next append reports a repair failure that
       // never happened and prepends a newline to an empty file.
       if(error?.code==='ENOENT'){state.needsLeadingNewline.delete(kind);return true;}
+      state.lastRepairError=String(error?.code??error?.message??'unknown').slice(0,120);
       return false;
     }
     // truncate() takes a byte offset, so the last newline must be located in the
@@ -360,6 +363,11 @@ export function createEffectObserver(ctx,runtime){
           }
           if((await fs.stat(file)).size>64*1024*1024)throw new Error('Observability file exceeds 64 MiB load limit');raw=await fs.readFile(file,'utf8');
         }catch(error){if(error.code!=='ENOENT')state.writeErrors.push('load: '+error.message);continue;}
+        if(raw&&!raw.endsWith('\n')){try{
+          const repaired=await repairAppendBoundary(state,file,kind);
+          if(repaired)raw=await fs.readFile(file,'utf8');
+          else{state.needsLeadingNewline.add(kind);state.writeErrors.push('newline repair: '+(state.lastRepairError??'boundary not repairable'));}
+        }catch(error){state.needsLeadingNewline.add(kind);state.writeErrors.push('newline repair: '+String(error.message??error).slice(0,200));}}
         const seen=new Set(),decisionIds=new Set();for(const line of raw.split('\n').filter(Boolean))try{
           const item=JSON.parse(line);
           if(kind==='observability'&&!['work-evidence.request-effects.v1','work-evidence.pending-decisions.v1'].includes(item.schema))continue;
@@ -385,20 +393,6 @@ export function createEffectObserver(ctx,runtime){
             }
           }
         }catch(error){state.writeErrors.push('Unreadable '+kind+' row retained: '+error.message);}
-        // Repairing a missing trailing newline keeps later appends one row per line. When
-        // that write fails the restore itself already succeeded, so record the failure,
-        // mark the next append self-terminating and do not re-read on every request.
-        // Repair the boundary, not only the missing newline. A partial append can leave an
-        // unparseable fragment joined to a complete row; appending '\n' terminates the COMBINED
-        // line, so the earlier complete row stays unreadable for the rest of the session. The
-        // in-memory `needsLeadingNewline` marker does not survive a restart, so `load()` has to
-        // do the same truncate-the-tail repair the append path does.
-        if(raw&&!raw.endsWith('\n')){try{
-          const repaired=await repairAppendBoundary(state,file,kind);
-          // A read-only ledger cannot be repaired. Record it under the same label the test and
-          // the status output already use, and mark the next append self-terminating.
-          if(!repaired){state.needsLeadingNewline.add(kind);state.writeErrors.push('newline repair: '+(state.lastRepairError??'boundary not repairable'));}
-        }catch(error){state.needsLeadingNewline.add(kind);state.writeErrors.push('newline repair: '+String(error.message??error).slice(0,200));}}
       }
     })().finally(()=>{state.writeErrors=state.writeErrors.slice(-8);state.loaded=true;});
     try{await state.loading;}

@@ -101,7 +101,9 @@ test('project_evidence entry and locate return the manifest, main entry and sour
     },null,2));
     await writeFile(host.cwd,'src/main.js','export const entry = true;\n');
     await writeFile(host.cwd,'src/WidgetMarker.js','export class WidgetMarker {\n  value = 1;\n}\n');
-    await writeFile(host.cwd,'src/util.js','export function helper(){\n  return "UNIQUE_NEEDLE_42";\n}\n');
+    await writeFile(host.cwd,'src/util.js','export function helper(){\n  return "UNIQUE_NEEDLE_42";\n}\n'+'\n'.repeat(50)+
+      'export const fallback = "UNIQUE_NEEDLE_42";\n');
+    await writeFile(host.cwd,'src/UNIQUE_NEEDLE_42.js','export const unrelated = true;\n');
 
     const agent=await host.createAgent('max');
     await host.send(agent,'Inspect the project entry and symbols.');
@@ -118,7 +120,9 @@ test('project_evidence entry and locate return the manifest, main entry and sour
 
     assert.equal(byLiteral.json.search.state,'observed');
     const literalLines=byLiteral.json.sources.flatMap(source=>source.lines??[]);
-    assert.ok(literalLines.some(line=>line.text.includes('UNIQUE_NEEDLE_42')));
+    assert.ok(literalLines.some(line=>line.text.includes('return "UNIQUE_NEEDLE_42"')));
+    assert.ok(literalLines.some(line=>line.text.includes('fallback = "UNIQUE_NEEDLE_42"')));
+    assert.ok(byLiteral.json.search.matches.every(match=>match.path.endsWith('util.js')));
   });
 });
 

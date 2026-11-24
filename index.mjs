@@ -22,6 +22,7 @@ import {createPtcFastpath} from './ptc-fastpath.mjs';
 import {createVerifiedExec} from './verified-exec.mjs';
 import {createFileProfiler} from './file-profile.mjs';
 import {createStructuredJson} from './structured-json.mjs';
+import {createBoundedPatch} from './bounded-patch.mjs';
 
 import {createReadRouting} from './read-routing.mjs';
 import {correctedReadArguments,recoveryFor,withRecovery,recoveredResult,normalizedReadResult,installExecutionDescriptionCompatibility,installNativeReadArgumentRecovery} from "./recovery.mjs";
@@ -32,7 +33,7 @@ import {createEvidenceViews} from './evidence-view.mjs';
 import {createContextEconomics,messageTokens} from './context-economics.mjs';
 import {createRequestWorkingSet} from './request-working-set.mjs';
 import {createCompressionControl} from './compression-control.mjs';
-import {createTaskFlow,findBareReadme,taskFlowGuidance,textPaths} from './task-flow.mjs';
+import {createTaskFlow,findBareReadme,taskFlowGuidance,taskPacingAllowed,textPaths} from './task-flow.mjs';
 import {exportTaskHandoff,createTaskHandoffDelivery} from './task-handoff.mjs';
 import {installUltraEffort} from './ultra-effort.mjs';
 import {nativeReasoningReplayRequest} from './native-reasoning-replay.mjs';
@@ -124,8 +125,10 @@ export function apply(ctx,config={}){
   const pendingSaves=new Set();
   const runtime=createRuntime(ctx,call,config),state=runtime.get;
   const disposal=createDisposalCoordinator(id=>runtime.dispose(id));
+  const effects=createEffectObserver(ctx,runtime);runtime.effects=effects;
+  const boundedPatch=createBoundedPatch(ctx,runtime,{effects});
   installExecutionDescriptionCompatibility(ctx,runtime);
-  const disposeUltra=installUltraEffort(ctx,{requestView:options=>nativeReasoningReplayRequest(ctx,runtime,options)});
+  const disposeUltra=installUltraEffort(ctx,{requestView:options=>boundedPatch.requestView(nativeReasoningReplayRequest(ctx,runtime,options))});
   ctx.effect(()=>disposeUltra);
   const toolSurfaceDisposers=new Map(),taskSurfaceModes=new Map();
   if(isBatchToolHost(ctx))ctx.on('system-prompt/assemble',async(assembly,context,next)=>{
@@ -137,10 +140,10 @@ export function apply(ctx,config={}){
   });
   if(isBatchToolHost(ctx))patchSystemPromptTools(ctx,(result,context)=>{
     const agent=context?.agent;
+    if(agent&&boundedPatch.result(agent)?.done===true&&Array.isArray(result.tools)){result.tools=[];return;}
     if(agent&&runtime.isEnabled(agent)&&state(agent).config.toolSurface==='compact'&&['read-only','minimal'].includes(taskSurfaceModes.get(agent.session.id))&&Array.isArray(result.tools))
       result.tools=result.tools.filter(tool=>tool?.name!=='work_exec');
   });
-  const effects=createEffectObserver(ctx,runtime);runtime.effects=effects;
   installNativeProgramReferences(ctx,runtime,effects);
   installStructuredCalls(ctx,runtime,effects);
   const available=(agent,name)=>{try{return Boolean(ctx.tools.get(name,agent));}catch{return false;}};
@@ -195,14 +198,14 @@ export function apply(ctx,config={}){
     }
   });
   runtime.setContextSnapshot((id,{detail=true}={})=>{
-    const agent=ctx.agents.get(id);return agent?{observability:effects.snapshot(agent,{detail}),coordination:historyCoordinator.summary(agent),workingSet:workingSet.metrics(agent),historyHygiene:historyHygiene.summary(agent),contextEconomics:contextEconomics.summary(agent),compression:{...compressionControl.metrics(agent),nativeHandoff:compactionHandoff.metrics(agent)},taskFlow:taskFlow.summary(agent),retainedCompute:retainedCompute.summary(agent),finalJson:finalJson.summary(agent),qualityReview:qualityReview.summary(agent),effortPolicy:{enabled:false,configuredEffort:agent.options?.reasoningEffort??null,selectedEffort:null,reason:'automatic-effort-disabled',classifierModelCalls:0},nativeExecution:executionEvidence.summary(agent)}:{};
+    const agent=ctx.agents.get(id);return agent?{observability:effects.snapshot(agent,{detail}),coordination:historyCoordinator.summary(agent),workingSet:workingSet.metrics(agent),historyHygiene:historyHygiene.summary(agent),contextEconomics:contextEconomics.summary(agent),compression:{...compressionControl.metrics(agent),nativeHandoff:compactionHandoff.metrics(agent)},taskFlow:taskFlow.summary(agent),boundedPatch:boundedPatch.summary(agent),retainedCompute:retainedCompute.summary(agent),finalJson:finalJson.summary(agent),qualityReview:qualityReview.summary(agent),effortPolicy:{enabled:false,configuredEffort:agent.options?.reasoningEffort??null,selectedEffort:null,reason:'automatic-effort-disabled',classifierModelCalls:0},nativeExecution:executionEvidence.summary(agent)}:{};
   });
   observeRequests(ctx,runtime);
   const contextWindow=createContextWindow(ctx,runtime);contextWindow.observe();
   const observationLedger=createObservationLedger(ctx,runtime,nativeFiles);observationLedger.observe();
   const evidenceViews=createEvidenceViews(ctx,runtime,{needsCurrentBody:observationLedger.needsCurrentBody});
   const historyCoordinator=createHistoryCoordinator(runtime,contextWindow,contextEconomics);runtime.historyCoordinator=historyCoordinator;
-  const clearPluginState=agent=>{observationLedger.clear(agent);contextWindow.clear(agent);finalJson.clear(agent);handoffDelivery.clear(agent);
+  const clearPluginState=agent=>{observationLedger.clear(agent);contextWindow.clear(agent);finalJson.clear(agent);boundedPatch.clear(agent);handoffDelivery.clear(agent);
     // These caches answer "does this session still need this body", so they describe the
     // ledger that was just cleared and must not outlive it.
     editedSources.delete(agent.session.id);supersededCache.delete(agent.session.id);readCountsCache.delete(agent.session.id);contextRetainedSources.delete(agent.session.id);};
@@ -658,33 +661,50 @@ export function apply(ctx,config={}){
       effects.decide(agent,'toolSurface','applied',surface+'-surface',{configured:base,dynamic:surface!==base});
     }catch(error){runtime.problem(state(agent),'tool-surface',error.message);}
   }
-  const prepareSession=agent=>{if(!agent)return;workingSet.attach(agent);return runtime.init(agent,AbortSignal.timeout(10000)).then(()=>{applyToolSurface(agent);return effects.load(agent);}).catch(error=>runtime.problem(state(agent),'session-prepare',error.message));};
+  let activeAgent=null;
+  const prepareSession=agent=>{if(!agent)return;activeAgent=agent;workingSet.attach(agent);return runtime.init(agent,AbortSignal.timeout(10000)).then(()=>{applyToolSurface(agent);return effects.load(agent);}).catch(error=>runtime.problem(state(agent),'session-prepare',error.message));};
   ctx.on('agent/created',({agent})=>prepareSession(agent));
-  ctx.on('agent/inbox/claimed',({agent,message})=>{if(isUserRequestMessage(message)){classifyTaskSurface(agent,message);state(agent).claimedRequest=message;applyToolSurface(agent);}});
+  ctx.on('agent/inbox/claimed',({agent,message})=>{if(agent)activeAgent=agent;if(isUserRequestMessage(message)){classifyTaskSurface(agent,message);state(agent).claimedRequest=message;applyToolSurface(agent);}});
   for(const agent of ctx.agents?.list?.()??[])prepareSession(agent);
   ctx.on('system-prompt/assemble',async(_assembly,context,next)=>{
-    const agent=context?.agent;
+    const listed=ctx.agents?.list?.()??[];
+    const agent=context?.agent??listed.find(item=>state(item).claimedRequest)??activeAgent??listed[0]??null;
     const claimedRequest=agent?state(agent).claimedRequest:null;
     if(agent){
       const signal=context.signal?AbortSignal.any([context.signal,AbortSignal.timeout(10000)]):AbortSignal.timeout(10000);
-      try{await runtime.init(context.agent,signal);await runtime.beginRequest(context.agent,signal);classifyTaskSurface(context.agent);applyToolSurface(context.agent);}catch(error){runtime.problem(state(context.agent),'session-prepare',error.message);}
+      try{await runtime.init(agent,signal);await runtime.beginRequest(agent,signal);classifyTaskSurface(agent);applyToolSurface(agent);}catch(error){runtime.problem(state(agent),'session-prepare',error.message);}
+    }
+    let boundedResult=null;
+    if(agent&&runtime.isEnabled(agent)&&state(agent).config.boundedPatch){
+      try{boundedResult=await boundedPatch.prepare(agent,context.signal??AbortSignal.timeout(600000),claimedRequest??runtime.currentRequest(agent));}
+      catch(error){runtime.problem(state(agent),'bounded-patch-prepare',String(error?.message??error).slice(0,240));}
     }
     const section=_assembly.sections.find(section=>section.name==='work-evidence:task-flow');
     if(section){
       section.text='';
-      if(agent&&runtime.isEnabled(agent)&&state(agent).config.stepPacing){
+      if(boundedResult?.done)section.text=boundedPatch.guidance(boundedResult);
+      else if(agent&&runtime.isEnabled(agent)){
         const request=claimedRequest??runtime.currentRequest(agent);
-        section.text=taskFlowGuidance(runtime.activeMode(agent),taskSurfaceModes.get(agent.session.id),state(agent).config,
-          textOf(request));
+        const config=state(agent).config,text=textOf(request);
+        if(taskPacingAllowed(config,text))section.text=taskFlowGuidance(runtime.activeMode(agent),taskSurfaceModes.get(agent.session.id),config,text);
       }
     }
-    if(context?.agent)effects.instructions(context.agent,section?.text??'');
-    if(context?.agent&&runtime.isEnabled(context.agent)&&state(context.agent).config.toolSurface==='compact'&&['read-only','minimal'].includes(taskSurfaceModes.get(context.agent.session.id))&&Array.isArray(_assembly.tools))
+    if(agent)effects.instructions(agent,section?.text??'');
+    if(boundedResult?.done&&Array.isArray(_assembly.tools))_assembly.tools=[];
+    if(agent&&runtime.isEnabled(agent)&&state(agent).config.toolSurface==='compact'&&['read-only','minimal'].includes(taskSurfaceModes.get(agent.session.id))&&Array.isArray(_assembly.tools))
       _assembly.tools=_assembly.tools.filter(tool=>tool?.name!=='work_exec');
-    return next();
+    const assembled=await next();
+    if(boundedResult?.done&&Array.isArray(assembled?.tools))assembled.tools=[];
+    return assembled;
   },{prepend:true});
+  ctx.on('system-prompt/assemble',async(_assembly,context,next)=>{
+    const assembled=await next();
+    const agent=context?.agent??activeAgent??ctx.agents?.list?.()?.[0]??null;
+    if(agent&&boundedPatch.result(agent)?.done===true&&Array.isArray(assembled?.tools))assembled.tools=[];
+    return assembled;
+  });
   const featureControl=createFeatureControl(ctx,runtime,{available,canRecall,workingSet,qualityReview,compactionHandoff,retainedCompute,effects,verifiedExec,contextEconomics});
-  registerPluginCommand({ctx,runtime,state,effects,available,featureControl,capabilityDiagnostic,contextEconomics,taskFlow,taskHandoff,finalJson,qualityReview,executionEvidence,refreshExecutionEvidence,workingSet,compressionControl,compactionHandoff,contextWindow,observationLedger,historyCoordinator,clearPluginState,applyToolSurface});
+  registerPluginCommand({ctx,runtime,state,effects,available,featureControl,capabilityDiagnostic,contextEconomics,taskFlow,taskHandoff,finalJson,boundedPatch,qualityReview,executionEvidence,refreshExecutionEvidence,workingSet,compressionControl,compactionHandoff,contextWindow,observationLedger,historyCoordinator,clearPluginState,applyToolSurface});
   const nested=new Set();
   async function call(name,args,exec){
     exec.signal.throwIfAborted();
@@ -716,11 +736,11 @@ export function apply(ctx,config={}){
     }
       finally{nested.delete(callId);}
   }
-  async function read(file,line,root,exec){
+  async function read(file,line,root,exec,maxLineChars){
     const full=within(root,file),offset=Math.max(1,line-8);
     const r=await call('read',{file_path:full,offset,limit:limits.lines},exec);
     if(r.isError)return {path:full,state:'unavailable',code:r.error?.info?.code||r.error?.code||'READ_FAILED'};
-    const window=textWindow(r.value);
+    const window=textWindow(r.value,{maxLineChars});
     return window?{state:'observed',...window,retrieveCurrent:{tool:'read',arguments:{file_path:full,offset,limit:limits.lines}}}:{path:full,state:'unknown',code:'UNRECOGNIZED_READ_RESULT'};
   }
   const sourceSearchInclude='*.{java,js,mjs,cjs,ts,tsx,py,pyi,json,toml,gradle,kts}';
@@ -728,22 +748,37 @@ export function apply(ctx,config={}){
     if(requested)return requested;
     try{
       const entry=await nativeFiles.stat(root,'src',exec.signal);
-      return entry.exists?'src':'.';
-    }catch(error){
+      return entry.type==='directory'?'src':'.';
+    }catch{
       exec.signal.throwIfAborted();
-      return ['FS_NOT_FOUND','ENOENT','ENOTDIR'].includes(error?.code)?'.':'src';
+      return '.';
     }
   }
-  async function search(pattern,scope,root,exec){
+  async function search(pattern,scope,root,exec,maxLineChars=300){
     const r=await call('grep',{pattern,path:within(root,scope),include:sourceSearchInclude},exec);
     if(r.isError)return {state:'unavailable',code:r.error?.info?.code||r.error?.code||'SEARCH_FAILED',matches:[]};
     if(!Array.isArray(r.value?.matches))return {state:'unknown',code:'UNRECOGNIZED_SEARCH_RESULT',matches:[]};
-    return {state:'observed',totalMatches:r.value.matches.length,truncated:r.value.matches.length>limits.matches,matches:r.value.matches.slice(0,limits.matches).map(m=>({path:m.path,lineNumber:m.lineNumber,line:String(m.line).slice(0,300),...(String(m.line).length>300?{lineTruncated:true}:{})}))};
+    return {state:'observed',totalMatches:r.value.matches.length,truncated:r.value.truncated===true||r.value.matches.length>limits.matches,matches:r.value.matches.slice(0,limits.matches).map(m=>({path:m.path,lineNumber:m.lineNumber,line:String(m.line).slice(0,maxLineChars),...(String(m.line).length>maxLineChars?{lineTruncated:true}:{})}))};
   }
-  async function snippets(matches,root,exec){
-    const unique=[];
-    for(const match of matches){const file=match.path;if(typeof file!=='string'||unique.some(x=>x.path===file))continue;unique.push({path:file,line:Number.isInteger(match.lineNumber)?match.lineNumber:1});if(unique.length===limits.files)break;}
-    return Promise.all(unique.map(m=>read(m.path,m.line,root,exec)));
+  async function snippets(matches,root,exec,maxLineChars){
+    const windows=[],files=new Set(),remaining=[];
+    for(const match of matches){
+      if(typeof match.path!=='string')continue;
+      const file=within(root,match.path),line=Number.isInteger(match.lineNumber)&&match.lineNumber>0?match.lineNumber:1;
+      const key=process.platform==='win32'?file.toLowerCase():file;
+      const window={file,key,line,offset:Math.max(1,line-8)};
+      if(files.has(key))remaining.push(window);
+      else{files.add(key);windows.push(window);}
+      if(windows.length===limits.files)break;
+    }
+    for(const window of remaining){
+      if(windows.length===limits.files)break;
+      if(!windows.some(other=>other.key===window.key&&window.line>=other.offset&&window.line<other.offset+limits.lines))windows.push(window);
+    }
+    return Promise.all(windows.map(async window=>({
+      ...await read(window.file,window.line,root,exec,maxLineChars),
+      requestedRange:{offset:window.offset,limit:limits.lines},matchLine:window.line
+    })));
   }
   async function sourceReferences(args,root,exec){
     const terms=[...new Set(args.members||[args.member||String(args.query).split(/[./]/).at(-1)])];
@@ -938,10 +973,11 @@ export function apply(ctx,config={}){
     // calling maintenance once gives one emission on either surface.
     const s=state(payload.agent),queued=s.queuedMessages??[];
     s.queuedMessages=[];
-    const messages=[...queued,...await maintenance(payload),...taskFlow.beforeStep(payload.agent,decision.messages,locations)];
+    const patchDone=boundedPatch.result(payload.agent)?.done===true;
+    const messages=[...queued,...(patchDone?[]:await maintenance(payload)),...(patchDone?[]:taskFlow.beforeStep(payload.agent,decision.messages,locations))];
     return messages.length?{...decision,messages:[...decision.messages,...messages]}:decision;
   },{prepend:true});
-  ctx.on('agent/disposed',({agent})=>disposal.agentDisposed(agent.session.id,async()=>{await Promise.allSettled([...pendingSaves]);try{toolSurfaceDisposers.get(agent.session.id)?.dispose?.();}catch{}toolSurfaceDisposers.delete(agent.session.id);pendingContextPrunes.delete(agent.session.id);contextRetainedSources.delete(agent.session.id);editedSources.delete(agent.session.id);supersededCache.delete(agent.session.id);readCountsCache.delete(agent.session.id);for(const key of contextReadCalls.keys())if(key.startsWith(agent.session.id+':'))contextReadCalls.delete(key);for(const key of preserveContextResults)if(key.startsWith(agent.session.id+':'))preserveContextResults.delete(key);try{await retainedCompute.disposeAgent(agent);}catch(error){runtime.problem(state(agent),'retained-compute-cleanup',error.message);}await effects.disposeAgent(agent);historyCoordinator.disposeAgent(agent);workingSet.disposeAgent(agent);historyHygiene.disposeAgent(agent);contextEconomics.clear(agent);taskFlow.disposeAgent(agent);executionEvidence.disposeAgent(agent);runtime.dispose(agent.session.id);}));
+  ctx.on('agent/disposed',({agent})=>disposal.agentDisposed(agent.session.id,async()=>{await Promise.allSettled([...pendingSaves]);try{toolSurfaceDisposers.get(agent.session.id)?.dispose?.();}catch{}toolSurfaceDisposers.delete(agent.session.id);pendingContextPrunes.delete(agent.session.id);contextRetainedSources.delete(agent.session.id);editedSources.delete(agent.session.id);supersededCache.delete(agent.session.id);readCountsCache.delete(agent.session.id);for(const key of contextReadCalls.keys())if(key.startsWith(agent.session.id+':'))contextReadCalls.delete(key);for(const key of preserveContextResults)if(key.startsWith(agent.session.id+':'))preserveContextResults.delete(key);try{await retainedCompute.disposeAgent(agent);}catch(error){runtime.problem(state(agent),'retained-compute-cleanup',error.message);}boundedPatch.dispose(agent);await effects.disposeAgent(agent);historyCoordinator.disposeAgent(agent);workingSet.disposeAgent(agent);historyHygiene.disposeAgent(agent);contextEconomics.clear(agent);taskFlow.disposeAgent(agent);executionEvidence.disposeAgent(agent);runtime.dispose(agent.session.id);}));
   async function saveInterruption(agent,{turn,step,provider,reason,signal,observed}){
     const sessionId=agent.session.id,s=state(agent);
     if(!observed.active||s.notedTurn>=turn||s.savingTurn===turn||!/^[-a-zA-Z0-9_][-.a-zA-Z0-9_]{0,127}$/.test(sessionId))return;

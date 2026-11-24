@@ -413,9 +413,11 @@ test('malformed response is retried once and never dispatches a tool',async()=>{
     const agent=await host.createAgent('max');
     await host.send(agent,'继续任务。');
     assert.equal(failures,1);
+    assert.equal(host.requests.length,2);
     assert.equal(host.events.some(event=>event.type==='tool/call'),false);
     const reports=host.events.filter(event=>event.type==='assistant/message');
     assert.equal(reports.length,1,'the second request completes after one bounded retry');
+    assert.equal(reports[0].data.message.content.map(block=>block.text??'').join(''),'完成。');
   }finally{await host.close();}
 });
 

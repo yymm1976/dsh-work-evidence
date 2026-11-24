@@ -2,7 +2,7 @@ import path from 'node:path';
 import {VERSION} from "./runtime.mjs";
 import {featureDefinition,featurePatch} from './feature-control.mjs';
 
-export function registerPluginCommand({ctx,runtime,state,effects,available,featureControl,capabilityDiagnostic,contextEconomics,taskFlow,taskHandoff,finalJson,qualityReview,executionEvidence,refreshExecutionEvidence,workingSet,compressionControl,compactionHandoff,contextWindow,observationLedger,historyCoordinator,clearPluginState,applyToolSurface}){
+export function registerPluginCommand({ctx,runtime,state,effects,available,featureControl,capabilityDiagnostic,contextEconomics,taskFlow,taskHandoff,finalJson,boundedPatch,qualityReview,executionEvidence,refreshExecutionEvidence,workingSet,compressionControl,compactionHandoff,contextWindow,observationLedger,historyCoordinator,clearPluginState,applyToolSurface}){
   ctx.commands.register({name:'work-evidence',
     description:'Inspect feature readiness, change workspace settings, export task handoff JSON and control the session switch.',
     input:{hint:'status | detail | features | feature <name> [on|off|value] | config <JSON> | handoff | on | off | inherit | mode | aggressive on|off'},
@@ -73,7 +73,7 @@ export function registerPluginCommand({ctx,runtime,state,effects,available,featu
           workingSet:workingSet.detail(agent),
           contextEconomics:contextEconomics.summary(agent),
           compression:{...compressionControl.metrics(agent),nativeHandoff:compactionHandoff.metrics(agent)},
-          taskFlow:taskFlow.summary(agent),
+          taskFlow:taskFlow.summary(agent),boundedPatch:boundedPatch.summary(agent),
           finalJson:finalJson.summary(agent),qualityReview:qualityReview.summary(agent),
           nativeExecution:executionEvidence.summary(agent),
           sw:{...contextWindowMetrics,...contextWindow.detail(agent)},

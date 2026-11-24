@@ -262,6 +262,30 @@ export function compactNativeGrepPreviews(text,matches,pattern){
   return sections.join('\n\n');
 }
 
+/** Summarize definition lines already present in a native grep result. */
+export function grepDefinitionSummary(text){
+  if(typeof text!=='string'||!text.startsWith('Found ')||text.includes('\nDefinition hits ('))return text;
+  const definitions=[];
+  let file=null;
+  for(const row of text.split(/\r?\n/u)){
+    if(!row.trim())continue;
+    if(!/^Line [1-9]\d*: /u.test(row)){
+      if(!/^Found \d+ /u.test(row))file=row;
+      continue;
+    }
+    if(!file)continue;
+    const match=/^Line ([1-9]\d*): (.*)$/u.exec(row);
+    if(!match)continue;
+    const declaration=/^\s*(?:async\s+)?(?:def|class|function)\s+([A-Za-z_$][\w$]*)/u.exec(match[2]);
+    if(!declaration)continue;
+    definitions.push({file,line:Number(match[1]),name:declaration[1]});
+  }
+  if(definitions.length<2)return text;
+  const shown=definitions.slice(0,8).map(item=>item.file+':'+item.line+' '+item.name);
+  const extra=definitions.length-shown.length;
+  return 'Definition hits ('+definitions.length+'): '+shown.join('; ')+(extra?' ; +'+extra+' more':'')+'\n\n'+text;
+}
+
 /** A request view only; canonical events and reasoning remain complete. */
 export function createHistoryHygiene(runtime,taskFlow,{isProtected=()=>false,retainedSource=()=>false,canRecall=()=>false,referenceContext=null}={}){
   const states=new Map();
@@ -283,7 +307,8 @@ export function createHistoryHygiene(runtime,taskFlow,{isProtected=()=>false,ret
     rememberRead(state,root,readDispatch({...exec,subCallId:exec.callId,...result}));
     if(result.isError||hasPruneProblem(result.content??[],result.value))state.failures.add(root);
     else if(exec.name==='grep'&&!exec.parent&&result.content?.length===1&&result.content[0].type==='text'){
-      const before=result.content[0].text,after=compactNativeGrepPreviews(before,result.value?.matches,argsOf(exec.arguments).pattern);
+      const before=result.content[0].text;
+      const after=grepDefinitionSummary(compactNativeGrepPreviews(before,result.value?.matches,argsOf(exec.arguments).pattern));
       if(after!==before){
         if(state.liveGrepViews.size>=64)state.liveGrepViews.delete(state.liveGrepViews.keys().next().value);
         state.liveGrepViews.set(exec.callId,{before,after});
@@ -466,10 +491,10 @@ export function createHistoryHygiene(runtime,taskFlow,{isProtected=()=>false,ret
       const protect=file=>isSourceBodyPath(file)||retainedSource(agent,file)||state.retainedSources.has(fileKey(root,file))||focus.has(fileKey(root,file));
       const existing=state.outputPlans.get(entry.seq);
       if(existing?.test||existing?.tool)return message;
+      entry.namedPaths??=sourceBodyPaths(resultText(original.content));
+      if(entry.namedPaths.some(protect))return message;
       let planned=existing;
       if(!planned){
-        entry.namedPaths??=sourceBodyPaths(resultText(original.content));
-        if(entry.namedPaths.some(protect))return message;
         planned=state.candidatePlans.get(entry.seq);
         if(planned===undefined){
           const draft=planContextPrune(original,entry.reads,{seq:entry.seq,...pruneSettings,retainSource:isSourceBodyPath});

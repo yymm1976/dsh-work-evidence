@@ -510,16 +510,10 @@ test('a file edit or an ordinary command failure does not advertise a new interp
   }
 });
 
-test('a real embedded program still receives conditional host discovery once',()=>{
+test('a PowerShell program does not prompt migration without a reusable script reference',()=>{
   for(const toolMode of ['native','ptc']){
-    const t=timeline({stepPacing:false},['pwsh','work_exec'],'aggressive',toolMode);
+    const t=timeline({stepPacing:false,nativeShellScriptReuse:true},['pwsh','work_exec'],'aggressive',toolMode);
     t.command('pwsh',{command:'node -e "'+('console.log(42);\n'.repeat(70))+'"'},{exitCode:0,stdout:'42\n',stderr:''});
-    const message=t.notices().find(m=>m.source.taskFlow.kind==='inlineExec');
-    assert.ok(message,'the program-specific recovery path remains available');
-    const body=message.content[0].text;
-    assert.match(body,/可沿用事件\d+的输出/u);
-    assert.match(body,/work_exec\(\{runtime,code,executable\?\}\)/u);
-    assert.equal(body.includes('capabilities.search'),toolMode==='ptc');
     assert.ok(!t.notices().some(m=>m.source.taskFlow.kind==='inlineExec'));
   }
 });

@@ -61,7 +61,8 @@ for(const toolMode of ['native','ptc'])test(`quality review retains a completed 
     assert.ok(execution);
     const row=payload.evidence.find(item=>item.seq===execution.seq);
     assert.ok(row?.data.includes(code),'the recorded result keeps the exact program that produced it');
-    assert.ok(row?.data.includes('passed'),'the native result is also available');
+    const resultText=row.data.split('\nRecorded work_exec program input:\n')[0];
+    assert.ok(resultText.includes('passed'),'the native result is available independently of the program text');
     assert.equal(payload.evidence.filter(item=>item.data.includes(code)).length,1);
   }finally{await host.close();}
 });

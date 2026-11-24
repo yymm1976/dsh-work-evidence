@@ -60,7 +60,7 @@ function proofFor(options,state){
     }
   }
   for(const record of state.records){
-    const candidates=record.roots.flatMap(root=>messagesByRoot.get(root)??[]);
+    const candidates=record.roots.flatMap(root=>calls.get(root)?.count===1?messagesByRoot.get(root)??[]:[]);
     for(const message of candidates){
       if(messageIds.get(message.id)!==1)continue;
       if((message.content||[]).some(block=>block.type==='text'&&block.text.length<=2_000_000&&
@@ -133,7 +133,8 @@ export function createEvidenceViews(ctx,runtime,{needsCurrentBody=()=>false}={})
     const signature=stable({requestKey,facts});
     let identity=null;
     if(eligible&&!writtenSource)try{identity=await identities(facts.sources,facts.workspace,exec);}catch{ /* No identity proof means full delivery. */ }
-    const prior=identity&&[...state.proof].find(([record])=>record.signature===signature&&record.identity===identity);
+    const live=current(exec.agent)===state;
+    const prior=live&&identity&&[...state.proof].find(([record])=>record.signature===signature&&record.identity===identity);
     if(view==='reference-if-visible'&&prior){
       const [record,proof]=prior;
       const result={mode:args.mode,workspace:facts.workspace,observedAt:facts.observedAt,responseView:{kind:'reference',receiptId:record.id,
@@ -150,9 +151,9 @@ export function createEvidenceViews(ctx,runtime,{needsCurrentBody=()=>false}={})
         s.metrics.evidenceReferenceViews++;s.metrics.evidenceViewOutputChars+=measureText(result).stringUnits;s.dirty=true;return result;
       }
     }
-    const previous=state.records.findLast(record=>record.requestKey===requestKey);
-    const sameSource=state.records.some(record=>record.sourceKey===sourceKey);
-    const missingReason=previous
+    const previous=live&&state.records.findLast(record=>record.requestKey===requestKey);
+    const sameSource=live&&state.records.some(record=>record.sourceKey===sourceKey);
+    const missingReason=!live?'session-state-reset':previous
       ?previous.identity!==identity?'source-identity-changed':previous.signature!==signature?'source-or-selection-changed':previous.everVisible?'body-no-longer-visible':'body-not-confirmed-visible'
       :sameSource?'range-or-arguments-changed':state.resetReason||'first-delivery';
     const reason=view==='full'?(args.responseView==='full'?'explicit-full-view':'default-full-view'):writtenSource?'current-body-after-write':!eligible?'incomplete-source':!identity?'identity-unavailable':!prior?missingReason:'reference-not-smaller';
@@ -161,7 +162,7 @@ export function createEvidenceViews(ctx,runtime,{needsCurrentBody=()=>false}={})
     const rendered=renderText(result);
     s.metrics.evidenceViewOutputChars+=rendered.length;s.dirty=true;
     observeDefault(view==='full'?'applied':'not-applicable',view==='full'?'configured-full-view':'reference-precondition-not-met',{reason});
-    if(eligible&&identity){
+    if(live&&eligible&&identity){
       const body=JSON.stringify(result);
       state.records.push({id,requestKey,sourceKey,signature,identity,everVisible:false,body,
         renderedBody:rendered===body?null:rendered,observedAt:facts.observedAt,roots:[...new Set([exec.callId,exec.rootCallId].filter(Boolean))]});
