@@ -131,7 +131,7 @@ export function createContextEconomics(ctx,runtime){
     let state=states.get(agent.session.id);
     if(!state){state={last:null,latestPrompt:null,previousAttempt:null,lastSuccessfulMain:null,mainHistory:[],mainAttempts:[],decisions:[],skips:{},requests:0,reportedPromptTokens:0,reportedMainPromptTokens:0,mainPromptRequests:0,reportedOutputTokens:0,
       missingUsage:0,missingCacheUsage:0,pricedRequests:0,publishedRateUsed:false,costByCurrency:Object.create(null),auxiliaryRequests:0,compactionRequests:0,mainFinished:0,
-      failedKnownCostByCurrency:Object.create(null),failedKnownCostRequests:0,
+      failedKnownCostByCurrency:Object.create(null),failedKnownCostByBasis:Object.create(null),failedKnownCostRequests:0,
       referenceCostByCurrency:Object.create(null),referencePricedRequests:0,referenceRateUsed:false,
       costLowerBoundByCurrency:Object.create(null),costLowerBoundRequests:0,
       referenceLowerBoundByCurrency:Object.create(null),referenceLowerBoundRequests:0,
@@ -187,16 +187,26 @@ export function createContextEconomics(ctx,runtime){
       }else if(cached===0)cachedSuffixTokens=0;
       else if(proposedMessages&&old.envelope===envelopeKey({tools,system})&&old.alignmentSafe&&textProjection(messages??[])&&textProjection(proposedMessages)){
         const currentKeys=new Set((messages??[]).map(modelKey)),oldKeys=new Set(old.keys),oldIds=new Set(old.ids.filter(Boolean));
+        const cacheBoundaryObserved=finite(old.usage.cacheReadTokens)&&
+          (old.usage.cacheReadTokens>0||finite(old.usage.cacheWriteTokens)&&old.usage.cacheWriteTokens>0);
         const exposure=target=>{
           let prefix=0;
-          while(prefix<old.keys.length&&prefix<target.length&&old.keys[prefix]===modelKey(target[prefix]))prefix++;
+          if(cacheBoundaryObserved)
+            while(prefix<old.keys.length&&prefix<target.length&&old.keys[prefix]===modelKey(target[prefix]))prefix++;
           // Charge surviving prior content and newly introduced replacements.
           // Unchanged, newly appended current messages were never cached yet.
-          const retained=target.slice(prefix).reduce((sum,message)=>{
+          let promptRetained=0,generatedRetained=0;
+          for(const message of target.slice(prefix)){
             const key=modelKey(message);
-            return sum+(oldIds.has(message.id)||oldKeys.has(key)||!currentKeys.has(key)?messageTokens(message):0);
-          },0);
-          return {prefix,tokens:Math.min(cached,retained*old.factor)};
+            if(oldIds.has(message.id)||oldKeys.has(key)||!currentKeys.has(key))promptRetained+=messageTokens(message);
+            else if(message.role==='assistant'&&finite(old.usage?.outputTokens)&&old.usage.outputTokens>0)
+              generatedRetained+=messageTokens(message);
+          }
+          // Generated output can form a persisted cache unit that is not part of
+          // the previous prompt-token total. Charge it separately instead of
+          // clipping it at `cached`.
+          return {prefix,tokens:Math.min(cached,promptRetained*old.factor)+Math.ceil(generatedRetained),
+            generatedTokens:Math.ceil(generatedRetained)};
         };
         const proposed=exposure(proposedMessages),existing=exposure(messages??[]);prefixMessages=proposed.prefix;
         oldSuffixTokens=Math.ceil(Math.min(cached,old.weights.slice(proposed.prefix).reduce((sum,value)=>sum+value,0)*old.factor));
@@ -205,7 +215,7 @@ export function createContextEconomics(ctx,runtime){
         // backend event or a route change made the entire request cold.
         const baselineAligned=existing.prefix===Math.min(old.keys.length,(messages??[]).length)&&proposed.prefix<=old.keys.length;
         cachedSuffixTokens=Math.ceil(Math.max(0,proposed.tokens-(baselineAligned?existing.tokens:0)));
-        exposureMethod='rewritten surviving suffix plus new replacements; unchanged unsent tail excluded; existing baseline exposure subtracted only when the current request is a complete continuation of the previous request';
+        exposureMethod='rewritten surviving suffix plus new replacements and retained generated output; matching prompt prefix excluded only with observed cache boundary evidence; unchanged unsent tail excluded; existing baseline exposure subtracted only when the current request is a complete continuation of the previous request';
       }else if(proposedMessages){cachedSuffixTokens=cached;}
       else if(changedMessageId||Number.isSafeInteger(changedSeq)){
         let weight=null,located=Boolean(changedMessageId);
@@ -333,6 +343,9 @@ export function createContextEconomics(ctx,runtime){
     // read it dropped the output of any request whose prompt fields were incomplete.
     if(finite(usage?.outputTokens))state.reportedOutputTokens+=usage.outputTokens;
     const billingComplete=record.settled&&['stop','tool-calls','max-tokens','length'].includes(record.finishReason);
+    // A stream can report complete usage and a stop reason, then fail while draining.
+    // Its known amount is useful, but it is not a settled successful request.
+    const settledBilling=billingComplete&&!record.failureCode&&!record.aborted;
     const cacheWritePriced=usage?.cacheWriteTokens===0||finite(price?.cacheWrite);
     const usageFieldsComplete=usage&&['inputTokens','cacheReadTokens','cacheWriteTokens','outputTokens'].every(key=>finite(usage[key]));
     const knownCost=price&&usage&&usageFieldsComplete&&cacheWritePriced
@@ -340,14 +353,17 @@ export function createContextEconomics(ctx,runtime){
         usage.cacheWriteTokens*(price.cacheWrite??0)+usage.outputTokens*price.output)/1e6:null;
     const lowerBound=price&&usage?usageCostLowerBound(usage,price):null;
     const exactPrice=price?.basis==='exact-route';
-    if(knownCost!==null&&exactPrice&&canonical.complete&&billingComplete){
+    if(knownCost!==null&&exactPrice&&canonical.complete&&settledBilling){
       state.costByCurrency[price.currency]=(state.costByCurrency[price.currency]??0)+knownCost;
       state.pricedRequests++;
-    }else if(knownCost!==null&&canonical.complete&&billingComplete&&price?.basis==='reference-rate'){
+    }else if(knownCost!==null&&canonical.complete&&settledBilling&&price?.basis==='reference-rate'){
       state.referenceCostByCurrency[price.currency]=(state.referenceCostByCurrency[price.currency]??0)+knownCost;
       state.referencePricedRequests++;state.referenceRateUsed=true;
     }else if(knownCost!==null){
       state.failedKnownCostByCurrency[price.currency]=(state.failedKnownCostByCurrency[price.currency]??0)+knownCost;
+      const basis=price.basis??'unavailable',key=basis+':'+price.currency;
+      const failed=state.failedKnownCostByBasis[key]??={basis,currency:price.currency,amount:0,requests:0};
+      failed.amount+=knownCost;failed.requests++;
       state.failedKnownCostRequests++;
     }else if(price){const reason=!billingComplete?'incomplete-request-billing':!cacheWritePriced?'cache-write-price-unavailable':'missing-usage-fields';state.skips[reason]=(state.skips[reason]??0)+1;}
     // A fully priced row is already represented by costByCurrency or
@@ -575,6 +591,7 @@ export function createContextEconomics(ctx,runtime){
       lastUnusableAttempt:state.lastUnusable??null,
       reportedCost:currencies.length===1&&state.pricedRequests===state.requests?state.costByCurrency[currencies[0]]:null,knownReportedCost:currencies.length===1?state.costByCurrency[currencies[0]]:null,costComplete:state.pricedRequests===state.requests,costByCurrency:{...state.costByCurrency},
       failedKnownCostRequests:state.failedKnownCostRequests,failedKnownCostByCurrency:{...state.failedKnownCostByCurrency},
+      failedKnownCostByBasis:Object.fromEntries(Object.entries(state.failedKnownCostByBasis).map(([key,value])=>[key,{...value}])),
       failedKnownCostLowerBound:Object.keys(state.failedKnownCostByCurrency).length===1?Object.values(state.failedKnownCostByCurrency)[0]:null,
       costLowerBoundByCurrency:{...state.costLowerBoundByCurrency},costLowerBound:
         Object.keys(state.costLowerBoundByCurrency).length===1?Object.values(state.costLowerBoundByCurrency)[0]:null,

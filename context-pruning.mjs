@@ -40,6 +40,18 @@ const ASSIGNMENT_LINE=/^\s*[A-Za-z_$][\w$.\[\]'"]*\s*=\s*\S/u;
 // a high density of code punctuation at line ends.
 const CODE_INDENT=/^(?: {4,}|\t+)\S/u;
 const CODE_PUNCTUATION=/[;:,)}\]>]$/u;
+// A shell can print a JSON configuration that happens to contain stdout/stderr
+// objects. Only a process-result envelope with a completion field is eligible for
+// the transport exception; every unknown top-level key keeps the body as source.
+const TRANSPORT_ENVELOPE_KEYS=new Set(['status','exitCode','stdout','stderr','truncated','timedOut','aborted','signal',
+  'kind','job','durationMs','scriptRef','scriptEventRef','executionCompleted','partial']);
+function isTransportEnvelope(value){
+  if(!value||typeof value!=='object'||Array.isArray(value))return false;
+  if(!('stdout' in value||'stderr' in value))return false;
+  if(Object.keys(value).some(key=>!TRANSPORT_ENVELOPE_KEYS.has(key)))return false;
+  return ['stdout','stderr'].every(key=>value[key]===undefined||
+    (value[key]&&typeof value[key]==='object'&&typeof value[key].text==='string'));
+}
 /** Does this body look like source code regardless of where it came from? */
 export function looksLikeSourceBody(text,{transport=false}={}){
   const body=String(text??'');
@@ -58,10 +70,7 @@ export function looksLikeSourceBody(text,{transport=false}={}){
   if((trimmed.startsWith('{')&&trimmed.endsWith('}'))||(trimmed.startsWith('[')&&trimmed.endsWith(']'))){
     try{
       const parsed=JSON.parse(trimmed);
-      const envelope=transport&&parsed&&typeof parsed==='object'&&!Array.isArray(parsed)&&
-        ('stdout' in parsed||'stderr' in parsed)&&!('scripts' in parsed)&&!('dependencies' in parsed)&&
-        ['stdout','stderr'].every(key=>parsed[key]===undefined||
-          (parsed[key]&&typeof parsed[key]==='object'&&typeof parsed[key].text==='string'));
+      const envelope=transport&&isTransportEnvelope(parsed);
       if(envelope){
         const carriers=[parsed.stdout?.text,parsed.stderr?.text,parsed.content,parsed.value,parsed.text]
           .filter(value=>typeof value==='string'&&value.length>=2000);

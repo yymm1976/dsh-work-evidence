@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import {createHash} from 'node:crypto';
-import {applyPatchProposal,failedPatchStatus,readSourceBundle,selectSourceDirectory,sourceOnlyMaintenanceTask} from '../bounded-patch.mjs';
+import {applyPatchProposal,boundedPatchGuidance,failedPatchStatus,readSourceBundle,selectSourceDirectory,sourceOnlyMaintenanceTask} from '../bounded-patch.mjs';
 import {startHost,text} from './helpers/host.mjs';
 
 test('source bundle selects one writable project and excludes an explicitly untouched sibling',async()=>{
@@ -200,6 +200,32 @@ test('a focused pass still reviews a file that an earlier pass modified',async()
   }finally{await host.close();}
 });
 
+test('a file omitted from the focused pass remains an explicit follow-up',async()=>{
+  const host=await startHost({
+    workspace:{boundedPatch:true,stepPacing:false,qualityReview:false,completionNotice:false,finalJsonGuard:false},
+    auxiliary:(_options,n)=>{
+      if(n===1)return [text(JSON.stringify({edits:[{file:'alpha.js',old:'"original"',replacement:'"fixed"'}],
+        followup:[{scope:'Review both large files.',files:['beta.js','gamma.js']}]}))];
+      if(n===2)return [text(JSON.stringify({edits:[],followup:[{scope:'Review both large files.',files:['beta.js','gamma.js']}]}))];
+      return [text(JSON.stringify({edits:[],followup:[]}))];
+    },
+    script:()=>[text('已完成有界源码修复。')],
+  });
+  try{
+    await fs.mkdir(path.join(host.cwd,'target'),{recursive:true});
+    await fs.writeFile(path.join(host.cwd,'target','alpha.js'),'export const alpha = "original";\n');
+    await fs.writeFile(path.join(host.cwd,'target','beta.js'),'export const beta = "'+('b'.repeat(90000))+'";\n');
+    await fs.writeFile(path.join(host.cwd,'target','gamma.js'),'export const gamma = "'+('g'.repeat(90000))+'";\n');
+    for(let index=0;index<30;index++)await fs.writeFile(path.join(host.cwd,'target','filler-'+index+'.js'),
+      '// '+(index+1)+'\n'+('export const value'+index+' = '+index+';\n').repeat(400));
+    const agent=await host.createAgent('max');
+    await host.send(agent,'修复工作目录中的 target。成员身份偶尔错误，请求失败后内容丢失，历史结果重复，设置切换后无法恢复。只允许通过源码定位问题。做完直接汇报。');
+    const status=await host.command(agent,'status');
+    assert.equal(status.boundedPatch.result.patchStatus,'partial');
+    assert.equal(status.boundedPatch.result.followup,1,'the omitted focused file is not silently cleared');
+  }finally{await host.close();}
+});
+
 test('one malformed edit does not discard the other edits in the same pass',async()=>{
   let calls=0;
   const host=await startHost({
@@ -223,6 +249,9 @@ test('one malformed edit does not discard the other edits in the same pass',asyn
     assert.equal(await fs.readFile(path.join(host.cwd,'target','alpha.js'),'utf8'),'export const alpha = "fixed";\n');
     assert.equal(await fs.readFile(path.join(host.cwd,'target','beta.js'),'utf8'),'export const beta = "fixed";\n');
     assert.equal(calls,2);
+    const status=await host.command(agent,'status');
+    assert.equal(status.boundedPatch.result.patchStatus,'partial');
+    assert.equal(status.boundedPatch.result.partial,true);
   }finally{await host.close();}
 });
 
@@ -624,6 +653,33 @@ test('a traversal budget reports unvisited entries instead of a complete omissio
   }finally{await fs.rm(root,{recursive:true,force:true});}
 });
 
+test('the independent entry limit bounds a tree of non-source files',async()=>{
+  const root=await fs.mkdtemp(path.join(process.env.TEMP??'.','we-scope-entry-budget-'));
+  try{
+    const target=path.join(root,'target');
+    await fs.mkdir(target,{recursive:true});
+    const source=Buffer.from('export const value = 1;\n');
+    const provider={
+      async list(directory){
+        if(directory===root)return [{name:'target',type:'directory'}];
+        return [
+          {name:'a.js',type:'file'},{name:'b.js',type:'file'},{name:'c.js',type:'file'},
+          ...Array.from({length:10010},(_,index)=>({name:`z-${String(index).padStart(5,'0')}.txt`,type:'file'})),
+        ];
+      },
+      async stat(){return {exists:true,type:'file',version:'v1',targetKey:'target'};},
+      async readBytes(){return {bytes:source,version:'v1',targetKey:'target',bytesLength:source.length};},
+    };
+    const bundle=await readSourceBundle(root,'修复工作目录中的 target。成员身份偶尔错误，只通过源码定位问题。',{files:provider});
+    assert.equal(bundle.files.length,3);
+    assert.equal(bundle.traversalStopped,true);
+    assert.equal(bundle.complete,false);
+    assert.equal(bundle.omittedCountKnown,false);
+    assert.ok(bundle.unvisitedEntries>0);
+    assert.equal(bundle.skipped.length,64,'the skipped path sample is bounded separately from its total');
+  }finally{await fs.rm(root,{recursive:true,force:true});}
+});
+
 test('hidden and ignored source entries are reported as incomplete coverage',async()=>{
   const root=await fs.mkdtemp(path.join(process.env.TEMP??'.','we-scope-hidden-'));
   try{
@@ -656,6 +712,19 @@ test('a requested file is the only writable scope',async()=>{
     const bundle=await readSourceBundle(root,'修复工作目录中的 target。成员身份偶尔错误，请求失败后内容丢失，历史结果重复，设置切换后无法恢复。只修复 src/alpha.js 中的问题。');
     assert.equal(bundle.writeScope.status,'explicit');
     assert.deepEqual(bundle.writeScope.files,['src/alpha.js']);
+  }finally{await fs.rm(root,{recursive:true,force:true});}
+});
+
+test('a reference path remains read-only when an edit target is also named',async()=>{
+  const {root}=await writeScopeFixture();
+  try{
+    await fs.writeFile(path.join(root,'target','src','parser.js'),'export const parser = true;\n');
+    await fs.writeFile(path.join(root,'target','src','example.js'),'export const example = true;\n');
+    const bundle=await readSourceBundle(root,
+      '修复工作目录中的 target。Fix parsing in src/parser.js using src/example.js as a reference.');
+    assert.equal(bundle.writeScope.status,'explicit');
+    assert.deepEqual(bundle.writeScope.files,['src/parser.js']);
+    assert.ok(!bundle.writeScope.files.includes('src/example.js'));
   }finally{await fs.rm(root,{recursive:true,force:true});}
 });
 
@@ -717,6 +786,31 @@ test('a bounded patch retains an unknown native effect and its rejection in the 
   assert.equal(result.rejections.some(item=>item.reason==='native-write-effect-unknown'),true);
 });
 
+test('authorization is checked again after syntax validation and before dispatch',async()=>{
+  const fixture=await proposalFixture(()=>({ok:true,status:'completed',effectState:'applied',revision:'v2',
+    targetKey:'target-1',contentHash:createHash('sha256').update('value = 2\n').digest('hex'),callId:'write-1'}));
+  let checks=0;
+  const result=await applyPatchProposal({edits:[{file:'alpha.py',old:'value = 1',replacement:'value = 2'}]},
+    fixture.bundle,new AbortController().signal,{python:process.execPath,agent:{},cas:fixture.cas,allowSyntax:false,
+      validate:()=>++checks===1?{ok:true}:{ok:false,reason:'request-identity-changed'}});
+  assert.equal(fixture.calls.apply,0);
+  assert.equal(result.applied.length,0);
+  assert.ok(result.rejections.some(item=>item.reason==='authorization-changed'));
+});
+
+test('failed and aborted guidance never denies an unconfirmed write',()=>{
+  const base={applied:[],files:[],rejected:[],followup:[],warning:null,unverified:[],
+    sourceCoverage:{status:'partial',omittedCount:0,omittedCountKnown:true}};
+  const failed=boundedPatchGuidance({...base,patchStatus:'failed',unknownEffects:[{file:'alpha.js'}]});
+  assert.match(failed,/No confirmed source edit was applied/u);
+  assert.match(failed,/unknown write effects/u);
+  assert.match(failed,/alpha\.js/u);
+  const aborted=boundedPatchGuidance({...base,patchStatus:'aborted',unknownEffects:[{file:'beta.js'}]});
+  assert.match(aborted,/aborted/u);
+  assert.match(aborted,/unknown write effects/u);
+  assert.match(aborted,/beta\.js/u);
+});
+
 test('a bounded patch never falls back to a direct child process for syntax checking',async()=>{
   const original='const value = 1;\n',changed='const value = ;\n';
   const hash=value=>createHash('sha256').update(value).digest('hex');
@@ -736,6 +830,28 @@ test('a bounded patch never falls back to a direct child process for syntax chec
   assert.equal(result.applied.length,1);
   assert.equal(result.applied[0].syntaxStatus,'unavailable',
     'without a host subprocess service the helper must be unavailable, not run through node:child_process');
+});
+
+test('a bounded patch validates .mjs source with module syntax',async()=>{
+  const original='await Promise.resolve(1);\n',changed='await Promise.resolve(2);\n';
+  const hash=value=>createHash('sha256').update(value).digest('hex');
+  const bundle={sourceRelative:'.',sourceRoot:'.',workspaceRoot:'.',complete:true,coverageStatus:'complete',
+    files:[{path:'alpha.mjs',text:original,version:'v1',targetKey:'target-mjs',contentHash:hash(original),bytes:original.length}],
+    writeScope:{status:'explicit',scopes:['.'],files:['alpha.mjs']},writable:['alpha.mjs'],forbidden:[]};
+  let syntaxArgs=null;
+  const cas={
+    async stat(){return {ok:true,exists:true,type:'file',revision:'v1',targetKey:'target-mjs'};},
+    async read(){return {ok:true,text:original,sha256:hash(original),revision:'v1',targetKey:'target-mjs'};},
+    async apply(){return {ok:true,status:'completed',effectState:'applied',revision:'v2',
+      targetKey:'target-mjs',contentHash:hash(changed),callId:'write-mjs'};},
+  };
+  const result=await applyPatchProposal({edits:[{file:'alpha.mjs',old:'1',replacement:'2'}]},bundle,
+    new AbortController().signal,{agent:{},cas,allowSyntax:true,
+      syntaxRunner:async(_command,args,input)=>{syntaxArgs={args,input};return {ok:true};}});
+  assert.equal(result.applied.length,1);
+  assert.ok(syntaxArgs.args.includes('--input-type=module'));
+  assert.equal(syntaxArgs.input,changed);
+  assert.equal(result.applied[0].syntaxStatus,'passed');
 });
 
 test('a bounded patch proposal uses strict JSON instead of repairing an invalid escape',async()=>{

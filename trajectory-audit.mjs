@@ -46,8 +46,10 @@ const normalizeFile=value=>{
   const windows=/^[A-Za-z]:[\\/]/u.test(value)||value.includes('\\');
   const flavor=windows?path.win32:path.posix;
   const absolute=flavor.isAbsolute(value);value=flavor.normalize(value);
-  return {value:value.replaceAll('\\','/'),absolute};
+  return {value:value.replaceAll('\\','/'),absolute,windows};
 };
+const pathKey=value=>value?(value.windows?value.value.toLowerCase():value.value):null;
+const samePath=(left,right)=>left&&right&&left.absolute===right.absolute&&pathKey(left)===pathKey(right);
 // Commands whose result says nothing about the source by itself. ops_bash is
 // here for saved histories: the adapter is gone from the live surface, but an
 // offline audit still reads sessions that used it, and a command run after a
@@ -386,14 +388,14 @@ function checkedJudgmentReviews(input,normal,sourceId,throughSeq,sourceCurrent,s
         if(change.seq<=lastEvidence||change.seq>throughSeq)continue;
         const changed=normalizeFile(change.path);
         if(!changed){reasons.push('file-scope-unresolved');break;}
-        const comparable=scopes.some(scope=>scope.value===changed.value);
+        const comparable=scopes.some(scope=>samePath(scope,changed));
         if(comparable){reasons.push('file-changed-after-evidence');break;}
         if(scopes.some(scope=>scope.absolute!==changed.absolute)){reasons.push('file-scope-unresolved');break;}
       }
       for(const change of normal.possibleChanges){
         if(change.seq<=lastEvidence||change.seq>throughSeq)continue;
         const changed=normalizeFile(change.path);
-        if(!changed||scopes.some(scope=>scope.value===changed.value||scope.absolute!==changed.absolute)){
+        if(!changed||scopes.some(scope=>samePath(scope,changed)||scope.absolute!==changed.absolute)){
           reasons.push('possible-file-change-after-evidence');break;
         }
       }
@@ -404,7 +406,7 @@ function checkedJudgmentReviews(input,normal,sourceId,throughSeq,sourceCurrent,s
         if(call.callSeq>throughSeq||call.resultSeq!==null||!WRITE.has(call.name)||readOnlyLegacyWrite(call))continue;
         const changed=normalizeFile(fileOf(call.arguments));
         if(!changed){reasons.push('file-scope-unresolved');break;}
-        if(scopes.some(scope=>scope.value===changed.value)){reasons.push('unsettled-mutation');break;}
+        if(scopes.some(scope=>samePath(scope,changed))){reasons.push('unsettled-mutation');break;}
         if(scopes.some(scope=>scope.absolute!==changed.absolute)){reasons.push('file-scope-unresolved');break;}
       }
     }
@@ -563,13 +565,13 @@ function reviewedCheckCoverage(input,review,normal,sourceId,sourceProblems){
           if(change.seq<=row.resultSeq||change.seq>review.throughSeq)continue;
           const changed=normalizeFile(change.path);
           if(!changed){fileReasons.push('file-scope-unresolved');break;}
-          if(scopes.some(scope=>scope.value===changed.value)){fileReasons.push('file-changed-after-check');break;}
+          if(scopes.some(scope=>samePath(scope,changed))){fileReasons.push('file-changed-after-check');break;}
           if(scopes.some(scope=>scope.absolute!==changed.absolute)){fileReasons.push('file-scope-unresolved');break;}
         }
         for(const change of normal.possibleChanges){
           if(change.seq<=row.resultSeq||change.seq>review.throughSeq)continue;
           const changed=normalizeFile(change.path);
-          if(!changed||scopes?.some(scope=>scope.value===changed.value||scope.absolute!==changed.absolute)){
+          if(!changed||scopes?.some(scope=>samePath(scope,changed)||scope.absolute!==changed.absolute)){
             fileReasons.push('possible-file-change-after-check');break;
           }
         }
@@ -580,7 +582,7 @@ function reviewedCheckCoverage(input,review,normal,sourceId,sourceProblems){
           if(pending.resultSeq!==null||pending.callSeq>review.throughSeq||!WRITE.has(pending.name)||readOnlyLegacyWrite(pending))continue;
           const changed=normalizeFile(fileOf(pending.arguments));
           if(!changed){fileReasons.push('file-scope-unresolved');break;}
-          if(scopes?.some(scope=>scope.value===changed.value)){fileReasons.push('unsettled-mutation');break;}
+          if(scopes?.some(scope=>samePath(scope,changed))){fileReasons.push('unsettled-mutation');break;}
           if(scopes?.some(scope=>scope.absolute!==changed.absolute)){fileReasons.push('file-scope-unresolved');break;}
         }
       }
@@ -695,7 +697,6 @@ function checkedChangeScopeReviews(input,normal,sourceId,sourceProblems){
     if(!operations.has(key))operations.set(key,[]);
     operations.get(key).push(call);
   }
-  const samePath=(left,right)=>left&&right&&left.absolute===right.absolute&&left.value===right.value;
   const matchedChanges=new Set();
   const items=declarations.map((row,index)=>{
     if(!row||typeof row.id!=='string'||!row.id.trim()||row.id.length>128||ids.has(row.id)||
@@ -916,8 +917,8 @@ export function requirementEvidenceView(normal,review,verification,sourceProblem
     const related=ids.map(id=>checks.get(id)).filter(Boolean);
     const relations=related.flatMap(check=>check.coverage.filter(item=>item.criterionId===criterion.id).map(item=>({check,item})));
     const scopes=[...new Set(relations.flatMap(({item})=>item.scopePaths??[]))];
-    const scopeKeys=new Set(scopes.map(scope=>normalizeFile(scope)?.value).filter(Boolean));
-    const mutations=scopeKeys.size?normal.changes.filter(change=>scopeKeys.has(normalizeFile(change.path)?.value)):[];
+    const scopeKeys=new Set(scopes.map(scope=>pathKey(normalizeFile(scope))).filter(Boolean));
+    const mutations=scopeKeys.size?normal.changes.filter(change=>scopeKeys.has(pathKey(normalizeFile(change.path)))):[];
     const unresolved=[...normal.changes,...normal.possibleChanges].filter(change=>{
       const changed=normalizeFile(change.path);
       return change.status==='unknown'||!changed||!scopeKeys.size||scopes.some(scope=>normalizeFile(scope)?.absolute!==changed.absolute);

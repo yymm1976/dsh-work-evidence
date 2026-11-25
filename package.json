@@ -24,6 +24,8 @@
     "scripts/check-syntax.mjs",
     "scripts/profile-default-path.mjs",
     "scripts/profile-host-path.mjs",
+    "test/helpers/host.mjs",
+    "test/helpers/paths.mjs",
     "index.mjs",
     "task-intent.mjs",
     "tool-execution.mjs",

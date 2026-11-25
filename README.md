@@ -483,7 +483,7 @@ PTC 已取得行记录，却在访问 `.content` 或 `.text` 后输出 `undefine
 开启 `probeReplay` 后，同一问题的新检查不会解除原检查的失败。只有原检查重执行取得完整相符结果，才解除该检查的未决状态。原始失败观察继续保留。
 
 声明文件在执行期间变化，或无法确认声明文件状态时，原失败继续保持未决。任一次原样重执行转入后台后，同一原检查的其他引用也会阻止重复派发。只有对应任务的原生生产者结束记录完整匹配，才允许再次显式执行。
-Windows 继续通过原生 `pwsh` 执行。POSIX 通过宿主原生 `bash` 向 Python/Node 的 stdin 传入完整程序，保留原生权限、stdout、stderr、退出码、超时、取消和作业状态。缺少 `bash` 或逐次环境注册服务时，分别返回 `native-bash-unavailable` 或 `native-shell-env-unavailable`。程序上限为 UTF-16 字符串的 1–64000 个字符。POSIX 将正文编码为最多 3 段环境变量，每段最多 96,000 个 UTF-8 字节，由宿主 `shellEnv` 仅注入匹配 Agent 和唯一命令的原生执行。Bash 内建 `printf` 还原反斜杠和 NUL 字节并送入解释器 stdin；正文不写项目文件，也不放入 `bash -c` 参数。传输标识或分段缺失时退出 125。解释器启动前清除传输变量，原生调用返回或转后台后清除插件中的暂存正文。
+Windows 优先通过原生 `pwsh` 执行；宿主仅发布 `bash` 且提供逐次环境注册服务时，Windows 改用原生 `bash` 执行。POSIX 通过宿主原生 `bash` 向 Python/Node 的 stdin 传入完整程序，保留原生权限、stdout、stderr、退出码、超时、取消和作业状态。缺少 `bash` 或逐次环境注册服务时，分别返回 `native-bash-unavailable` 或 `native-shell-env-unavailable`。程序上限为 UTF-16 字符串的 1–64000 个字符。POSIX 将正文编码为最多 3 段环境变量，每段最多 96,000 个 UTF-8 字节，由宿主 `shellEnv` 仅注入匹配 Agent 和唯一命令的原生执行。Bash 内建 `printf` 还原反斜杠和 NUL 字节并送入解释器 stdin；正文不写项目文件，也不放入 `bash -c` 参数。传输标识或分段缺失时退出 125。解释器启动前清除传输变量，原生调用返回或转后台后清除插件中的暂存正文。
 新程序省略 `executable` 时，`work_exec` 可选用用户声明的唯一已安装解释器。支持“本机已有 Python 3.12，路径为 ……”的相邻分句。
 显式绝对 `executable` 路径不存在或指向目录时，调用在启动所选原生 shell 前返回 `WORK_EXEC_EXECUTABLE_NOT_FOUND`、`executionOccurred:false`，保留 `scriptRef`。程序引用继承记录的解释器路径；省略 `executable` 不会改用 PATH。只有任务允许更换环境时，才建议将 `executable` 显式设为 `python` 或 `node`，改用 PATH 中的同名运行时；任务声明特定解释器时保留缺失路径为阻塞项。权限无法确认、PATH 名称及相对路径仍交给宿主执行；这里不检查执行权限或文件格式。
 `scriptEditsSubmitted` 记录提交的编辑数，`scriptEditCount` 只计替换前后文字不同的编辑。相同文字仍会按请求再次执行原程序，不发送脚本已改动的版本提示。
@@ -585,7 +585,7 @@ deferPressureCompaction 也保持默认关闭。
 - `executionTriage` 根据实际执行结果和恢复记录提供建议。Shell 脚本已有可用的 `scriptRef` 时，提示如何复用原程序。用户要求文件大小且 PowerShell 盘点结果缺少大小列时，同一请求提示一次，并保留原始结果。
 - `archiveReadRouting`：默认开启。把 `.jar`、`.zip` 等归档路径转入受限解码读取，需要原生文件系统与 `fflate`；解码器缺失时返回明确的不可用原因，不退化为直接读取二进制。
 - `requestAccounting`：默认开启。分别记录主请求、压缩请求和辅助请求的用量及未知消费；关闭只影响统计口径，不停止或改写实际请求。
-- `strictObservability`：默认关闭，仅用于需要证明每次请求都可复算的实验。开启后，请求开始记录无法持久化时会在派发前拒绝并标记为未派发；普通运行仍允许请求继续，同时把账本标为不完整，不把遥测故障当成上游消费。
+- `strictObservability`：默认关闭，仅用于需要证明每次请求都可复算的实验。开启后，请求开始记录无法持久化时会在派发前拒绝并标记为未派发；即使 `requestAccounting`、`requestProjection` 和 `compressionControl` 都关闭，也保留最小请求开始/结束账本，不允许无记录派发。普通运行仍允许请求继续，同时把账本标为不完整，不把遥测故障当成上游消费。
 - `memberParsing`：默认开启。按语法实体定位 Java 类和方法范围；解析器不可用时退回词法扫描，并把本次解析失败记录为不可用而不是成功。其他语言使用文本窗口，不提供语法完整的成员范围。
 - `mavenSourceBinding`：默认开启。按 Maven 坐标匹配 `sources` 归档并绑定其中的源码条目；依赖归档解码，坐标或条目不一致时不采用猜测来源。
 - `ledgerReceipt`：默认开启。同一正文已在当前上下文可见时返回短回执而不是重复全文；依赖 `evidenceViews` 与历史取回。关闭 `evidenceViews` 后回执行为同时停用，状态显示 `requires-setting:evidenceViews`。
@@ -622,9 +622,9 @@ stubSummary 保留问题处理标记、事件指针和原文取回。
 index.mjs 负责组装和会话事件。
 plugin-command.mjs 负责命令；source-tools.mjs 负责源码和报告入口；management-tools.mjs 负责执行、状态与管理入口。
 
-当前开发版已在本机桌面宿主运行时独立加载声明的发布文件，并完成来源读取、结构化调用、保留计算、程序引用、精确编辑、交接及关闭后的原生读取。`node --test test/host-package-load.test.mjs test/host-workflow-combinations.test.mjs` 覆盖这些路径；`node --test test/trajectory-audit.test.mjs` 覆盖审计行为。`npm test` 当前为 1103 项，1102 通过，0 失败，1 项按宿主能力跳过。默认路径分段测量用 `npm run profile`，只测本地处理，不包含模型等待或工具执行。`npm run profile:host` 使用真实宿主循环和脚本化模型，记录启动、配置读取、请求投影、原生工具、文件系统、持久化和销毁耗时；脚本化模型等待固定为零，不测量供应商延迟或费用。工作区配置只在请求边界和显式状态/控制操作刷新，`init` 不重复读取同一工作区配置。宿主核对需要本机 DSH Desktop 运行时和配套 Python 环境，不调用在线模型。`test/helpers/host.mjs` 可用 `DSH_APP` 指定桌面运行时目录。当前结果不表示桌面目录已加载开发版，也不证明每项模型质量和费用效果。
+当前开发版已在本机桌面宿主运行时独立加载声明的发布文件，并完成来源读取、结构化调用、保留计算、程序引用、精确编辑、交接及关闭后的原生读取。`node --test test/host-package-load.test.mjs test/host-workflow-combinations.test.mjs` 覆盖这些路径；`node --test test/trajectory-audit.test.mjs` 覆盖审计行为。`npm test` 当前为 1136 项，1134 通过，0 失败，2 项按宿主能力跳过。默认路径分段测量用 `npm run profile`，只测本地处理，不包含模型等待或工具执行。`npm run profile:host` 使用真实宿主循环和脚本化模型，记录启动、配置读取、请求投影、原生工具、文件系统、持久化和销毁耗时；脚本化模型等待固定为零，不测量供应商延迟或费用。工作区配置只在请求边界和显式状态/控制操作刷新，`init` 不重复读取同一工作区配置。宿主核对需要本机 DSH Desktop 运行时和配套 Python 环境，不调用在线模型。`test/helpers/host.mjs` 可用 `DSH_APP` 指定桌面运行时目录。当前结果不表示桌面目录已加载开发版，也不证明每项模型质量和费用效果。
 
-运行完整测试时，源码成员解析和 `verified_exec` 宿主检查需要 `requirements-source-members.txt` 所列依赖的 Python。将 `DSH_TEST_FASTEDIT_PYTHON` 设置为该解释器的绝对路径；未设置或设为空时，测试使用开发目录的 `.fastedit-venv/Scripts/python.exe`。`verified_exec` 的原生条件写入要求 `dsh-tools`、`dsh-fs-local`、`dsh-tool-fs` 位于同一 0.2.2-rc.1 或 0.2.2-rc.2 版本，并注入官方本地或沙箱文件服务。0.2.1-rc.4 或混合版本按 `cas-file-tools-unavailable` 明确 deopt，不做无版本条件的替代写入。
+运行完整测试时，源码成员解析相关检查需要 `requirements-source-members.txt` 所列依赖的 Python；`verified_exec` 宿主检查不依赖该解释器。将 `DSH_TEST_FASTEDIT_PYTHON` 设置为该解释器的绝对路径；未设置或设为空时，测试使用开发目录的 `.fastedit-venv/Scripts/python.exe`。`verified_exec` 的原生条件写入要求 `dsh-tools`、`dsh-fs-local`、`dsh-tool-fs` 位于同一 0.2.2-rc.1 或 0.2.2-rc.2 版本，并注入官方本地或沙箱文件服务。0.2.1-rc.4 或混合版本按 `cas-file-tools-unavailable` 明确 deopt，不做无版本条件的替代写入。
 
 `dsh-tools@0.2.2` 已移除 `mode` 配置。1.1.2 保留 `tool-execution.mjs` 的批量执行兼容与 `toolModeFor`，测试宿主按版本挂载拆分执行器；旧运行时保持原行为。支持版本为 `0.2.1-rc.4`、`0.2.2-rc.1` 和 `0.2.2-rc.2`。原生条件编辑仅支持已识别的 rc.1/rc.2 文件服务；不支持时明确返回不可用。历史版本的检查结果不能替代当前候选的完整验收。
 

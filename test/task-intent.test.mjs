@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {isReadOnlyTaskRequest} from '../task-intent.mjs';
+import {classifyTaskIntent,isReadOnlyTaskRequest} from '../task-intent.mjs';
 
 // The clause classifier decides whether work_exec/verified_exec stay visible. Six
 // successive review rounds found a new hole in it, so the whole invariant is pinned
@@ -81,6 +81,9 @@ const CASES = [
   ['Do not modify README.md. Implement pagination.', false, 'an implementation verb needs no named target'],
   ['Do not implement pagination.', true, 'the same verb is still denied when the denial governs it'],
   ['Do not rewrite the parser.', true, 'rewrite is an implementation verb and its denial decides'],
+  ["Don't forget not to modify src/a.js.", true, 'an inner negation survives the forget idiom'],
+  ['Read-only: explain how to refactor the module.', true, 'an explanation asks for discussion, not a write'],
+  ['只读：解释如何重构这个模块。', true, 'a Chinese explanation is not a write request'],
 ];
 
 for (const [request, expected, why] of CASES) {
@@ -93,6 +96,17 @@ test('task intent: a target described at length still counts',()=>{
   // The target sits 40+ characters after the verb; a fixed character limit dropped it and
   // let the denied first sentence decide the whole task.
   assert.equal(isReadOnlyTaskRequest('Do not modify src/a.js; fix the failing authentication regression in src/b.js.'),false);
+});
+
+test('task intent: explanation and hypothetical forms do not authorize a write',()=>{
+  assert.equal(classifyTaskIntent('Read-only: explain how to refactor the module.').writeAuthorized,false);
+  assert.equal(classifyTaskIntent('Explain how to refactor the module.').writeAuthorized,false);
+  assert.equal(classifyTaskIntent('How would you refactor the module?').writeAuthorized,false);
+  assert.equal(classifyTaskIntent('解释如何重构这个模块。').writeAuthorized,false);
+  assert.equal(classifyTaskIntent('Refactor the module.').writeAuthorized,true);
+  assert.equal(classifyTaskIntent('重构这个模块。').writeAuthorized,true);
+  assert.equal(classifyTaskIntent("Don't forget not to modify src/a.js.").writeAuthorized,false);
+  assert.equal(classifyTaskIntent("Don't forget to modify src/a.js.").writeAuthorized,true);
 });
 
 test('task intent: a capitalized verb with an extensionless target still counts',()=>{

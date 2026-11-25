@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import {createQualityReview} from '../quality-review.mjs';
+import {createQualityReview,scopeReviewSources} from '../quality-review.mjs';
 
 const USAGE={inputTokens:100,cacheReadTokens:0,cacheWriteTokens:0,outputTokens:50,totalTokens:150};
 const payloadOf=request=>JSON.parse(request.messages[0].content[0].text);
@@ -517,4 +517,23 @@ test('a create edit with both body fields is described by the content that was w
     assert.ok(joined.includes('ACTUAL_BODY'),'the written content is in the payload');
     assert.ok(!joined.includes('UNUSED_NEW_TEXT'),'the ignored new_text is not');
   }finally{await h.close();}
+});
+
+test('focused review filtering follows a physical alias identity',async t=>{
+  const root=await fs.mkdtemp(path.join(os.tmpdir(),'we-quality-alias-'));
+  t.after(()=>fs.rm(root,{recursive:true,force:true}));
+  const real=path.join(root,'real.mjs'),alias=path.join(root,'alias.mjs');
+  await fs.writeFile(real,'export const value = 1;\n');
+  try{await fs.symlink(real,alias,'file');}
+  catch(error){t.skip('The host cannot create a file alias for this check: '+error.code);return;}
+  const payload={
+    request:{seq:1},answer:{seq:2},requestSources:[],
+    observed:{mutation:null,artifacts:[{seq:3,path:'real.mjs',effectState:'applied'},
+      {seq:4,path:'README.md',effectState:'none'}],executions:[],unresolvedErrors:[],pendingJobEvents:[]},
+    evidence:[{seq:99,type:'tool/result',data:'alias-associated change '+ 'x'.repeat(26000),sourceFiles:['alias.mjs']}]
+  };
+  const scoped=scopeReviewSources(payload,root,'auto');
+  assert.equal(scoped.sourceReview.mode,'focused');
+  assert.ok(scoped.evidence.some(item=>item.seq===99),
+    'evidence associated with the symlink target must survive focused filtering');
 });

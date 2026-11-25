@@ -135,11 +135,13 @@ test('a write through a physical alias invalidates the observed target',async t=
   await f.post({agent:f.agent,name:'read',callId:'read-real',arguments:{file_path:real},mutationCountAtDispatch:0},
     {isError:false,content:[{type:'text',text:body}],value:{path:real,lines:[
       {line:1,text:'alpha'},{line:2,text:'beta'},{line:3,text:'gamma'}]}});
-  await f.post({agent:f.agent,name:'write',callId:'write-alias',arguments:{file_path:alias},mutationCountAtDispatch:0},
-    {isError:false,value:{path:alias},content:[]});
   f.agent.session.surface.nodes.push(11);
   f.sessionEvent({seq:11,type:'tool/result',data:{turn:1,step:1,message:{role:'tool',
     source:{callId:'read-real'},isError:false,content:[{type:'text',text:body}]}}});
   const [observation]=f.ledger.detail(f.agent).observations;
-  assert.equal(observation.stale,true,'the observed real target must be invalidated by a write through its alias');
+  assert.equal(observation.stale,false,'the read is fresh before the alias write');
+  await f.post({agent:f.agent,name:'write',callId:'write-alias',arguments:{file_path:alias},mutationCountAtDispatch:0},
+    {isError:false,value:{path:alias},content:[]});
+  assert.equal(f.ledger.detail(f.agent).observations[0].stale,true,
+    'the observed real target must be invalidated by a write through its alias');
 });

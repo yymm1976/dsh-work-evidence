@@ -465,7 +465,7 @@ export function createHistoryHygiene(runtime,taskFlow,{isProtected=()=>false,ret
           definitionSummaryInjectedChars>0;
         if(reduction<=0&&!optedInSummary)return message;
         if(!planned?.initial&&!firstSend){
-          const approved=allowed('historyOutput',message,after,entry.seq,entry,Math.max(0,textTokens(message)-textTokens(after)));
+          const approved=allowed('historyOutput',message,after,entry.seq,entry,Math.max(0,messageTokens(message)-messageTokens(after)));
           if(!approved)return message;
         }
         outputs++;saved+=reduction;hidden.add(entry.seq);
@@ -478,7 +478,7 @@ export function createHistoryHygiene(runtime,taskFlow,{isProtected=()=>false,ret
             {seq:entry.seq,savedChars:reduction,
               economics:firstSend?{allowed:true,reason:optedInSummary?'initial-opted-in-definition-summary':'initial-unsent-output-view',refillCostEstimate:0}:undefined});
         }
-        if(definitionSummaryInjectedChars>0){
+        if(record&&definitionSummaryInjectedChars>0){
           state.definitionSummaryProjectionCalls++;
           state.definitionSummaryProjectedInjectedChars+=definitionSummaryInjectedChars;
         }

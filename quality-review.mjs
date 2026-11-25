@@ -89,7 +89,7 @@ export function scopeReviewSources(payload,root,configured='auto'){
   const full={...payload,sourceReview:{mode:'all-supplied',files,omittedFiles:[],requestSourceFiles,
     coverage:'Supplied historical snippets only; no complete current files were reconstructed.'}};
   if(configured==='full'||files.length<2||JSON.stringify(payload).length<=24000)return full;
-  const key=file=>path.resolve(root??'.',file).replaceAll('\\','/');
+  const key=file=>physicalPathKey(root??'.',file);
   const artifacts=payload.observed.artifacts;
   const sources=[...artifacts].reverse().filter(item=>!/(?:\.(?:md|mdx|rst|adoc)|\bREADME(?:\.[^/]*)?)$/iu.test(item.path));
   const isCheck=file=>/(?:^|\/)(?:tests?|__tests__)(?:\/|$)|(?:^|\/)(?:test|check)[_-][^/]+\.(?:[cm]?js|tsx?|py)$|\.(?:test|spec)\.[^/]+$/iu.test(file.replaceAll('\\','/'));

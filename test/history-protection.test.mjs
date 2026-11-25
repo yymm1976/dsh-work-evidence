@@ -117,9 +117,9 @@ test('definition summaries are counted as candidates but only sent when opted in
 function initialGrepFixture({allow=false,steps=2}={}){
   const log=[],session={id:'initial-grep-view',log,surface:{nodes:[],contentGeneration:0},eventAt:seq=>log[seq]},agent={session};
   const state={config:defaults({contextProtocol:false,historyHygiene:true,definitionSummary:'off'}),root:process.cwd()};
-  const decisions=[];
+  const decisions=[],assessments=[];
   const hygiene=createHistoryHygiene({get:()=>state,isEnabled:()=>true,contextControl:{
-    assess:()=>({allowed:allow,reason:'initial-grep-fixture'}),
+    assess:(_agent,input)=>{assessments.push(input);return {allowed:allow,reason:'initial-grep-fixture'};},
     remember:(_agent,decision)=>decisions.push(decision),
   }},{phase:()=>({focus:[]})},{canRecall:()=>true});
   const add=(type,data)=>{const event={seq:log.length,type,data};log.push(event);session.surface.nodes.push(event.seq);session.seq=event.seq;return event;};
@@ -132,7 +132,7 @@ function initialGrepFixture({allow=false,steps=2}={}){
   const message={id:'initial-grep-result',role:'tool',source:{callId:'initial-grep'},content:[{type:'text',text}]};
   add('tool/result',{message});
   for(let index=0;index<steps;index++)add('step/start',{});
-  return {agent,hygiene,message,decisions};
+  return {agent,hygiene,message,decisions,assessments,state};
 }
 
 test('an initial grep view is independent only on the first send; cached history still needs the economics gate',()=>{
@@ -142,8 +142,21 @@ test('an initial grep view is independent only on the first send; cached history
   assert.equal(first.decisions.length,0,'the first send has no cached exposure to price');
 
   const cached=initialGrepFixture({allow:false,steps:2});
+  cached.state.step=2;
   assert.deepEqual(cached.hygiene.project(cached.agent,[cached.message])[0].content,cached.message.content,
     'a cached result must not be rewritten when the forecast denies it');
   assert.equal(cached.decisions.length,1);
   assert.equal(cached.decisions[0].allowed,false);
+  assert.ok(cached.assessments.at(-1).savedTokensEstimate>0,
+    'the economics forecast must receive message-token savings, not a zero from object stringification');
+});
+
+test('preview projections do not advance definition-summary projection counters',()=>{
+  const h=definitionFixture({definitionSummary:'on'});
+  h.hygiene.project(h.agent,[h.message],{record:false});
+  const view=h.hygiene.summary(h.agent).definitionSummary;
+  assert.equal(view.projectionCalls,0);
+  assert.equal(view.projectedInjectedChars,0);
+  h.hygiene.project(h.agent,[h.message]);
+  assert.equal(h.hygiene.summary(h.agent).definitionSummary.projectionCalls,1);
 });

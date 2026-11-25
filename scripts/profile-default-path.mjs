@@ -72,7 +72,10 @@ const results=[];
 }
 {
   const bundlePromise=readSourceBundle(root,'profile only reads source');
-  results.push({name:'readSourceBundle source tree',rounds:1,note:'asynchronous native/Node filesystem read',resolved:Boolean(await bundlePromise)});
+  const started=performance.now();
+  const resolved=Boolean(await bundlePromise);
+  results.push({name:'readSourceBundle source tree',rounds:1,note:'asynchronous native/Node filesystem read',
+    resolved,durationMs:performance.now()-started});
 }
 
 console.log(JSON.stringify({generatedAt:new Date().toISOString(),root,rounds,hostVersion:process.env.DSH_TEST_HOST_VERSION??null,

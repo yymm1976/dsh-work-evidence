@@ -47,7 +47,7 @@ const DEFINITIONS=[
   ['finalJsonGuard','JSON 格式','修正用户明确要求的 JSON 格式'],
   ['finalJsonResultGuard','JSON 结果一致性','核对结果字段与明确观察'],
   ['qualityReview','交付复核','复核有直接依据的交付遗漏'],
-  ['boundedPatch','有界源码补丁','大型只读源码维护按整项目补丁和有界复核完成'],
+  ['boundedPatch','有界源码补丁','大型项目中仅依据源码定位，并在明确授权后应用补丁'],
   ['qualityReviewEffort','复核思考档位','独立选择复核档位，主任务档位保留',['auto','inherit','low','medium','high','max']],
   ['qualityReviewScope','复核源码范围','auto 在较大输入中聚焦源码文件，full 保留全部已装配片段',['auto','full']],
   ['toolSurface','工具入口','compact 保留常用入口，full 展示管理和工程工具',['compact','full']],
@@ -180,6 +180,7 @@ export function createFeatureControl(ctx,runtime,{available,canRecall,workingSet
         if(key==='qualityReview'&&(!selection?.provider||!selection?.model))reasons.push('main-model-route-unavailable');
         if(key==='boundedPatch'&&(!selection?.provider||!selection?.model))reasons.push('main-model-route-unavailable');
         if(key==='boundedPatch'&&!service('fs'))reasons.push('native-filesystem-unavailable');
+        if(key==='boundedPatch'&&!service('sandboxPolicy'))reasons.push('native-service-unavailable:sandboxPolicy');
         if(key==='retainedCompute')for(const name of retained.missingDependencies)reasons.push('native-service-unavailable:'+name);
         if(key==='nativeVerifiedEdits'&&!nativeVerifiedReady)reasons.push('rc2-native-conditional-write-unavailable');
         if(key==='nativeVerifiedEdits'&&!available(agent,'verified_exec'))reasons.push('tool-unavailable:verified_exec');

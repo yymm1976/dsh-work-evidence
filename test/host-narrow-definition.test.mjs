@@ -37,7 +37,8 @@ test('a workspace-wide search raises no scope reminder',async()=>{
     if(n===1)return [tool('grep',{pattern:'normalize_birthday',path:'.'})];
     return [text('完成。')];
   });
-  assert.ok(!observed.body.includes('只在'),'a whole-project search already covers other files');
+  assert.ok(!observed.body.includes('中找到'),'a whole-project search already covers other files');
+  assert.equal(observed.detail.metrics.stateNotices,0);
 });
 
 test('an empty single-file search raises no scope reminder',async()=>{
@@ -49,5 +50,6 @@ test('an empty single-file search raises no scope reminder',async()=>{
     if(n===1)return [tool('grep',{pattern:'normalize_birthday',path:'identity.py'})];
     return [text('完成。')];
   });
-  assert.ok(!observed.body.includes('只在'),'no result means no scope advice');
+  assert.ok(!observed.body.includes('中找到'),'no result means no scope advice');
+  assert.equal(observed.detail.metrics.stateNotices,0);
 });

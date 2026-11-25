@@ -1,7 +1,6 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import os from 'node:os';
-import {randomUUID,createHash} from 'node:crypto';
+import {createHash} from 'node:crypto';
 import {modelJson} from './model.mjs';
 import {isUserRequestMessage,textOf} from './runtime.mjs';
 import {createNativeFiles} from './native-files.mjs';
@@ -34,6 +33,7 @@ const SKIP_DIRECTORIES = new Set([
 const SKIP_FILES = new Set(['package-lock.json', 'pnpm-lock.yaml', 'yarn.lock', 'bun.lockb']);
 const LIMITS = Object.freeze({
   files: 512,
+  traversalEntries: 10_000,
   sourceBytes: 2_500_000,
   fileBytes: 512_000,
   edits: 64,
@@ -71,6 +71,38 @@ export function sourceOnlyMaintenanceTask(text) {
 
 export function failedPatchStatus({aborted = false, applied = 0} = {}) {
   return aborted ? 'aborted' : applied ? 'partial' : 'failed';
+}
+
+export function boundedPatchGuidance(result) {
+  if (!result?.patchStatus) return '';
+  const edits = result.applied.reduce((sum, item) => sum + item.edits, 0);
+  const rejected = (result.rejected ?? []).slice(0, 8).map(item =>
+    `${item.file ?? 'unknown'}:${item.reason ?? 'rejected'}`).join(', ');
+  const followup = (result.followup ?? []).slice(0, 4).map(item => item.scope).join('; ');
+  const coverage = result.sourceCoverage?.status === 'complete' ? 'complete'
+    : `${result.sourceCoverage?.status ?? 'unknown'} (${result.sourceCoverage?.omittedCountKnown === false
+      ? 'omission count unknown' : `${result.sourceCoverage?.omittedCount ?? 'unknown'} omitted`})`;
+  const unknownFiles = [...new Set((result.unknownEffects ?? []).map(item => item.file).filter(Boolean))];
+  const base = '[Work Evidence bounded source maintenance] Bounded patch phase: ' + result.patchStatus
+    + '; task completion is unknown. ' + edits + ' exact source edits across ' + result.files.length
+    + ' files. Native tools remain available.';
+  const unknownAction = unknownFiles.length
+    ? ' Inspect the files with unknown write effects with native tools before retrying: ' + JSON.stringify(unknownFiles) + '.'
+    : '';
+  const action = result.patchStatus === 'completed'
+    ? ' Verify the applied behavior with native evidence and continue any remaining user-visible work. Do not claim tests were run unless you run them.'
+    : result.patchStatus === 'partial'
+      ? ' Inspect the applied and unverified files with native tools, handle the rejected edits or follow-up, and do not claim completion.'
+      : result.patchStatus === 'aborted'
+        ? ' The bounded patch was aborted. Inspect the applied files and files with unknown write effects with native tools, then report the interruption without claiming completion.'
+      : unknownFiles.length
+        ? ' No confirmed source edit was applied. Inspect the files with unknown write effects with native tools before retrying or reporting a concrete blocker.'
+        : ' No source edit was applied. Use native tools to inspect the current source or report the concrete blocker.';
+  return base + action + unknownAction + ' Source coverage: ' + coverage + '.'
+    + (rejected ? ' Rejected: ' + rejected + '.' : '')
+    + (followup ? ' Follow-up: ' + followup + '.' : '')
+    + (result.unverified?.length ? ' Unverified effects: ' + JSON.stringify(result.unverified) + '.' : '')
+    + (result.warning ? ' Warning: ' + result.warning + '.' : '');
 }
 
 function excludedTopLevelName(name, request) {
@@ -114,9 +146,27 @@ function unquotedText(value) {
   return text;
 }
 
+// A path named as evidence, an example or a reference is not a write target.
+// Keep the marker in these patterns so an unrelated mention of the word "read"
+// does not suppress a path that is also the object of a later edit verb.
+const REFERENCE_PATTERNS = [
+  new RegExp(`(?:using|use|refer(?:ring)? to|references?|based on|according to|see|consult|inspect|read|check|look at|examples?|e\\.g\\.?|such as|from)\\s+(?:the\\s+)?(?:${SCOPE_TOKEN.source})`, 'giu'),
+  new RegExp(`(?:${SCOPE_TOKEN.source})\\s+(?:as|for)\\s+(?:an?\\s+)?(?:reference|example|source|context|guidance)`, 'giu'),
+  new RegExp(`(?:参考|参照|根据|基于|对照|查看|阅读|读取|参见|例如|比如|诸如)\\s*(?:文件\\s*)?(?:${SCOPE_TOKEN.source})\\s*(?:为|作为|当作|用作)?\\s*(?:参考|参照|示例|样例|依据|基础|准)`, 'giu'),
+  new RegExp(`(?:${SCOPE_TOKEN.source})\\s*(?:作为|当作|用作|仅作)\\s*(?:参考|参照|示例|样例|依据|基础)`, 'giu'),
+];
+
+function withoutReferenceSpans(text) {
+  let result = String(text ?? '');
+  // Keep the erased span non-whitespace so a second pattern cannot bridge from
+  // the edit target to a trailing "as a reference" marker left by the first.
+  for (const pattern of REFERENCE_PATTERNS) result = result.replace(pattern, match => '\u0000'.repeat(match.length));
+  return result;
+}
+
 function positiveScopeTokens(request) {
   const tokens = [];
-  for (const sentence of splitSentences(unquotedText(request))) {
+  for (const sentence of splitSentences(withoutReferenceSpans(unquotedText(request)))) {
     const intent = classifyTaskIntent(sentence);
     if (!sentence.trim() || intent.readOnly || NEGATIVE_SCOPE.test(sentence) || !MUTATION.test(sentence)) continue;
     tokens.push(...scopeTokens(sentence));
@@ -261,8 +311,21 @@ async function readDirectory(root, relativeRoot, budget, {provider = null, signa
   }
   const files = [];
   const ordered = entries.sort((left, right) => left.name.localeCompare(right.name, 'en'));
+  const omit = (reason, path, affectsCoverage = true) => {
+    if (affectsCoverage) budget.complete = false;
+    budget.omittedCount = (budget.omittedCount ?? 0) + 1;
+    budget.omittedReasons[reason] = (budget.omittedReasons[reason] ?? 0) + 1;
+    if (budget.skipped.length < 64) budget.skipped.push({path, reason});
+  };
   for (let entryIndex = 0; entryIndex < ordered.length; entryIndex++) {
     const entry = ordered[entryIndex];
+    if (budget.visits >= LIMITS.traversalEntries) {
+      budget.complete = false;
+      budget.budgetExceeded = true;
+      budget.traversalStopped = true;
+      budget.unvisitedEntries += ordered.length - entryIndex;
+      break;
+    }
     if (budget.files >= LIMITS.files || budget.bytes >= LIMITS.sourceBytes) {
       budget.complete = false;
       budget.budgetExceeded = true;
@@ -270,67 +333,59 @@ async function readDirectory(root, relativeRoot, budget, {provider = null, signa
       budget.unvisitedEntries += ordered.length - entryIndex;
       break;
     }
+    budget.visits++;
     const relative = relativeRoot === '.' ? entry.name : posix(path.join(relativeRoot, entry.name));
     if (entry.name.startsWith('.') && entry.name !== '.env.example') {
-      budget.complete = false;
-      budget.skipped.push({path: relative, reason: 'hidden-entry'});
+      omit('hidden-entry', relative);
       continue;
     }
     if (entry.type === 'symlink') {
-      budget.complete = false;
-      budget.skipped.push({path: relative, reason: 'symbolic-link'});
+      omit('symbolic-link', relative);
       continue;
     }
     if (entry.type === 'directory') {
       if (SKIP_DIRECTORIES.has(entry.name)) {
-        budget.complete = false;
-        budget.skipped.push({path: relative, reason: 'ignored-directory'});
+        omit('ignored-directory', relative);
         continue;
       }
       const nested = await readDirectory(root, relative, budget, {provider, signal});
       if (nested === null) {
-        budget.complete = false;
-        budget.skipped.push({path: relative, reason: 'directory-read-failed'});
+        omit('directory-read-failed', relative);
         continue;
       }
       files.push(...nested);
       continue;
     }
     if (entry.type !== 'file') {
-      budget.complete = false;
-      budget.skipped.push({path: relative, reason: 'unsupported-entry'});
+      omit('unsupported-entry', relative);
       continue;
     }
     if (!sourceFile(entry.name)) {
-      budget.skipped.push({path: relative, reason: SKIP_FILES.has(entry.name) ? 'excluded-file' : 'non-source-file'});
+      omit(SKIP_FILES.has(entry.name) ? 'excluded-file' : 'non-source-file', relative, false);
       continue;
     }
     let read;
     try {
       read = await readSourceFile(root, relative, provider, signal);
     } catch (error) {
-      budget.complete = false;
       const code = String(error?.code ?? '');
-      budget.skipped.push({path: relative, reason: code === 'FS_READ_BUDGET' || code === 'FS_TOO_LARGE'
-        ? 'size-budget' : code === 'SOURCE_CHANGED' ? 'source-changed-during-read' : 'read-unavailable'});
+      omit(code === 'FS_READ_BUDGET' || code === 'FS_TOO_LARGE'
+        ? 'size-budget' : code === 'SOURCE_CHANGED' ? 'source-changed-during-read' : 'read-unavailable', relative);
       continue;
     }
     if (read.bytesLength > LIMITS.fileBytes || budget.bytes + read.bytesLength > LIMITS.sourceBytes) {
-      budget.complete = false;
-      budget.skipped.push({path: relative, reason: 'size-budget'});
+      omit('size-budget', relative);
       continue;
     }
     if (read.bytes.includes(0)) {
-      budget.complete = false;
-      budget.skipped.push({path: relative, reason: 'binary'});
+      omit('binary', relative);
       continue;
     }
     let text;
     try {
       text = decodeUtf8(read.bytes);
     } catch {
-      budget.complete = false;
-      budget.skipped.push({path: relative, reason: 'decode-failed'});
+      omit('decode-failed', relative);
       continue;
     }
     budget.files++;
@@ -360,19 +415,19 @@ export async function readSourceBundle(root, requestText, {files: provider = nul
     }
   }
   const sourceRoot = selected === '.' ? workspaceRoot : path.join(workspaceRoot, selected);
-  const budget = {files: 0, bytes: 0, skipped: [], complete: true, budgetExceeded: false,
+  const budget = {files: 0, bytes: 0, visits: 0, skipped: [], omittedCount: 0,
+    omittedReasons: Object.create(null), complete: true, budgetExceeded: false,
     traversalStopped: false, unvisitedEntries: 0, versions: new Map()};
   const files = await readDirectory(sourceRoot, '.', budget, {provider, signal});
   if (!files || files.length < 3) return null;
   const writeScope = resolveWriteScope(requestText, {workspaceRoot, sourceRelative: selected, files});
-  const reasons = Object.create(null);
-  for (const item of budget.skipped) reasons[item.reason] = (reasons[item.reason] ?? 0) + 1;
+  const reasons = {...budget.omittedReasons};
   const complete = budget.complete !== false;
   return {workspaceRoot, sourceRoot, sourceRelative: selected, files,
     writeScope,
     complete, coverageStatus: complete ? 'complete' : 'partial',
     includedFiles: files.map(file => file.path), includedCount: files.length,
-    omittedCount: budget.skipped.length, omittedReasons: reasons,
+    omittedCount: budget.omittedCount, omittedReasons: reasons,
     omittedCountKnown: !budget.traversalStopped && budget.complete !== false,
     traversalStopped: budget.traversalStopped === true,
     unvisitedEntries: budget.unvisitedEntries ?? 0,
@@ -541,6 +596,28 @@ async function runSyntaxCheck(ctx, command, args, input, cwd, signal = null) {
   }
 }
 
+async function javascriptInputType(target, cwd, extension) {
+  if (extension === '.mjs') return 'module';
+  if (extension === '.cjs') return 'commonjs';
+  let directory = path.dirname(path.resolve(cwd, target));
+  for (;;) {
+    try {
+      const packageJson = JSON.parse(await fs.readFile(path.join(directory, 'package.json'), 'utf8'));
+      if (packageJson?.type === 'module') return 'module';
+      if (packageJson?.type === 'commonjs') return 'commonjs';
+      break;
+    } catch (error) {
+      if (error?.code !== 'ENOENT') break;
+    }
+    const parent = path.dirname(directory);
+    if (parent === directory) break;
+    directory = parent;
+  }
+  // With no package metadata, syntax validation stays permissive: ESM is the
+  // superset that accepts ordinary CommonJS declarations such as require/module.exports.
+  return 'module';
+}
+
 async function syntaxCheck(target, text, python, {signal = null, allowed = true, cwd = process.cwd(), runner = null, ctx = null} = {}) {
   if (!allowed) return {status: 'skipped', message: 'The request forbids executing helper processes.'};
   if (!runner && !ctx) return {status: 'unavailable', message: 'No host subprocess service is available.'};
@@ -563,20 +640,14 @@ async function syntaxCheck(target, text, python, {signal = null, allowed = true,
     return result.ok ? {status: 'passed'} : {status: 'failed', message: result.message || 'Python syntax check failed'};
   }
   if (['.js', '.mjs', '.cjs'].includes(extension)) {
-    const esm = /^\s*(?:import|export)\b/mu.test(text);
-    let directory;
     try {
-      directory = await fs.mkdtemp(path.join(os.tmpdir(), 'we-bounded-syntax-'));
-      const temporary = path.join(directory, `check-${randomUUID()}${esm ? '.mjs' : '.cjs'}`);
-      await fs.writeFile(temporary, text, {encoding: 'utf8', flag: 'wx'});
-      const result = await run(process.execPath, ['--check', temporary], undefined, signal);
+      const inputType = await javascriptInputType(target, cwd, extension);
+      const result = await run(process.execPath, ['--check', `--input-type=${inputType}`, '-'], text, signal);
       if (result.skipped) return {status: 'unavailable', message: result.message || 'JavaScript checker is unavailable.'};
       if (result.aborted) return {status: 'aborted', message: result.message};
       return result.ok ? {status: 'passed'} : {status: 'failed', message: result.message || 'JavaScript syntax check failed'};
     } catch (error) {
       return {status: 'unavailable', message: String(error?.message ?? error).slice(0, 300)};
-    } finally {
-      if (directory) await fs.rm(directory, {recursive: true, force: true}).catch(() => {});
     }
   }
   return {status: 'unsupported', message: 'No deterministic syntax checker is available for this file type.'};
@@ -744,6 +815,13 @@ async function writeChangedFiles(bundle, states, signal, python, {agent = null, 
         expectedRevision: observation.revision, observedRevision: afterSyntax.revision ?? null});
       continue;
     }
+    // The syntax check and the revision read both await. Re-check the request
+    // authorization with no await between this decision and the conditional write.
+    const commitAuthorization = validate?.();
+    if (commitAuthorization && commitAuthorization.ok !== true) {
+      rejected.push({file, reason: 'authorization-changed', detail: commitAuthorization.reason});
+      continue;
+    }
     let effect;
     const writeText = state.text;
     const beforeHash = sourceSnapshot.contentHash;
@@ -894,6 +972,20 @@ function focusedBundle(bundle, followup, changedFiles) {
     omittedExamples: [...(bundle.omittedExamples ?? []), ...omitted].slice(0, 24)};
 }
 
+function mergeFollowup(primary, omitted) {
+  const merged = [], seen = new Set();
+  for (const item of [...(primary ?? []), ...(omitted ?? [])]) {
+    const files = [...new Set((item?.files ?? []).filter(Boolean))];
+    if (!files.length) continue;
+    const key = JSON.stringify([item.scope ?? '', files]);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    merged.push({...item, files});
+    if (merged.length >= LIMITS.followups) break;
+  }
+  return merged;
+}
+
 function viewCoverage(view) {
   return {status: view.coverageStatus ?? (view.complete === false ? 'partial' : 'complete'),
     includedCount: view.files?.length ?? 0,
@@ -1004,7 +1096,7 @@ export function createBoundedPatch(ctx, runtime, {effects}) {
       decide(agent, 'not-applicable', 'task-not-bounded-source-maintenance', {requestChars: task.length});
       return null;
     }
-    state.promise = (async () => {
+    const promise = state.promise = (async () => {
       const root = runtime.get(agent).root;
       if (!root) {
         decide(agent, 'unavailable', 'workspace-root-unavailable');
@@ -1167,15 +1259,20 @@ export function createBoundedPatch(ctx, runtime, {effects}) {
               };
               const result = await applyPatchProposal(filtered, focused, signal, {python, agent, cas, task, onApplied, allowSyntax,
                 validate: validateCommit, ctx});
-              followup = result.followup;
+              const included = new Set(focused.files.map(file => file.path));
+              const omittedFollowup = scoped.map(item => ({
+                ...item,
+                files: item.files.filter(file => !included.has(file)),
+              })).filter(item => item.files.length);
+              followup = mergeFollowup(result.followup, omittedFollowup);
               previous.push({pass: 3, requestedEdits: result.requestedEdits ?? filtered.edits.length,
                 requestedFollowups: result.requestedFollowups ?? 0,
                 proposedEdits: result.requestedEdits ?? filtered.edits.length,
                 normalizedEdits: result.edits ?? filtered.edits.length,
-                normalizedFollowups: result.followup?.length ?? 0,
+                normalizedFollowups: followup.length,
                 proposalDigest: result.proposalDigest ?? null,
                 applied: result.applied, effects: result.effects, rejected: result.rejections,
-                followup: result.followup, changes: result.changes, interrupted: result.interrupted ?? null,
+                followup, changes: result.changes, interrupted: result.interrupted ?? null,
                 viewCoverage: viewCoverage(focused)});
               decide(agent, result.applied.length ? 'applied' : 'not-applicable',
                 result.applied.length ? 'pass-3-focused-source-patch' : 'pass-3-no-supported-edit',
@@ -1216,7 +1313,7 @@ export function createBoundedPatch(ctx, runtime, {effects}) {
           {patchStatus, passes: previous.length, edits: result.applied.reduce((sum, item) => sum + item.edits, 0),
             files: result.files.length, rejected: rejected.length, followup: followup.length,
             unverified: result.unverified.length});
-        state.result = result;
+        if (state.requestId === requestId) state.result = result;
         return result;
       } catch (error) {
         const files = [...new Set(applied.map(item => item.file))];
@@ -1243,7 +1340,7 @@ export function createBoundedPatch(ctx, runtime, {effects}) {
             {passes: previous.length, edits: result.applied.reduce((sum, item) => sum + item.edits, 0), files: result.files.length,
               partial: patchStatus === 'partial', aborted: patchStatus === 'aborted',
               warning: result.warning});
-          state.result = result;
+          if (state.requestId === requestId) state.result = result;
           return result;
         }
         const effectsSeen = previous.flatMap(item => item.effects ?? []);
@@ -1262,11 +1359,11 @@ export function createBoundedPatch(ctx, runtime, {effects}) {
         decide(agent, 'failed', patchStatus === 'aborted' ? 'bounded-source-maintenance-aborted' : 'bounded-source-maintenance-failed',
           {message: warning, aborted: patchStatus === 'aborted'});
         runtime.problem?.(runtime.get(agent), 'bounded-patch', warning);
-        state.result = result;
+        if (state.requestId === requestId) state.result = result;
         return result;
       }
-    })().finally(() => { state.promise = null; });
-    return state.promise;
+    })().finally(() => { if (state.promise === promise) state.promise = null; });
+    return promise;
   }
 
   return {
@@ -1280,38 +1377,14 @@ export function createBoundedPatch(ctx, runtime, {effects}) {
       return state.result;
     },
     guidance(result) {
-      if (!result?.patchStatus) return '';
-      const edits = result.applied.reduce((sum, item) => sum + item.edits, 0);
-      const rejected = (result.rejected ?? []).slice(0, 8).map(item =>
-        `${item.file ?? 'unknown'}:${item.reason ?? 'rejected'}`).join(', ');
-      const followup = (result.followup ?? []).slice(0, 4).map(item => item.scope).join('; ');
-      const coverage = result.sourceCoverage?.status === 'complete' ? 'complete'
-        : `${result.sourceCoverage?.status ?? 'unknown'} (${result.sourceCoverage?.omittedCountKnown === false
-          ? 'omission count unknown' : `${result.sourceCoverage?.omittedCount ?? 'unknown'} omitted`})`;
-      const base = '[Work Evidence bounded source maintenance] Bounded patch phase: ' + result.patchStatus
-        + '; task completion is unknown. ' + edits + ' exact source edits across ' + result.files.length
-        + ' files. Native tools remain available.';
-      const action = result.patchStatus === 'completed'
-        ? ' Verify the applied behavior with native evidence and continue any remaining user-visible work. Do not claim tests were run unless you run them.'
-        : result.patchStatus === 'partial'
-          ? ' Inspect the applied and unverified files with native tools, handle the rejected edits or follow-up, and do not claim completion.'
-          : result.patchStatus === 'aborted'
-            ? ' The bounded patch was aborted. Inspect the applied files with native tools, then report the interruption without claiming completion.'
-          : ' No source edit was applied. Use native tools to inspect the current source or report the concrete blocker.';
-      return base + action + ' Source coverage: ' + coverage + '.'
-        + (rejected ? ' Rejected: ' + rejected + '.' : '')
-        + (followup ? ' Follow-up: ' + followup + '.' : '')
-        + (result.unknownEffects?.length ? ' Unknown write effects: '
-          + JSON.stringify(result.unknownEffects.map(item => item.file).filter(Boolean)) + '.' : '')
-        + (result.unverified?.length ? ' Unverified effects: ' + JSON.stringify(result.unverified) + '.' : '')
-        + (result.warning ? ' Warning: ' + result.warning + '.' : '');
+      return boundedPatchGuidance(result);
     },
     summary(agent) {
       const state = get(agent);
       return {enabled: runtime.isEnabled(agent) && !!runtime.get(agent).config.boundedPatch,
         result: state.result ? {requestId: state.result.requestId, done: state.result.done,
           patchStatus: state.result.patchStatus, taskStatus: state.result.taskStatus ?? 'unknown',
-          partial: state.result.partial === true, rejected: state.result.rejected?.length ?? 0,
+          partial: state.result.patchStatus === 'partial', rejected: state.result.rejected?.length ?? 0,
           followup: state.result.followup?.length ?? 0, coverage: state.result.sourceCoverage ?? null,
           edits: state.result.applied.reduce((sum, item) => sum + item.edits, 0), files: state.result.files.length,
           passes: state.result.passes.length, requestedEdits: state.result.requestedEdits ?? 0,

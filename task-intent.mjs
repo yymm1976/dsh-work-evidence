@@ -81,6 +81,19 @@ const denialPattern=new RegExp(DENIAL_ANY,'giu');
 const verbProbe=new RegExp(VERB_ANY,'iu');
 const denialProbe=new RegExp(DENIAL_ANY,'iu');
 const idiomPattern=new RegExp(`(?:${enWord(IDIOM)})|(?:${IDIOM.split('|').filter(x=>/[\u4e00-\u9fff]/u.test(x)).join('|')})`,'iu');
+// `not`/`never` inside the text governed by an idiom denial still negates the
+// write. "Don't forget not to modify" is a denial; only "don't forget to
+// modify" is the idiom exception.
+const innerNegationPattern=new RegExp(`(?:${DENIAL_ZH}|${enWord('not|never|no')})`,'iu');
+// A write verb inside an explanation or hypothetical is discussion, not
+// authorization to modify the project. Direct requests such as "Refactor the
+// module." do not match these governors.
+const explanationGovernor=new RegExp(
+  `(?:${enWord('explain|describe|discuss|outline|summari[sz]e|show|tell')})[^.!?;\\n]{0,180}`+
+  `(?:\\bhow\\s+(?:to|would|could|should|might)\\b|\\bwhat\\s+(?:would|could|should|might)\\b|\\bhypothetically\\b|\\bif\\s+(?:we|you|one)\\b)[^.!?;\\n]{0,120}$`+
+  `|(?:解释|说明|描述|讨论|概述|总结)[^。；;\\n]{0,120}(?:如何|怎样|怎么|可不可以|能不能)[^。；;\\n]{0,80}$`+
+  `|^\\s*(?:how|what)\\s+(?:would|could|should|might)\\b[^.!?;\\n]{0,120}$`+
+  `|^\\s*(?:如何|怎样|怎么)[^。；;\\n]{0,80}$`,'iu');
 const allowancePattern=new RegExp(`(?:^|[^A-Za-z0-9_-])(?:${ALLOWANCE})(?![A-Za-z0-9_-])`,'iu');
 // A determiner directly before the verb makes it the object of that phrase.
 const nounPrefix=/(?:^|\s)(?:a|an|the|this|that|these|those|its|their|his|her|our|your|my|any|some|each|every|no)\s+$/iu;
@@ -201,6 +214,7 @@ function sentenceIsWritable(prose,raw=prose){
   const denials=positions(denialPattern,prose);
   for(const verb of positions(verbPattern,prose)){
     if(!isVerbUse(prose,verb.at,verb.text,raw))continue;
+    if(explanationGovernor.test(prose.slice(0,verb.at)))continue;
     // Only the text before this verb can deny it.
     const before=prose.slice(0,verb.at);
     const prior=denials.filter(denial=>{
@@ -215,7 +229,7 @@ function sentenceIsWritable(prose,raw=prose){
     const governedRaw=raw.slice(last.at+last.text.length,verb.at);
     // A second denial inside the governed span is the one that applies: "Don't forget: do
     // not modify src/a.js" is a denial, so the idiom rule must not override it.
-    if(positions(denialPattern,governed).length)continue;
+    if(positions(denialPattern,governed).length||innerNegationPattern.test(governed))continue;
     // The denial governs this verb unless it only introduced an idiom or permitted it.
     if(idiomPattern.test(governed))return true;
     // An allowance only counts when it is followed by a write request. "but review the

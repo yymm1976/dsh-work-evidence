@@ -6,21 +6,6 @@ import path from 'node:path';
 import {createEffectObserver} from '../effect-observer.mjs';
 import realFs from 'node:fs/promises';
 
-// A read-only mode only blocks writes when the process lacks CAP_DAC_OVERRIDE, so a
-// root container can still append after chmod(0o444). Detect the capability instead
-// of assuming the permission model, and skip only the cases that need it.
-async function readOnlyBlocksWrites(){
-  const dir=await fs.mkdtemp(path.join(os.tmpdir(),'we-chmod-'));
-  try{
-    const file=path.join(dir,'probe.txt');
-    await fs.writeFile(file,'a','utf8');
-    await fs.chmod(file,0o444);
-    try{await fs.appendFile(file,'b');return false;}catch{return true;}
-  }finally{await fs.rm(dir,{recursive:true,force:true});}
-}
-const chmodBlocks=await readOnlyBlocksWrites();
-
-
 const SESSION='we-effects-session';
 const COMPLETE={inputTokens:1000,cacheReadTokens:0,cacheWriteTokens:0,outputTokens:100,totalTokens:1100};
 const REJECTED={inputTokens:100,cacheReadTokens:-5,outputTokens:50,totalTokens:150};
@@ -59,26 +44,34 @@ test('a missing trailing newline is repaired so later rows keep their own line',
   }finally{await remove(created.telemetryDir);}
 });
 
-test('a failed trailing-newline write is recorded and does not block later requests',{skip:!chmodBlocks?'read-only mode does not block writes here (CAP_DAC_OVERRIDE)' : false},async()=>{
+test('a failed trailing-newline write is recorded and does not block later requests',async()=>{
   const created=await start();
   const file=path.join(created.telemetryDir,SESSION+'.observability.jsonl');
+  let failing=true;
+  const io={...realFs,
+    appendFile:async(...args)=>{if(failing&&args[0]===file)throw Object.assign(new Error('injected append failure'),{code:'EACCES'});return realFs.appendFile(...args);},
+    truncate:async(...args)=>{if(failing&&args[0]===file)throw Object.assign(new Error('injected repair failure'),{code:'EACCES'});return realFs.truncate(...args);}};
   try{
     await fs.writeFile(file,JSON.stringify(row('restored-row')),'utf8');
-    await fs.chmod(file,0o444);
-    await created.effects.load(created.agent);
-    assert.equal(created.effects.snapshot(created.agent).requests.count,1);
-    assert.equal(created.effects.snapshot(created.agent).persistence.writeErrors.filter(message=>/newline repair/.test(message)).length,1);
+    const scoped=await start({telemetryDir:created.telemetryDir,io});
+    await scoped.effects.load(scoped.agent);
+    assert.equal(scoped.effects.snapshot(scoped.agent).requests.count,1);
+    assert.equal(scoped.effects.snapshot(scoped.agent).persistence.writeErrors.filter(message=>/newline repair/.test(message)).length,1);
     // The restore is not repeated for later requests, so the file is read only once.
-    await created.effects.load(created.agent);
-    assert.equal(created.effects.snapshot(created.agent).requests.count,1);
-    assert.equal(created.effects.snapshot(created.agent).persistence.writeErrors.length,1);
+    await scoped.effects.load(scoped.agent);
+    assert.equal(scoped.effects.snapshot(scoped.agent).requests.count,1);
+    assert.equal(scoped.effects.snapshot(scoped.agent).persistence.writeErrors.length,1);
     // Accounting continues in memory even while this file cannot be written.
-    await created.effects.finish(created.agent,row('appended-row'));
-    await created.effects.flush(created.agent);
-    assert.equal(created.effects.snapshot(created.agent).requests.count,2);
-    assert.ok(created.effects.snapshot(created.agent).persistence.writeErrors.some(message=>/EPERM|EACCES/.test(message)));
+    await scoped.effects.finish(scoped.agent,row('appended-row'));
+    await scoped.effects.flush(scoped.agent);
+    assert.equal(scoped.effects.snapshot(scoped.agent).requests.count,2);
+    assert.ok(scoped.effects.snapshot(scoped.agent).persistence.writeErrors.some(message=>/EACCES/.test(message)));
     assert.deepEqual((await stored(created.telemetryDir)).map(item=>item.requestId),['restored-row']);
-  }finally{await fs.chmod(file,0o664);await remove(created.telemetryDir);}
+    failing=false;
+    await scoped.effects.finish(scoped.agent,row('late-row'));
+    await scoped.effects.flush(scoped.agent);
+    assert.deepEqual((await stored(created.telemetryDir)).map(item=>item.requestId),['restored-row','appended-row','late-row']);
+  }finally{await remove(created.telemetryDir);}
 });
 
 test('a rejected adapter usage value is never re-read as a proven zero',async()=>{
@@ -142,22 +135,26 @@ test('a row that already carries its source verdicts is stored unchanged',async(
 test('a failed append after a failed newline repair keeps the next row on its own line',async()=>{
   const created=await start();
   const file=path.join(created.telemetryDir,SESSION+'.observability.jsonl');
+  let failing=true;
+  const io={...realFs,
+    appendFile:async(...args)=>{if(failing&&args[0]===file)throw Object.assign(new Error('injected append failure'),{code:'EACCES'});return realFs.appendFile(...args);},
+    truncate:async(...args)=>{if(failing&&args[0]===file)throw Object.assign(new Error('injected repair failure'),{code:'EACCES'});return realFs.truncate(...args);}};
   try{
     await fs.writeFile(file,JSON.stringify(row('restored-row')),'utf8');
-    await fs.chmod(file,0o444);
-    await created.effects.load(created.agent);
-    await created.effects.finish(created.agent,row('blocked-row'));
-    await created.effects.flush(created.agent);
-    assert.equal(created.effects.snapshot(created.agent).requests.count,2);
+    const scoped=await start({telemetryDir:created.telemetryDir,io});
+    await scoped.effects.load(scoped.agent);
+    await scoped.effects.finish(scoped.agent,row('blocked-row'));
+    await scoped.effects.flush(scoped.agent);
+    assert.equal(scoped.effects.snapshot(scoped.agent).requests.count,2);
     assert.deepEqual((await stored(created.telemetryDir)).map(item=>item.requestId),['restored-row']);
     // The storage becomes writable again: the row that was lost must not merge with the
     // unfinished line that the failed repair left behind.
-    await fs.chmod(file,0o664);
-    await created.effects.finish(created.agent,row('late-row'));
-    await created.effects.flush(created.agent);
+    failing=false;
+    await scoped.effects.finish(scoped.agent,row('late-row'));
+    await scoped.effects.flush(scoped.agent);
     assert.deepEqual((await stored(created.telemetryDir)).map(item=>item.requestId),['restored-row','blocked-row','late-row'],
       'the recovered blocked row is retried before the later row instead of being dropped');
-  }finally{await fs.chmod(file,0o664);await remove(created.telemetryDir);}
+  }finally{await remove(created.telemetryDir);}
 });
 
 test('a partial failed append is isolated before the next persistent row',async()=>{
@@ -519,6 +516,63 @@ test('normal mode lets the next request proceed when the prior row is pending',a
   }finally{await remove(telemetryDir);}
 });
 
+test('an ambiguous start append is reconciled by a disposition instead of a second start row',async()=>{
+  const telemetryDir=await fs.mkdtemp(path.join(os.tmpdir(),'we-effects-start-ambiguous-'));
+  const file=path.join(telemetryDir,SESSION+'.observability.jsonl');
+  let fault=true,appendCalls=0;
+  const io={...realFs,
+    appendFile:async(...args)=>{
+      if(fault&&args[0]===file&&appendCalls++===0){
+        await realFs.appendFile(...args);
+        throw Object.assign(new Error('lost start acknowledgement'),{code:'EIO'});
+      }
+      return realFs.appendFile(...args);
+    },
+    readFile:async(...args)=>{
+      if(fault&&args[0]===file)throw Object.assign(new Error('injected readback failure'),{code:'EIO'});
+      return realFs.readFile(...args);
+    },
+    open:async(...args)=>{
+      if(fault&&args[0]===file)throw Object.assign(new Error('injected repair read failure'),{code:'EIO'});
+      return realFs.open(...args);
+    }};
+  const created=await start({telemetryDir,io,config:{strictObservability:true}});
+  try{
+    const next=row('ambiguous-start');
+    await assert.rejects(()=>created.effects.start(created.agent,next,{strict:true}),error=>
+      error.code==='EFFECT_PERSISTENCE_UNAVAILABLE'&&error.effectsDispatched===false);
+    fault=false;
+    await created.effects.flush(created.agent);
+    const rows=await stored(telemetryDir);
+    assert.equal(rows.filter(item=>item.schema==='work-evidence.request-start.v1').length,1);
+    assert.equal(rows.filter(item=>item.schema==='work-evidence.request-disposition.v1').length,1);
+    const restored=await start({telemetryDir});
+    await restored.effects.load(restored.agent);
+    const persistence=restored.effects.snapshot(restored.agent).persistence;
+    assert.equal(persistence.unsettledRequestStarts,0);
+    assert.equal(persistence.recoveredRequestDispositions,1);
+    assert.equal(persistence.complete,true);
+  }finally{await remove(telemetryDir);}
+});
+
+test('observability load streams rows instead of reading the whole log',async()=>{
+  const telemetryDir=await fs.mkdtemp(path.join(os.tmpdir(),'we-effects-stream-'));
+  const file=path.join(telemetryDir,SESSION+'.observability.jsonl');
+  const io={...realFs,readFile:async(...args)=>{
+    if(args[0]===file)throw Object.assign(new Error('whole-file read is not permitted'),{code:'EIO'});
+    return realFs.readFile(...args);
+  }};
+  try{
+    await fs.writeFile(file,JSON.stringify({schema:'work-evidence.request-start.v1',sessionId:SESSION,
+      requestId:'streamed-start',dispatchState:'dispatch-intent',at:'2026-11-02T00:00:00.000Z'})+'\n','utf8');
+    const created=await start({telemetryDir,io});
+    await created.effects.load(created.agent);
+    const persistence=created.effects.snapshot(created.agent).persistence;
+    assert.equal(persistence.recoveredRequestStarts,1);
+    assert.equal(persistence.historyComplete,true);
+  }finally{await remove(telemetryDir);}
+});
+
 test('strict mode blocks the next request-start until the pending row is persisted',async()=>{
   const telemetryDir=await fs.mkdtemp(path.join(os.tmpdir(),'we-effects-strict-gate-'));
   const file=path.join(telemetryDir,SESSION+'.observability.jsonl');
@@ -592,10 +646,12 @@ test('an append whose publication readback also fails is proved before retry',as
 test('an in-flight finish is pending until its row is written',async()=>{
   const telemetryDir=await fs.mkdtemp(path.join(os.tmpdir(),'we-effects-finish-pending-'));
   const file=path.join(telemetryDir,SESSION+'.observability.jsonl');
-  let release=null,blocked=false;
+  let release=null,blocked=false,enteredResolve;
+  const entered=new Promise(resolve=>{enteredResolve=resolve;});
   const io={...realFs,appendFile:async(...args)=>{
     if(args[0]===file&&!blocked){
       blocked=true;
+      enteredResolve();
       await new Promise(resolve=>{release=resolve;});
     }
     return realFs.appendFile(...args);
@@ -603,7 +659,7 @@ test('an in-flight finish is pending until its row is written',async()=>{
   const created=await start({telemetryDir,io});
   try{
     created.effects.finish(created.agent,row('finish-pending'));
-    await new Promise(resolve=>setTimeout(resolve,20));
+    await entered;
     const pending=created.effects.snapshot(created.agent).persistence;
     assert.equal(pending.finishPending,1);
     assert.equal(pending.complete,false,'an asynchronous finish cannot report complete before its append resolves');
@@ -630,6 +686,60 @@ test('disposeAgent retries pending request rows before dropping state',async()=>
     failing=false;
     await created.effects.disposeAgent(created.agent);
     assert.deepEqual((await stored(telemetryDir)).map(item=>item.requestId),['dispose-row']);
+  }finally{await remove(telemetryDir);}
+});
+
+test('a degraded start is queued in normal mode and persisted before its finish when storage recovers',async()=>{
+  const telemetryDir=await fs.mkdtemp(path.join(os.tmpdir(),'we-effects-degraded-start-'));
+  const state={id:SESSION,dir:null,telemetryDir:null,step:4,config:{toolSurface:'compact'},dirty:true};
+  const runtime={get:()=>state,isEnabled:()=>true,modeStatus:()=>({selected:'aggressive',source:'effort-selection'}),problem:()=>{}};
+  const agent={session:{id:SESSION,seq:42,surface:{nodes:[]},log:[]}};
+  const ctx={on:()=>(()=>{})};
+  const effects=createEffectObserver(ctx,runtime);
+  try{
+    const first=row('degraded-start');
+    await effects.start(agent,first);
+    assert.equal(first.startRecorded,false);
+    assert.equal(effects.snapshot(agent).persistence.pendingStartRows,1);
+    state.telemetryDir=telemetryDir;
+    effects.finish(agent,first);
+    await effects.flush(agent);
+    const schemas=(await stored(telemetryDir)).map(item=>item.schema);
+    assert.deepEqual(schemas,['work-evidence.request-start.v1','work-evidence.request-effects.v1']);
+  }finally{await remove(telemetryDir);}
+});
+
+test('a later finish cannot overtake a pending head row',async()=>{
+  const telemetryDir=await fs.mkdtemp(path.join(os.tmpdir(),'we-effects-order-'));
+  const file=path.join(telemetryDir,SESSION+'.observability.jsonl');
+  let failing=true;
+  const io={...realFs,appendFile:async(...args)=>{
+    if(failing&&args[0]===file)throw Object.assign(new Error('injected append failure'),{code:'EACCES'});
+    return realFs.appendFile(...args);
+  }};
+  const created=await start({telemetryDir,io});
+  try{
+    created.effects.finish(created.agent,row('first-row'));
+    await created.effects.flush(created.agent);
+    created.effects.finish(created.agent,row('second-row'));
+    failing=false;
+    await created.effects.flush(created.agent);
+    assert.deepEqual((await stored(telemetryDir)).map(item=>item.requestId),['first-row','second-row']);
+  }finally{await remove(telemetryDir);}
+});
+
+test('a conflicting stored row makes history coverage partial',async()=>{
+  const telemetryDir=await fs.mkdtemp(path.join(os.tmpdir(),'we-effects-conflict-'));
+  const file=path.join(telemetryDir,SESSION+'.observability.jsonl');
+  const first=row('same-id'),second={...first,mode:{selected:'quality',source:'effort-selection'}};
+  try{
+    await fs.writeFile(file,JSON.stringify(first)+'\n'+JSON.stringify(second)+'\n');
+    const created=await start({telemetryDir});
+    await created.effects.load(created.agent);
+    const persistence=created.effects.snapshot(created.agent).persistence;
+    assert.equal(persistence.persistenceConflict,true);
+    assert.equal(persistence.historyComplete,false);
+    assert.equal(persistence.readCoverage,'partial');
   }finally{await remove(telemetryDir);}
 });
 

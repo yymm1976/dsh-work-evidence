@@ -926,6 +926,33 @@ test('change scope review status becomes stale when the source advances',()=>{
   assert.equal(result.items[0].relation,'direct-requirement');
 });
 
+test('case variants of one Windows path invalidate check coverage',()=>{
+  const {f,assessment,audit}=reviewedFixture();
+  const check=f.operation('pwsh',{command:'node check.js'},JSON.stringify({exitCode:0}));
+  f.operation('write',{file_path:'c:\\repo\\orders.json',content:'later'},'written');
+  assessment.throughSeq=f.events.at(-1).seq;
+  assessment.checks=[recordedCheck(f,check,'source','addresses')];
+  assessment.checks[0].coverage[0].scopePaths=['C:/Repo/orders.json'];
+  const result=audit();
+  assert.equal(result.verification.checks[0].coverage[0].unavailableReason,'file-changed-after-check');
+});
+
+test('case variants of one Windows path invalidate a change-scope review',()=>{
+  const {f,assessment,audit}=reviewedFixture();
+  const done=f.operation('edit',{file_path:'C:/Repo/orders.json',old_string:'old',new_string:'new'},'applied');
+  assessment.throughSeq=done.resultSeq;
+  const call=normalizeDshEvents(f.events).calls.find(row=>row.resultSeq===done.resultSeq);
+  assessment.scopeReviews=[{id:'windows-scope',callSeq:call.callSeq,resultSeq:done.resultSeq,
+    path:'C:/Repo/orders.json',declaredRelation:'direct-requirement',requirementSeqs:[1],
+    dependencyEvidenceSeqs:[],reviewer:'human',reason:'The user requested this file change.',
+    counterexample:'A later operation can change its current applicability.'}];
+  assert.equal(audit().changeScopeReviews.status,'reviewed');
+  f.operation('write',{file_path:'c:\\repo\\orders.json',content:'later'},'written');
+  const result=audit().changeScopeReviews;
+  assert.equal(result.status,'stale');
+  assert.ok(result.items[0].currentUnknownReasons.includes('file-changed-after-review'));
+});
+
 test('change scope applicability accounts for overlapping operations and later requirements',()=>{
   for(const kind of ['pending-write','pending-program','unknown-write','later-requirement',
     'pending-unrelated','pending-read','unknown-unrelated','no-effect']){

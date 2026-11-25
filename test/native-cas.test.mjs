@@ -218,10 +218,14 @@ test('a scoped replacement of the native write tool deopts before it can write',
 test('a filesystem without the conditional write seam is reported unavailable, not guessed from its version',async()=>{
   const host=await startHost({script:()=>[text('probe')]});
   try{
-    const write=host.ctx.tools.get('write');
+    const agent=await host.createAgent(),write=host.ctx.tools.get('write');
+    const realCtx={on:()=>{},tools:host.ctx.tools,get:name=>name==='fs'?host.ctx.get('fs'):host.ctx.get(name)};
+    const realCas=createNativeCas(realCtx,{get:()=>({root:process.cwd()}),execFor:()=>({})},write,write.execute);
+    if(nativeSupported)assert.equal(await realCas.available(agent),true,
+      'the positive fixture must be available before testing the missing seam');
     const ctx={on:()=>{},tools:host.ctx.tools,get:name=>name==='fs'?{}:host.ctx.get(name)};
     const cas=createNativeCas(ctx,{get:()=>({root:process.cwd()}),execFor:()=>({})},write,write.execute);
-    assert.equal(await cas.available({session:{}}),false,
+    assert.equal(await cas.available(agent),false,
       'an unknown filesystem implementation must not be treated as a conditional-write backend');
   }finally{await host.close();}
 });

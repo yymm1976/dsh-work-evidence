@@ -248,7 +248,12 @@ test('a compact JSON document is source, and a shell envelope is not',()=>{
   const transportBody=JSON.stringify({stdout:{text:'build step '.repeat(900)},stderr:{text:''}});
   assert.ok(transportBody.length>=8000);
   assert.equal(isSourceBody(transportBody),true,'an unattributed transport-shaped body is conservatively retained');
-  assert.equal(isSourceBody(transportBody,{transport:true}),false,'a proven transport envelope is not configuration');
+  assert.equal(isSourceBody(transportBody,{transport:true}),false,
+    'a recognized transport envelope with ordinary text remains prunable');
+  const provenEnvelope=JSON.stringify({status:'completed',exitCode:0,
+    stdout:{text:'build step '.repeat(900)},stderr:{text:''}});
+  assert.equal(isSourceBody(provenEnvelope,{transport:true}),false,
+    'a completion-marked process envelope can use the transport rule');
   assert.equal(isSourceBody(JSON.stringify({stdout:{text:'ok'},stderr:{text:''}})),false,
     'a short body stays below the source-shape threshold');
   // And prose wrapped in braces must not parse.
@@ -266,6 +271,11 @@ test('a real configuration that happens to contain stdout and stderr keys is ret
   assert.equal(looksLikeSourceBody(config),true,'unattributed JSON configuration is source-shaped');
   assert.equal(isSourceBody(config,{transport:true}),true,
     'even with a possible transport origin, stdout objects without a text field are not a transport envelope');
+  const textConfig=JSON.stringify({stdout:{text:'ordinary setting text '.repeat(500)},stderr:{text:'ordinary warning'},
+    ...Object.fromEntries(Array.from({length:20},(_,i)=>['option_'+i,{enabled:true,value:i}]))},null,2);
+  assert.ok(textConfig.length>=8000);
+  assert.equal(isSourceBody(textConfig,{transport:true}),true,
+    'raw shell stdout containing a stdout/stderr-shaped configuration is retained');
 });
 
 test('prefix stripping preserves the content indentation',()=>{

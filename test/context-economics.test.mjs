@@ -318,6 +318,33 @@ test('coverage counts a fully priced request once and does not inflate its lower
     lowerBound:1,referenceLowerBound:0,unpriced:0});
 });
 
+test('a stream failure with complete usage stays in the failed cost bucket',()=>{
+  const {agent,economics,options,state}=harness();
+  state.config.projectionPricing=[{provider:'p',model:'m',currency:'CNY',input:1,cacheRead:.2,cacheWrite:0,output:2}];
+  economics.requestFinished(agent,options,{usage:{inputTokens:1000,cacheReadTokens:0,cacheWriteTokens:0,outputTokens:100},
+    settled:true,finishReason:'stop',failureCode:'STREAM_FAILED',usageComplete:true,usageConsistent:true});
+  const summary=economics.summary(agent);
+  assert.equal(summary.pricedRequests,0,'a failed stream is not a settled successful request');
+  assert.equal(summary.costComplete,false);
+  assert.equal(summary.failedKnownCostRequests,1);
+  assert.ok(summary.failedKnownCostByCurrency.CNY>0);
+  assert.ok(summary.failedKnownCostByBasis['exact-route:CNY'].amount>0);
+});
+
+test('failed known costs retain their pricing basis and count each request once',()=>{
+  const {agent,economics,options,state}=harness();
+  state.config.projectionPricing=[{provider:'p',model:'m',currency:'CNY',input:1,cacheRead:.2,cacheWrite:0,output:2}];
+  const usage={inputTokens:1000,cacheReadTokens:0,cacheWriteTokens:0,outputTokens:100};
+  economics.requestFinished(agent,options,{usage,settled:true,finishReason:'stop',failureCode:'STREAM_FAILED',usageComplete:true,usageConsistent:true});
+  economics.requestFinished(agent,{...options,provider:'opendesign',model:'deepseek-v4.1-flash-eco'},
+    {usage,settled:true,finishReason:'stop',failureCode:'STREAM_FAILED',usageComplete:true,usageConsistent:true});
+  const summary=economics.summary(agent);
+  assert.equal(summary.failedKnownCostRequests,2);
+  assert.ok(summary.failedKnownCostByBasis['exact-route:CNY'].amount>0);
+  assert.ok(summary.failedKnownCostByBasis['reference-rate:CNY'].amount>0);
+  assert.ok(summary.failedKnownCostByCurrency.CNY>summary.failedKnownCostByBasis['exact-route:CNY'].amount);
+});
+
 test('the forecast horizon follows the current task and resets at the next human request',()=>{
   const {agent,economics,finish,state,options}=harness();
   // Same shape as the pointer-mismatch test: a complete prior request that leaves
@@ -579,4 +606,40 @@ test('auxiliary requests do not lengthen the main-history horizon',()=>{
   for(let i=0;i<63;i++)finish(true);   // auxiliary
   const after=economics.assess(agent,{savedChars:4000,savedTokensEstimate:1000,changedSeq:1}).horizonSteps;
   assert.equal(after,before,'auxiliary requests leave the horizon unchanged: '+before+' -> '+after);
+});
+
+test('a matching prompt prefix is excluded only after an observed cache boundary',()=>{
+  const messages=[
+    {id:'a',role:'user',content:[{type:'text',text:'A'.repeat(80)}]},
+    {id:'b',role:'assistant',content:[{type:'text',text:'B'.repeat(80)}]},
+  ];
+  const proposed=[messages[0],{id:'c',role:'user',content:[{type:'text',text:'C'.repeat(80)}]}];
+  const assessWith=cacheRead=>{
+    const h=harness();
+    h.options.tools=[];h.options.system='';h.options.messages=messages;
+    h.finish(false,{inputTokens:1000,cacheReadTokens:cacheRead,cacheWriteTokens:0,outputTokens:100,totalTokens:1100});
+    return h.economics.assess(h.agent,{messages,proposedMessages:proposed,tools:[],system:'',
+      route:{provider:'p',model:'m'}}).cachedSuffixTokensEstimate;
+  };
+  const noBoundary=assessWith(0),observedBoundary=assessWith(5000);
+  assert.ok(noBoundary>observedBoundary,
+    'without cache-read or cache-write evidence the matching prefix remains exposed');
+});
+
+test('retained generated assistant output is charged even when an earlier prompt changes',()=>{
+  const a={id:'a',role:'user',content:[{type:'text',text:'A'.repeat(80)}]};
+  const b={id:'b',role:'assistant',content:[{type:'text',text:'B'.repeat(80)}]};
+  const c={id:'c',role:'assistant',content:[{type:'text',text:'C'.repeat(80)}]};
+  const d={id:'d',role:'user',content:[{type:'text',text:'D'.repeat(80)}]};
+  const changed={...b,content:[{type:'text',text:'B2'.repeat(40)}]};
+  const assessWith=outputTokens=>{
+    const h=harness();
+    h.options.tools=[];h.options.system='';h.options.messages=[a,b];
+    h.finish(false,{inputTokens:1000,cacheReadTokens:0,cacheWriteTokens:0,outputTokens});
+    return h.economics.assess(h.agent,{messages:[a,b,c,d],proposedMessages:[a,changed,c,d],
+      tools:[],system:'',route:{provider:'p',model:'m'},changedMessageId:'b'}).cachedSuffixTokensEstimate;
+  };
+  const withoutOutput=assessWith(0),withOutput=assessWith(100);
+  assert.ok(withOutput>withoutOutput,
+    'a retained assistant message can refill as a generated-output cache unit');
 });

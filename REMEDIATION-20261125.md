@@ -7,9 +7,9 @@
 | 项 | 结果 |
 |---|---|
 | 语法检查 | `npm run check`，194 个 JavaScript 文件通过 |
-| 全量单测 | `npm test`，1108 项，1107 通过，0 失败，1 项按宿主能力跳过 |
+| 全量单测 | `npm test`，1136 项，1134 通过，0 失败，2 项按宿主能力跳过 |
 | 跳过原因 | 当前宿主三包均为 `0.2.2-rc.1`，条件写入后端可用；只描述“后端缺失”的用例按设计跳过 |
-| 并发波动 | 首次并发全量出现 1 次 `host-node-fallback` 的解释器约束用例失败；该文件单独运行 10/10，第二次全量通过。根因未定位，保留为测试稳定性风险，不写成已修复 |
+| 并发波动 | 首次并发全量出现 1 次 `host-node-fallback` 的解释器约束用例失败；该文件单独运行 10/10，随后两轮全量通过，最近一轮为 1136 项。根因未定位，保留为测试稳定性风险，不写成已修复 |
 | 打包安装 | `test/package-install.test.mjs` 通过；离线安装不拉宿主 peer，安装副本可加载 |
 | 声明文件加载 | `test/host-package-load.test.mjs` 通过；95 个声明文件，45 个功能项，无阻塞项 |
 | 宿主兼容 | `test/host-compatibility.test.mjs` 通过；声明与宿主运行时一致 |
@@ -45,6 +45,19 @@
 | 退役快速路径发现 | `ptc_fastpath` 列表报告退役名称和原因，调用方可按名称删除；空列表不再返回 `undefined` 字段破坏无损 JSON | `test/ptc-fastpath-restore.test.mjs`、`test/host-tools.test.mjs` |
 | 条件写入发布契约 | 工具文档明确：发布由 `nativeVerifiedEdits` 决定，执行另需受支持的原生后端；不支持的宿主明确 deopt，不写入 | `management-tools.mjs`、`index.mjs`、`OPS-ADAPTERS-OPT-IN.md` |
 | 大 JSON 源保护 | 通用工具回执对无 `<path>` 标记、超过 12,000 字符的原始 JSON 和 shell 信封都返回 `null`，保留配置正文 | `test/history-source-retention.test.mjs` |
+| 引用文件不可写 | 有界补丁的肯定范围排除 `using … as a reference`、`参考 …` 等引用短语；引用路径仍是只读证据 | `test/bounded-patch.test.mjs` 的引用路径反例 |
+| 遍历独立上限 | 源码遍历另计条目访问次数；达到上限标记覆盖不完整，遗漏计数与最多 64 条路径样本分离 | `test/bounded-patch.test.mjs` 的独立条目预算 |
+| 提交前二次授权 | 语法检查后的版本确认与 `cas.apply` 之间再次执行请求授权；不再以旧的预检查替代提交条件 | `test/bounded-patch.test.mjs` 的写前授权 |
+| 聚焦遗漏跟进 | 聚焦轮未纳入的文件不会被第三轮空 followup 清空；仍待复核的文件保持 `partial` | `test/bounded-patch.test.mjs` 的 160 KB 预算反例 |
+| 未知写入效果交接 | 失败或取消但存在 `unknownEffects` 时，指引先核对这些文件，不宣称“没有源码修改” | `boundedPatchGuidance` 回归 |
+| 开始记录歧义 | 只对可能已发布的追加错误使用独立 disposition 记录；目录/权限类失败仍重试原 start，恢复时不会制造冲突 | `test/effect-observer.test.mjs` 的歧义 start 与宿主生命周期回归 |
+| 长观测日志恢复 | 观测日志按行流式读取，尾行修复只读文件尾部；不再因单文件超过 64 MiB 永久跳过历史 | `test/effect-observer.test.mjs` 的流式恢复反例 |
+| 预算锁与未结算预留 | 锁包含持有者 token，释放/破锁校验身份；结算写失败保留可重放的预留标记，下次预留在锁内对账后才允许派发 | `test/auxiliary-budget.test.mjs` 的活进程旧锁与结算写失败 |
+| 任务意图边界 | 内层否定 `forget not to` 不被 idiom 放行；解释/假设句中的改写动词不授予自动写入 | `test/task-intent.test.mjs` 的对应正反例 |
+| Windows 路径大小写 | 轨迹审计对 Windows 路径按大小写折叠比较；无物理身份时大小写变体按可能同一文件处理 | `test/trajectory-audit.test.mjs` 的两条反例 |
+| 发布脚本依赖 | `package.json.files` 纳入 `test/helpers/host.mjs` 与 `paths.mjs`，打包安装可直接运行 `profile:host` | `npm pack --dry-run` 文件清单 |
+| 缓存边界与生成输出 | 仅在本轮已有 cache-read/cache-write 证据时排除相同提示前缀；保留的生成 assistant 消息按独立输出暴露计费，不受上一请求输入 Token 上限截断 | `test/context-economics.test.mjs` 的两条边界测试 |
+| 权限失败测试 | 日志恢复测试改用注入 `appendFile`/`truncate` 失败，不再依赖 `chmod` 在 root/CAP_DAC_OVERRIDE 环境下是否生效 | `test/effect-observer.test.mjs` |
 
 ## 反向验证
 
@@ -189,7 +202,7 @@
 | 模式 | `sendMs` p50 / p95 | `read` p50 | 3 轮配置操作 / 耗时 | 3 轮遥测操作 / 耗时 |
 |---|---:|---:|---:|---:|
 | `plugin-off` | 1046.25 / 1135.73 ms | 5.10 ms | 0 / 0 ms | 0 / 0 ms |
-| `plugin-default`（改动后） | 1311.92 / 1341.75 ms | 9.12 ms | 189 / 31.02 ms | 387 / 567.90 ms |
+| `plugin-default`（改动后） | 1311.92 / 1341.75 ms | 9.12 ms | 189 / 31.02 ms | 387 / 602.40 ms |
 | `plugin-default`（改动前） | 1770.95 / 1856.51 ms | 19.15 ms | 1080 / 247.59 ms | 387 / 526.01 ms |
 
 每 3 轮配置操作减少 82.5%，读取总耗时从 1020.61 ms 降到 500.23 ms；相对关闭组的额外读取开销从约 691.64 ms 降到约 209.27 ms。剩余本机开销主要在 3 轮 387 次遥测写入，平均每次读取仍多约 3.9 ms。单关 `requestAccounting`、`historyHygiene`、`stepPacing` 或 `contextProtocol` 未显著降低配置或遥测次数；这些开关不是当前读取额外开销的主因。数据见 `evidence/profile-host-path-20261125-single-factor.json`、`evidence/profile-host-path-20261125-refresh.json`。
@@ -214,7 +227,7 @@
 ## 尚未完成
 
 - 审查后真实模型小卷已执行到 `EcoNative49`；45–49 的连续三次达标记录见交接页。本节不把该结果当作审查报告级别以上的质量证明。
-- PR #12 的旧未解决线程尚未全部关闭。最新手动审查已触发，但 CodeRabbit 因本 PR 124 个文件超过其 100 个文件上限继续跳过；不能把“已触发”写成“已审查”。
+- PR #12 的最新复审为 `6053426991`，基准 `393d424`，返回 14 条 actionable，均为 Major；对应修复已进入本轮工作树并通过定向回归。尚有 8 条旧线程未关闭：6 条对应本轮修复，2 条 `runtime.mjs` 在当前源码中已无对应实现。提交推送后需逐条回复并 resolve，不能把线程关闭数量当作研发成果。
 - `boundedPatch` 的项目规模、文件数、源码字节和缺陷数量只表示机制适用性；本轮没有跨项目验证这些阈值，不能据此宣称通用效率收益。
 - 请求开始记录在持久化不可用且进程被强制终止时无法恢复；状态只标记不完整。
 - 本地 Token 估计不是服务端分词；预算不能视为服务端硬限制。

@@ -17,11 +17,15 @@ export function observeRequests(ctx,runtime){
     if(!agent||!runtime.isEnabled(agent)){yield* next();return;}
     await runtime.init(agent,options.signal);await runtime.effects?.load(agent);
     const config=runtime.get(agent).config;
-    if(!config.requestAccounting&&!config.requestProjection&&!config.compressionControl){yield* next();return;}
+    if(!config.requestAccounting&&!config.requestProjection&&!config.compressionControl&&config.strictObservability!==true){yield* next();return;}
     const s=runtime.sync(agent),started=performance.now();
     const requestKind=requestKindOf({purpose:options.purpose,auxiliary:s.auxiliarySignals.has(options.signal)}),auxiliary=requestKind==='auxiliary',main=requestKind==='main';
     const taskRequestId=main?runtime.currentRequest?.(agent)?.id:null;
     const effectRecord=runtime.effects?.begin(agent,options,{auxiliary,requestKind});
+    if(config.strictObservability===true&&!effectRecord){
+      const error=new Error('Strict observability requires a request effect record before dispatch.');
+      error.code='EFFECT_PERSISTENCE_UNAVAILABLE';error.effectsDispatched=false;throw error;
+    }
     if(effectRecord){
       await runtime.effects?.start?.(agent,effectRecord,{strict:config.strictObservability===true});
       if(!effectRecord.dispatchState)effectRecord.dispatchState='dispatch-intent';
@@ -50,7 +54,7 @@ export function observeRequests(ctx,runtime){
         yield chunk;
       }
     }catch(error){
-      record.failureCode=error.code||error.name||'STREAM_FAILED';
+      record.failureCode=error?.code||error?.name||'STREAM_FAILED';
       if(effectRecord)effectRecord.dispatchState='outcome-unknown';
       throw error;
     }

@@ -119,6 +119,10 @@ test('feature readiness distinguishes required settings, runtime dependencies an
     let changed=await host.command(agent,'config {"swLedger":true,"finalJsonGuard":true}');
     assert.ok(changed.readiness.features.find(item=>item.key==='swEviction').reasons.includes('requires-setting:projectionPricing'));
     assert.equal(changed.readiness.features.find(item=>item.key==='finalJsonResultGuard').status,'ready');
+    changed=await host.command(agent,'config {"projectionPricing":[{"provider":"other","model":"other","currency":"USD","input":1,"cacheRead":0.02,"cacheWrite":0,"output":4}]}');
+    const wrongRoute=changed.readiness.features.find(item=>item.key==='historyHygiene');
+    assert.equal(wrongRoute.status,'blocked');
+    assert.ok(wrongRoute.reasons.includes('route-price-unavailable'),JSON.stringify(wrongRoute));
     changed=await host.command(agent,'config {"projectionPricing":[{"provider":"scripted","model":"scripted-model","currency":"USD","input":1,"cacheRead":0.02,"cacheWrite":0,"output":4}]}');
     assert.equal(changed.readiness.features.find(item=>item.key==='historyHygiene').status,'ready',JSON.stringify(changed.readiness.features.find(item=>item.key==='historyHygiene')));
   }finally{await host.close();}
