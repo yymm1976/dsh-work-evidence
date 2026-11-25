@@ -206,7 +206,7 @@ function timeline(config={},availableTools=[],mode='aggressive',toolMode='native
   const log=[],agent={session:{id:'flow-timeline',log,seq:0}},runtimeState={config:{...defaults(),...config},root:process.cwd(),taskSurfaceMode:'writable'};
   const flow=createTaskFlow({tools:{get:name=>availableTools.includes(name)?{}:null,modeFor:()=>toolMode}}, {get:()=>runtimeState,isEnabled:()=>runtimeState.config.enabled!==false,activeMode:()=>mode,modeStatus:()=>({selected:mode})});
   const add=(type,data)=>{const event={seq:log.length,type,data};log.push(event);agent.session.seq=event.seq;return event;};
-  const user=()=>add('user/message',{message:{id:'request-'+log.length,role:'user',source:{kind:'user'},content:[{type:'text',text:'修改项目并运行检查'}]}});
+  const user=(text='修改项目并运行检查')=>add('user/message',{message:{id:'request-'+log.length,role:'user',source:{kind:'user'},content:[{type:'text',text}]}});
   add('turn/start',{turn:1});user();
   let step=0;
   const command=(name,args,value,{live=true,isError=false,innerIsError=isError,nested=false,program='return await tools.pwsh({command:"checks"});',output=value}={})=>{
@@ -498,6 +498,23 @@ test('a write alone cannot trigger delivery guidance before explicit completion'
     }
     assert.equal(reminders.length,todo==='completed'?1:0,todo??'without a todo list');
   }
+});
+
+test('an explicit no-execution request gets one stop notice after an interpreter attempt',()=>{
+  const t=timeline({stepPacing:true});
+  t.user('修复源码后直接汇报，不得运行应用或验证程序。');
+  t.command('pwsh',{command:'python -m py_compile a.py'},{exitCode:0,stdout:'',stderr:''});
+  const first=t.notices(),notice=first.find(message=>message.source.taskFlow.kind==='validation');
+  assert.ok(notice,JSON.stringify(first));
+  assert.match(notice.content[0].text,/不要继续查找或运行/u);
+  t.keep(first);
+  t.command('work_exec',{runtime:'python',code:'import a'},{exitCode:0,stdout:'',stderr:''});
+  assert.equal(t.notices().filter(message=>message.source.taskFlow.kind==='validation').length,0);
+
+  const allowed=timeline({stepPacing:true});
+  allowed.user('修改项目并运行检查。');
+  allowed.command('pwsh',{command:'python -m py_compile a.py'},{exitCode:0,stdout:'',stderr:''});
+  assert.equal(allowed.notices().filter(message=>message.source.taskFlow.kind==='validation').length,0);
 });
 
 test('a file edit or an ordinary command failure does not advertise a new interpreter program',()=>{
