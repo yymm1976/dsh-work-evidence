@@ -113,3 +113,37 @@ test('definition summaries are counted as candidates but only sent when opted in
   assert.equal(onView.netChars,onView.compactedChars-onView.projectedInjectedChars);
   assert.equal(onView.observedNetChars,onView.compactedChars-onView.injectedChars);
 });
+
+function initialGrepFixture({allow=false,steps=2}={}){
+  const log=[],session={id:'initial-grep-view',log,surface:{nodes:[],contentGeneration:0},eventAt:seq=>log[seq]},agent={session};
+  const state={config:defaults({contextProtocol:false,historyHygiene:true,definitionSummary:'off'}),root:process.cwd()};
+  const decisions=[];
+  const hygiene=createHistoryHygiene({get:()=>state,isEnabled:()=>true,contextControl:{
+    assess:()=>({allowed:allow,reason:'initial-grep-fixture'}),
+    remember:(_agent,decision)=>decisions.push(decision),
+  }},{phase:()=>({focus:[]})},{canRecall:()=>true});
+  const add=(type,data)=>{const event={seq:log.length,type,data};log.push(event);session.surface.nodes.push(event.seq);session.seq=event.seq;return event;};
+  add('step/start',{});
+  add('tool/call',{name:'grep',callId:'initial-grep',arguments:{pattern:'needle'}});
+  const preview='a'.repeat(1000),source=preview+'needle'+'b'.repeat(200);
+  const text=`Found 1 match\n\nsrc/alpha.js\nLine 1: ${preview} (line truncated)`;
+  hygiene.observe({agent,rootCallId:'initial-grep',callId:'initial-grep',name:'grep',arguments:{pattern:'needle'}},
+    {content:[{type:'text',text}],value:{matches:[{path:'src/alpha.js',lineNumber:1,line:source}]}});
+  const message={id:'initial-grep-result',role:'tool',source:{callId:'initial-grep'},content:[{type:'text',text}]};
+  add('tool/result',{message});
+  for(let index=0;index<steps;index++)add('step/start',{});
+  return {agent,hygiene,message,decisions};
+}
+
+test('an initial grep view is independent only on the first send; cached history still needs the economics gate',()=>{
+  const first=initialGrepFixture({allow:false,steps:1});
+  assert.notEqual(first.hygiene.project(first.agent,[first.message])[0].content,first.message.content,
+    'a never-sent initial view can use its separate first-send rule');
+  assert.equal(first.decisions.length,0,'the first send has no cached exposure to price');
+
+  const cached=initialGrepFixture({allow:false,steps:2});
+  assert.deepEqual(cached.hygiene.project(cached.agent,[cached.message])[0].content,cached.message.content,
+    'a cached result must not be rewritten when the forecast denies it');
+  assert.equal(cached.decisions.length,1);
+  assert.equal(cached.decisions[0].allowed,false);
+});

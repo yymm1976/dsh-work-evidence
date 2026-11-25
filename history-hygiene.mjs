@@ -454,7 +454,7 @@ export function createHistoryHygiene(runtime,taskFlow,{isProtected=()=>false,ret
       // A surface replacement may retain the message id while changing the body.
       // Receipts and prune plans describe only the captured canonical result.
       if(!original||message.isError!==original.isError||message.content!==original.content&&JSON.stringify(message.content)!==JSON.stringify(original.content))return message;
-      if(entry.initialOutputView&&(entry.initialOutputProjected||state.step-entry.step<=1)){
+      if(entry.initialOutputView){
         const {text,reason,definitionSummaryInjectedChars=0}=entry.initialOutputView;
         const planned=state.outputPlans.get(entry.seq);
         const content=planned?.initial?planned.content:[{type:'text',text}];
