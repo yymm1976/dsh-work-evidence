@@ -144,9 +144,17 @@ export function createRuntime(ctx,call,initial={}){
   async function withExecution(exec,fn){const s=get(exec.agent),prior=s.execution;s.execution=exec;try{return await fn();}finally{s.execution=prior;}}
   async function init(agent,signal){
     const s=get(agent);
-    // Session policy is re-read on every init cycle: the policy file may be written by an
-    // experiment harness (or a user) after the agent/created prepare pass already cached a
-    // missing result. The file is tiny, so re-reading is cheaper than the staleness.
+    if(s.configured)return s;
+    if(s.initPromise)return s.initPromise;
+    const pending=refresh(agent,signal);
+    s.initPromise=pending;
+    try{return await pending;}finally{if(s.initPromise===pending)s.initPromise=null;}
+  }
+  async function refresh(agent,signal){
+    const s=get(agent);
+    // Settings are re-read at request boundaries and explicit status/control checks, not
+    // from every pre-step and tool dispatch. Those repeated reads did not change the
+    // documented rule that a workspace setting starts at the next model request.
     if(s.configured&&s.sessionPolicyLoaded&&s.sessionPolicyPath){
       const before=s.workspaceConfigValid&&(s.sessionEnabledOverride??s.config.enabled);
       try{
@@ -174,8 +182,7 @@ export function createRuntime(ctx,call,initial={}){
       if(before!==(s.workspaceConfigValid&&(s.sessionEnabledOverride??s.config.enabled)))clearSessionState(agent);
     }
     if(s.configured)return s;
-    if(s.initPromise)return s.initPromise;
-    s.initPromise=(async()=>{
+    const initialized=(async()=>{
       if(!/^[-a-zA-Z0-9_][-.a-zA-Z0-9_]{0,127}$/.test(s.id))throw new Error('Unsafe session id');
       s.root=await ctx.workingDirectory.ensure(agent,signal);
       s.dir=within(s.root,path.join('.dsh','work-evidence'));
@@ -219,7 +226,7 @@ export function createRuntime(ctx,call,initial={}){
       s.sessionPolicyLoaded=true;
       s.configured=true;return s;
     })();
-    try{return await s.initPromise;}finally{s.initPromise=null;}
+    return initialized;
   }
   function isEnabled(agent){
     const s=get(agent);
@@ -290,10 +297,10 @@ export function createRuntime(ctx,call,initial={}){
     for(const key of RETIRED_SETTINGS)if(patch[key]===true)throw new Error('Setting '+key+' is retired and has no active implementation.');
     if(patch.contextPruningPolicy!==undefined&&patch.contextPruningPolicy!=='forecast')throw new Error('Only forecast context pruning is supported.');
     if(patch.compactionTiming!==undefined&&patch.compactionTiming!=='native')throw new Error('Only native compaction timing is supported.');
-    const s=await init(agent,signal),key=path.join(s.dir,'config.json');
+    const s=await refresh(agent,signal),key=path.join(s.dir,'config.json');
     const operation=(workspaceQueues.get(key)??Promise.resolve()).catch(()=>{}).then(async()=>{
       signal?.throwIfAborted();
-      await init(agent,signal);
+      await refresh(agent,signal);
       if(!s.workspaceConfigValid)throw new Error('Workspace configuration is unavailable or invalid');
       const before=isEnabled(agent);
       // workspaceConfig() folds every retired key to false so old workspaces keep
@@ -359,7 +366,7 @@ export function createRuntime(ctx,call,initial={}){
   }
   async function setSessionEnabled(agent,enabled,signal){
     if(enabled!==null&&typeof enabled!=='boolean')throw new Error('Session enabled must be boolean or null');
-    const s=await init(agent,signal),before=isEnabled(agent);
+    const s=await refresh(agent,signal),before=isEnabled(agent);
     await updateSessionPolicy(agent,{enabled},signal);
     s.sessionEnabledOverride=enabled;s.sessionPolicyLoaded=true;s.dirty=true;
     const effective=isEnabled(agent);
@@ -719,7 +726,7 @@ export function createRuntime(ctx,call,initial={}){
       problem(s,'receipt-write',message);ctx.logger.warn('work-evidence: activity record unavailable: '+message);
     }}
   let runtimeContextSnapshot=null;
-  return {get,init,isEnabled,currentSelection:effortSelection,currentRequest,clearSessionState,setSessionEnabled,setSessionMode,setWorkspaceMode,setAggressiveMode,setWorkspaceConfig,modeStatus,activeMode,beginRequest,sync,observe,save,loadJson,problem,snapshot,stateSnapshot,consumeStateNotice,recordMutation,recordStateObservation,
+  return {get,init,refresh,isEnabled,currentSelection:effortSelection,currentRequest,clearSessionState,setSessionEnabled,setSessionMode,setWorkspaceMode,setAggressiveMode,setWorkspaceConfig,modeStatus,activeMode,beginRequest,sync,observe,save,loadJson,problem,snapshot,stateSnapshot,consumeStateNotice,recordMutation,recordStateObservation,
     setContextSnapshot:reader=>{runtimeContextSnapshot=reader;},
     receipt,execFor,withExecution,dispose:id=>states.delete(id)};
 }

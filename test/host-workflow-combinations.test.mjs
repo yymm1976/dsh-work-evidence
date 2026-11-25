@@ -18,7 +18,7 @@ const nativeSupported=(()=>{
       .map(name=>require(name+'/package.json').version);
     return ['0.2.2-rc.1','0.2.2-rc.2'].includes(versions[0])&&
       versions.every(version=>version===versions[0]);
-  }catch{return false;}
+  }catch(error){throw new Error('Cannot determine native conditional-write support: '+error.message);}
 })();
 
 const valueOf=options=>JSON.parse(options.messages.findLast(message=>message.role==='tool').content.map(block=>block.text??'').join(''));
@@ -100,6 +100,7 @@ test('structured calls, retained data, exact program references, editing and han
     const latest=await host.command(agent,'handoff');
     const edited=JSON.parse(await fs.readFile(path.join(host.cwd,'orders.json'),'utf8'))[0].amount;
     if(edited!==1300){
+      assert.equal(nativeSupported,false,'verified_exec did not apply the edit on the supported conditional-write host');
       // No supported conditional-write backend on this host: verified_exec deopts
       // without touching the file. No authored mutation exists, so the handoff
       // carries no file artifact; its executions and source read are still real.

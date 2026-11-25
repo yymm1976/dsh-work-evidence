@@ -10,9 +10,11 @@ import path from 'node:path';
 
 const repo=path.resolve(import.meta.dirname,'..');
 const bundle=readFileSync(path.join(repo,'cordis.patch.yml'),'utf8');
+const presetBlock=text=>/^    - id: preset-work-evidence-flash1017\r?\n([\s\S]*?)(?=^    - id: |$(?![\s\S]))/m.exec(text)?.[1];
+const suffixBlock=preset=>/suffix: \|-\r?\n((?: {16}[^\r\n]*(?:\r?\n|$))+)/.exec(preset)?.[1];
 
 test('the Flash1017 preset is composed from the native PTC preset and keeps native compaction',()=>{
-  const preset=/^    - id: preset-work-evidence-flash1017\n([\s\S]*?)(?=^    - id: |$(?![\s\S]))/m.exec(bundle)?.[1];
+  const preset=presetBlock(bundle);
   assert.ok(preset,'preset-work-evidence-flash1017 must be present in the bundle');
   assert.match(preset,/id: work-evidence-flash1017$/m);
   assert.match(preset,/name: 工程证据 · Flash1017/u);
@@ -26,11 +28,18 @@ test('every preset rule is rendered into the persona suffix verbatim',async()=>{
   const {FLASH_PRESET_RULES,FLASH_PRESET_SUFFIX}=await import('../flash-preset-rules.mjs');
   assert.equal(FLASH_PRESET_RULES.length,9);
   assert.equal(FLASH_PRESET_SUFFIX,FLASH_PRESET_RULES.join('\n'));
-  const preset=/^    - id: preset-work-evidence-flash1017\n([\s\S]*?)(?=^    - id: |$(?![\s\S]))/m.exec(bundle)[1];
-  const suffix=/suffix: \|-\n((?: {16}[^\n]*\n)+)/.exec(preset)?.[1];
+  const preset=presetBlock(bundle);
+  const suffix=suffixBlock(preset);
   assert.ok(suffix,'the persona suffix must exist in the preset');
-  const rendered=suffix.split('\n').filter(Boolean).map(line=>line.trim());
+  const rendered=suffix.replaceAll('\r','').split('\n').filter(Boolean).map(line=>line.trim());
   assert.deepEqual(rendered,FLASH_PRESET_RULES);
+});
+
+test('the preset selectors accept a CRLF checkout',()=>{
+  const crlf=bundle.replaceAll('\r\n','\n').replaceAll('\n','\r\n');
+  const preset=presetBlock(crlf);
+  assert.ok(preset,'the preset block is found with CRLF');
+  assert.ok(suffixBlock(preset),'the suffix block is found with CRLF');
 });
 
 test('the route guard refuses a non-Flash model instead of swapping routes',async()=>{

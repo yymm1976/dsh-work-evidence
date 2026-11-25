@@ -9,7 +9,7 @@ export function registerPluginCommand({ctx,runtime,state,effects,available,featu
     handler:async({agent,rawInput,signal})=>{
       if(!agent)return {kind:'error',text:'No active session is available.'};
       try{
-        await runtime.init(agent,signal);
+        await runtime.refresh(agent,signal);
         const input=String(rawInput||'').trim(),action=input.toLowerCase()||'status';
         if(action==='handoff')return {kind:'success',text:JSON.stringify(await taskHandoff(agent,{signal}))};
         if(action==='config')return {kind:'success',text:JSON.stringify({version:VERSION,scope:'workspace',path:path.join(state(agent).dir,'config.json'),

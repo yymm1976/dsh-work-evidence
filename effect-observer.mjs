@@ -75,7 +75,7 @@ export function createEffectObserver(ctx,runtime,{io=fs}={}){
   const states=new Map();
   const nativeAttempts=new WeakMap();
   const storageFor=agent=>{const s=runtime.get(agent);return s.telemetryDir===undefined?s.dir:s.telemetryDir;};
-  const get=agent=>{let state=states.get(agent.session.id);if(!state){state={agent,features:Object.create(null),effects:new Map(),decisions:[],pendingDecisions:[],pendingOverflow:[],decisionSeq:0,overflowWriting:false,overflowQueue:Promise.resolve(),pendingStartRows:[],pendingRequestRows:[],requestRowWriting:false,requestRowQueue:Promise.resolve(),pendingLinkRows:[],linkWriting:false,linkQueue:Promise.resolve(),finishQueue:Promise.resolve(),finishPending:0,finishFailed:false,ambiguousRows:new Map(),persistenceUnavailable:false,persistenceConflict:false,storageDir:null,recoveredRequestStarts:0,recoveredRequestLinks:0,unsettledRequestStarts:0,recentRequests:[],requests:0,mainRequests:0,auxiliaryRequests:0,compactionRequests:0,completeUsageRequests:0,missingUsage:0,unknownConsumption:0,reported:{inputTokens:0,cacheReadTokens:0,cacheWriteTokens:0,outputTokens:0,totalTokens:0},rawReported:{inputTokens:0,cacheReadTokens:0,cacheWriteTokens:0,outputTokens:0,totalTokens:0},totals:{directTokensEstimate:0,directChars:0,instructionTokensEstimate:0,systemTokensEstimate:0,messageTokensEstimate:0,toolSchemaTokensEstimate:0,requestReconstructionMisses:0},queue:Promise.resolve(),writeErrors:[],effectBytes:0,loaded:false,loadComplete:false,loadErrors:0,snippets:new Map(),needsLeadingNewline:new Set()};states.set(agent.session.id,state);}return state;};
+  const get=agent=>{let state=states.get(agent.session.id);if(!state){state={agent,features:Object.create(null),effects:new Map(),decisions:[],pendingDecisions:[],pendingOverflow:[],decisionSeq:0,overflowWriting:false,overflowQueue:Promise.resolve(),pendingStartRows:[],pendingRequestRows:[],requestRowWriting:false,requestRowQueue:Promise.resolve(),pendingLinkRows:[],linkWriting:false,linkQueue:Promise.resolve(),finishQueue:Promise.resolve(),finishPending:0,finishFailed:false,ambiguousRows:new Map(),persistenceUnavailable:false,persistenceConflict:false,storageDir:null,storageDirectoryReady:false,recoveredRequestStarts:0,recoveredRequestLinks:0,unsettledRequestStarts:0,recentRequests:[],requests:0,mainRequests:0,auxiliaryRequests:0,compactionRequests:0,completeUsageRequests:0,missingUsage:0,unknownConsumption:0,reported:{inputTokens:0,cacheReadTokens:0,cacheWriteTokens:0,outputTokens:0,totalTokens:0},rawReported:{inputTokens:0,cacheReadTokens:0,cacheWriteTokens:0,outputTokens:0,totalTokens:0},totals:{directTokensEstimate:0,directChars:0,instructionTokensEstimate:0,systemTokensEstimate:0,messageTokensEstimate:0,toolSchemaTokensEstimate:0,requestReconstructionMisses:0},queue:Promise.resolve(),writeErrors:[],effectBytes:0,loaded:false,loadComplete:false,loadErrors:0,snippets:new Map(),needsLeadingNewline:new Set()};states.set(agent.session.id,state);}return state;};
   // Storage must survive a destroyed runtime: disposal keeps the telemetry directory on the
   // state so a later flush can still reach the records it has not written yet.
   const rememberStorage=(state,agent)=>{if(!state.storageDir){const value=storageFor(agent);if(value)state.storageDir=value;}return state.storageDir??null;};
@@ -213,7 +213,11 @@ export function createEffectObserver(ctx,runtime,{io=fs}={}){
     const serialized=JSON.stringify(row),identity=stableRowIdentity(row,kind);
     // Boundary inspection and repair stay in this same queue, so a later row cannot
     // overtake recovery and turn a partial append into a corrupt persistent ledger.
-    state.queue=state.queue.catch(()=>{}).then(async()=>{await io.mkdir(dir,{recursive:true});
+    state.queue=state.queue.catch(()=>{}).then(async()=>{
+      if(!state.storageDirectoryReady){
+        await io.mkdir(dir,{recursive:true});
+        state.storageDirectoryReady=true;
+      }
       // An append can publish a complete row and then reject. If its readback also
       // fails, a later retry must prove whether that row exists before appending it
       // again. Only this ambiguous case pays for a read; a normal append stays O(1).
@@ -246,6 +250,7 @@ export function createEffectObserver(ctx,runtime,{io=fs}={}){
       await io.appendFile(file,(state.needsLeadingNewline.has(kind)?'\n':'')+serialized+'\n','utf8');
       if(identity)state.ambiguousRows.delete(identity);
       state.needsLeadingNewline.delete(kind);return true;}).catch(async error=>{
+      state.storageDirectoryReady=false;
       state.writeErrors.push(String(error.message).slice(0,240));state.writeErrors=state.writeErrors.slice(-8);
       // appendFile may publish a complete row and still reject. Confirm that exact row
       // before any retry; a conflicting row with the same stable identity stops writes

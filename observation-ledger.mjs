@@ -203,13 +203,18 @@ function mutationPathsFromValue(name,args,value){
   if(WRITE_TOOLS.has(name)){
     if(value?.status==='partial'&&Array.isArray(value?.data?.items)){
       for(const item of value.data.items)if(item.status==='completed'&&typeof item.path==='string')out.push(item.path);
-    }else if(!resultHasProblem(value))for(const item of pathsFromArguments(args))out.push(item);
+    }else if(name!=='verified_exec'&&!resultHasProblem(value))for(const item of pathsFromArguments(args))out.push(item);
     // verified_exec changes files named in args.edits and reports them under
-    // value.files; neither shape carries a top-level file_path.
+    // value.files; neither shape carries a top-level file_path. A preview or
+    // deopt reports effectState:"none" and must not invalidate earlier reads.
     if(name==='verified_exec'){
-      if(Array.isArray(args?.edits))for(const edit of args.edits)if(typeof edit?.file==='string')out.push(edit.file);
-      if(Array.isArray(value?.files))for(const file of value.files)
-        if(['applied','partial','unknown'].includes(file?.effectState)&&typeof file?.path==='string')out.push(file.path);
+      const states=Array.isArray(value?.files)?value.files:[];
+      if(states.length){
+        for(const file of states)if(['applied','partial','unknown'].includes(file?.effectState)&&typeof file?.path==='string')out.push(file.path);
+      }else if(value===null||value===undefined||['applied','partial','unknown'].includes(value?.effectState)){
+        if(Array.isArray(args?.edits))for(const edit of args.edits)
+          if(typeof (edit?.file??edit?.path??edit?.file_path)==='string')out.push(edit.file??edit.path??edit.file_path);
+      }
     }
   }
   return [...new Set(out)];

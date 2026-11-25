@@ -394,7 +394,7 @@ completionNotice 独立控制阶段摘要后的继续提醒，默认关闭。显
 `providerReported` 只合计完整且内部一致的用量。`providerReportedRaw` 保留各行有限数值作诊断，不能作为完整消耗；不一致或缺失用量继续显示未知。
 缓存额外费用按 `resetTaxByCurrency` 与 `effortResetExposureByCurrency` 的币种分别列出。兼容字段 `resetTaxUSD`、`effortResetExposureUSD` 只含美元数值。
 未完成或失败的请求若有可信用量，按已知价格计入 `failedKnownCostByCurrency` 下界；该值不并入完成请求费用，也不代表实际账单。
-参考价格不代表实际支付或通道额度。费用观察不自动停止任务。
+参考价格不代表实际支付或通道额度，也不能批准正常上下文改写。历史压缩、源码裁剪、上下文协议和请求投影只接受 `projectionPricing` 中当前 provider/model 的精确价；配置价不完整时，功能就绪状态报告 `requires-setting:projectionPricing`、`route-price-not-exact` 或 `route-price-unavailable`。费用观察不自动停止任务。
 
 `import --session SESSION_ID --variant work-evidence` 同时读取该显式导入会话自己的请求记录。`import --file engineering.json --variant work-evidence --observations requests.jsonl` 可显式提供记录；不会按子任务身份自动打开其他会话。
 通用 PTC 预设不能证明插件关闭。缺少明确加载标记时，分组来源保留为调用者声明；原生记录已明确显示插件存在时，仍拒绝导入为 recorder-only。
@@ -622,7 +622,7 @@ stubSummary 保留问题处理标记、事件指针和原文取回。
 index.mjs 负责组装和会话事件。
 plugin-command.mjs 负责命令；source-tools.mjs 负责源码和报告入口；management-tools.mjs 负责执行、状态与管理入口。
 
-当前开发版已在本机桌面宿主运行时独立加载声明的发布文件，并完成来源读取、结构化调用、保留计算、程序引用、精确编辑、交接及关闭后的原生读取。`node --test test/host-package-load.test.mjs test/host-workflow-combinations.test.mjs` 覆盖这些路径；`node --test test/trajectory-audit.test.mjs` 覆盖审计行为。`npm test` 当前为 1096 项，1095 通过，1 项按宿主能力跳过。默认路径分段测量用 `npm run profile`，只测本地处理，不包含模型等待或工具执行。`npm run profile:host` 使用真实宿主循环和脚本化模型，记录启动、配置读取、请求投影、原生工具、文件系统、持久化和销毁耗时；脚本化模型等待固定为零，不测量供应商延迟或费用。宿主核对需要本机 DSH Desktop 运行时和配套 Python 环境，不调用在线模型。`test/helpers/host.mjs` 可用 `DSH_APP` 指定桌面运行时目录。当前结果不表示桌面目录已加载开发版，也不证明每项模型质量和费用效果。
+当前开发版已在本机桌面宿主运行时独立加载声明的发布文件，并完成来源读取、结构化调用、保留计算、程序引用、精确编辑、交接及关闭后的原生读取。`node --test test/host-package-load.test.mjs test/host-workflow-combinations.test.mjs` 覆盖这些路径；`node --test test/trajectory-audit.test.mjs` 覆盖审计行为。`npm test` 当前为 1102 项，1101 通过，0 失败，1 项按宿主能力跳过。默认路径分段测量用 `npm run profile`，只测本地处理，不包含模型等待或工具执行。`npm run profile:host` 使用真实宿主循环和脚本化模型，记录启动、配置读取、请求投影、原生工具、文件系统、持久化和销毁耗时；脚本化模型等待固定为零，不测量供应商延迟或费用。工作区配置只在请求边界和显式状态/控制操作刷新，`init` 不重复读取同一工作区配置。宿主核对需要本机 DSH Desktop 运行时和配套 Python 环境，不调用在线模型。`test/helpers/host.mjs` 可用 `DSH_APP` 指定桌面运行时目录。当前结果不表示桌面目录已加载开发版，也不证明每项模型质量和费用效果。
 
 运行完整测试时，源码成员解析和 `verified_exec` 宿主检查需要 `requirements-source-members.txt` 所列依赖的 Python。将 `DSH_TEST_FASTEDIT_PYTHON` 设置为该解释器的绝对路径；未设置或设为空时，测试使用开发目录的 `.fastedit-venv/Scripts/python.exe`。`verified_exec` 的原生条件写入要求 `dsh-tools`、`dsh-fs-local`、`dsh-tool-fs` 位于同一 0.2.2-rc.1 或 0.2.2-rc.2 版本，并注入官方本地或沙箱文件服务。0.2.1-rc.4 或混合版本按 `cas-file-tools-unavailable` 明确 deopt，不做无版本条件的替代写入。
 

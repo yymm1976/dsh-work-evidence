@@ -6,14 +6,14 @@ import {startHost,text,tool,requestText} from '../test/helpers/host.mjs';
 
 const rounds=Math.max(1,Number(process.env.WE_PROFILE_HOST_ROUNDS??3));
 const TASK='读取源码文件以检查历史增长和原生工具处理。只做只读核对，完成后报告。';
+const PWSH_PATH=process.env.WE_PROFILE_PWSH?.trim()||(process.platform==='win32'?'D:/dsh-tools/pwsh7/pwsh.exe':null);
 const MODES=[
-  {name:'plugin-off',mountPlugin:false,workspace:null},
-  {name:'plugin-default',mountPlugin:true,workspace:{}},
-  {name:'core-only',mountPlugin:true,workspace:{stepPacing:false,contextProtocol:false,historyHygiene:false,
-    evidenceViews:false,ledgerReceipt:false,requestProjection:false}},
-  {name:'accounting-off',mountPlugin:true,workspace:{requestAccounting:false,requestProjection:false,
-    compressionControl:false,stateLedger:false,stateInform:false,historyHygiene:false,contextProtocol:false,
-    evidenceViews:false,ledgerReceipt:false,stepPacing:false}},
+  {name:'plugin-off',variable:null,mountPlugin:false,workspace:null},
+  {name:'plugin-default',variable:null,mountPlugin:true,workspace:{}},
+  {name:'request-accounting-off',variable:'requestAccounting',mountPlugin:true,workspace:{requestAccounting:false}},
+  {name:'history-hygiene-off',variable:'historyHygiene',mountPlugin:true,workspace:{historyHygiene:false}},
+  {name:'step-pacing-off',variable:'stepPacing',mountPlugin:true,workspace:{stepPacing:false}},
+  {name:'context-protocol-off',variable:'contextProtocol',mountPlugin:true,workspace:{contextProtocol:false}},
 ];
 const FS_OPS=['appendFile','lstat','mkdir','open','readFile','readdir','rename','rm','stat','truncate','writeFile'];
 
@@ -144,6 +144,7 @@ async function observe(mode){
   const host=await startHost({
     mountPlugin:mode.mountPlugin,
     workspace:mode.workspace,
+    pwshPath:PWSH_PATH,
     script:()=>{
       if(!measuring)return [text('warmup complete')];
       const now=performance.now();
@@ -153,7 +154,7 @@ async function observe(mode){
       if(step<=10)return [tool('read',{file_path:`src/file${step-1}.js`})];
       if(step<=14)return [tool('read',{file_path:`src/file${step-11}.js`})];
       if(step===15)return [tool('grep',{path:'src',pattern:'file0_line0'})];
-      if(step===16)return [tool('pwsh',{command:'Get-Content src/file0.js | Select-Object -First 20'})];
+      if(step===16)return [tool('pwsh',{command:'Get-Content src/file0.js | Select-Object -First 20',description:'Read the first source fixture lines'})];
       if(step===17)return [tool('read',{file_path:'src/does-not-exist.js'})];
       if(step===18)return [tool('read',{file_path:'src/file0.js'})];
       if(step<=20)return [tool('read',{file_path:`src/file${step-19}.js`})];
@@ -303,7 +304,7 @@ try{
   for(const mode of MODES){
     const runs=[];
     for(let index=0;index<rounds;index++)runs.push(await observe(mode));
-    evidence.modes.push({name:mode.name,samples:runs.map(run=>({...run,bootMs:round(run.bootMs),createMs:round(run.createMs),
+    evidence.modes.push({name:mode.name,variable:mode.variable,samples:runs.map(run=>({...run,bootMs:round(run.bootMs),createMs:round(run.createMs),
       initMs:round(run.initMs),statusMs:round(run.statusMs),sendMs:round(run.sendMs),disposeMs:round(run.disposeMs),
       meanStepMs:round(run.meanStepMs),stepP50Ms:round(run.stepP50Ms),stepP95Ms:round(run.stepP95Ms)})),
       summary:summarizeRuns(runs)});

@@ -251,6 +251,16 @@ test('a partial usage observation cannot replace the exposure baseline',()=>{
   assert.equal(economics.lastUsage(agent).cacheReadTokens,81408);
 });
 
+test('an error finish without a failure code cannot replace the exposure baseline',()=>{
+  const {agent,economics,finish,options}=harness();
+  finish(false,{inputTokens:1513,cacheReadTokens:81408,cacheWriteTokens:0,outputTokens:144,totalTokens:83065});
+  economics.requestFinished(agent,options,{usage:{inputTokens:1000,cacheReadTokens:0,cacheWriteTokens:0,outputTokens:10,totalTokens:1010},
+    settled:true,finishReason:'error',usageComplete:true,usageConsistent:true});
+  assert.equal(economics.summary(agent).lastUnusableAttempt.reason,'unusable-finish-reason');
+  assert.equal(economics.lastUsage(agent).cacheReadTokens,81408,
+    'the previous usable observation remains the exposure baseline');
+});
+
 test('a DeepSeek V4.1 Flash route is priced from the published rate when no exact row exists',()=>{
   const {agent,economics}=harness();
   for(const model of ['opendesign/deepseek-v4.1-flash-eco','3/deepseek-v4-1-flash-1017','3/deepseek-v4_1-flash']){

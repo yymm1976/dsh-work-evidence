@@ -154,7 +154,15 @@ export function registerSourceTools({ctx,nativeFiles,runtime,state,effects,evide
         const requests=args.files.map(f=>({path:within(root,f.path),offset:f.offset??1,limit:f.limit??2000}));
         facts.sources=await Promise.all(requests.map(async request=>{
           const locator=/^(.+\.(?:jar|zip))![\\/](.+)$/i.exec(request.path);
-          if(locator)return archiveSource(root,{archive:locator[1],entry:locator[2],offset:request.offset,limit:request.limit,lineTextLimit:args.lineTextLimit},exec,call);
+          if(locator){
+            try{return await archiveSource(root,{archive:locator[1],entry:locator[2],offset:request.offset,limit:request.limit,lineTextLimit:args.lineTextLimit},exec,call);}
+            catch(error){
+              if(exec.signal?.aborted)throw error;
+              return {state:'unavailable',path:request.path,code:error.code||'ARCHIVE_READ_FAILED',
+                requestedRange:{offset:request.offset,limit:request.limit},
+                nextFactNeeded:'This archive member could not be read. Other requested sources remain available.'};
+            }
+          }
           if(/\.(?:jar|zip)$/i.test(request.path))return {state:'unavailable',path:request.path,code:'ARCHIVE_ENTRY_REQUIRED',nextFactNeeded:'Use mode source with a class name, or mode archive with this archive and an exact entry; a binary archive is not a text file.'};
           const r=await call('read',{file_path:request.path,offset:request.offset,limit:request.limit},exec);
           const window=!r.isError&&textWindow(r.value,{maxLines:request.limit,maxLineChars:args.lineTextLimit??500});

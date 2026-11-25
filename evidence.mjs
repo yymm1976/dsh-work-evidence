@@ -170,15 +170,18 @@ export function boundEvidence(facts,maxChars=limits.evidenceChars,{preferWholeSo
         const currentTextLimit=source.lineTextLimit??lineTextLimit??500;
         const largerTextLimit=source.nextLineTextLimit??source.lineTextMaximum??12000;
         const recoveryLimited=!!clipped&&largerTextLimit<=currentTextLimit;
-        const resumeOffset=clipped&&!recoveryLimited?clipped.line:last===null?start:last+1;
+        const resumeOffset=clipped?clipped.line:last===null?start:last+1;
         const remaining=Math.max(1,start+limit-resumeOffset);
         const textLimit=clipped&&!recoveryLimited?largerTextLimit:lineTextLimit;
         source.fileHasMore=true;
         if(last===null){delete source.nextOffset;delete source.observedRange;}
         else{source.nextOffset=resumeOffset;source.observedRange={first:source.lines[0].line,last};}
-        source.responseBudget={batch:true,bodyDelivered:count>0,truncatedAfterLine:last,
-          ...(clipped?{firstClippedLine:clipped.line,...(recoveryLimited?{lineTextRecoveryLimited:true}:{})}:{}),
+        const resume=clipped&&recoveryLimited?null:{
           resumeTool:'project_evidence',resumeArguments:resumeArguments(source,resumeOffset,remaining,textLimit)};
+        source.responseBudget={batch:true,bodyDelivered:count>0,truncatedAfterLine:last,
+          ...(clipped?{firstClippedLine:clipped.line,...(recoveryLimited?{lineTextRecoveryLimited:true,
+            lineTextRecovery:'Read line '+clipped.line+' with a tool that can return more than '+currentTextLimit+' characters.'}:{})}:{}),
+          ...(resume??{})};
       };
       let low=canTrim.length?minimumRows(source):0,high=lines.length-1;
       while(low<high){

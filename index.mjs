@@ -670,7 +670,7 @@ export function apply(ctx,config={}){
     const claimedRequest=agent?state(agent).claimedRequest:null;
     if(agent){
       const signal=context.signal?AbortSignal.any([context.signal,AbortSignal.timeout(10000)]):AbortSignal.timeout(10000);
-      try{await runtime.init(agent,signal);await runtime.beginRequest(agent,signal);classifyTaskSurface(agent);applyToolSurface(agent);}catch(error){runtime.problem(state(agent),'session-prepare',error.message);}
+      try{await runtime.refresh(agent,signal);await runtime.beginRequest(agent,signal);classifyTaskSurface(agent);applyToolSurface(agent);}catch(error){runtime.problem(state(agent),'session-prepare',error.message);}
     }
     let boundedResult=null;
     if(agent&&runtime.isEnabled(agent)&&state(agent).config.boundedPatch){

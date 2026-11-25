@@ -747,3 +747,17 @@ test('without session storage, finished request rows stay pending and complete s
       'a session without any persistent identity cannot promise later recovery');
   }finally{await remove(telemetryDir);}
 });
+
+test('repeated observability rows reuse the established telemetry directory',async()=>{
+  const telemetryDir=await fs.mkdtemp(path.join(os.tmpdir(),'we-effects-mkdir-'));
+  let mkdirCalls=0;
+  const io={...realFs,mkdir:async(...args)=>{mkdirCalls++;return realFs.mkdir(...args);}};
+  const created=await start({telemetryDir,io});
+  try{
+    await created.effects.finish(created.agent,row('first-row'));
+    await created.effects.finish(created.agent,row('second-row'));
+    await created.effects.flush(created.agent);
+    assert.equal(mkdirCalls,1,'one verified directory is enough for subsequent rows');
+    assert.deepEqual((await stored(telemetryDir)).map(item=>item.requestId),['first-row','second-row']);
+  }finally{await remove(telemetryDir);}
+});

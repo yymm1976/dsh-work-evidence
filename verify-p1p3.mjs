@@ -32,7 +32,3 @@ console.log('  judged source by content (would be retained if unnamed):',source)
 console.log('  judged log by content (no retention from the body):',log);
 console.log('  distinct source files named:',sourceByPath.size);
 
-// The decision P1/P3 changes: with the old code the test-output branch and the generic
-// digest branch could both reduce a source body. Recount how many of these bodies the
-// FIXED code refuses to reduce for a source reason.
-

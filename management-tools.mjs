@@ -259,14 +259,14 @@ export function registerManagementTools({ctx,runtime,state,effects,available,fea
       recovery:{type:'object',additionalProperties:true,properties:{reason:{type:'string'},tool:{type:'string'},arguments:{type:'object',additionalProperties:true},note:{type:'string'}}}
     }}});
   register('work_status','Inspect status; detail:true includes request diagnostics.',
-    {detail:{type:'boolean',description:'Full request diagnostics.'},config:{type:'object',description:'Workspace settings. toolSurface: compact (work_exec/work_recall), full (management/research tools; advertised 29 tools vs compact 18 and measured slower and more expensive than no plugin on an independent task, so prefer compact unless the management tools are needed). Forecast cost gates price the active route from an exact projectionPricing row when one exists, otherwise from the published DeepSeek V4.1 Flash rate card; a route the fallback cannot price keeps those gates inert. stepPacing guides without blocking. projectionPricing: exact provider/model rates per million tokens.'},
+    {detail:{type:'boolean',description:'Full request diagnostics.'},config:{type:'object',description:'Workspace settings. toolSurface: compact (work_exec/work_recall), full (management/research tools; advertised 29 tools vs compact 18 and measured slower and more expensive than no plugin on an independent task, so prefer compact unless the management tools are needed). Forecast cost gates require an exact provider/model row in projectionPricing; the published rate is reference-only and cannot approve a rewrite. stepPacing guides without blocking. projectionPricing: exact provider/model rates per million tokens.'},
       session_enabled:{anyOf:[{type:'boolean'},{type:'null'}],description:'This session: true on, false off, null inherit workspace.'},
       quality_review_retry:{type:'boolean',description:'Resume this session route after an unavailable review, only when the user explicitly requests another attempt.'}},[],async(args,exec)=>{
       args=args||{};
       if(!args||typeof args!=='object'||Array.isArray(args)||Object.keys(args).some(key=>!['detail','config','session_enabled','quality_review_retry'].includes(key)))throw new Error('Unrecognized work_status field');
       if(args.detail!==undefined&&typeof args.detail!=='boolean')throw new Error('detail must be a boolean');
       if(args.quality_review_retry!==undefined&&typeof args.quality_review_retry!=='boolean')throw new Error('quality_review_retry must be a boolean');
-      await runtime.init(exec.agent,exec.signal??AbortSignal.timeout(10000)).catch(()=>{});
+      await runtime.refresh(exec.agent,exec.signal??AbortSignal.timeout(10000)).catch(()=>{});
       const s=state(exec.agent);
       if(!runtime.isEnabled(exec.agent)&&(args.config!==undefined||Object.hasOwn(args,'session_enabled')||args.quality_review_retry))
         throw new Error('Work Evidence is disabled. Configuration changes require the user to enable it with /work-evidence on.');

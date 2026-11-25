@@ -6,16 +6,17 @@
 
 | 项 | 结果 |
 |---|---|
-| 语法检查 | `npm run check`，193 个 JavaScript 文件通过 |
-| 全量单测 | `npm test`，1096 项，1095 通过，0 失败，1 项按宿主能力跳过 |
+| 语法检查 | `npm run check`，194 个 JavaScript 文件通过 |
+| 全量单测 | `npm test`，1102 项，1101 通过，0 失败，1 项按宿主能力跳过 |
 | 跳过原因 | 当前宿主三包均为 `0.2.2-rc.1`，条件写入后端可用；只描述“后端缺失”的用例按设计跳过 |
+| 并发波动 | 首次并发全量出现 1 次 `host-node-fallback` 的解释器约束用例失败；该文件单独运行 10/10，第二次全量通过。根因未定位，保留为测试稳定性风险，不写成已修复 |
 | 打包安装 | `test/package-install.test.mjs` 通过；离线安装不拉宿主 peer，安装副本可加载 |
 | 声明文件加载 | `test/host-package-load.test.mjs` 通过；95 个声明文件，45 个功能项，无阻塞项 |
 | 宿主兼容 | `test/host-compatibility.test.mjs` 通过；声明与宿主运行时一致 |
-| 宿主路径性能 | `evidence/profile-host-path-20261125-segmented.json`；3 轮、21 请求/轮，覆盖插件关闭、默认插件、核心机制消融和统计关闭 |
+| 宿主路径性能 | `evidence/profile-host-path-20261125-refresh.json`；3 轮、21 请求/轮，覆盖插件关闭、默认插件和四项单变量消融；旧合并消融与参数错误数据不再使用 |
 | 本地微基准 | `evidence/profile-default-path-20261125.json`；30 轮，仅本地函数分段 |
 | 条件写入负例 | 未知文件服务按不可用返回，不进入读取或写入；见 `test/native-cas.test.mjs` |
-| 远端同步 | `88b4ea6` 的代码修复与随附记录已推送 `origin/feat/v04-windows-bash` |
+| 远端同步 | 本次审查修复与随附记录提交后推送 `origin/feat/v04-windows-bash` |
 
 ## 第三轮审查残余关闭
 
@@ -30,7 +31,13 @@
 | PTC 工作区文件身份 | 历史会话 cwd 与当前工作区使用宿主物理路径身份，符号链接/目录别名不会把同一工作区拆开 | `test/ptc-workspace-identity.test.mjs` |
 | 严格 JSON 提案 | 辅助提案只按严格 JSON 解析；非法转义不会被宽松恢复为另一段待写源码，失败后才进入一次重试 | `test/bounded-patch.test.mjs` 的 strict JSON 反例 |
 | 提交前请求身份 | 主机暴露当前用户请求时，提交前再次比较请求身份和写入授权；主机在后续工具阶段不暴露时，保留启动时请求 id 与逐文件 Native CAS/身份检查，并明确这一证据限制 | `bounded-patch.mjs` 的 `validateCommit` |
-| 真实默认路径 profiling | 宿主循环、原生 read/grep/pwsh、增长历史、重复读取、一次失败读取、持久化和消融组均已采样；模型仍为脚本化零等待，不冒充供应商延迟或账单 | `scripts/profile-host-path.mjs`、`evidence/profile-host-path-20261125-segmented.json` |
+| 真实默认路径 profiling | 宿主循环、原生 read/grep/pwsh、增长历史、重复读取、一次失败读取、请求边界配置刷新和单变量消融均已采样；模型仍为脚本化零等待，不冒充供应商延迟或账单 | `scripts/profile-host-path.mjs`、`evidence/profile-host-path-20261125-single-factor.json`、`evidence/profile-host-path-20261125-refresh.json` |
+| 预览写入不失效旧读取 | `verified_exec` 只预览或 deopt、且效果状态为 `none` 时，不把此前读取标记为过期；真实写入和未知效果仍按原规则失效 | `test/observation-ledger-freshness.test.mjs` |
+| 超长行续读 | 响应预算裁掉后续行且首行本身被截断时，不再把“下一行”作为唯一恢复入口；达到 `lineTextMaximum` 时报告 `lineTextRecoveryLimited` | `test/evidence-archive.test.mjs` |
+| 归档批次隔离 | 单个归档成员读取异常只返回该来源 `unavailable`，同批其它来源继续；宿主取消仍向外抛出，不伪装成不可用 | `source-tools.mjs`；归档取消边界已由 `test/evidence-archive.test.mjs` 覆盖，批次异常路径依赖注入边界 |
+| 条件写入能力探测 | 原生条件写入探测失败直接报错，不再被当作“不支持宿主”；未编辑分支断言 `nativeSupported === false`，防止 rc.2 回归被错误接受 | `test/host-workflow-combinations.test.mjs` |
+| CRLF 预设选择 | 预设选择器同时接受 LF 和 CRLF 检出；新增 CRLF 回归 | `test/flash1017-preset.test.mjs` |
+| 失败请求基线 | 出错但无 `failureCode` 的 finish 不能替换曝光基线 | `test/context-economics.test.mjs` |
 
 ## 反向验证
 
@@ -133,6 +140,15 @@
 - 参考价不能批准正常压缩或上下文改写；只有精确路由价可以进入正常经济性决策。容量紧急策略与正常经济性策略分开。
 - 部分已知用量按可信字段记录费用下界；混合参考价、精确价和失败费用时分别报告覆盖率。
 
+`feature-control.mjs` 的就绪判断与上述执行条件一致：
+
+- `projectionPricing` 为空时报告 `requires-setting:projectionPricing`，不再把发布价描述为可用价格。
+- 有价格但路由不精确时报告 `route-price-not-exact`。
+- 找不到对应价格时报告 `route-price-unavailable`。
+- `historyHygiene`、`contextPrune`、`contextProtocol`、`requestProjection` 以及开启 `compressionControl` 时的 `swEviction` 使用同一条件。
+
+审查后的 `EcoNative45`–`EcoNative49` 实际配置为 `projectionPricing: []`。五轮共 349 个主请求、0 个辅助模型请求；`historyOutput` 532 次决策中只有 5 次初始未发送视图应用，527 次因参考价被拒；`contextPrune` 109 次决策中 39 次因参考价被拒，正常改写 0 次。因此这些轮次的费用下降不能归因于正常历史压缩或源码裁剪。可复核数据见 `evidence/feature-effects-h26-20261125.json`。
+
 `history-hygiene.mjs`：`initialOutputView` 与 `testDigest` 复用已存储计划，稳定期内不因新的预测反复切换。首次发送的初始 grep 视图仍是独立规则；已进入缓存历史且尚未投影的视图必须通过 `allowed('historyOutput')` 经济性门禁，不能绕过价格判断。定义摘要默认关闭，只有 `definitionSummary:"on"` 才额外注入；统计区分候选、实际发送、工具观察时注入和真实请求投影时注入，并注明信息组织不等于净收益。
 
 `context-pruning.mjs`：来源优先。`transport` 只在调用来源可证明为 shell/程序执行时成立；来源不明时，`stdout/stderr` 形状的 JSON 保守保留。配置正文与传输结果同形的反例已覆盖，live history 与 stage checkpoint 两条路径都传入来源标记。
@@ -159,16 +175,21 @@
 
 ## 七、性能
 
-`scripts/profile-host-path.mjs`（`npm run profile:host`）现在使用真实宿主循环、原生 `read`/`grep`/`pwsh`、10 个文件、每文件 180 行、7 次重复读取和 1 次失败读取，每轮 21 个请求。脚本化模型等待固定为 0；结果区分配置读取、工具执行、文件系统、遥测持久化、请求历史增长和销毁。3 轮结果在 `evidence/profile-host-path-20261125-segmented.json`：
+`scripts/profile-host-path.mjs`（`npm run profile:host`）使用真实宿主循环、原生 `read`/`grep`/`pwsh`、10 个文件、每文件 180 行、7 次重复读取和 1 次失败读取，每轮 21 个请求。脚本化模型等待固定为 0。旧的 `accounting-off` 同时关闭十项配置，且 `pwsh` 调用缺少必填 `description`：关闭组被宿主在参数校验阶段拒绝，插件组的参数兼容逻辑补救了调用，因此旧数据不能用于执行能力或 4.53 倍耗时比较。现行脚本使用同一 `pwsh` 路径和合法参数，两组均为 3/3 成功；消融改为单变量模式。
 
-| 模式 | `sendMs` p50 / p95 | 初始化 p50 | 步耗时 p95 | 每轮文件系统 / 遥测 | 每轮工具执行 | 辅助请求 |
-|---|---:|---:|---:|---:|---:|---:|
-| `plugin-off` | 287.73 / 331.42 ms | 无 | 164.15 ms | 0 / 0 ms | 250.37 ms | 0 |
-| `plugin-default` | 1304.67 / 1337.69 ms | 5.81 ms | 573.06 ms | 176.19 / 124.74 ms | 915.70 ms | 0 |
-| `core-only` | 1192.66 / 1218.63 ms | 5.31 ms | 574.58 ms | 178.30 / 131.19 ms | 922.45 ms | 0 |
-| `accounting-off` | 1062.02 / 1105.17 ms | 4.82 ms | 597.46 ms | 46.58 / 4.05 ms | 889.48 ms | 0 |
+配置刷新改动前，默认插件每 3 轮读取 `config.json` 1080 次；每轮 18 次 `read` 的总耗时比关闭组高约 230 ms。`runtime.init` 曾在每个 `pre-step` 和读工具派发时重读工作区与会话配置。现在 `init` 只装载一次，`refresh` 只在新模型请求、状态查询和控制命令时重读；配置仍从下一次模型请求生效。改动后的同条件 3 轮结果：
 
-三轮峰值 RSS 为 172.1 MiB，结束时堆使用 90.8 MiB。默认插件与关闭组的最终请求正文为 315,413 / 313,214 字符（约 +0.70%），但 `sendMs` 中位数从 287.73 ms 增至 1304.67 ms；初始化只有 5.81 ms。主要本机开销落在每步工具路径和请求账本持久化：关掉统计后，文件系统与遥测写入降到每轮 46.58 / 4.05 ms，`sendMs` 降到 1062.02 ms；关掉历史、节奏和上下文机制（`core-only`）没有降低这两项。该结果定位了本机瓶颈，不能证明供应商延迟、实际扣费或任务级费用收益。`scripts/profile-default-path.mjs`（`npm run profile`）的 30 轮结果仍只作为局部微基准：
+| 模式 | `sendMs` p50 / p95 | `read` p50 | 3 轮配置操作 / 耗时 | 3 轮遥测操作 / 耗时 |
+|---|---:|---:|---:|---:|
+| `plugin-off` | 1046.25 / 1135.73 ms | 5.10 ms | 0 / 0 ms | 0 / 0 ms |
+| `plugin-default`（改动后） | 1311.92 / 1341.75 ms | 9.12 ms | 189 / 31.02 ms | 387 / 567.90 ms |
+| `plugin-default`（改动前） | 1770.95 / 1856.51 ms | 19.15 ms | 1080 / 247.59 ms | 387 / 526.01 ms |
+
+每 3 轮配置操作减少 82.5%，读取总耗时从 1020.61 ms 降到 500.23 ms；相对关闭组的额外读取开销从约 691.64 ms 降到约 209.27 ms。剩余本机开销主要在 3 轮 387 次遥测写入，平均每次读取仍多约 3.9 ms。单关 `requestAccounting`、`historyHygiene`、`stepPacing` 或 `contextProtocol` 未显著降低配置或遥测次数；这些开关不是当前读取额外开销的主因。数据见 `evidence/profile-host-path-20261125-single-factor.json`、`evidence/profile-host-path-20261125-refresh.json`。
+
+缓存前缀离线检查读取原生会话事件并按相邻请求重建可见消息序列。H26 关闭组 168 次相邻比较全部为追加，插件 45–49 共 343 次比较也全部为追加，缓存读取下降 0 次；关闭组最小/中位缓存读占前一请求提示 Token 的比例为 98.61% / 99.96%，插件为 98.65%–99.62% / 99.95%–99.96%。5 次 `historyOutput` 改写都发生在消息首次送达前，没有改写已进入缓存的历史。H26 的费用差来自请求数、累计输入、缓存读取量和输出量，不是插件造成的缓存断点。汇总见 `evidence/cache-prefix-h26-20261125.json`。会话事件不保留宿主生成的完整系统提示和工具 schema 正文，因此该结果不能替代供应商侧缓存日志。
+
+`scripts/profile-default-path.mjs`（`npm run profile`）的 30 轮结果仍只作为局部微基准：
 
 | 分段 | 均值 | p95 |
 |---|---|---|
@@ -186,6 +207,7 @@
 ## 尚未完成
 
 - 审查后真实模型小卷已执行到 `EcoNative49`；45–49 的连续三次达标记录见交接页。本节不把该结果当作审查报告级别以上的质量证明。
+- PR #12 的旧未解决线程尚未全部关闭。最新手动审查已触发，但 CodeRabbit 因本 PR 124 个文件超过其 100 个文件上限继续跳过；不能把“已触发”写成“已审查”。
 - `boundedPatch` 的项目规模、文件数、源码字节和缺陷数量只表示机制适用性；本轮没有跨项目验证这些阈值，不能据此宣称通用效率收益。
 - 请求开始记录在持久化不可用且进程被强制终止时无法恢复；状态只标记不完整。
 - 本地 Token 估计不是服务端分词；预算不能视为服务端硬限制。
