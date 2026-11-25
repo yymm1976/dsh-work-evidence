@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {restoreStoredDefinitions} from '../ptc-fastpath.mjs';
+import {removeStoredDefinition,restoreStoredDefinitions} from '../ptc-fastpath.mjs';
 
 const validDefinition=()=>({
   name:'list-readme',
@@ -28,4 +28,12 @@ test('a stored store with only unusable entries yields an empty valid set instea
   assert.deepEqual(restored.valid,[]);
   assert.equal(restored.skipped.length,2);
   assert.equal(restored.skipped[1].reason,'not-an-object');
+});
+
+test('a retired definition can be removed by name without validating it',()=>{
+  const store={definitions:[validDefinition()],retiredDefinitions:[{name:'retired-legacy',steps:[{tool:'ops_read_files'}]}]};
+  assert.deepEqual(removeStoredDefinition(store,'retired-legacy'),{removed:true});
+  assert.deepEqual(store.definitions.map(item=>item.name),['list-readme']);
+  assert.deepEqual(store.retiredDefinitions,[]);
+  assert.deepEqual(removeStoredDefinition(store,'retired-legacy'),{removed:false});
 });

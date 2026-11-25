@@ -7,7 +7,7 @@
 | 项 | 结果 |
 |---|---|
 | 语法检查 | `npm run check`，194 个 JavaScript 文件通过 |
-| 全量单测 | `npm test`，1102 项，1101 通过，0 失败，1 项按宿主能力跳过 |
+| 全量单测 | `npm test`，1103 项，1102 通过，0 失败，1 项按宿主能力跳过 |
 | 跳过原因 | 当前宿主三包均为 `0.2.2-rc.1`，条件写入后端可用；只描述“后端缺失”的用例按设计跳过 |
 | 并发波动 | 首次并发全量出现 1 次 `host-node-fallback` 的解释器约束用例失败；该文件单独运行 10/10，第二次全量通过。根因未定位，保留为测试稳定性风险，不写成已修复 |
 | 打包安装 | `test/package-install.test.mjs` 通过；离线安装不拉宿主 peer，安装副本可加载 |
@@ -35,6 +35,7 @@
 | 预览写入不失效旧读取 | `verified_exec` 只预览或 deopt、且效果状态为 `none` 时，不把此前读取标记为过期；真实写入和未知效果仍按原规则失效 | `test/observation-ledger-freshness.test.mjs` |
 | 超长行续读 | 响应预算裁掉后续行且首行本身被截断时，不再把“下一行”作为唯一恢复入口；达到 `lineTextMaximum` 时报告 `lineTextRecoveryLimited` | `test/evidence-archive.test.mjs` |
 | 归档批次隔离 | 单个归档成员读取异常只返回该来源 `unavailable`，同批其它来源继续；宿主取消仍向外抛出，不伪装成不可用 | `source-tools.mjs`；归档取消边界已由 `test/evidence-archive.test.mjs` 覆盖，批次异常路径依赖注入边界 |
+| 退役快速路径清理 | `ptc_fastpath.remove` 同时删除有效定义和 `retiredDefinitions` 中的同名条目；无法验证的旧定义不再只能手工改存储文件 | `test/ptc-fastpath-restore.test.mjs` |
 | 条件写入能力探测 | 原生条件写入探测失败直接报错，不再被当作“不支持宿主”；未编辑分支断言 `nativeSupported === false`，防止 rc.2 回归被错误接受 | `test/host-workflow-combinations.test.mjs` |
 | CRLF 预设选择 | 预设选择器同时接受 LF 和 CRLF 检出；新增 CRLF 回归 | `test/flash1017-preset.test.mjs` |
 | 失败请求基线 | 出错但无 `failureCode` 的 finish 不能替换曝光基线 | `test/context-economics.test.mjs` |

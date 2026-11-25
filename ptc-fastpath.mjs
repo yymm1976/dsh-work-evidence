@@ -128,6 +128,14 @@ export function restoreStoredDefinitions(definitions){
   return {valid,skipped};
 }
 
+export function removeStoredDefinition(store,name){
+  const before=store.definitions.length+(Array.isArray(store.retiredDefinitions)?store.retiredDefinitions.length:0);
+  store.definitions=store.definitions.filter(item=>item?.name!==name);
+  store.retiredDefinitions=(Array.isArray(store.retiredDefinitions)?store.retiredDefinitions:[])
+    .filter(item=>item?.name!==name);
+  return {removed:store.definitions.length+store.retiredDefinitions.length<before};
+}
+
 function resultStatus(result,tool){
   const status=result?.value?.data?.status||result?.value?.status;
   if(status)return status;
@@ -214,9 +222,8 @@ export function createPtcFastpath(ctx,runtime,call){
   async function remove(agent,name,signal){
     const s=await runtime.init(agent,signal);if(typeof name!=='string'||!SAFE_NAME.test(name))throw new Error('Invalid name');
     return serial(path.join(s.dir,'ptc-fastpaths.json'),async()=>{
-      const {file,store}=await load(agent,signal);const before=store.definitions.length;
-      store.definitions=store.definitions.filter(item=>item.name!==name);
-      if(store.definitions.length===before)return {status:'not-found',name,storePath:file};
+      const {file,store}=await load(agent,signal),{removed}=removeStoredDefinition(store,name);
+      if(!removed)return {status:'not-found',name,storePath:file};
       await save(agent,file,store,signal);return {status:'removed',name,storePath:file};
     });
   }

@@ -19,13 +19,14 @@
 | `mavenSourceBinding` | 成熟默认开启 | 依赖归档解码和坐标匹配 | `host-source-options.test.mjs`、Maven 来源测试 | `README.md` |
 | `contextProtocol` | 成熟默认开启 | 处理可恢复旧工具正文；正常改写依赖回收入口和当前路由的精确 `projectionPricing` 行 | `host-context-combinations.test.mjs`、`host-compaction.test.mjs` 验证正文、压缩与恢复 | `README.md` |
 | `historyHygiene` | 成熟默认开启 | 依赖历史回收入口和当前路由的精确 `projectionPricing` 行；异常时停用自身折叠。测试回执覆盖 pytest、ruff、compileall、gradlew/gradle/mvn 和带完整 TAP 摘要的 `node --test`；无摘要、截断、spill 或用户要求完整输出时不投影 | `host-history.test.mjs` 验证折叠和恢复；`test-output-hygiene.test.mjs` 验证测试输出回执、TAP 摘要边界、截断与召回边界；`history-full-output-request.test.mjs` 验证只有真实用户消息可停用回执 | `README.md` |
+| `contextPrune` | 成熟默认开启 | 正常源码裁剪依赖当前路由的精确 `projectionPricing` 行；参考价只用于显示，不能批准改写 | `context-pruning` 与宿主上下文测试 | `README.md` |
 | `nativeVerifiedEdits` | 候选，默认关闭 | `verified_exec` 的唯一后端。限定同一版本的 rc.1/rc.2 原生 tools、LocalFileSystem 或官方 SandboxedFileSystem；沿原生 write 权限路径附带版本条件。旧宿主或工具替换时：**feature readiness** 报 `rc2-native-conditional-write-unavailable`；而 **`verified_exec` 调用**返回 `reason:"cas-file-tools-unavailable"` + `missing:["rc2-native-conditional-write"]`。两者是不同接口（前者是配置就绪度，后者是工具结果），匹配时必须用各自的值。任何情况下都不退回未验证写入 | `native-cas.test.mjs` 覆盖创建、替换、BOM/CRLF、并发、权限、逐文件成功和失败状态、延迟注册及真实 PTC；`host-source.test.mjs` 覆盖不可用宿主上的诚实 deopt | 当前候选尚未发布 |
 | `fileProfiling` | 候选，默认关闭 | 依赖原生文件服务的版本、stat 和字节范围读取；入口 `file_profile` | `file-profile-core.test.mjs`、`file-profile.test.mjs` 覆盖 CSV、UTF-8、抽样/全量、预算与并发；真实触发及消融待完成 | `RELEASE-NOTES-1.1.2.md`、`MIGRATION-1.1.2.md` |
 | `structuredJson` | 候选，默认关闭 | 依赖原生有界字节读取和版本；入口 `structured_json` | `json-pointer.test.mjs`、`structured-json-core.test.mjs`、`structured-json.test.mjs` 覆盖指针、数值规则、行号、短读及真实 PTC；真实任务及消融待完成 | `RELEASE-NOTES-1.1.2.md`、`MIGRATION-1.1.2.md` |
 | `ledgerReceipt` | 成熟默认开启 | 依赖可回收历史和来源正文 | `host-source-options.test.mjs`、`host-acp-combinations.test.mjs` 验证短回执 | `README.md` |
 | `ledgerUnresolved` | 成熟默认开启 | 保留真实未解决项，不推断完成 | `host-state.test.mjs` 验证状态传播 | `README.md` |
 | `swLedger` | 成熟显式开启 | 默认关闭；为重复结果折叠提供记录 | `sw-default.test.mjs`、上下文组合测试 | `README.md`、`MIGRATION-1.1.1.md` |
-| `swEviction` | 成熟显式开启 | 依赖 `swLedger` 和历史回收 | `sw-default.test.mjs` 验证启停和释放 | `README.md`、`MIGRATION-1.1.1.md` |
+| `swEviction` | 成熟显式开启 | 依赖 `swLedger` 和历史回收；`compressionControl` 开启时还需当前路由的精确 `projectionPricing` 行 | `sw-default.test.mjs` 验证启停和释放 | `README.md`、`MIGRATION-1.1.1.md` |
 | `requestProjection` | 成熟显式开启 | 默认关闭；依赖 `projectionRestore`、回收入口 | `host-projection.test.mjs` 验证隐藏、恢复和锚点 | `README.md`、`MIGRATION-1.1.1.md` |
 | `projectionRestore` | 成熟显式开启 | 依赖 `requestProjection` | `host-projection.test.mjs` 验证恢复失败清理 | `README.md`、`MIGRATION-1.1.1.md` |
 | `compressionControl` | 成熟默认开启 | 协调原生压缩和来源恢复 | `compression-control.test.mjs`、`host-context-combinations.test.mjs` | `README.md` |
