@@ -993,6 +993,17 @@ test('later opaque execution and unscoped changes cannot preserve a current scop
   assert.deepEqual(audit().verification.checks[0].coverage[0].unavailableReasons,['opaque-execution-after-check','unsettled-mutation']);
 });
 
+test('a pending legacy lookup does not count as an unsettled write',()=>{
+  const {f,assessment,audit}=reviewedFixture();
+  const check=f.operation('read',{file_path:'a.txt'},'source');
+  f.add('tool/call',{callId:'legacy-lookup',name:'fastedit_java',arguments:{operation:'read_entity',path:'a.txt'}});
+  assessment.throughSeq=f.events.at(-1).seq;assessment.checks=[recordedCheck(f,check,'source','addresses')];
+  assessment.checks[0].coverage[0].scopePaths=['a.txt'];
+  const coverage=audit().verification.checks[0].coverage[0];
+  assert.equal(coverage.reach,'addresses');
+  assert.equal(coverage.unavailableReason,undefined);
+});
+
 test('partial check output and a later requirement cannot inherit a complete check coverage claim',()=>{
   const {f,done,assessment,audit}=reviewedFixture();
   const check=f.operation('pwsh',{command:'node partial.js'},JSON.stringify({exitCode:0,stdout:'ok',truncated:true}));
@@ -1018,9 +1029,9 @@ test('nested check review preserves delivery uncertainty and unreviewed requirem
   assert.equal(unreviewed.verification.unknownCriteria,2);assert.equal(unreviewed.taskOutcome,'unknown');
 });
 
-function processFixture({variation=null,body='[exit code: 1]',exitCode=1}={}){
-  const f=fixture(),call=f.add('tool/call',{callId:'native-call',name:'pwsh',arguments:{command:'node check.js'}});
-  const job={jobId:'native-job',owner:'session-a',kind:'pwsh',toolCall:{callId:'native-call',rootCallId:'native-call'}};
+function processFixture({variation=null,body='[exit code: 1]',exitCode=1,name='pwsh'}={}){
+  const f=fixture(),call=f.add('tool/call',{callId:'native-call',name,arguments:{command:'node check.js'}});
+  const job={jobId:'native-job',owner:'session-a',kind:name,toolCall:{callId:'native-call',rootCallId:'native-call'}};
   const registered=f.add('job/registered',job),end={...job,status:'completed',cause:'producer',producerReported:true,detail:'exit code: '+exitCode};
   if(variation==='owner')end.owner='session-b';
   if(variation==='caller')end.toolCall={...end.toolCall,callId:'different-call'};
@@ -1045,6 +1056,16 @@ test('process outcome does not come from printable exit text or unrelated or inc
     assert.equal(call.processOutcome,'unknown',variation);assert.equal(call.exitCode,null,variation);
     assert.equal(call.completionObservation,undefined,variation);
   }
+});
+
+test('historical ops_bash still requires producer completion evidence',()=>{
+  const completed=processFixture({name:'ops_bash',body:'ok',exitCode:0}),completedCall=normalizeDshEvents(completed.f.events).calls[0];
+  assert.equal(completedCall.processOutcome,'exited-zero');
+  assert.equal(completedCall.exitCode,0);
+  const missing=fixture();missing.operation('ops_bash',{command:'printf ok'},'ok');
+  const missingCall=normalizeDshEvents(missing.events).calls[0];
+  assert.equal(missingCall.processOutcome,'unknown');
+  assert.equal(missingCall.exitCode,null);
 });
 
 test('contradictory structured and producer exit codes invalidate a supplied coverage claim',()=>{

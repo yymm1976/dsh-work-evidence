@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {removeStoredDefinition,restoreStoredDefinitions} from '../ptc-fastpath.mjs';
+import {removeStoredDefinition,restoreStoredDefinitions,retiredDefinitionSummary} from '../ptc-fastpath.mjs';
 
 const validDefinition=()=>({
   name:'list-readme',
@@ -36,4 +36,18 @@ test('a retired definition can be removed by name without validating it',()=>{
   assert.deepEqual(store.definitions.map(item=>item.name),['list-readme']);
   assert.deepEqual(store.retiredDefinitions,[]);
   assert.deepEqual(removeStoredDefinition(store,'retired-legacy'),{removed:false});
+});
+
+test('retired fast-paths expose names and reasons for removal',()=>{
+  const store={definitions:[validDefinition()],retiredDefinitions:[
+    {name:'retired-legacy',retireReason:'Step uses an unavailable read-only tool'},
+    {name:'retired-broken',retireReason:'Unknown definition field'},
+    {steps:[]},
+  ]};
+  assert.deepEqual(retiredDefinitionSummary(store),{
+    count:3,
+    names:['retired-legacy','retired-broken'],
+    reasons:['Step uses an unavailable read-only tool','Unknown definition field'],
+    skippedNow:0,
+  });
 });

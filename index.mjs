@@ -627,9 +627,9 @@ export function apply(ctx,config={}){
     const mode=taskSurfaceModes.get(agent.session.id);
     const keepRecall=base==='compact'&&mode==='minimal'&&(taskHistoricalRecallRequested||recoveredRead||hasHistoricalReferences(agent));
     const surface=base==='compact'?(mode==='read-only'||keepRecall?'compact-read-only':mode==='minimal'?'compact-minimal':'compact'):base;
-    // verified_exec is advertised only when the native conditional-write backend
-    // is enabled and the task surface can write. It has no other edit backend,
-    // so advertising it otherwise would publish a tool that can only deopt.
+    // Publication follows the setting and task surface. Backend readiness is a
+    // separate execution condition: feature readiness reports it, and an
+    // unsupported host returns an explicit deopt without writing.
     const nativeEditHidden=config.nativeVerifiedEdits?[]:['verified_exec'];
     // project_evidence is a read-only entry point for these features. An explicit
     // source request can need it even when execution tools are hidden.

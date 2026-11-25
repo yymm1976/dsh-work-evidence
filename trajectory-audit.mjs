@@ -306,7 +306,7 @@ export function normalizeDshEvents(input){
   const nestedRoots=new Set(calls.filter(call=>call.nested&&call.rootCallId).map(call=>call.rootCallId));
   for(const call of calls){
     call.toolOutcome=call.outcome;call.processOutcome='unknown';
-    if(call.resultSeq===null||!['pwsh','bash','run_code','work_exec','work_probe','verified_exec','job_output'].includes(call.name))continue;
+    if(call.resultSeq===null||!['pwsh','bash','run_code','work_exec','work_probe','verified_exec','job_output','ops_bash'].includes(call.name))continue;
     if(Number.isInteger(call.exitCode))call.processOutcome=call.exitCode===0?'exited-zero':'exited-nonzero';
     const completion=recordedProcessCompletion(events,{seq:call.resultSeq},throughSeq+1);
     if(!completion)continue;
@@ -401,7 +401,7 @@ function checkedJudgmentReviews(input,normal,sourceId,throughSeq,sourceCurrent,s
         OPAQUE.has(call.name));
       if(opaque)reasons.push('opaque-execution-after-evidence');
       for(const call of normal.calls){
-        if(call.callSeq>throughSeq||call.resultSeq!==null||!WRITE.has(call.name))continue;
+        if(call.callSeq>throughSeq||call.resultSeq!==null||!WRITE.has(call.name)||readOnlyLegacyWrite(call))continue;
         const changed=normalizeFile(fileOf(call.arguments));
         if(!changed){reasons.push('file-scope-unresolved');break;}
         if(scopes.some(scope=>scope.value===changed.value)){reasons.push('unsettled-mutation');break;}
@@ -656,7 +656,7 @@ function constraintObservations(normal){
       const scriptTarget=runpy?.[1]??shell?.[1]??shell?.[2];
       if(scriptTarget){
         const target=scriptTarget.replaceAll('\\','/').split('/').at(-1),writes=normal.calls.filter(candidate=>candidate.callSeq<call.callSeq&&
-          WRITE.has(candidate.name)&&
+          WRITE.has(candidate.name)&&!readOnlyLegacyWrite(candidate)&&
           String(fileOf(candidate.arguments)??'').replaceAll('\\','/').split('/').at(-1)===target);
         const changed=new Set(normal.changes.map(change=>change.callSeq));
         const latest=writes.findLast(candidate=>candidate.effectState!=='none');
@@ -757,7 +757,7 @@ function checkedChangeScopeReviews(input,normal,sourceId,sourceProblems){
         currentReasons.push('possible-file-change-after-review');
     }
     for(const later of normal.calls){
-      if(later.resultSeq===null&&WRITE.has(later.name)){
+      if(later.resultSeq===null&&WRITE.has(later.name)&&!readOnlyLegacyWrite(later)){
         const laterPath=normalizeFile(fileOf(later.arguments));
         if(!laterPath||!requestedPath||laterPath.absolute!==requestedPath.absolute||samePath(laterPath,requestedPath))currentReasons.push('unsettled-mutation');
       }
@@ -938,7 +938,7 @@ export function requirementEvidenceView(normal,review,verification,sourceProblem
       [...normal.changes,...normal.possibleChanges].some(change=>change.seq>check.resultSeq&&change.seq<=review.throughSeq)||
       normal.calls.some(call=>call.callSeq<=review.throughSeq&&(
         OPAQUE.has(call.name)&&(call.resultSeq===null||call.resultSeq>check.resultSeq)||
-        WRITE.has(call.name)&&call.resultSeq===null))));
+        WRITE.has(call.name)&&call.resultSeq===null&&!readOnlyLegacyWrite(call)))));
     const successful=({check,item})=>item.reach==='addresses'&&check.outputIncomplete!==true&&check.toolOutcome==='succeeded'&&
       (!check.nested||check.enclosingOutcome==='succeeded')&&
       (!['pwsh','bash','run_code','work_exec','work_probe','verified_exec','job_output','ops_bash'].includes(check.tool)||

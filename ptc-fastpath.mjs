@@ -136,6 +136,19 @@ export function removeStoredDefinition(store,name){
   return {removed:store.definitions.length+store.retiredDefinitions.length<before};
 }
 
+export function retiredDefinitionSummary(store,skippedDefinitions=[]){
+  const retired=Array.isArray(store?.retiredDefinitions)?store.retiredDefinitions:[];
+  return {
+    count:retired.length,
+    names:retired.map(item=>typeof item?.name==='string'?item.name:null).filter(Boolean).slice(0,32),
+    reasons:[...new Set([
+      ...retired.map(item=>typeof item?.retireReason==='string'?item.retireReason:null),
+      ...skippedDefinitions.map(item=>typeof item?.reason==='string'?item.reason:null),
+    ].filter(Boolean))].slice(0,8),
+    skippedNow:skippedDefinitions.length,
+  };
+}
+
 function resultStatus(result,tool){
   const status=result?.value?.data?.status||result?.value?.status;
   if(status)return status;
@@ -182,7 +195,10 @@ export function createPtcFastpath(ctx,runtime,call){
     // first save after a restore delete every definition this build cannot validate, which
     // is irreversible: a rollback then finds them gone.
     const retired=[...(Array.isArray(loaded.value.retiredDefinitions)?loaded.value.retiredDefinitions:[]),
-      ...restored.skipped.map(entry=>loaded.value.definitions[entry.index]).filter(Boolean)];
+      ...restored.skipped.map(entry=>{
+        const item=loaded.value.definitions[entry.index];
+        return item&&typeof item==='object'&&!Array.isArray(item)?{...item,retireReason:entry.reason}:null;
+      }).filter(Boolean)];
     return {s,file,store:{...loaded.value,definitions:restored.valid,retiredDefinitions:retired},skippedDefinitions:restored.skipped};
   }
   async function save(agent,file,store,signal){await runtime.save(agent,file,store,signal);}
@@ -211,13 +227,12 @@ export function createPtcFastpath(ctx,runtime,call){
   }
   async function list(agent,signal){
     await runtime.init(agent,signal);const {file,store,skippedDefinitions}=await load(agent,signal);
+    const retired=retiredDefinitionSummary(store,skippedDefinitions??[]);
     return {storePath:file,definitions:store.definitions.map(item=>({name:item.name,description:item.description,candidate_id:item.candidate_id,
       tools:item.steps.map(step=>step.tool),uses:item.uses||0,successes:item.successes||0,lastUsedAt:item.lastUsedAt,lastOutcome:item.lastOutcome})),
       // Reported, not silently dropped: these entries remain in the store under
       // `retiredDefinitions` and can be restored by a build that understands them.
-      retiredDefinitions:{count:Array.isArray(store.retiredDefinitions)?store.retiredDefinitions.length:0,
-        skippedNow:(skippedDefinitions??[]).length,
-        reasons:[...new Set((skippedDefinitions??[]).map(item=>item.reason))].slice(0,5)}};
+      ...(retired.count?{retiredDefinitions:retired}:{})};
   }
   async function remove(agent,name,signal){
     const s=await runtime.init(agent,signal);if(typeof name!=='string'||!SAFE_NAME.test(name))throw new Error('Invalid name');

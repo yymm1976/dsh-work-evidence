@@ -210,7 +210,10 @@ function mutationPathsFromValue(name,args,value){
     if(name==='verified_exec'){
       const states=Array.isArray(value?.files)?value.files:[];
       if(states.length){
-        for(const file of states)if(['applied','partial','unknown'].includes(file?.effectState)&&typeof file?.path==='string')out.push(file.path);
+        for(const file of states){
+          const target=file?.path??file?.file;
+          if(['applied','partial','unknown'].includes(file?.effectState)&&typeof target==='string')out.push(target);
+        }
       }else if(value===null||value===undefined||['applied','partial','unknown'].includes(value?.effectState)){
         if(Array.isArray(args?.edits))for(const edit of args.edits)
           if(typeof (edit?.file??edit?.path??edit?.file_path)==='string')out.push(edit.file??edit.path??edit.file_path);

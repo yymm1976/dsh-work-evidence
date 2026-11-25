@@ -75,6 +75,21 @@ test('a verified_exec preview does not invalidate an earlier read',async()=>{
   assert.equal(observation.stale,false,'a preview made no file change');
 });
 
+test('a verified_exec apply invalidates an earlier read through the producer file field',async()=>{
+  const f=fixture();
+  await f.post({agent:f.agent,name:'read',callId:'read-applied',arguments:{file_path:'a.txt'},mutationCountAtDispatch:0},
+    {isError:false,content:[{type:'text',text:body}],value:{path:'a.txt',lines:[
+      {line:1,text:'alpha'},{line:2,text:'beta'},{line:3,text:'gamma'}]}});
+  await f.post({agent:f.agent,name:'verified_exec',callId:'applied-1',mutationCountAtDispatch:0,
+    arguments:{summary:'replace beta',apply:true,edits:[{file:'a.txt',mode:'replace_exact',old_text:'beta',new_text:'BETA'}]}},
+  {isError:false,content:[],value:{status:'applied',effectState:'applied',files:[{file:'a.txt',effectState:'applied'}]}});
+  f.agent.session.surface.nodes.push(11);
+  f.sessionEvent({seq:11,type:'tool/result',data:{turn:1,step:1,message:{role:'tool',
+    source:{callId:'read-applied'},isError:false,content:[{type:'text',text:body}]}}});
+  const [observation]=f.ledger.detail(f.agent).observations;
+  assert.equal(observation.stale,true,'the applied file field must invalidate the pre-edit read');
+});
+
 test('paths that differ only by case are not merged without a host identity proof',async()=>{
   const f=fixture();
   await f.post({agent:f.agent,name:'write',callId:'write-upper',arguments:{file_path:'A.txt'},mutationCountAtDispatch:0},

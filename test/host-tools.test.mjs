@@ -435,7 +435,7 @@ test('ptc_fastpath runs a read and grep chain, then removes the saved definition
     assert.equal(run.json.steps[1].status,'completed');
     assert.ok(run.json.steps[1].summary.matches.some(match=>match.line==='needle here'));
 
-    assert.ok(beforeRemove.json.definitions.some(item=>item.name==='read-grep-chain'));
+    assert.ok(beforeRemove.json?.definitions.some(item=>item.name==='read-grep-chain'),beforeRemove.text);
     assert.equal(removed.json.status,'removed');
     assert.ok(!afterRemove.json.definitions.some(item=>item.name==='read-grep-chain'));
   });

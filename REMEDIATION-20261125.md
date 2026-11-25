@@ -1,13 +1,13 @@
 # 系统性缺陷整改记录（2026-11-25）
 
-对象：`feat/v04-windows-bash`，当前审查关闭提交 `88b4ea6`。本文记录系统性整改和第三轮独立审查后当前成立的行为、验证方式和真实限制；不把离线测试、脚本化性能循环或参考费率当成真实模型费用与质量结论。
+对象：`feat/v04-windows-bash` 当前审查修复。本文记录系统性整改和后续独立审查后当前成立的行为、验证方式和真实限制；不把离线测试、脚本化性能循环或参考费率当成真实模型费用与质量结论。
 
 ## 验证结果
 
 | 项 | 结果 |
 |---|---|
 | 语法检查 | `npm run check`，194 个 JavaScript 文件通过 |
-| 全量单测 | `npm test`，1103 项，1102 通过，0 失败，1 项按宿主能力跳过 |
+| 全量单测 | `npm test`，1107 项，1106 通过，0 失败，1 项按宿主能力跳过 |
 | 跳过原因 | 当前宿主三包均为 `0.2.2-rc.1`，条件写入后端可用；只描述“后端缺失”的用例按设计跳过 |
 | 并发波动 | 首次并发全量出现 1 次 `host-node-fallback` 的解释器约束用例失败；该文件单独运行 10/10，第二次全量通过。根因未定位，保留为测试稳定性风险，不写成已修复 |
 | 打包安装 | `test/package-install.test.mjs` 通过；离线安装不拉宿主 peer，安装副本可加载 |
@@ -39,6 +39,11 @@
 | 条件写入能力探测 | 原生条件写入探测失败直接报错，不再被当作“不支持宿主”；未编辑分支断言 `nativeSupported === false`，防止 rc.2 回归被错误接受 | `test/host-workflow-combinations.test.mjs` |
 | CRLF 预设选择 | 预设选择器同时接受 LF 和 CRLF 检出；新增 CRLF 回归 | `test/flash1017-preset.test.mjs` |
 | 失败请求基线 | 出错但无 `failureCode` 的 finish 不能替换曝光基线 | `test/context-economics.test.mjs` |
+| 条件写入失效路径 | `verified_exec` 的实际逐文件效果同时读取生产者 `file` 字段；已应用或未知效果会使先前读取失效，预览和 deopt 不失效 | `test/observation-ledger-freshness.test.mjs` |
+| 历史 Shell 完成证据 | 离线审计中的 `ops_bash` 与其它进程工具一样要求生产者完成事件；只有工具成功返回、没有退出证据时保持 `processOutcome:"unknown"` | `test/trajectory-audit.test.mjs` |
+| 历史只读调用 | 未结算的 `fastedit_java` `find_entity`/`read_entity` 不计为未结算写入；脚本来源筛选也排除这些只读调用 | 同一轨迹审计测试 |
+| 退役快速路径发现 | `ptc_fastpath` 列表报告退役名称和原因，调用方可按名称删除；空列表不再返回 `undefined` 字段破坏无损 JSON | `test/ptc-fastpath-restore.test.mjs`、`test/host-tools.test.mjs` |
+| 条件写入发布契约 | 工具文档明确：发布由 `nativeVerifiedEdits` 决定，执行另需受支持的原生后端；不支持的宿主明确 deopt，不写入 | `management-tools.mjs`、`index.mjs`、`OPS-ADAPTERS-OPT-IN.md` |
 
 ## 反向验证
 
