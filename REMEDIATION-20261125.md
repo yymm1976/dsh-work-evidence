@@ -7,9 +7,9 @@
 | 项 | 结果 |
 |---|---|
 | 语法检查 | `npm run check`，194 个 JavaScript 文件通过 |
-| 全量单测 | `npm test`，1136 项，1134 通过，0 失败，2 项按宿主能力跳过 |
+| 全量单测 | `npm test`，1137 项，1135 通过，0 失败，2 项按宿主能力跳过 |
 | 跳过原因 | 当前宿主三包均为 `0.2.2-rc.1`，条件写入后端可用；只描述“后端缺失”的用例按设计跳过 |
-| 并发波动 | 首次并发全量出现 1 次 `host-node-fallback` 的解释器约束用例失败；该文件单独运行 10/10，随后两轮全量通过，最近一轮为 1136 项。根因未定位，保留为测试稳定性风险，不写成已修复 |
+| 并发波动 | 首次并发全量出现 1 次 `host-node-fallback` 的解释器约束用例失败；该文件单独运行 10/10，随后三轮全量通过，最近一轮为 1137 项。根因未定位，保留为测试稳定性风险，不写成已修复 |
 | 打包安装 | `test/package-install.test.mjs` 通过；离线安装不拉宿主 peer，安装副本可加载 |
 | 声明文件加载 | `test/host-package-load.test.mjs` 通过；95 个声明文件，45 个功能项，无阻塞项 |
 | 宿主兼容 | `test/host-compatibility.test.mjs` 通过；声明与宿主运行时一致 |
@@ -55,6 +55,7 @@
 | 预算锁与未结算预留 | 锁包含持有者 token，释放/破锁校验身份；结算写失败保留可重放的预留标记，下次预留在锁内对账后才允许派发 | `test/auxiliary-budget.test.mjs` 的活进程旧锁与结算写失败 |
 | 任务意图边界 | 内层否定 `forget not to` 不被 idiom 放行；解释/假设句中的改写动词不授予自动写入 | `test/task-intent.test.mjs` 的对应正反例 |
 | Windows 路径大小写 | 轨迹审计对 Windows 路径按大小写折叠比较；无物理身份时大小写变体按可能同一文件处理 | `test/trajectory-audit.test.mjs` 的两条反例 |
+| Windows pwsh 命令上限 | `inlineCommand` 在 win32 用完整命令的字符数对照 30,000 字符上限；超限在启动前返回明确错误，不再因路径分支漏检 | `test/inline-exec-platform.test.mjs` 的 Windows 超限回归 |
 | 发布脚本依赖 | `package.json.files` 纳入 `test/helpers/host.mjs` 与 `paths.mjs`，打包安装可直接运行 `profile:host` | `npm pack --dry-run` 文件清单 |
 | 缓存边界与生成输出 | 仅在本轮已有 cache-read/cache-write 证据时排除相同提示前缀；保留的生成 assistant 消息按独立输出暴露计费，不受上一请求输入 Token 上限截断 | `test/context-economics.test.mjs` 的两条边界测试 |
 | 权限失败测试 | 日志恢复测试改用注入 `appendFile`/`truncate` 失败，不再依赖 `chmod` 在 root/CAP_DAC_OVERRIDE 环境下是否生效 | `test/effect-observer.test.mjs` |

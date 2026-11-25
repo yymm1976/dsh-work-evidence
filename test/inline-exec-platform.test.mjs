@@ -48,3 +48,9 @@ test('inline command validation remains shared by both shell renderers',()=>{
   assert.throws(()=>inlineCommand({runtime:'python',code:'print(1)'},'.','bash'),/transfer ID/u);
   assert.throws(()=>inlineEnvironment({runtime:'node',code:'console.log(1)'},'bad\nID'),/transfer ID/u);
 });
+
+test('Windows pwsh transport rejects a command over the command-line limit',{skip:process.platform!=='win32'},()=>{
+  const code='console.log("'+'x'.repeat(24000)+'");';
+  assert.throws(()=>inlineCommand({runtime:'node',format:'commonjs',executable:'node.exe',code},'C:/project'),
+    /work_exec source is too large for the pwsh transport/u);
+});
