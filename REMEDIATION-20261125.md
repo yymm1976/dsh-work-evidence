@@ -7,7 +7,7 @@
 | 项 | 结果 |
 |---|---|
 | 语法检查 | `npm run check`，194 个 JavaScript 文件通过 |
-| 全量单测 | `npm test`，1107 项，1106 通过，0 失败，1 项按宿主能力跳过 |
+| 全量单测 | `npm test`，1108 项，1107 通过，0 失败，1 项按宿主能力跳过 |
 | 跳过原因 | 当前宿主三包均为 `0.2.2-rc.1`，条件写入后端可用；只描述“后端缺失”的用例按设计跳过 |
 | 并发波动 | 首次并发全量出现 1 次 `host-node-fallback` 的解释器约束用例失败；该文件单独运行 10/10，第二次全量通过。根因未定位，保留为测试稳定性风险，不写成已修复 |
 | 打包安装 | `test/package-install.test.mjs` 通过；离线安装不拉宿主 peer，安装副本可加载 |
@@ -44,6 +44,7 @@
 | 历史只读调用 | 未结算的 `fastedit_java` `find_entity`/`read_entity` 不计为未结算写入；脚本来源筛选也排除这些只读调用 | 同一轨迹审计测试 |
 | 退役快速路径发现 | `ptc_fastpath` 列表报告退役名称和原因，调用方可按名称删除；空列表不再返回 `undefined` 字段破坏无损 JSON | `test/ptc-fastpath-restore.test.mjs`、`test/host-tools.test.mjs` |
 | 条件写入发布契约 | 工具文档明确：发布由 `nativeVerifiedEdits` 决定，执行另需受支持的原生后端；不支持的宿主明确 deopt，不写入 | `management-tools.mjs`、`index.mjs`、`OPS-ADAPTERS-OPT-IN.md` |
+| 大 JSON 源保护 | 通用工具回执对无 `<path>` 标记、超过 12,000 字符的原始 JSON 和 shell 信封都返回 `null`，保留配置正文 | `test/history-source-retention.test.mjs` |
 
 ## 反向验证
 

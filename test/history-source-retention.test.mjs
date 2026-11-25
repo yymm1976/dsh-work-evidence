@@ -51,6 +51,20 @@ test('the generic tool receipt refuses a source body printed by a shell command'
   assert.equal(toolOutputDigest('pwsh',text,{seq:9,command:'cat src/widget.py'}),null,'source is never digested');
 });
 
+test('the generic tool receipt refuses large JSON configuration without path markup',()=>{
+  const json=JSON.stringify({name:'fixture',dependencies:Object.fromEntries(
+    Array.from({length:700},(_,i)=>['package-'+(i+1),'^1.'+i+'.0']))},null,2);
+  assert.ok(json.length>=12000,'the fixture clears TOOL_MIN_CHARS: '+json.length);
+  assert.equal(looksLikeSourceBody(json),true,'pretty-printed JSON is source-shaped');
+  assert.equal(toolOutputDigest('pwsh',json,{seq:12,command:'cat package.json'}),null,
+    'raw configuration output is not digested');
+  const envelope=JSON.stringify({stdout:{text:json},stderr:{text:''},exitCode:0});
+  assert.ok(envelope.length>=12000,'the envelope also clears TOOL_MIN_CHARS: '+envelope.length);
+  assert.equal(looksLikeSourceBody(envelope,{transport:true}),true,'the shell envelope carries source');
+  assert.equal(toolOutputDigest('pwsh',envelope,{seq:13,command:'cat package.json'}),null,
+    'a shell envelope carrying configuration is not digested');
+});
+
 test('the generic tool receipt still summarises a diagnostic log',()=>{
   const log=Array.from({length:900},(_,i)=>`build step ${i} completed in ${i}ms`).join('\n')+'\nERROR: one step failed\n';
   assert.equal(looksLikeSourceBody(log),false,'a log is not source-shaped');
