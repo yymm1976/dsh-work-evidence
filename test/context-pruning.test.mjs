@@ -302,3 +302,30 @@ test('readDispatch normalizes read calls and ignores non-read calls', () => {
   });
   assert.equal(readDispatch({name: 'edit', arguments: {}}), null);
 });
+
+test('shell envelopes and nested program output retain source while ordinary shell text can be pruned', () => {
+  const source = Array.from({length: 340}, (_, index) =>
+    `def symbol_${index}():\n    return ${index}`).join('\n');
+  const sourceEnvelope = JSON.stringify({status: 'completed', exitCode: 0,
+    stdout: {text: source}, stderr: {text: ''}});
+  assert.ok(sourceEnvelope.length > 8000, 'the source fixture must clear the size guard');
+  const sourceMessage = textMessage(sourceEnvelope);
+  assert.equal(prunableMessage(sourceMessage), true);
+  assert.equal(planContextPrune(sourceMessage, [], options({transport: true, retainSource: () => false})),
+    null, 'a source body inside stdout.text must not be reduced to head and tail');
+
+  const nested = JSON.stringify({content: [{type: 'text', text: source}], status: 'completed'});
+  assert.ok(nested.length > 8000, 'the nested source fixture must clear the size guard');
+  assert.equal(planContextPrune(textMessage(nested), [], options({transport: true, retainSource: () => false})),
+    null, 'nested read/program content is source too');
+
+  const log = Array.from({length: 260}, (_, index) =>
+    `2026-11-25T12:00:00Z INFO request ${index} completed in ${index} ms`).join('\n');
+  const logEnvelope = JSON.stringify({status: 'completed', exitCode: 0,
+    stdout: {text: log}, stderr: {text: ''}});
+  assert.ok(logEnvelope.length > 8000, 'the log control must clear the size guard');
+  const logMessage = textMessage(logEnvelope);
+  const pruned = planContextPrune(logMessage, [], options({transport: true, retainSource: () => false}));
+  assert.ok(pruned, 'a non-source shell envelope remains eligible for pruning');
+  assert.ok(pruned.content[0].text.length < logEnvelope.length);
+});

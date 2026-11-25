@@ -1,7 +1,24 @@
+import {limits} from './evidence.mjs';
+
 export const resultText=content=>(content??[]).filter(block=>block?.type==='text').map(block=>block.text??'').join('\n');
 
 export function parseResult(text){
-  try{return JSON.parse(text);}catch{return null;}
+  try{
+    const value=JSON.parse(text);
+    if(!['read','locate'].includes(value?.mode)||value.readLayout!=='numbered'||!Array.isArray(value.sources))return value;
+    return {...value,sources:value.sources.map(source=>{
+      if(typeof source?.numberedLines!=='string')return source;
+      const {numberedLines,clippedLines,...entry}=source;
+      const clipped=new Set(Array.isArray(clippedLines)?clippedLines:[]);
+      const lines=numberedLines.split('\n').map(row=>{
+        const match=/^([1-9]\d*)\t([\s\S]*)$/u.exec(row);
+        if(!match)return null;
+        const line=Number(match[1]);
+        return {line,text:match[2],...(clipped.has(line)?{lineTextTruncated:true}:{})};
+      });
+      return lines.every(row=>Number.isSafeInteger(row?.line))?{...entry,lines}:source;
+    })};
+  }catch{return null;}
 }
 
 /** Read existing structured results, then recover tool-owned non-JSON error envelopes. */
@@ -42,14 +59,17 @@ function inspectResult(value,includeIncomplete){
   const visit=(node,depth=0,execution=true,selection=false)=>{
     if(--remaining<0||depth>16)return true;
     if(!node||typeof node!=='object')return false;
+    const completeSourcePage=node.rangeComplete===true&&node.rowRangeComplete===true&&node.lineTextComplete===true&&node.fileHasMore===true;
     if(node.isError===true||node.success===false||node.ok===false||node.error||node.err||typeof node.stderr==='string'&&node.stderr.trim()||
+      node.state==='unavailable'&&typeof node.path==='string'&&!!node.requestedRange||
       Number.isFinite(node.exitCode)&&node.exitCode!==0||Number.isFinite(node.exit_code)&&node.exit_code!==0||
       execution&&(
       [node.status,node.state,node.job?.status].some(status=>['error','failed','killed','cancelled','rejected','aborted','unavailable','disabled','deopt','not_found','blocked','not-attempted'].includes(String(status??'').toLowerCase())||includeIncomplete&&['unknown','partial','running','pending','queued','stopping','stopped','background','promoted'].includes(String(status??'').toLowerCase()))||
       node.timedOut===true||node.aborted===true||node.cancelled===true||node.stopped!==undefined||node.signal!=null||includeIncomplete&&(
       ['background','promoted'].includes(node.kind)||node.executionCompleted===false||node.completed===false||
       node.partial===true||node.outputPartial===true||node.lossy===true))||includeIncomplete&&(
-      node.complete===false||node.rangeComplete===false||node.textComplete===false||node.scanComplete===false||node.truncated===true||node.budgetTruncated===true))return true;
+      node.complete===false||node.rangeComplete===false||node.textComplete===false||node.scanComplete===false||
+      node.truncated===true&&!completeSourcePage||node.budgetTruncated===true))return true;
     if(Array.isArray(node))return node.some(item=>visit(item,depth+1,false,selection));
     const query=node.sourceComplete===true&&['json','jsonl'].includes(node.format)&&Array.isArray(node.results);
     const selected=selection&&node.status==='selected'&&typeof node.pointer==='string'&&['value','page','keys'].includes(node.op);
@@ -61,7 +81,8 @@ function inspectResult(value,includeIncomplete){
 
 export function resultReference(seq,details={}){
   return {kind:'work-evidence-reference',seq,...details,
-    retrieveOriginal:{tool:'work_recall',arguments:{kind:'output',seq}},
+    retrieveOriginal:{tool:'work_recall',arguments:{kind:'output',seq,
+      ...(Number.isSafeInteger(details.sourceIndex)?{sourceIndex:details.sourceIndex}:{})}},
     note:'Historical content is available at the listed event. This reference does not assert that the workspace is unchanged.'};
 }
 
@@ -102,6 +123,7 @@ export function contentReferences(content){
 
 const surfaceReferenceCache=new WeakMap();
 const historicalReferenceCache=new WeakMap();
+export const RECOVERED_NATIVE_READ_HEADER='[Work Evidence recovered native read output]';
 export function hasHistoricalReferences(agent){
   const session=agent.session,nodes=session.surface?.nodes??[],generation=session.surface?.contentGeneration;
   const previous=historicalReferenceCache.get(session);
@@ -113,7 +135,8 @@ export function hasHistoricalReferences(agent){
     if(!event)return true;
     const message=event.data?.message??event.data;
     if((message?.content??[]).some(block=>block?.type==='text'&&typeof block.text==='string'&&
-      /work_recall|work_state|\[work-evidence history |work-evidence-reference|\[work-evidence ledger receipt\]|\[SW evicted\]/.test(block.text))){
+      (event.type==='tool/result'&&block.text.startsWith(RECOVERED_NATIVE_READ_HEADER+'\n')||
+      /work_recall|work_state|\[work-evidence history |work-evidence-reference|\[work-evidence ledger receipt\]|\[SW evicted\]/.test(block.text)))){
       historicalReferenceCache.set(session,{generation,scanned:nodes.length,lastSeq:nodes.at(-1),found:true});
       return true;
     }
@@ -138,15 +161,30 @@ export function surfaceReferences(session){
   return result;
 }
 
-export function recallResult(agent,{seq,offset=0,maxChars=16000}={}){
+export function recallResult(agent,{seq,sourceIndex,offset=0,maxChars=16000}={}){
   if(!Number.isSafeInteger(seq)||seq<0)throw new Error('recall requires a non-negative event seq');
   if(!Number.isSafeInteger(offset)||offset<0)throw new Error('recall offset must be non-negative');
   if(!Number.isSafeInteger(maxChars)||maxChars<256||maxChars>64000)throw new Error('recall maxChars must be between 256 and 64000');
   const event=agent.session.eventAt(seq);
   if(event?.type!=='tool/result')return {status:'unavailable',seq,reason:'The requested event is not an available tool result in this session.'};
-  const message=event.data?.message??{},text=resultText(message.content),end=Math.min(text.length,offset+maxChars);
+  const message=event.data?.message??{};
+  let text=resultText(message.content);
+  let selection={};
+  if(sourceIndex!==undefined){
+    if(!Number.isSafeInteger(sourceIndex)||sourceIndex<1||sourceIndex>limits.sourceRanges)throw new Error('sourceIndex is outside the recorded batch range limit');
+    let parsed;try{parsed=JSON.parse(text);}catch{}
+    const value=parsed?.data??parsed;
+    const source=value?.mode==='read'&&Array.isArray(value.sources)?value.sources[sourceIndex-1]:null;
+    if(!source||typeof source.path!=='string')return {status:'unavailable',seq,sourceIndex,reason:'The event does not contain that recorded source entry.'};
+    const hasLines=Array.isArray(source.lines)&&source.lines.length||typeof source.numberedLines==='string'&&source.numberedLines.length;
+    if(!hasLines)return {status:'unavailable',seq,sourceIndex,path:source.path,
+      reason:'No source lines were recorded in that entry.',...(source.responseBudget?{responseBudget:source.responseBudget}:{})};
+    text=JSON.stringify(source);
+    selection={sourceIndex,path:source.path,rangeComplete:source.rangeComplete===true&&!source.budgetTruncated&&!source.lineTextTruncated};
+  }
+  const end=Math.min(text.length,offset+maxChars);
   const nonTextBlocks=(message.content??[]).filter(block=>block.type!=='text').map(block=>block.type);
-  return {status:'observed',seq,original:event.surfaceOp?.op!=='replace',historical:true,isError:!!message.isError,offset,totalChars:text.length,
+  return {status:'observed',seq,...selection,original:event.surfaceOp?.op!=='replace',historical:true,isError:!!message.isError,offset,totalChars:text.length,
     text:text.slice(offset,end),textComplete:end>=text.length,complete:end>=text.length&&!nonTextBlocks.length,nextOffset:end<text.length?end:null,
     nonTextBlocks,note:'Recorded session output, not a new observation of the current workspace. Non-text blocks are listed but not included in this text response.'};
 }

@@ -7,8 +7,8 @@ import {resultText,parseResult} from './visible-results.mjs';
 import {createExecutionDependencies,declaredFileSources,dependencyView,executionResultLayers,executionFacts,dependencyExecutionComplete} from './execution-dependencies.mjs';
 import {argsOf,eventLog} from './runtime.mjs';
 
-const TOOLS=['pwsh','ops_bash','bash','job_output','read','grep','glob','ops_stat','ops_read_files','ops_inspect_local_file'];
-const SHELL=new Set(['pwsh','ops_bash','bash']);
+const TOOLS=['pwsh','bash','job_output','read','grep','glob'];
+const SHELL=new Set(['pwsh','bash']);
 const MAX_RECORD_BYTES=1500000;
 const MAX_RECORDS=32;
 const MAX_SUMMARY_RECORDS=8;
@@ -226,7 +226,7 @@ export function createExecutionEvidence(ctx,runtime,call,{executionDependencies=
       error:failed?clip(rawError??'Native tool returned an error',1000):null,
       outputScope:tool==='job_output'?'consuming-job-output-delta':'native-tool-observation',sourceScope,
       effectState:'not-inferred',recordOrigin,scope};
-    if(!['pwsh','ops_bash','bash','job_output'].includes(tool)&&!stdout.text&&!cases.length)
+    if(!['pwsh','bash','job_output'].includes(tool)&&!stdout.text&&!cases.length)
       observation.resultPreview=clip(value??resultText(result.content),Math.floor(maxChars/3));
     return observation;
   }

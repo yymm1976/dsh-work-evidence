@@ -1,49 +1,35 @@
 import path from 'node:path';
 import {createHash} from 'node:crypto';
 import {argsOf,eventLog} from './runtime.mjs';
+import {physicalPathKey} from './evidence.mjs';
 
 export const VERSION='0.8.3';
 export const REPORT_SCHEMA='work-evidence.ptc-patterns.v1';
 
 const TOOL_ALIASES=Object.freeze({
-  ops_inspect_local_file:'read',
-  ops_read_files:'read',
   read:'read',
   read_files:'read',
   read_table:'read',
   read_docx:'read',
   read_pdf:'read',
   read_image:'read',
-  ops_grep:'grep',
   grep:'grep',
-  ops_glob:'glob',
   glob:'glob',
-  ops_stat:'stat',
   stat:'stat',
-  ops_diff:'diff',
   diff:'diff',
-  ops_result:'result',
   result:'result',
   working_directory:'working_directory',
-  ops_bash:'shell',
   bash:'shell',
   pwsh:'shell',
-  ops_edit_file:'edit',
   edit:'edit',
   edit_file:'edit',
-  ops_write_file:'write',
   write:'write',
   write_file:'write',
   str_replace_editor:'edit',
-  ops_replace:'replace',
   replace:'replace',
-  ops_copy:'copy',
   copy:'copy',
-  ops_move:'move',
   move:'move',
-  ops_remove:'remove',
   remove:'remove',
-  ops_batch:'batch',
   batch:'batch',
 });
 
@@ -350,7 +336,7 @@ function validateArgs(input){
 export function createPtcPatterns(ctx,runtime){
   async function scan(agent,args,signal){
     const input=validateArgs(args||{}),root=path.resolve(await ctx.workingDirectory.ensure(agent,signal));
-    const workspaceKey=value=>process.platform==='win32'?path.resolve(value).toLowerCase():path.resolve(value);
+    const workspaceKey=value=>physicalPathKey('.',value);
     const snapshots=[...(await ctx.sessionPersistence.list({signal}))];
     const allowed=snapshots.filter(snapshot=>typeof snapshot.header.cwd==='string'&&workspaceKey(snapshot.header.cwd)===workspaceKey(root))
       .sort((a,b)=>b.header.createdAt-a.header.createdAt);

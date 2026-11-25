@@ -1,8 +1,8 @@
-import path from 'node:path';
+import {physicalPathKey} from './evidence.mjs';
 
 const SCHEMA='work-evidence.declared-files.v1';
 const SCOPE='caller-declared-files-only';
-const key=value=>process.platform==='win32'?path.resolve(value).toLowerCase():path.resolve(value);
+const key=(root,value)=>physicalPathKey(root??'.',value);
 const versioned=value=>value?.exists===true&&value.type==='file'&&typeof value.version==='string'&&value.version.length>0&&value.version.length<=1024;
 
 export function declaredFileSources(sources=[]){
@@ -72,6 +72,11 @@ export function dependencyExecutionComplete(result){
 function compare(before,after){
   if(!versioned(before)||typeof after?.exists!=='boolean')return null;
   if(!after.exists||after.type!=='file')return false;
+  if(before.targetKey||after.targetKey){
+    if(!before.targetKey||!after.targetKey||before.targetKey!==after.targetKey)return false;
+  }else if(before.identity||after.identity){
+    if(!before.identity||!after.identity||before.identity!==after.identity)return false;
+  }
   return versioned(after)?before.version===after.version:null;
 }
 
@@ -86,12 +91,14 @@ export function createExecutionDependencies(nativeFiles){
     signal?.throwIfAborted();
     if(/^[A-Za-z][A-Za-z0-9+.-]*:/u.test(source)&&!(/^[A-Za-z]:[\\/]/u.test(source)))
       return {reason:'non-file-source'};
-    const id=JSON.stringify([key(root),source]);
+    const id=JSON.stringify([key(root,'.'),source]);
     if(!cache.has(id))cache.set(id,(async()=>{
       try{
         if(!nativeFiles)throw Object.assign(new Error('Native filesystem unavailable'),{code:'NATIVE_FS_UNAVAILABLE'});
         const info=await nativeFiles.stat(root,source,signal);
-        return {path:info.path,exists:info.exists,type:info.type,version:typeof info.version==='string'&&info.version.length<=1024?info.version:null};
+        return {path:info.path,identity:info.exists?key(root,info.path??source):null,
+          targetKey:typeof info.targetKey==='string'&&info.targetKey.length<=2048?info.targetKey:null,
+          exists:info.exists,type:info.type,version:typeof info.version==='string'&&info.version.length<=1024?info.version:null};
       }catch(error){
         signal?.throwIfAborted();
         if(['ENOENT','FS_NOT_FOUND'].includes(error.code))return {exists:false,type:null,version:null};
@@ -104,12 +111,12 @@ export function createExecutionDependencies(nativeFiles){
   async function capture(root,sources,signal){
     const declared=declaredFileSources(sources),cache=new Map();
     const files=await Promise.all(declared.map(async source=>({source,before:await sample(root,source,signal,cache)})));
-    return {schema:SCHEMA,scope:SCOPE,workspace:path.resolve(root),startedAt:new Date().toISOString(),declaredCount:declared.length,files};
+    return {schema:SCHEMA,scope:SCOPE,workspace:key(root,'.'),startedAt:new Date().toISOString(),declaredCount:declared.length,files};
   }
 
   function validRecord(root,record){
     const data=record?.fileDependencies;
-    return data?.schema===SCHEMA&&typeof data.workspace==='string'&&key(data.workspace)===key(root)&&
+    return data?.schema===SCHEMA&&typeof data.workspace==='string'&&key(root,data.workspace)===key(root,'.')&&
       Array.isArray(data.files)&&data.files.length<=16&&data.declaredCount===data.files.length&&
       data.files.every(file=>typeof file?.source==='string'&&file.source.trim()&&file.source.length<=2000)&&data;
   }
@@ -157,7 +164,7 @@ export function createExecutionDependencies(nativeFiles){
       if(!assessment)continue;
       const files=assessment.files.map(file=>{
         const captured=data.files.find(item=>item.source===file.source);
-        if(!file.path||key(file.path)!==key(path.resolve(root,mutation.path))||!versioned(captured?.before)||!versioned(captured?.after)||file.status.startsWith('changed-'))return file;
+        if(!file.path||key(root,file.path)!==key(root,mutation.path)||!versioned(captured?.before)||!versioned(captured?.after)||file.status.startsWith('changed-'))return file;
         const {reason,code,...previous}=file;
         return {...previous,status:mutation.effectState==='applied'?'changed-by-file-tool':'unknown',mutationSeq:mutation.seq,
           ...(mutation.effectState==='applied'?{}:{reason:'file-effect-unresolved'})};

@@ -3,21 +3,19 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import {pathToFileURL} from 'node:url';
 import {createRequire} from 'node:module';
 import {defaults,RETIRED_SETTINGS,VERSION} from '../runtime.mjs';
 import {startHost,text,tool,APP} from './helpers/host.mjs';
-import {OPS_ROOT} from './helpers/paths.mjs';
 
 const source=path.resolve(import.meta.dirname,'..');
-const FEATURE_KEYS=['enabled','aggressiveMode','selfIndex','fastEditEnabled','stateLedger','stateInform','completionNotice',
-  'archiveReadRouting','readArgumentRecovery','requestAccounting','evidenceViews','memberParsing','mavenSourceBinding','contextProtocol',
+const FEATURE_KEYS=['enabled','aggressiveMode','selfIndex','stateLedger','stateInform','completionNotice',
+  'archiveReadRouting','readArgumentRecovery','requestAccounting','strictObservability','evidenceViews','memberParsing','mavenSourceBinding','contextProtocol',
   'historyHygiene','nativeVerifiedEdits','fileProfiling','structuredJson','ledgerReceipt','ledgerUnresolved','swLedger','swEviction','requestProjection','projectionRestore',
   'compressionControl','deferPressureCompaction','stubSummary','executionTriage','nativeProgramReuse','hostNodeFallback','nativeShellScriptReuse','probeReplay','structuredCalls','nativeReasoningReplay',
-  'stageWorkingSet','stepPacing','retainedCompute','finalJsonGuard','finalJsonResultGuard','qualityReview','qualityReviewEffort',
+  'stageWorkingSet','stepPacing','retainedCompute','finalJsonGuard','finalJsonResultGuard','qualityReview','boundedPatch','qualityReviewEffort',
   'qualityReviewScope','toolSurface','defaultResponseView'];
 const TOOL_NAMES=['project_evidence','work_exec','work_recall','work_status','work_state','work_report','work_probe','evidence_index',
-  'candidate_select','ptc_patterns','ptc_fastpath','verified_exec','fastedit_java','work_compute','file_profile','structured_json'];
+  'candidate_select','ptc_patterns','ptc_fastpath','verified_exec','work_compute','file_profile','structured_json'];
 const contained=(root,relative)=>{
   const full=path.resolve(root,relative),part=path.relative(root,full);
   assert.ok(part&&!part.startsWith('..')&&!path.isAbsolute(part),'Package files remain inside their directory.');return full;
@@ -40,12 +38,11 @@ test('declared package files independently load all retained controls and preser
     const workspace={...Object.fromEntries(Object.entries(defaults()).filter(([key,value])=>typeof value==='boolean'&&!RETIRED_SETTINGS.includes(key)).map(([key])=>[key,true])),
       toolSurface:'full',fastEditPython:process.env.DSH_TEST_FASTEDIT_PYTHON||path.join(source,'.fastedit-venv/Scripts/python.exe'),
       projectionPricing:[{provider:'scripted',model:'scripted-model',input:.15,cacheRead:.003,output:.6,currency:'USD'}]};
-    const opsRoot=OPS_ROOT;
-    const ops=await Promise.all(['file','ptc'].map(name=>import(pathToFileURL(opsRoot+'/'+name+'/index.js').href)));
     let sourceValue,nativeValue;
+    // The package is loaded on the native tool surface only: the dsh-ops adapter
+    // components and the OPS-only tools are gone from this build.
     host=await startHost({pluginDirectory:directory,workspace,toolMode:'ptc',
-      extraMounts:[['dsh-ptc-runtime-node'],['dsh-compaction-basic',{thresholdRatio:.8,retainTokens:4000,maxTokens:10000,headroomTokens:4000}],
-        [ops[0],{promptPolicy:false,required:true}],[ops[1],{alwaysLoaded:['stat','edit_file','write_file'],required:true}]],
+      extraMounts:[['dsh-ptc-runtime-node'],['dsh-compaction-basic',{thresholdRatio:.8,retainTokens:4000,maxTokens:10000,headroomTokens:4000}]],
       script:(options,n)=>{
         if(n===1)return [tool('run_code',{calls:[{name:'project_evidence',arguments:{mode:'read',files:[{path:'source.txt',offset:1,limit:10}]}}]})];
         if(n===2){sourceValue=options.messages.findLast(message=>message.role==='tool');return [text('来源已取得。')];}
@@ -62,12 +59,11 @@ test('declared package files independently load all retained controls and preser
     assert.deepEqual(features.features.map(item=>item.key),FEATURE_KEYS);
     assert.equal(new Set(features.features.map(item=>item.key)).size,FEATURE_KEYS.length);
     assert.deepEqual(features.tools.map(item=>item.name),TOOL_NAMES);
-    assert.equal(new Set(features.tools.map(item=>item.name)).size,16);
+    assert.equal(new Set(features.tools.map(item=>item.name)).size,TOOL_NAMES.length);
     assert.ok(features.tools.every(item=>item.exposed===true),JSON.stringify(features.tools.filter(item=>!item.exposed)));
     assert.ok(features.features.filter(item=>typeof item.configured==='boolean').every(item=>item.configured));
-    assert.equal(features.features.find(item=>item.key==='fastEditEnabled').status,'ready');
     assert.equal(features.features.find(item=>item.key==='nativeReasoningReplay').status,'waiting');
-    const nativeHost=JSON.parse(await fs.readFile(createRequire(path.join(APP,'package.json')).resolve('@deepseek-ai/dsh-tools/package.json'),'utf8')).version==='0.2.2-rc.2';
+    const nativeHost=['0.2.2-rc.1','0.2.2-rc.2'].includes(JSON.parse(await fs.readFile(createRequire(path.join(APP,'package.json')).resolve('@deepseek-ai/dsh-tools/package.json'),'utf8')).version);
     assert.deepEqual(features.features.filter(item=>item.status==='blocked').map(item=>item.key),nativeHost?[]:['nativeVerifiedEdits']);
     assert.ok(JSON.stringify(sourceValue).includes('package-load-marker'));
     await host.command(agent,'off');await host.send(agent,'读取 source.txt，保持 Work Evidence 关闭。');

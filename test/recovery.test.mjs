@@ -15,126 +15,15 @@ const invalidResult = (code = 'INVALID_ARGUMENT', message = 'invalid arguments')
 
 test('correctedReadArguments ignores unknown tools and non-object arguments', () => {
   assert.equal(correctedReadArguments('write_file', {path: 'a'}), null);
-  assert.equal(correctedReadArguments('ops_glob', null), null);
-  assert.equal(correctedReadArguments('ops_glob', ['*.js']), null);
+  assert.equal(correctedReadArguments('read', null), null);
+  assert.equal(correctedReadArguments('read', ['a.txt']), null);
 });
 
-test('ops_stat accepts one paths item as path and rejects ambiguous forms', () => {
-  assert.deepEqual(
-    correctedReadArguments('ops_stat', {paths: ['src/main.java']}),
-    {path: 'src/main.java'}
-  );
-  assert.equal(correctedReadArguments('ops_stat', {paths: ['a.java', 'b.java']}), null);
-  assert.equal(correctedReadArguments('ops_stat', {paths: []}), null);
-  assert.equal(correctedReadArguments('ops_stat', {paths: ['']}), null);
-  assert.equal(correctedReadArguments('ops_stat', {path: 'a.java', paths: ['a.java']}), null);
-});
-
-test('ops_glob corrects scalar patterns and an identical glob alias', () => {
-  assert.deepEqual(
-    correctedReadArguments('ops_glob', {path: 'src', pattern: '**/*.js'}),
-    {path: 'src', pattern: ['**/*.js']}
-  );
-  assert.deepEqual(
-    correctedReadArguments('ops_glob', {glob: '*.mjs'}),
-    {pattern: ['*.mjs']}
-  );
-  assert.deepEqual(
-    correctedReadArguments('ops_glob', {pattern: '*.js', glob: '*.js'}),
-    {pattern: ['*.js']}
-  );
-});
-
-test('ops_glob does not choose between conflicting or malformed aliases', () => {
-  assert.equal(correctedReadArguments('ops_glob', {pattern: '*.js', glob: '*.ts'}), null);
-  assert.equal(correctedReadArguments('ops_glob', {glob: ''}), null);
-  assert.equal(correctedReadArguments('ops_glob', {glob: []}), null);
-  assert.equal(correctedReadArguments('ops_glob', {glob: [42]}), null);
-});
-
-test('ops_grep aliases normalize output, case, pattern, files-only and limit', () => {
-  assert.deepEqual(
-    correctedReadArguments('ops_grep', {pattern: 'needle', outputMode: 'files'}),
-    {pattern: 'needle', outputMode: 'files_with_matches'}
-  );
-  assert.deepEqual(
-    correctedReadArguments('ops_grep', {pattern: 'needle', output_mode: 'count'}),
-    {pattern: 'needle', outputMode: 'count'}
-  );
-  assert.deepEqual(
-    correctedReadArguments('ops_grep', {pattern: 'needle', case_insensitive: true}),
-    {pattern: 'needle', caseInsensitive: true}
-  );
-  assert.deepEqual(
-    correctedReadArguments('ops_grep', {pattern: ['foo', 'bar'], outputMode: 'content'}),
-    {pattern: '(?:foo)|(?:bar)', outputMode: 'content'}
-  );
-  assert.deepEqual(
-    correctedReadArguments('ops_grep', {pattern: 'needle', files_only: true}),
-    {pattern: 'needle', outputMode: 'files_with_matches'}
-  );
-  assert.deepEqual(
-    correctedReadArguments('ops_grep', {pattern: 'needle', maxMatches: 7}),
-    {pattern: 'needle', limit: 7}
-  );
-});
-
-test('ops_grep rejects conflicting aliases instead of choosing one', () => {
-  assert.equal(correctedReadArguments('ops_grep', {
-    pattern: 'needle',
-    outputMode: 'content',
-    mode: 'count'
-  }), null);
-  assert.equal(correctedReadArguments('ops_grep', {
-    pattern: 'needle',
-    caseInsensitive: true,
-    case_insensitive: false
-  }), null);
-  assert.equal(correctedReadArguments('ops_grep', {
-    pattern: 'needle',
-    outputMode: 'content',
-    files_only: true
-  }), null);
-  assert.equal(correctedReadArguments('ops_grep', {
-    pattern: 'needle',
-    maxMatches: 7,
-    limit: 7
-  }), null);
-  assert.equal(correctedReadArguments('ops_grep', {
-    pattern: 'needle',
-    maxMatches: 0
-  }), null);
-});
-
-test('ops_grep does not correct when an unsupported alias or value remains', () => {
-  assert.equal(correctedReadArguments('ops_grep', {
-    pattern: 'needle',
-    outputMode: 'files',
-    mode: 'bogus'
-  }), null);
-  assert.equal(correctedReadArguments('ops_grep', {
-    pattern: 'needle',
-    outputMode: 'bogus',
-    mode: 'count'
-  }), null);
-});
-
-test('ops_read_files wraps a single flat file request', () => {
-  assert.deepEqual(
-    correctedReadArguments('ops_read_files', {path: 'src/main.java', offset: 4, limit: 20}),
-    {files: [{path: 'src/main.java', offset: 4, limit: 20}]}
-  );
-  assert.equal(correctedReadArguments('ops_read_files', {
-    path: 'src/main.java',
-    offset: 4,
-    unexpected: true
-  }), null);
-});
-
-test('project_evidence infers unambiguous read and archive modes', () => {
+test('project_evidence repairs conflicting modes and leaves omitted modes to the tool', () => {
   const files = [{path: 'src/main.java', offset: 1, limit: 20}];
+  assert.equal(correctedReadArguments('project_evidence', {files}), null);
   assert.deepEqual(
-    correctedReadArguments('project_evidence', {files}),
+    correctedReadArguments('project_evidence', {mode: 'source', files}),
     {mode: 'read', files}
   );
   assert.deepEqual(
@@ -153,28 +42,28 @@ test('project_evidence infers unambiguous read and archive modes', () => {
 
 test('recoveryFor does nothing for a successful result', () => {
   assert.equal(
-    recoveryFor('ops_glob', {pattern: '*.js'}, {value: {state: 'completed'}}),
+    recoveryFor('read', {file_path: 'a.txt'}, {value: {state: 'completed'}}),
     null
   );
 });
 
 test('recoveryFor allows one deterministic read-only alias correction', () => {
-  const args = {path: 'src', glob: '*.js'};
-  const recovery = recoveryFor('ops_glob', args, invalidResult());
+  const args = {path: 'a.txt', offset: 1, limit: 10};
+  const recovery = recoveryFor('read', args, invalidResult());
 
   assert.deepEqual(recovery.correctedCall, {
-    tool: 'ops_glob',
-    arguments: {path: 'src', pattern: ['*.js']}
+    tool: 'read',
+    arguments: {file_path: 'a.txt', offset: 1, limit: 10}
   });
   assert.equal(recovery.retry, 'one-read-only-correction');
   assert.equal(recovery.automaticAllowed, true);
-  assert.match(recovery.shape, /pattern/);
+  assert.match(recovery.shape, /file_path/);
 });
 
 test('recoveryFor leaves conflicting read arguments for input repair', () => {
   const recovery = recoveryFor(
-    'ops_glob',
-    {pattern: '*.js', glob: '*.ts'},
+    'read',
+    {path: 'a.txt', file_path: 'b.txt'},
     invalidResult()
   );
 
@@ -198,8 +87,8 @@ test('recoveryFor never guesses corrections for write operations', () => {
 test('recoveryFor never retries permission or conflict failures unchanged', () => {
   for (const code of ['APPROVAL_REQUIRED', 'SANDBOX_DENIED', 'STATE_CONFLICT']) {
     const recovery = recoveryFor(
-      'ops_glob',
-      {path: 'src', glob: '*.js'},
+      'read',
+      {path: 'a.txt'},
       invalidResult(code)
     );
     assert.equal(recovery.correctedCall, null, code);
@@ -210,8 +99,8 @@ test('recoveryFor never retries permission or conflict failures unchanged', () =
 
 test('recoveryFor reports unavailable results without automatic retry', () => {
   const recovery = recoveryFor(
-    'ops_stat',
-    {path: 'missing.java'},
+    'read',
+    {file_path: 'missing.java'},
     {value: {state: 'unavailable', nextFactNeeded: 'The path was not found.'}}
   );
 
@@ -221,15 +110,15 @@ test('recoveryFor reports unavailable results without automatic retry', () => {
 });
 
 test('recoveredResult records the second attempt and disables a second retry', () => {
-  const originalArguments = {glob: '*.js'};
-  const correctedArguments = {pattern: ['*.js']};
+  const originalArguments = {path: 'a.txt'};
+  const correctedArguments = {file_path: 'a.txt'};
   const result = {
     value: {
       error: {info: {code: 'INVALID_ARGUMENT'}, message: 'unknown field'}
     }
   };
   const recovered = recoveredResult(result, {
-    tool: 'ops_glob',
+    tool: 'read',
     originalArguments,
     correctedArguments,
     originalError: {message: 'unknown field'}
@@ -245,22 +134,24 @@ test('recoveredResult records the second attempt and disables a second retry', (
 });
 
 test('normalizedReadResult records a pre-dispatch normalization', () => {
-  const originalArguments = {glob: '*.mjs'};
-  const correctedArguments = {pattern: ['*.mjs']};
+  const originalArguments = {path: 'a.txt'};
+  const correctedArguments = {file_path: 'a.txt'};
   const normalized = normalizedReadResult(
-    {value: {state: 'completed', items: []}},
-    {tool: 'ops_glob', originalArguments, correctedArguments}
+    {value: {value: 'raw text'}, error: {code: 'FAILED'}, meta: {}},
+    {tool: 'read', originalArguments, correctedArguments}
   );
 
-  assert.equal(normalized.value.recovery.applied, true);
-  assert.equal(normalized.value.recovery.stage, 'before-dispatch');
-  assert.equal(normalized.value.recovery.attempts, 1);
-  assert.equal(normalized.value.recovery.followup, null);
-  assert.deepEqual(normalized.value.recovery.originalArguments, originalArguments);
-  assert.deepEqual(normalized.value.recovery.correctedArguments, correctedArguments);
+  // Native read keeps its closed output schema and host presentation metadata;
+  // the normalization receipt belongs to metadata, not to the value.
+  assert.equal(normalized.meta.workEvidenceReadRecovery.applied, true);
+  assert.equal(normalized.meta.workEvidenceReadRecovery.stage, 'before-dispatch');
+  assert.equal(normalized.meta.workEvidenceReadRecovery.attempts, 1);
+  assert.equal(normalized.meta.workEvidenceReadRecovery.followup.automaticAllowed, false);
+  assert.deepEqual(normalized.meta.workEvidenceReadRecovery.originalArguments, originalArguments);
+  assert.deepEqual(normalized.meta.workEvidenceReadRecovery.correctedArguments, correctedArguments);
 });
 
-test('withRecovery extends OPS envelopes inside data and preserves status', () => {
+test('withRecovery extends closed provider envelopes inside data and preserves status', () => {
   const recovery = {applied: true};
   const result = {
     value: {status: 'partial', data: {items: [1]}, error: {code: 'PARTIAL'}}

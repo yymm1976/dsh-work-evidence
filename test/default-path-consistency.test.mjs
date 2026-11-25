@@ -29,6 +29,11 @@ test('a stale search reaches the model under the default ledger combination',asy
     'the default combination must not silently drop a recorded search invalidation');
   assert.ok(observed.body.includes('0 个旧源码观察和'),
     'keeping a stale search notice must drop the authored-write observation count, not report it as a reread requirement');
+  const notice=observed.body.slice(observed.body.indexOf('工程状态已失效'));
+  assert.ok(notice.includes('只有后续判断依赖这些搜索事实时'),
+    'search invalidation only asks for a new search when a later decision needs those facts');
+  assert.ok(!notice.includes('按当前文件核对三类断言'),
+    'stale search hits do not establish a need for a source and caller review');
 });
 
 test('the legacy notice still reports invalidation when the ledger card is disabled',async()=>{
@@ -42,6 +47,36 @@ test('an authored write without a stale search clears the notice and asks for no
     'a write that only invalidates its own earlier read must not leave a state notice behind');
   assert.ok(!observed.body.includes('changed at its source'),
     'a known-write invalidation must not be reported as an unresolved reread requirement');
+});
+
+test('a write invalidates only searches whose filters could include the written file',async()=>{
+  const host=await startHost({script:async(_options,index)=>{
+    if(index===1)return [
+      tool('glob',{pattern:'**/*.md'}),
+      tool('glob',{pattern:'**/{checks,specs}/**/*'}),
+      tool('grep',{pattern:'needle',include:'*.md'}),
+    ];
+    if(index===2)return [tool('write',{file_path:'worker.py',content:'needle changed\n'})];
+    if(index===3)return [
+      tool('glob',{pattern:'**/*.py'}),
+      tool('grep',{pattern:'needle',path:'worker.py',include:'*.md'}),
+    ];
+    if(index===4)return [tool('write',{file_path:'worker.py',content:'changed\n'})];
+    return [text('完成。')];
+  }});
+  try{
+    await fs.writeFile(path.join(host.cwd,'worker.py'),'needle\n');
+    await fs.writeFile(path.join(host.cwd,'guide.md'),'needle\n');
+    const agent=await host.createAgent('max');
+    await host.send(agent,'查找 needle 后更新 worker.py');
+    const state=(await host.command(agent,'detail')).detail.state;
+    const stale=state.searches.filter(search=>search.stale).map(search=>[search.tool,search.pattern,search.scope]);
+    assert.deepEqual(stale.sort(),[['glob','**/*.py','.'],['grep','needle','worker.py']]);
+    assert.equal(state.searches.length,5);
+    assert.equal(state.counts.stateNotices,1);
+    assert.doesNotMatch(requestText(host.requests[2]),/工程状态已失效/u);
+    assert.match(requestText(host.requests[4]),/2 个旧搜索命中/u);
+  }finally{await host.close();}
 });
 
 test('stageWorkingSet is enabled by default but reports no reachable consumer instead of ready',async()=>{
@@ -76,20 +111,19 @@ test('stageWorkingSet stays ready when a consumer is reachable',async()=>{
   }
 });
 
-test('the ledger card cites model reasoning without copying it into a user message',async()=>{
+test('the ledger omits recall pointers for private reasoning and visible assistant text',async()=>{
   const conclusion='采用方案B继续实现该功能并保留旧入口';
   const host=await startHost({script:async(_options,index)=>index===1?
-    [reasoning('结论：'+conclusion),tool('read',{file_path:'a.txt'})]:[text('完成。')]});
+    [reasoning('结论：'+conclusion),tool('read',{file_path:'a.txt'})]:index===2?
+      [text('结论：已有文件正文可供下一步使用'),tool('read',{file_path:'a.txt'})]:[text('完成。')]});
   try{
     await fs.writeFile(path.join(host.cwd,'a.txt'),'original\n');
     const agent=await host.createAgent('max');
     await host.send(agent,'读取 a.txt 并决定实现方案');
     const cards=host.events.filter(event=>event.type==='user/message'&&
       String(messageOf(event)?.source?.kind??'')==='work-evidence-ledger');
-    const card=cards.map(event=>textOf(messageOf(event))).find(value=>value.includes('reasoning at event'));
-    assert.ok(card,'the unresolved reasoning pointer must still be reported');
-    assert.ok(!card.includes(conclusion),'model-generated reasoning must not be replayed as user-role text');
-    assert.ok(card.includes('work_recall'),'the pointer must name the retrieval entry that still exposes the original reasoning');
+    const card=cards.map(event=>textOf(messageOf(event))).find(value=>value.includes('work_recall')||value.includes(conclusion));
+    assert.equal(card,undefined);
   }finally{await host.close();}
 });
 
@@ -124,5 +158,70 @@ test('an explicit reference view cannot bypass disabled evidenceViews receipts',
       'an explicit reference-if-visible request must not shorten a body while evidenceViews is blocked');
     assert.equal(results.filter(value=>value.includes('the quick brown fox')).length,2,
       'both explicit reads must return the requested full body');
+  }finally{await host.close();}
+});
+
+test('a truncated batch read is never receipted as a visible complete window',async()=>{
+  const body=Array.from({length:60},(_,index)=>'batch row '+index+' '+('z'.repeat(100))).join('\n')+'\n';
+  const host=await startHost({workspace:{toolSurface:'full'},script:async(_options,index)=>index===1?
+    [tool('project_evidence',{files:[{path:'a.txt'},{path:'b.txt'}],maxChars:2000})]:
+    index===2?[tool('read',{file_path:'a.txt'})]:[text('完成。')]});
+  try{
+    await fs.writeFile(path.join(host.cwd,'a.txt'),body);
+    await fs.writeFile(path.join(host.cwd,'b.txt'),body);
+    const agent=await host.createAgent('max');
+    await host.send(agent,'批量读取两个文件，然后重新读取 a.txt');
+    const results=host.events.filter(event=>event.type==='tool/result').map(event=>textOf(messageOf(event)));
+    const second=results.at(-1);
+    assert.ok(!second.includes('[work-evidence ledger receipt]'),'a budget-truncated batch body is not a complete visible receipt');
+    assert.ok(second.includes('batch row 59'),'the subsequent read delivers the requested body');
+  }finally{await host.close();}
+});
+
+test('an incomplete evidence body stays re-readable instead of receiving a receipt',async()=>{
+  const host=await startHost({workspace:{toolSurface:'full'},script:async(_options,index)=>index===1?
+    [tool('project_evidence',{files:[{path:'a.txt'}]})]:
+    index===2?[tool('read',{file_path:'a.txt'})]:[text('完成。')]});
+  try{
+    await fs.writeFile(path.join(host.cwd,'a.txt'),'short\n');
+    const agent=await host.createAgent('max');
+    await host.send(agent,'读取 a.txt，再重新读取同一文件。');
+    const results=host.events.filter(event=>event.type==='tool/result').map(event=>textOf(messageOf(event)));
+    const secondEvidence=results.at(-2),secondRead=results.at(-1);
+    assert.match(secondEvidence,/rangeComplete/u);
+    assert.ok(!secondRead.includes('[work-evidence ledger receipt]'));
+    assert.match(secondRead,/short/u);
+  }finally{await host.close();}
+});
+
+test('a budget-truncated single source is never receipted as a visible complete window',async()=>{
+  const body=Array.from({length:80},(_,index)=>'single row '+index+' '+('z'.repeat(100))).join('\n')+'\n';
+  const host=await startHost({workspace:{toolSurface:'full'},script:async(_options,index)=>index===1?
+    [tool('project_evidence',{mode:'read',files:[{path:'a.txt'}],maxChars:2000})]:
+    [text('完成。')]});
+  try{
+    await fs.writeFile(path.join(host.cwd,'a.txt'),body);
+    const agent=await host.createAgent('max');
+    await host.send(agent,'读取 a.txt。');
+    const result=host.events.filter(event=>event.type==='tool/result').map(event=>textOf(messageOf(event))).at(-1);
+    assert.match(result,/single row 0/u);
+    assert.ok(!result.includes('[work-evidence ledger receipt]'),'an incomplete source remains body-bearing and is never replaced by a receipt');
+  }finally{await host.close();}
+});
+
+test('a new user request clears the prior source continuation',async()=>{
+  const host=await startHost({workspace:{toolSurface:'full'},script:(_options,index)=>index===1
+    ?[tool('project_evidence',{mode:'read',files:[{path:'a.txt'},{path:'b.txt'}],maxChars:2000})]
+    :[text('完成。')]});
+  const continuations=()=>host.events.filter(event=>event.type==='user/message'&&
+    messageOf(event)?.source?.taskFlow?.key?.includes('"source-followup"'));
+  try{
+    await fs.writeFile(path.join(host.cwd,'a.txt'),'a');
+    await fs.writeFile(path.join(host.cwd,'b.txt'),BODY);
+    const agent=await host.createAgent('max');
+    await host.send(agent,'读取 a.txt 和 b.txt，再修复 b.txt。');
+    assert.equal(continuations().length,1);
+    await host.send(agent,'修改 c.txt。');
+    assert.equal(continuations().length,1,'the second request did not repeat the old continuation');
   }finally{await host.close();}
 });

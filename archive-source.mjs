@@ -2,9 +2,12 @@ import {readArchiveEntry} from './archive-store.mjs';
 import {finalizeEvidenceWindow} from './evidence.mjs';
 import {checkedLineTextLimit,sourceMemberSource,MAX_LINE_TEXT_LIMIT} from './source-members.mjs';
 
+export const ARCHIVE_LINE_LIMIT=160;
+
 export async function archiveSource(root,args,exec,_call){
-  const offset=args.offset??1,limit=args.limit??100;
-  if(!Number.isInteger(offset)||offset<1||!Number.isInteger(limit)||limit<1||limit>160)throw new Error('archive offset>=1 and limit=1-160 required');
+  const offset=args.offset??1,requestedLimit=args.limit??100;
+  if(!Number.isInteger(offset)||offset<1||!Number.isInteger(requestedLimit)||requestedLimit<1||requestedLimit>2000)throw new Error('archive offset>=1 and limit=1-2000 required');
+  const limit=Math.min(requestedLimit,ARCHIVE_LINE_LIMIT);
   const lineTextLimit=checkedLineTextLimit(args.lineTextLimit);
   const value=await readArchiveEntry(root,args.archive,args.entry,exec);if(value.state!=='observed')return value;
   const {archive,entry,cache}=value;
@@ -13,7 +16,7 @@ export async function archiveSource(root,args,exec,_call){
   const canIncrease=maxLineLength>lineTextLimit&&maxLineLength<=MAX_LINE_TEXT_LIMIT;
   const maximumReached=lineTextLimit===MAX_LINE_TEXT_LIMIT&&maxLineLength>MAX_LINE_TEXT_LIMIT;
   return finalizeEvidenceWindow({state:'observed',path:archive+'!/'+entry,archive,entry,cache,lines,totalLines:value.lines.length,
-    returnedThrough:lines.at(-1)?.line??offset-1,requestedRange:{offset,limit},hasMore:offset-1+lines.length<value.lines.length,
+    returnedThrough:lines.at(-1)?.line??offset-1,requestedRange:{offset,limit:requestedLimit},hasMore:offset-1+lines.length<value.lines.length,
     lineTextTruncated:lines.some(line=>line.lineTextTruncated),lineTextLimit,lineTextMaximum:MAX_LINE_TEXT_LIMIT,
     ...(maximumReached?{lineTextMaximumReached:true}:{}),
     ...(canIncrease?{nextLineTextLimit:maxLineLength,nextRetrieval:{tool:'project_evidence',arguments:{mode:'archive',archive:args.archive,entry,offset,limit,lineTextLimit:maxLineLength}}}:{}),

@@ -1,0 +1,90 @@
+{
+  "schema": "work-evidence.feature-effects-summary.v1",
+  "generatedAt": "2026-11-25T05:50:00.000Z",
+  "scope": "EcoNative45-H26 through EcoNative49-H26; observability decisions and same-trajectory local text estimates",
+  "requestCount": 349,
+  "auxiliaryModelRequests": 0,
+  "features": {
+    "historyOutput": {
+      "opportunities": 532,
+      "applied": 5,
+      "deferred": 527,
+      "reasons": {
+        "initial-unsent-output-view": 5,
+        "reference-rate-without-exact-route": 527
+      },
+      "observedProjectionEffects": 294,
+      "netLocalTokensEstimate": 474148,
+      "netLocalChars": 1629131
+    },
+    "contextPrune": {
+      "opportunities": 109,
+      "applied": 0,
+      "deferred": 104,
+      "notApplicable": 5,
+      "reasons": {
+        "source-retention-active": 65,
+        "reference-rate-without-exact-route": 39,
+        "already-reduced-in-request-view": 5
+      },
+      "observedProjectionEffects": 0,
+      "netLocalTokensEstimate": 0,
+      "netLocalChars": 0
+    },
+    "requestAccounting": {
+      "opportunities": 349,
+      "applied": 349,
+      "observedProjectionEffects": 0,
+      "netLocalTokensEstimate": 0,
+      "note": "Local request-row observation; no auxiliary model request."
+    },
+    "state": {
+      "opportunities": 219,
+      "applied": 219,
+      "observedProjectionEffects": 0,
+      "netLocalTokensEstimate": 0,
+      "note": "Ledger observation recording; no visible text by itself."
+    },
+    "stepPacing": {
+      "opportunities": 14,
+      "applied": 14,
+      "observedProjectionEffects": 387,
+      "netLocalTokensEstimate": -31338,
+      "netLocalChars": -38681,
+      "note": "Negative values are injected text carried by subsequent projections, not measured task benefit."
+    },
+    "guidance": {
+      "opportunities": 0,
+      "observedProjectionEffects": 349,
+      "netLocalTokensEstimate": -68404,
+      "netLocalChars": -70847,
+      "note": "Visible plugin guidance carried by requests; negative values are overhead, not measured benefit."
+    },
+    "stateInform": {
+      "opportunities": 2,
+      "applied": 2,
+      "observedProjectionEffects": 78,
+      "netLocalTokensEstimate": -6240,
+      "netLocalChars": -8818
+    },
+    "unresolved": {
+      "opportunities": 5,
+      "applied": 5,
+      "observedProjectionEffects": 112,
+      "netLocalTokensEstimate": -9287,
+      "netLocalChars": -30677
+    },
+    "receipt": {
+      "opportunities": 219,
+      "applied": 0,
+      "notApplicable": 219,
+      "reasons": {
+        "noMatchingVisibleBody": 213,
+        "smallBody": 6
+      },
+      "observedProjectionEffects": 0,
+      "netLocalTokensEstimate": 0
+    }
+  },
+  "conclusion": "The five reviewed runs did not execute a normal history rewrite or source pruning: every normal rewrite candidate lacked an exact-route price. The observed 50% outcomes therefore cannot be attributed to those mechanisms. Five initial unsent output views account for the only historyOutput effects. Injected notices, state guidance and unresolved reminders have measurable local prompt overhead, but these runs do not establish their task-level net benefit."
+}

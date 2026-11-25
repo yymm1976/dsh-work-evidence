@@ -6,7 +6,7 @@ import {stat} from 'node:fs/promises';
 
 const quote=value=>"'"+String(value).replaceAll("'","''")+"'";
 const bashQuote=value=>"'"+String(value).replaceAll("'","'\\''")+"'";
-const INPUT_KEYS=new Set(['runtime','language','code','scriptRef','edits','executable','interpreter','format','cwd','workdir','timeoutMs','mode','sources']);
+const INPUT_KEYS=new Set(['runtime','language','code','syntaxFiles','scriptRef','edits','executable','interpreter','format','cwd','workdir','timeoutMs','mode','sources']);
 const CALL_EVENT_TYPES=new Set(['tool/call','tool/ptc-dispatch-start','tool/ptc-dispatch','tool/code-dispatch-start','tool/code-dispatch']);
 const RESULT_EVENT_TYPES=new Set(['tool/result','tool/ptc-dispatch','tool/code-dispatch']);
 const validExecutable=value=>typeof value==='string'&&value.trim()&&value.length<=4096&&!/[\0\r\n]/u.test(value);
@@ -23,14 +23,58 @@ export async function sameDeclaredInlineExecutable(left,right){
     return first.isFile()&&second.isFile()&&first.ino!==0n&&first.dev!==0n&&second.dev!==0n&&first.ino===second.ino&&first.dev===second.dev;
   }catch{return false;}
 }
+function pythonSyntaxCode(files){
+  if(!Array.isArray(files)||files.length<1||files.length>32||files.some(file=>
+    typeof file!=='string'||file.length>512||/[\0\r\n:]/u.test(file)||
+    /^[\\/]/u.test(file)||file.split(/[\\/]/u).includes('..')||!/\.pyi?$/iu.test(file)))
+    throw new Error('syntaxFiles requires 1-32 workspace-relative .py or .pyi file paths');
+  const names=[...new Set(files.map(file=>file.replaceAll('\\','/')))];
+  return `import json
+from pathlib import Path
+
+root = Path.cwd().resolve()
+passed = []
+failed = []
+byte_limit = 2_000_000
+for name in ${JSON.stringify(names)}:
+    try:
+        target = (root / name).resolve(strict=True)
+        target.relative_to(root)
+        if not target.is_file():
+            raise ValueError("Not a regular file")
+        with target.open("rb") as source:
+            content = source.read(byte_limit + 1)
+        if len(content) > byte_limit:
+            raise ValueError("Source exceeds 2000000 bytes")
+        compile(content, name, "exec", dont_inherit=True)
+    except SyntaxError as error:
+        failed.append({"file": name, "kind": type(error).__name__, "line": error.lineno,
+                       "column": error.offset, "message": error.msg[:240]})
+    except (OSError, ValueError, RuntimeError) as error:
+        failed.append({"file": name, "kind": type(error).__name__, "message": str(error)[:240]})
+    else:
+        passed.append(name)
+
+print(json.dumps({"passedFiles": passed, "failedFiles": failed}, ensure_ascii=False))
+raise SystemExit(1 if failed else 0)
+`;
+}
 function normalizeInput(input){
   if(!input||typeof input!=='object'||Array.isArray(input))throw new Error('work_exec arguments must be an object');
   for(const key of Object.keys(input))if(!INPUT_KEYS.has(key))throw new Error('Unknown work_exec argument: '+key);
-  const {language,interpreter,cwd,workdir,mode,sources,...normalized}=input;
+  const {language,interpreter,cwd,workdir,mode,sources,syntaxFiles,...normalized}=input;
   if(mode!==undefined&&mode!=='once')throw new Error('scriptRef requires a fresh-process work_exec call');
   for(const [key,value]of [['runtime',language],['executable',interpreter]])if(value!==undefined){
     if(normalized[key]!==undefined&&normalized[key]!==value)throw new Error('Conflicting work_exec '+key+' alias');
     normalized[key]=value;
+  }
+  if(syntaxFiles!==undefined){
+    if(normalized.runtime!==undefined&&normalized.runtime!=='python')
+      throw new Error('syntaxFiles requires the Python runtime');
+    if(['code','scriptRef','edits','format'].some(key=>normalized[key]!==undefined))
+      throw new Error('syntaxFiles cannot be combined with code, scriptRef, edits, or format');
+    normalized.runtime='python';
+    normalized.code=pythonSyntaxCode(syntaxFiles);
   }
   for(const directory of [cwd,workdir])if(directory!==undefined&&!['.','./','.\\'].includes(directory))throw new Error('work_exec runs in the current project; cwd/workdir may only be .');
   if(normalized.timeoutMs!==undefined&&(!Number.isInteger(normalized.timeoutMs)||normalized.timeoutMs<1||normalized.timeoutMs>600000))
@@ -71,6 +115,7 @@ export function inlineScriptEventRef(session,callId){
   return event?'event:'+event.seq:null;
 }
 const DECLARED_EXECUTABLE=/\b(?:existing|installed|available)\b|(?:已有|现有|已经安装|已安装|可用)/iu;
+const USE_PREVIOUS_EXECUTABLE=/(?:可(?:以)?|请|应|须|必须)(?:直接)?(?:使用|调用|执行)(?:该|此|上述)(?:路径|解释器)|\b(?:can|may|should|must|please)\s+(?:directly\s+)?(?:use|invoke|run)\s+(?:this|that|the above)\s+(?:path|interpreter)\b/iu;
 const PATH_PERMISSION=/(?:改用|切换到|回退到|使用|采用|用)\s*PATH\b|(?:use|fall\s*back\s+to|switch\s+to)\s+(?:the\s+)?PATH\b|\bor\s+(?:the\s+)?PATH\b/giu;
 const PATH_PROHIBITION=/(?:不要|请勿|禁止|do not|don't|must not|never)[^。；;\n]{0,24}$/iu;
 const PATH_CONTRAST=/(?:\bbut\b|\binstead\b|\brather\b|而是|但是|不过|却|转而)/iu;
@@ -93,24 +138,43 @@ function executablePath(value,runtime){
   const basename=path.split(/[\\/]/u).at(-1);
   return (runtime==='python'?pythonExecutable:nodeExecutable).test(basename)?path:null;
 }
+const CJK_RUNTIME_DECLARATION=/^\s*(?:本机|当前环境)?\s*(?:已有|现有|已经安装|已安装)\s*(python|node(?:\.js)?)(?:\s+v?\d+(?:\.\d+)*)?\s*[,，]$/iu;
+const EN_RUNTIME_DECLARATION=/^\s*(python|node(?:\.js)?)(?:\s+v?\d+(?:\.\d+)*)?\s+is\s+(?:already\s+)?(?:installed|available)\s*[,，]$/iu;
+const EXECUTABLE_PATH_LABEL=/^\s*(?:路径\s*(?:为|是|[:：])|(?:its|the)\s+path\s*(?:is\b|:))/iu;
 function declaredPathFacts(text,runtime){
   const all=new Map(),declared=new Map(),positive=new Map();let negated=false,pathFallbackAllowed=false;
-  const windows=/[A-Za-z]:[\\/](?:[^\r\n"'`<>|?*:\\/]+[\\/])*(?:python(?:3(?:\.\d+)?)?(?:\.exe)?|node(?:\.exe)?)(?![A-Za-z0-9_\\/-]|\.[A-Za-z0-9_-])/giu;
-  const posix=/(?<![\w.:\\/])\/(?:[^\r\n"'`<>|?*\\/\s]+[\\/])*(?:python(?:3(?:\.\d+)?)?(?:\.exe)?|node(?:\.exe)?)(?![A-Za-z0-9_\\/-]|\.[A-Za-z0-9_-])/giu;
+  // Scan both path forms together so a Windows path consumes its POSIX-looking suffix.
+  const unquoted=/(?:[A-Za-z]:[\\/](?:[^\r\n"'`<>|?*:\\/]+[\\/])*|(?<![\w.:\\/])\/(?:[^\r\n"'`<>|?*\\/\s]+[\\/])*)(?:python(?:3(?:\.\d+)?)?(?:\.exe)?|node(?:\.exe)?)(?![A-Za-z0-9_\\/-]|\.[A-Za-z0-9_-])/giu;
   const quoted=/(["'`])([^\r\n]*?)\1/gu;
-  for(const clause of String(text??'').split(/\r?\n|(?<=[!?;。！？；，,])|(?<=\.)(?=\s)/u)){
+  let previousExecutable=null,previousClause='';
+  for(const clause of String(text??'').split(/(\r?\n)|(?<=[!?;。！？；，,])|(?<=\.)(?=\s)/u).filter(Boolean)){
+    const prior=previousClause;
+    previousClause=clause;
+    if(!clause.trim()){if(clause.includes('\n'))previousExecutable=null;continue;}
     const quotedPaths=[...clause.matchAll(quoted)].map(match=>executablePath(match[2],runtime)).filter(Boolean);
-    const views=quotedPaths.length?[]:[windows,posix];
-    const paths=quotedPaths.concat(views.flatMap(view=>[...clause.matchAll(view)].map(match=>executablePath(match[0],runtime))).filter(Boolean));
+    const paths=quotedPaths.length?quotedPaths:[...clause.matchAll(unquoted)].map(match=>executablePath(match[0],runtime)).filter(Boolean);
     const denied=NEGATED_EXECUTABLE.test(clause);
     if(pathFallbackAllowedIn(clause))pathFallbackAllowed=true;
-    if(!paths.length)continue;
+    if(!paths.length){
+      if(previousExecutable&&USE_PREVIOUS_EXECUTABLE.test(clause)){
+        if(denied)negated=true;
+        else if(!declared.has(previousExecutable.key))declared.set(previousExecutable.key,previousExecutable.path);
+      }
+      previousExecutable=null;
+      continue;
+    }
+    previousExecutable=null;
+    const namedRuntime=paths.length===1&&EXECUTABLE_PATH_LABEL.test(clause)&&!NEGATED_EXECUTABLE.test(prior)
+      ?(CJK_RUNTIME_DECLARATION.exec(prior)??EN_RUNTIME_DECLARATION.exec(prior))?.[1]?.toLowerCase()
+      :null;
+    const linkedDeclaration=namedRuntime===runtime||runtime==='node'&&namedRuntime==='node.js';
     for(const candidate of paths){
       const key=/^[A-Za-z]:/u.test(candidate)?candidate.replaceAll('/','\\').toLowerCase():candidate;
       if(!all.has(key))all.set(key,candidate);
       if(denied){negated=true;continue;}
       if(!positive.has(key))positive.set(key,candidate);
-      if(DECLARED_EXECUTABLE.test(clause)&&!declared.has(key))declared.set(key,candidate);
+      if(paths.length===1)previousExecutable={key,path:candidate};
+      if((linkedDeclaration||DECLARED_EXECUTABLE.test(clause))&&!declared.has(key))declared.set(key,candidate);
     }
   }
   return {all:[...all.values()],declared:[...declared.values()],positive:[...positive.values()],negated,pathFallbackAllowed};
@@ -224,7 +288,7 @@ export function declaredInlineExecutable(session,runtime){
 }
 
 /** Reconstruct explicitly referenced scripts from this session's original calls. */
-export function resolveInlineScript(input,session,signal,{nativeShellScriptReuse=false}={}){
+export function resolveInlineScript(input,session,signal,{nativeShellScriptReuse=false,root}={}){
   const events=typeof input?.scriptRef==='string'?eventLog(session):[],calls=new Map(),resultExecutables=new Map(),resultHostRuntimes=new Map();
   for(const event of events){
     const data=event.data??{};
@@ -247,9 +311,9 @@ export function resolveInlineScript(input,session,signal,{nativeShellScriptReuse
     if(hostRuntime)resultHostRuntimes.set(id,hostRuntime);
   }
   const eventRefs=new Map(events.filter(event=>CALL_EVENT_TYPES.has(event.type)&&
-    (event.data?.name==='work_exec'||nativeShellScriptReuse&&event.data?.name==='bash')&&Number.isSafeInteger(event.seq)&&event.seq>=0)
+    (event.data?.name==='work_exec'||nativeShellScriptReuse&&NATIVE_SHELLS.includes(event.data?.name))&&Number.isSafeInteger(event.seq)&&event.seq>=0)
     .map(event=>['event:'+event.seq,eventCallId(event.type,event.data)]).filter(([,id])=>typeof id==='string'&&calls.has(id)));
-  try{return resolveIndexedScript(input,calls,resultExecutables,resultHostRuntimes,eventRefs,signal,nativeShellScriptReuse);}catch(error){
+  try{return resolveIndexedScript(input,calls,resultExecutables,resultHostRuntimes,eventRefs,signal,nativeShellScriptReuse,root);}catch(error){
     if(error.code!=='WORK_EXEC_SCRIPT_REF_NOT_FOUND')throw error;
     const request=events.findLast(event=>event.type==='user/message'&&isUserRequestMessage(messageOf(event)));
     const requestedRuntime=input.runtime??input.language,available=[];
@@ -291,7 +355,7 @@ function scriptEditMismatch(code,edit,editIndex,scriptRef){
     {code:'WORK_EXEC_SCRIPT_EDIT_MISMATCH',editMismatch:detail});
 }
 
-function resolveIndexedScript(input,calls,resultExecutables,resultHostRuntimes,eventRefs,signal,allowNativeShell=false){
+function resolveIndexedScript(input,calls,resultExecutables,resultHostRuntimes,eventRefs,signal,allowNativeShell=false,root){
   const chain=[],seen=new Set(),sourceCallIds=[];let candidate=input,callId=null,runtime;
   let shellSource=null;
   while(true){
@@ -316,13 +380,13 @@ function resolveIndexedScript(input,calls,resultExecutables,resultHostRuntimes,e
     seen.add(ref);
     sourceCallIds.push(ref);
     const previous=calls.get(ref);
-    if(!previous||previous.name!=='work_exec'&&!(allowNativeShell&&previous.name==='bash'))
+    if(!previous||previous.name!=='work_exec'&&!(allowNativeShell&&NATIVE_SHELLS.includes(previous.name)))
       throw Object.assign(new Error('scriptRef does not identify a supported original program in this session'),{code:'WORK_EXEC_SCRIPT_REF_NOT_FOUND'});
-    if(previous.name==='bash'){
-      const program=nativeShellScript(previous.name,previous.args);
+    if(previous.name!=='work_exec'){
+      const program=nativeShellScript(previous.name,previous.args,root);
       if(!program)throw Object.assign(new Error('The recorded Shell command is not one literal supported Python/Node stdin program.'),{code:'WORK_EXEC_SHELL_REF_UNSUPPORTED'});
       const {nativeArguments,...script}=program;
-      shellSource={tool:'bash',callId:ref,seq:previous.seq,nativeArguments};
+      shellSource={tool:previous.name,callId:ref,seq:previous.seq,nativeArguments};
       candidate=script;
     }else candidate=previous.args;
     callId=ref;
@@ -360,8 +424,55 @@ function resolveIndexedScript(input,calls,resultExecutables,resultHostRuntimes,e
     ...(shellSource?{shellSource,nativeArguments:shellSource.effectiveArguments??shellSource.nativeArguments}:{})};
 }
 
-export const INLINE_ENV_KEYS=Object.freeze(['DSH_WORK_EVIDENCE_STDIN_ID',...Array.from({length:3},(_,index)=>'DSH_WORK_EVIDENCE_STDIN_'+index)]);
+// The source travels as environment values. The per-variable ceiling is real and documented
+// (32,767 characters including the terminating NUL), but the "whole block is about 32 KiB"
+// figure that used to be here was wrong, and review caught the arithmetic: nine chunks of
+// 32,766 characters is 294,894 bytes, far above 32 KiB.
+//
+// Measured on this host: spawnSync with N x 1 KiB variables succeeded at every size tried —
+// 32 KiB, 290 KiB, 512 KiB, 1 MiB, 2 MiB. The block limit is therefore not what constrains
+// this path; the per-variable limit is. The chunk count follows that limit, and no
+// total-size check is needed on win32.
+const STDIN_CHUNKS=process.platform==='win32'?9:3;
+// POSIX caps a single exec argument at 128 KiB. A host that publishes only pwsh on
+// POSIX still passes the program through `pwsh -Command`, so the encoded text has
+// to fit one argument.
+const LOCAL_ARGUMENT_LIMIT=128*1024;
+// Windows caps a whole command line near 32,767 characters; leave room for the
+// wrapping shell and quoting rather than using the exact maximum.
+const WINDOWS_COMMAND_LIMIT=30000;
+export const INLINE_ENV_KEYS=Object.freeze(['DSH_WORK_EVIDENCE_STDIN_ID',...Array.from({length:STDIN_CHUNKS},(_,index)=>'DSH_WORK_EVIDENCE_STDIN_'+index)]);
 const validTransferId=value=>typeof value==='string'&&/^[A-Za-z0-9_-]{1,128}$/u.test(value);
+
+/** The native shells `work_exec` can transport a program through. */
+export const NATIVE_SHELLS=Object.freeze(['pwsh','bash']);
+
+/** The shell a platform prefers, used to name what an unavailable report looked for. */
+export function preferredShell(platform=process.platform){return platform==='win32'?'pwsh':'bash';}
+
+/**
+ * Select the native shell from the shells the host actually publishes.
+ *
+ * The platform only orders the preference; it never decides the result. A
+ * host that publishes nothing yields null, so callers report the shell that
+ * was looked for rather than a platform guess. On Windows pwsh stays first
+ * (PowerShell 7 or the 5.1 fallback the executor already accepts); on POSIX
+ * bash stays first. A Windows host that publishes only bash therefore reaches
+ * bash instead of an unavailable pwsh.
+ *
+ * @param isAvailable - reports whether the host publishes the named shell.
+ * @param platform - the platform whose preference order applies.
+ * @returns the first published shell, or null when neither is published.
+ */
+export function selectShell(isAvailable,platform=process.platform){
+  for(const candidate of platform==='win32'?['pwsh','bash']:['bash','pwsh']){
+    let present=false;
+    try{present=Boolean(isAvailable(candidate));}catch{present=false;}
+    if(present)return candidate;
+  }
+  return null;
+}
+
 /** Ask the native shell about its own executor, including local functions on Bash. */
 export function nodeAvailabilityCommand(shell,marker){
   if(!validTransferId(marker))throw new Error('Node availability needs an exact marker');
@@ -383,14 +494,21 @@ function validateInlineInput(input){
   return executable;
 }
 
-/** Keep each environment string below Linux's per-string exec limit, including UTF-8 and NUL bytes. */
+/** Keep each environment string below the platform's per-string exec limit, including UTF-8 and NUL bytes.
+ *  On win32 the spawn goes through CreateProcess, which caps one variable at 32,767 characters;
+ *  the environment block itself was measured to accept at least 2 MiB here, so the per-variable
+ *  limit is what sets the chunk count. The Linux path can carry much larger execve strings. */
 export function inlineEnvironment(input,transferId){
   validateInlineInput(input);
   if(!validTransferId(transferId))throw new Error('bash transport requires a valid transfer ID');
   const bytes=Buffer.from(input.code.replaceAll('\\','\\\\').replaceAll('\0','\\x00'),'utf8');
+  // The number of usable chunks is set by the PER-VARIABLE limit, not by a block cap:
+  // measured here, a 2 MiB environment spawned fine. 32,767 is the documented variable
+  // limit *including* the terminating NUL, so a chunk holds at most 32,766 characters.
+  const perVariable=process.platform==='win32'?32766:96000;
   const values={[INLINE_ENV_KEYS[0]]:transferId};let offset=0;
   for(const key of INLINE_ENV_KEYS.slice(1)){
-    let end=Math.min(offset+96000,bytes.length);
+    let end=Math.min(offset+perVariable,bytes.length);
     while(end<bytes.length&&(bytes[end]&0xc0)===0x80)end--;
     values[key]=bytes.subarray(offset,end).toString('utf8');offset=end;
   }
@@ -422,7 +540,14 @@ builtin printf '%b' "${content}" | (
   if(shell!=='pwsh')throw new Error('shell must be pwsh or bash');
   const args=input.nativeArguments?.join(' ')??(input.runtime==='python'?'-B -X utf8 -':'--input-type='+(input.format??'module')+' -');
   const encoded=Buffer.from(input.code,'utf8').toString('base64');
-  return `$ErrorActionPreference = 'Stop'
+  // The pwsh transport carries the program inside the command text, so the limit that
+  // applies is the host's command-line limit — and it covers the whole command, the
+  // wrapper plus the program, not the program alone. POSIX caps one argument at
+  // 128 KiB; Windows caps the entire command line near 32,767 characters. Report the
+  // oversize before launch rather than failing with E2BIG or a truncated command,
+  // which reads as an infrastructure fault.
+  const commandLimit=process.platform==='win32'?WINDOWS_COMMAND_LIMIT:LOCAL_ARGUMENT_LIMIT;
+  const command=`$ErrorActionPreference = 'Stop'
 [Console]::OutputEncoding = [Text.UTF8Encoding]::new($false)
 $workExecInfo = [Diagnostics.ProcessStartInfo]::new()
 $workExecInfo.FileName = ${quote(executable)}
@@ -453,4 +578,22 @@ try {
   $workExecProcess.Dispose()
 }
 exit $workExecExit`;
+  // The whole rendered command is what the host passes as one argument, so the limit is
+  // checked against the finished text rather than an estimated wrapper size: an
+  // undercount here would let an over-limit command through to a launch failure.
+  // The limit is compared in the unit the platform enforces, and the two platforms differ:
+  //   - CreateProcess caps the command line in CHARACTERS, so a path with non-ASCII letters
+  //     must count its code points, not its UTF-8 bytes. Comparing bytes rejected commands
+  //     that would have launched.
+  //   - POSIX caps an argv element in BYTES *including the terminating NUL*, so a command of
+  //     exactly MAX_ARG_STRLEN bytes is one byte over and fails with E2BIG. The POSIX branch
+  //     therefore rejects at >=, the Windows branch at >.
+  // The error names the unit for the same reason: "unit limit" told an operator nothing.
+  const onWindows=process.platform==='win32';
+  const measured=onWindows?command.length:Buffer.byteLength(command,'utf8');
+  const unit=onWindows?'characters':'bytes';
+  if(onWindows?measured>commandLimit:measured>=commandLimit){
+    throw new Error(`work_exec source is too large for the pwsh transport on this host (${measured} ${unit} of command against a ${commandLimit}-${unit} limit); use the bash transport or a smaller program`);
+  }
+  return command;
 }

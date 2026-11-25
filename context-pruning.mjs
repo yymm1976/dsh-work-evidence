@@ -4,14 +4,209 @@ import {argsOf} from './runtime.mjs';
 export {historyReferences} from './visible-results.mjs';
 
 const count=text=>Array.from(text).length;
-const READ=new Set(['read','ops_read_files','ops_inspect_local_file','project_evidence']);
+// One definition of "this body is source code". Both prune entry points (the live path and
+// the stage-checkpoint builder) consult it, because the same body must be treated the same
+// way regardless of which one reaches it. Splitting the list between them is how a source
+// body kept being cut to head+tail on the path that did not have it.
+export const SOURCE_BODY_PATH=/\.(?:py|pyi|js|jsx|mjs|cjs|ts|tsx|java|go|rs|c|cc|cpp|cxx|h|hpp|rb|php|cs|kt|swift|scala|m|mm|pl|lua|sql|json|jsonc|json5|yaml|yml|toml|ini|cfg|conf|md|mdx|rst|adoc|html|htm|css|scss|sass|less|vue|svelte|astro|sh|bash|zsh|ps1|psm1|bat|cmd|gradle|xml|proto|graphql|gql|tf|hcl)$/iu;
+// Build and project files that carry source without an extension. They are read and edited
+// the same way, so they must be retained the same way.
+const SOURCE_BODY_NAME=/^(?:Makefile|makefile|GNUmakefile|Dockerfile|Containerfile|CMakeLists\.txt|Rakefile|Gemfile|Procfile|Vagrantfile|Jenkinsfile|Brewfile|Pipfile)$/u;
+/** Is this path a source file whose body a repair task works on? */
+export const isSourceBodyPath=file=>typeof file==='string'&&(SOURCE_BODY_PATH.test(file)||SOURCE_BODY_NAME.test(file.split(/[\\/]/).pop()??''));
+// A source body can arrive without any markup at all (a shell `cat`, a program that prints
+// a file). Statements and declarations are the closed signal that a body is code rather
+// than a log; prose, listings and test output do not match them densely.
+const SOURCE_SHAPE=[
+  /^\s*(?:async\s+)?def\s+\w+\s*\(|^\s*class\s+\w+\s*[:(]/mu,
+  /^\s*(?:export\s+)?(?:function|class|interface|struct|enum|impl|func|fn|package|import|from|using|namespace|module)\b/mu,
+  /^\s*(?:public|private|protected|static|final|abstract)\s+\S/mu,
+  /^\s*(?:const|let|var|val)\s+[\w$]+\s*=/mu,
+  /^\s*(?:if|for|while|switch|try|catch|return|raise|throw|yield)\b.*[:{;]\s*$/mu,
+  /^\s*[\w$.]+\s*\([^)]*\)\s*\{\s*$/mu,
+  /^\s*#\s*(?:include|define|ifndef|pragma)\b/mu,
+];
+// A body can be source that none of the shapes above describe: a generated module of
+// nothing but assignments. Density of `name = value` lines is the signal there.
+const ASSIGNMENT_LINE=/^\s*[A-Za-z_$][\w$.\[\]'"]*\s*=\s*\S/u;
+// A MID-FILE window is the case the shape list misses entirely. A window that starts inside a
+// function has no `def`/`class`/`import` line, and an adversarial review found three ordinary
+// shapes that matched zero of the seven patterns and zero assignments:
+//   method calls only   `        self._helper_12(payload, retry=True)`
+//   if/else blocks      `        if value_7 is not None:` / `            return value_7`
+//   dict literals       `        "key_7": compute_7(),`
+// All three are 10-20 K characters of real Python and were classified as logs, so their
+// middles were prunable. Code has two signals logs do not: deep, consistent indentation, and
+// a high density of code punctuation at line ends.
+const CODE_INDENT=/^(?: {4,}|\t+)\S/u;
+const CODE_PUNCTUATION=/[;:,)}\]>]$/u;
+// A shell can print a JSON configuration that happens to contain stdout/stderr
+// objects. Only a process-result envelope with a completion field is eligible for
+// the transport exception; every unknown top-level key keeps the body as source.
+const TRANSPORT_ENVELOPE_KEYS=new Set(['status','exitCode','stdout','stderr','truncated','timedOut','aborted','signal',
+  'kind','job','durationMs','scriptRef','scriptEventRef','executionCompleted','partial']);
+function isTransportEnvelope(value){
+  if(!value||typeof value!=='object'||Array.isArray(value))return false;
+  if(!('stdout' in value||'stderr' in value))return false;
+  if(Object.keys(value).some(key=>!TRANSPORT_ENVELOPE_KEYS.has(key)))return false;
+  return ['stdout','stderr'].every(key=>value[key]===undefined||
+    (value[key]&&typeof value[key]==='object'&&typeof value[key].text==='string'));
+}
+/** Does this body look like source code regardless of where it came from? */
+export function looksLikeSourceBody(text,{transport=false}={}){
+  const body=String(text??'');
+  if(body.length<2000)return false;
+  let hits=0;
+  for(const pattern of SOURCE_SHAPE)if(pattern.test(body))hits++;
+  if(hits>=2)return true;
+  // Configuration is source too, and a COMPACT document defeats every line-based rule below:
+  // one 13,390-character line with no indentation and no assignments. This check has to come
+  // before the line-count gate, because that gate rejects a one-line body outright.
+  //
+  // A shell result is ALSO valid JSON — its envelope is `{stdout:{text},stderr:{text}}` — so a
+  // bare parse would classify every shell output as configuration and disable the receipt
+  // branch. The transport envelope is excluded by its own keys.
+  const trimmed=body.trim();
+  if((trimmed.startsWith('{')&&trimmed.endsWith('}'))||(trimmed.startsWith('[')&&trimmed.endsWith(']'))){
+    try{
+      const parsed=JSON.parse(trimmed);
+      const envelope=transport&&isTransportEnvelope(parsed);
+      if(envelope){
+        const carriers=[parsed.stdout?.text,parsed.stderr?.text,parsed.content,parsed.value,parsed.text]
+          .filter(value=>typeof value==='string'&&value.length>=2000);
+        if(carriers.some(value=>looksLikeSourceBody(value)||looksLikeSourceBody(stripLineNumbers(value))))return true;
+      }else return true;
+    }catch{/* not a JSON document */}
+  }
+  // Fall back to assignment density: at least half of the non-empty lines assign.
+  const lines=body.split(/\r?\n/u).filter(line=>line.trim());
+  if(lines.length<40)return false;
+  const assignments=lines.filter(line=>ASSIGNMENT_LINE.test(line)).length;
+  if(assignments/lines.length>=0.5)return true;
+  // The mid-file window. Two independent signals must agree, because either one alone has a
+  // false positive: a wrapped prose paragraph can be deeply indented, and a log line can end
+  // in `:`. Requiring both keeps ticket logs and listings out.
+  const indented=lines.filter(line=>CODE_INDENT.test(line)).length;
+  const punctuated=lines.filter(line=>CODE_PUNCTUATION.test(line.trim())).length;
+  if(indented/lines.length>=0.5&&punctuated/lines.length>=0.5)return true;
+  return false;
+}
+
+export function sourceBodyPaths(text){
+  const paths=new Set([...text.matchAll(/<path>([^<]+)<\/path>/gu)].map(match=>match[1]));
+  // PowerShell Select-String -Context marks the matched source row with "> ".
+  // Its path and line prefix hide the declarations from the plain-source matcher.
+  for(const [,file] of text.matchAll(/^[ \t]*>[ \t]+((?:[A-Za-z]:)?[^:\r\n]{1,1024}):[1-9]\d*:/gmu)){
+    if(isSourceBodyPath(file))paths.add(file);
+  }
+  return [...paths];
+}
+
+/**
+ * Is this tool body a source file whose middle must stay visible?
+ *
+ * The single answer to that question. Every prune and receipt entry point calls it, because
+ * five separate implementations of "named source, else source-shaped" produced five
+ * different answers: one ignored an unrelated name beside an unmarked body, one asked only
+ * about the first path, and the receipt branches never asked at all. A body is source when
+ * ANY path it names is source, or — when it names no source path — when the body itself is
+ * source-shaped.
+ */
+export function isSourceBody(text,{transport=false}={}){
+  const body=String(text??'');
+  const named=sourceBodyPaths(body);
+  if(named.some(file=>isSourceBodyPath(file)))return true;
+  // A named non-source path does not make an unmarked source body a log, and a named source
+  // path anywhere in a compound result keeps the whole result. Only the absence of any
+  // source path leaves the body itself as the remaining evidence.
+  if(looksLikeSourceBody(body,{transport}))return true;
+  // A read result wraps the document in `<path>`/`<content>` markup, so the JSON check inside
+  // looksLikeSourceBody never sees a `{` at the start. Ask once on the unwrapped text.
+  const content=/<content>\n?([\s\S]*?)\n?<\/content>/u.exec(body)?.[1];
+  if(content&&looksLikeSourceBody(content,{transport}))return true;
+  // A native read or `run_code` renders `N: row`, `N | row` or `N\trow`, and every shape
+  // detector anchors on a line start, so a real source body with rendered line numbers reads
+  // as a log. Measured: a 400-line Python module behind `.txt` markup and `N | ` prefixes was
+  // classified as a log and its middle was cut 13,782 -> 5,320, while the same body without
+  // the prefixes was refused.
+  //
+  // This has to live HERE, not in the callers: the reads branch already stripped the prefix
+  // for its own decision, and the flat branch did not, so the same body got two answers
+  // depending on which branch reached it. One body, one answer.
+  if(looksLikeSourceBody(stripLineNumbers(body),{transport}))return true;
+  // A shell result is a serialized envelope: the source sits in `stdout.text` as a JSON
+  // string, where every newline is the two characters `\` and `n`. Both detectors look for
+  // shapes at LINE STARTS and count assignment rows split on real newlines, so a whole file
+  // inside an envelope reads as one long line and matches neither. Measured on a 300-line
+  // assignment body: the envelope is false, the decoded body is true — and the receipt
+  // branch would then cut its middle to head+tail.
+  //
+  // Only when the raw form did not match, and only for text that actually contains escaped
+  // newlines, so an ordinary body pays nothing for this.
+  if(!body.includes('\\n'))return false;
+  try{
+    const decoded=decodeEscapedNewlines(body);
+    return looksLikeSourceBody(decoded,{transport})||looksLikeSourceBody(stripLineNumbers(decoded),{transport});
+  }catch{return false;}
+}
+
+/**
+ * Turn the `\n` sequences inside a serialized envelope back into real newlines.
+ *
+ * Deliberately narrow: it unescapes newlines, tabs and quotes only, because the goal is to
+ * let the line-start detectors see lines, not to reconstruct the JSON value. A body that is
+ * not an envelope has no `\\n` and never reaches this.
+ */
+export function decodeEscapedNewlines(text){
+  return String(text??'').replace(/\\r\\n|\\n|\\r|\\t|\\"|\\'/gu,sequence=>{
+    switch(sequence){
+      case '\\n':case '\\r\\n':case '\\r':return '\n';
+      case '\\t':return '\t';
+      case '\\"':return '\"';
+      default:return '\'';
+    }
+  });
+}
+
+/**
+ * Advance a per-session annotation over an append-only event log.
+ *
+ * The annotations that decide whether a body may be hidden (edited paths, superseded
+ * reads, read counts) must track the live session. Computing them once froze the first
+ * step's view, so a later complete read could never supersede an earlier body. Each cache
+ * stores the number of events it has consumed and folds only the new tail. A log that
+ * shrank means the session was replaced, so the state is rebuilt from scratch.
+ *
+ * @param {Map<string,{cursor:number,state:any}>} cache per-session cursors
+ * @param {{initial:()=>any, apply:(state:any,events:any[])=>void}} consume
+ */
+export function cacheAdvance(cache,id,events,consume){
+  const at=cache.get(id);
+  // A replaced session is not always shorter: a same-length log would otherwise keep the
+  // old annotations and skip its first events. Compare the last consumed event's identity.
+  const lastSeen=at?.lastSeq??null;
+  const replaced=!at||events.length<at.cursor||(lastSeen!==null&&at.cursor>0&&events[at.cursor-1]?.seq!==lastSeen);
+  const state=replaced?consume.initial():at.state;
+  consume.apply(state,replaced?events:events.slice(at.cursor));
+  cache.set(id,{cursor:events.length,state,lastSeq:events.at(-1)?.seq??null});
+  return state;
+}
+// The retired OPS read tools stay recognised: a resumed session can replay their
+// results. Keeping the names here preserves the read-window protection those historical
+// entries had; dropping them let history hygiene excerpt a focused source window.
+const READ=new Set(['read','project_evidence','ops_read_files','ops_inspect_local_file','ops_inspect_source']);
 export const prunableMessage=message=>!!message&&!message.isError&&Array.isArray(message.content)&&
   message.content.length>0&&message.content.every(block=>block?.type==='text')&&!hasPruneProblem(message.content);
 
 const PRUNE_PROBLEM=/(?:^|\n)\s*(?:fatal:|Traceback\b|\w*(?:Error|Exception):|FAIL(?:ED)?\b|[1-9]\d*\s+(?:failed|failures)\b)|["']passed["']\s*:\s*false|\b(?:exit(?:\s+code)?|exitCode|exit_code)\s*["']?\s*[:= ]\s*-?[1-9]\d*\b/i;
+// A producer can carry a large successful body in a history-safe form and then must
+// still have any deliberately incomplete retrieval short-circuited by the caller.
+// Recognising the explicit marker keeps an intermediate excerpt from later being
+// treated as the complete source and receiving a no-op "already read" receipt.
+const INCOMPLETE_EVIDENCE=/["'](?:textComplete|rangeComplete|lineTextComplete)["']\s*:\s*false|["'](?:budgetTruncated|omitted)["']\s*:\s*true/iu;
 export function hasPruneProblem(content,value=null){
   const text=resultText(content),parsed=value??parseResult(text);
-  if(resultHasProblem(parsed??text))return true;
+  if(resultHasProblem(parsed??text)||INCOMPLETE_EVIDENCE.test(text))return true;
   // A successful wrapper can contain a failed command or a failed assertion.
   if(PRUNE_PROBLEM.test(text))return true;
   // Serialized command output contains escaped newlines. Inspect the decoded
@@ -157,12 +352,56 @@ function applyOperations(text,operations){
   return after+text.slice(cursor);
 }
 
+/** Strip a native read's line-number prefix so the rows can be classified as content. */
+// `renderedReads` accepts `N: `, `N | ` and `N\t` as line-number prefixes, so all three have
+// to come off here. Handling only the colon form made `run_code` output rendered with a pipe
+// pass window matching and then fail source recognition, which sends a real source body down
+// the prune path.
+// Separator grammar per form, so the CONTENT's own indentation survives:
+//   `N: row`   the producer writes one space after the colon, which is not content
+//   `N\trow`   the tab IS the separator; a following space is content
+//   `N | row`  spaces around the pipe are separator; nothing after it is
+// The previous single trailing `[ \t]?` consumed one content space for the tab and pipe
+// forms, so a four-space-indented row became three and CODE_INDENT stopped matching.
+const LINE_NUMBER_PREFIX=/^\s*\d+(?::[ \t]?|\t|[ \t]{0,2}\|[ \t]?)/u;
+export function stripLineNumbers(text){
+  return String(text??'').split('\n').map(line=>line.replace(LINE_NUMBER_PREFIX,'')).join('\n');
+}
+
 /** Old output only. A native read window is the smallest independently pruned unit. */
 export function planContextPrune(message,reads,options){
   if(!prunableMessage(message))return null;
   const original=resultText(message.content);
   if(contentReferences(original).hasReferences)return null;
   if(count(original)<=options.thresholdChars)return null;
+  // A whole-result reduction has no per-window path, but the result itself names one.
+  // Without this check the retention rule applied only to the nested-read branch, which
+  // is why a complete source body could still be cut to head+tail in the flat branch.
+  // Every named path is checked, not only the first: a result can carry an old log entry
+  // and the source body it was run against, and retaining either one forbids the cut.
+  if(!reads.length&&options.retainSource){
+    const named=sourceBodyPaths(original);
+    // `retainSource` is the authority on a NAMED path: it knows whether a later complete
+    // read superseded this copy, and refusing here on "it is source" alone would make a
+    // superseded body permanently unprunable — the exact case pruning exists for.
+    if(named.some(file=>options.retainSource(file)))return null;
+    // The body itself is the remaining evidence in two cases: no path at all (`bash cat`
+    // returns a file with no markup), and paths that are all NON-source names (`run.log` next
+    // to an unmarked source body). The second case used to fall through to the excerpt
+    // because the check was gated on `!named.length`, so a result naming only `run.log` lost
+    // the middle of real source.
+    //
+    // It still does not run when a SOURCE path is named: `retainSource` already answered for
+    // that path, including supersession, and overruling it would make a superseded source
+    // body permanently unprunable.
+    //
+    // The check includes the escaped-envelope form: a shell result carries its text in
+    // `stdout.text` with newlines escaped, so the line-start detectors see one long line and
+    // a whole source file reads as a log.
+    const onlyNonSourceNames=named.every(file=>!isSourceBodyPath(file));
+    if(onlyNonSourceNames&&(isSourceBody(original,{transport:options.transport===true})||
+      looksLikeSourceBody(original,{transport:options.transport===true})))return null;
+  }
   let content,ranges=[],dedupStats=[];
   if(reads.length){
     // Never cut an unidentified compound output across file boundaries.
@@ -177,8 +416,25 @@ export function planContextPrune(message,reads,options){
       if(start<cursor||end>lines.length)return null;
       const from=offsets[start],to=offsets[end],body=original.slice(from,to);
       after+=original.slice(offsets[cursor],from);
-      const replacement=options.retainSource?.(window.path)?null:excerpt(body,{...options,offset:from,sourcePath:window.path});
-      after+=replacement??body;
+      // `retainSource` decides by PATH, and a path that is not a source file (a `.log`, a
+      // file with no extension) still gets no protection. The body itself is the remaining
+      // evidence: a native read of `build.log` can return assignment-only source, and
+      // reducing that to head+tail hides exactly the middle a repair needs.
+      //
+      // The line numbers have to come off first. A native read renders `N: <row>`, and
+      // `ASSIGNMENT_LINE` anchors on `^\s*<identifier>\s*=`, so every one of those rows
+      // fails the test and a real source body reads as a log. Stripping the prefix is what
+      // makes the same body get the same answer here as in the flat branch.
+      // `retainSource` owns the decision for a path it RECOGNISES as source: it returns true
+      // for a live body and false when a later complete read superseded it, and that
+      // supersession is the case pruning exists for. Asking the content rule again for such a
+      // path overrules it and makes a superseded source body permanently unprunable.
+      //
+      // The content check therefore applies only where the path cannot answer: a `.log` or an
+      // extensionless name whose body is really source.
+      const kept=options.retainSource?.(window.path)||
+        (!isSourceBodyPath(window.path)&&looksLikeSourceBody(stripLineNumbers(body),{transport:options.transport===true}));
+      const replacement=kept?null:excerpt(body,{...options,offset:from,sourcePath:window.path});      after+=replacement??body;
       if(replacement)ranges.push({path:window.path,offset:from,end:to,startLine:window.lines[0]?.number,endLine:window.lines.at(-1)?.number});
       cursor=end;
     }

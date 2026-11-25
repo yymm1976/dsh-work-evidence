@@ -40,7 +40,7 @@ mode 只查询状态。旧的 mode <名称> 和 workspace-mode 命令不再设�
 `feature <设置名>` 查看单项，末尾加 `on` 或 `off` 修改布尔设置。
 `toolSurface` 接受 `compact` 或 `full`；`defaultResponseView` 接受 `full` 或 `reference-if-visible`。
 `qualityReviewEffort` 接受 `auto`、`inherit`、`low`、`medium`、`high` 或 `max`，只控制交付复核。
-`qualityReviewScope` 接受 `auto` 或 `full`，控制复核采用的源码片段范围。`defaultResponseView` 记录未显式覆盖时的默认短引用是否实际采用、回退为完整正文的原因或视图不可用；`toolSurface` 记录实际生效的工具面及只读/最小任务动态切换。`qualityReviewEffort` 和 `qualityReviewScope` 记录实际复核档位、选择来源与装配范围；未请求复核、显式覆盖来源返回或未采用短引用时保持未观察或不适用。`evidenceViews` 关闭时，默认返回视图记录 `evidence-views-disabled`；插件关闭时 `project_evidence` 在禁用门控直接返回，通常不产生默认视图效果，只有已进入视图处理时才记 `plugin-disabled`。这些原因不归为上下文代际错误。`selfIndex` 记录 `verified-index-match`、`no-index-match` 或 `index-query-error`；`historyHygiene` 在成功改写历史正文时记 `message-rewrite-recorded`；`ledgerUnresolved` 在注入未解决事项时记 `ledger-unresolved-injected`；过程指引中的阶段判断提醒归入 `stageJudgment` 计数器。`defaultResponseView` 在 `evidenceViews` 关闭且采用默认短引用时显示 `requires-setting:evidenceViews`；`qualityReviewEffort` 和 `qualityReviewScope` 在 `qualityReview` 关闭时显示 `requires-setting:qualityReview`。
+`qualityReviewScope` 接受 `auto` 或 `full`，控制复核采用的源码片段范围。`defaultResponseView` 记录未显式覆盖时的默认短引用是否实际采用、回退为完整正文的原因或视图不可用；`toolSurface` 记录实际生效的工具面及只读/最小任务动态切换。`qualityReviewEffort` 和 `qualityReviewScope` 记录实际复核档位、选择来源与装配范围；未请求复核、显式覆盖来源返回或未采用短引用时保持未观察或不适用。`evidenceViews` 关闭时，默认返回视图记录 `evidence-views-disabled`；插件关闭时 `project_evidence` 在禁用门控直接返回，通常不产生默认视图效果，只有已进入视图处理时才记 `plugin-disabled`。这些原因不归为上下文代际错误。`selfIndex` 记录 `verified-index-match`、`no-index-match` 或 `index-query-error`；`historyHygiene` 在成功改写历史正文时记 `message-rewrite-recorded`；`ledgerUnresolved` 在注入未解决事项时记 `ledger-unresolved-injected`；过程指引中的阶段判断提醒归入 `stageJudgment` 计数器。完成过工具参数解析前即被宿主拒绝的 `MALFORMED_RESPONSE` 可触发一次当前请求重试，原始失败保留，不自动重放工具，也不放宽权限、取消或其他错误。`defaultResponseView` 在 `evidenceViews` 关闭且采用默认短引用时显示 `requires-setting:evidenceViews`；`qualityReviewEffort` 和 `qualityReviewScope` 在 `qualityReview` 关闭时显示 `requires-setting:qualityReview`。
 默认 compact 会隐藏管理工具，以上命令仍可直接使用，无须先让模型查找工具。
 
 `feature` 和 `config <JSON>` 保存到当前工作区的 `.dsh/work-evidence/config.json`，同一工作区的会话在下次读取配置时采用。
@@ -56,8 +56,8 @@ mode 只查询状态。旧的 mode <名称> 和 workspace-mode 命令不再设�
 功能状态含义：`off` 表示有效开关关闭；`blocked` 表示缺少配套设置、依赖或插件未启用；`waiting` 表示等待适用档位或任务；`ready` 表示当前可检查的条件已满足。
 例如质量复核须选 Ultra；结构化调用须用原生 TypeScript 函数体运行时；PTC 程序引用须同时开启执行恢复。
 归档读取和 Maven 归档来源还需 `fflate`。`dependencies.archiveDecoder` 显示加载状态，缺失时功能显示 `archive-decoder-unavailable:fflate`，实际读取返回 `ARCHIVE_DECODER_UNAVAILABLE`。读取成员时会核对目录与本地头的文件名、标志位、压缩方式，以及解压长度和 CRC；不一致时返回不可用，不将截断正文当作完整来源。支持存储、deflate、数据描述符和 ZIP64 目录。
-`fastEditPython` 指向带有所需包的现有 Python 环境，包版本见 `requirements-fastedit.txt`。状态确认运行文件可访问，桥接调用确认包能导入。
-`fastEditEnabled` 默认开启。关闭后 `fastedit_java` 返回 `deopt` 和 `fastedit-disabled`，不读取或修改 Java 文件；在同一会话重新开启后恢复调用。
+`memberParsing` 的成员定位使用 `source-members-bridge.py`。`fastEditPython` 指向已安装这些包的现有 Python 环境，包版本见 `requirements-source-members.txt`。状态确认运行文件可访问，桥接调用确认包能导入；解释器缺失时 `memberParsing` 显示 `tree-sitter-runtime-unavailable:fastEditPython`，源码成员返回字面回退并标注实际解析结果。
+`fastedit_java` 与 `opsAdapters` 已随 OPS 适配一同删除，不再有 Java 实体级编辑入口；精确多文件修改使用 `verified_exec`，逐处修改使用原生 `edit`。
 这些状态说明本地可用条件。实际触发、任务质量和资源效果仍按各功能记录判断。
 
 ## 原生思考回传候选
@@ -289,6 +289,9 @@ PTC 程序只在内部读取、输出省略或分页不全时，保留原快照�
 
 测试/检查命令（pytest、ruff、compileall、node --test、gradlew/gradle/mvn）输出完整且超过 4,000 个 UTF-16 单元时，后续请求视图使用有界的测试回执：命令、退出/失败计数、最多 8 个失败用例、关键错误行和尾部；规范事件保留完整输出，可用 `work_recall` 取回。`node --test` 只接受带完整 `# tests`、`# pass`、`# fail` 摘要的 TAP 输出，摘要缺失时保留规范正文。输出被宿主截断或 spill 到临时文件、没有可解析的失败/计数、用户要求完整输出、或历史取回不可用时，不做回执。
 
+原生 `grep` 搜索普通词或用 `|` 分隔的备选词时，宿主的长行预览可能省掉实际匹配。若同一次调用还返回完整匹配行，插件可在请求中显示匹配词附近的原文。文件、行号、结果数量和其他匹配照常交付。摘录标明长行仍有省略。宿主原始结果可按原方式取回。该处理不重新搜索或读取文件。
+定义摘要默认关闭（`definitionSummary:"off"`，可选 `"on"`）。开启后仍是信息组织，不自动算作省费；`definitionSummary` 分别记录候选与发送次数、压缩字符、候选注入字符、实际注入字符和净字符，供后续判断。
+
 状态中的 `historyHygiene.referenceContext` 列出当前要求、追踪页、采用的来源、字符差和保留原因。
 `charsRemovedAcrossViews` 按请求视图累计，不能当成单次减少量或费用收益。
 原始事件的跨会话读取继续使用宿主授权的 `session_event_read` 地址。
@@ -341,15 +344,17 @@ URL、目录、项目外路径、缺失文件和版本信息不可用的来源�
 
 qualityReview 控制质量模式的最终答复复核，默认关闭。已取得源码遗漏发现和实际修正结果，较大交付采用明确的源码范围。
 JSON 格式修正先处理。阶段摘要还有可执行下一步、且完成提醒将接续工作时，先继续工作；完整交付再复核。关闭完成提醒时，保留独立复核行为。
+
+完成提醒开启后，如果用户明确要求最终汇报，模型正常停止却只留下推理内容，宿主会收到一次补答复提示。暂停、待授权和请求失败沿用原来的处理。
 用户明确暂停或只要求汇报时，交付复核等待；明确要求的 JSON 格式仍可修正。待写文本中的引号内容不当作暂停指令。
 状态中的 `waitingReason` 区分 `authorized-continuation-pending` 与 `current-request-report-only`，等待期间没有复核通过结论。
 复核使用当前会话路由和有界历史；结果没有充分依据时保留原答复。
 复核沿用要求中的限定词、例外和允许行为。“未修改记录保持原文”不自动要求修改行也保持原文。最终答复的声明不作为用户新要求；声明与事实矛盾时单列为报告过度声明。
 报告过度声明须同时给出答复原句和已提供事件中的反证原文，插件核对两段文字及来源。所给材料没有执行记录或缺少确认时保持未知，不单凭缺记录报告声明不实。引语不匹配、来源不存在或未被引用时，复核结果记为无效，不要求主模型据此返工。
 复核优先携带已修改文件在修改后读到的正文，并限制证据长度。
-同一文件的成功 write/edit、ops_write_file/ops_edit_file 片段按事件顺序补入，完整覆盖写入之前的旧片段退出选择；补充片段合计最多 18000 个字符，单份最多 14000 个字符。
-OPS 的预览和失败修改不作为成功片段。ops_read_files 与 ops_inspect_local_file 可提供已读源码；范围收缩时保留读取事件对应的文件。
+同一文件的成功 write/edit/verified_exec 片段按事件顺序补入，完整覆盖写入之前的旧片段退出选择；补充片段合计最多 18000 个字符，单份最多 14000 个字符。失败的写入和预览不作为成功片段；原生 `read` 的已读源码可提供片段，范围收缩时保留读取事件对应的文件。
 片段标为历史修改，后续观察优先，不拼造当前整份文件，也不额外读取项目文件。
+答复声明执行范围时，已成功执行的 `work_exec` 内联程序可随对应结果进入复核。程序单份最多 2,000 个字符，合计最多 4,000 个字符，优先保留最近的完整程序。复核只使用已记录的调用和结果，不再次执行程序。
 `qualityReviewEffort` 默认 `auto`，从当前通道声明的 low、medium、high、max 中选择最低可用档位；声明不可取得时继承主请求。
 `inherit` 始终继承主请求。显式档位未在通道声明中出现时，状态记为 `review-effort-not-declared`，不发请求。
 主任务的思考档位保持原选择。状态记录复核所选档位；宿主在发送时仍可执行 Ultra 等原有映射。
@@ -388,7 +393,8 @@ completionNotice 独立控制阶段摘要后的继续提醒，默认关闭。显
 状态分别统计主请求、宿主压缩和辅助调用。压缩与辅助用量仍计入费用，但不用于校准主请求的容量与投影结果。
 `providerReported` 只合计完整且内部一致的用量。`providerReportedRaw` 保留各行有限数值作诊断，不能作为完整消耗；不一致或缺失用量继续显示未知。
 缓存额外费用按 `resetTaxByCurrency` 与 `effortResetExposureByCurrency` 的币种分别列出。兼容字段 `resetTaxUSD`、`effortResetExposureUSD` 只含美元数值。
-参考价格不代表实际支付或通道额度。费用观察不自动停止任务。
+未完成或失败的请求若有可信用量，按已知价格计入 `failedKnownCostByCurrency` 下界；该值不并入完成请求费用，也不代表实际账单。
+参考价格不代表实际支付或通道额度，也不能批准正常上下文改写。历史压缩、源码裁剪、上下文协议和请求投影只接受 `projectionPricing` 中当前 provider/model 的精确价；配置价不完整时，功能就绪状态报告 `requires-setting:projectionPricing`、`route-price-not-exact` 或 `route-price-unavailable`。费用观察不自动停止任务。
 
 `import --session SESSION_ID --variant work-evidence` 同时读取该显式导入会话自己的请求记录。`import --file engineering.json --variant work-evidence --observations requests.jsonl` 可显式提供记录；不会按子任务身份自动打开其他会话。
 通用 PTC 预设不能证明插件关闭。缺少明确加载标记时，分组来源保留为调用者声明；原生记录已明确显示插件存在时，仍拒绝导入为 recorder-only。
@@ -399,9 +405,12 @@ completionNotice 独立控制阶段摘要后的继续提醒，默认关闭。显
 ## 工具与存储
 
 - work_exec 执行当前任务已经允许的 Python 或 Node 程序；retained 模式保留只读 Node 状态。
-- work_recall 按 seq 取回原始会话文字。offset 和 nextOffset 是 JavaScript 字符串位置。
+- `work_recall` 按 `seq` 取回原始会话文字。`offset` 和 `nextOffset` 是 JavaScript 字符串位置。紧凑工具界面在用户点名 `work_recall` 或给出历史事件号时，从首问提供取回工具。
 - work_status 查看状态，修改工作区配置或会话开关。
-- project_evidence 读取工程、归档和依赖源码。
+- `project_evidence` 读取工程、归档和依赖源码。`read` 一次接受 1–16 个独立行范围，同一文件可用不同 offset 分段出现。默认总预算为 48,000 字节。原生模型批读在带行号的显示更短时采用该格式。若只有该格式能容纳全部请求区段，插件一次交付这些区段。两种格式均放不下时，默认按结构化记录选择可交付区段。显式指定 `readLayout:"numbered"` 时按带行号的显示计算字节。需要逐行对象时指定 `readLayout:"records"`。程序调用默认返回结构化行记录。未送达的范围使用 `responseBudget.resumeArguments` 续读。
+- 源码定位和引用搜索可指定范围。省略范围时先用 `src`。工作区没有 `src` 时，在工作区内查找源码和构建文件。引用搜索按名称返回文本命中，实际调用关系须从源码或执行结果核对。
+- `locate` 返回正文命中及附近行，一次最多取 4 个窗口。`query` 查单个字面量，`queries` 用 `{"query":"..."}` 批量查字面量，`pattern` 接受原生 `grep` 的正则表达式。`lineTextLimit` 限制每行长度。`responseView` 只接受 `full`。单个字面量无正文命中时，可按标识符匹配源码文件名。默认按窗口数分配正文预算。响应超出预算时，优先保留命中行号。`truncated` 表示当前窗口缺失内容，`fileHasMore` 表示文件还有余行。
+- `work_recall({seq, sourceIndex})` 取回历史批量读取结果中的单项。序号从 1 开始，按该结果的 `sources` 数组排列。分页偏移量针对所选项，正文仍是历史记录。
 - work_probe 执行已明确的原生调用；work_report、索引、候选、PTC 快速路径及精确编辑工具由 full 工具面提供。work_report 保存明确请求的工作报告。
 
 `/work-evidence feature retainedCompute` 列出保留计算缺少的原生服务。初始化失败后，依赖补齐时显示等待下一次调用；下一次 `work_compute` 或 retained 模式的 `work_exec` 会重新加载。成功后继续复用同一会话中的数据，状态查询本身不会运行程序。
@@ -421,13 +430,17 @@ compact 写入回执中的 `submittedContentMatchesAfter` 比较提交正文与�
 用户只写 `README` 时，在项目根目录确认 `README`、`README.md`、`README.rst`、`README.txt` 中唯一存在的文件。多个候选、查找受阻或用户禁止读取时不选。
 禁止修改或安装的动作不会阻止文件位置查找。读取禁令按当前禁止列表中的动作和文件判断；含义不明确的文件禁令继续跳过可选查找。
 该处理只取得文件信息，正文仍由原生读取工具返回；不会提前读取正文或扩大文件权限。
-原生 DSH 文件服务承担核心读取；OPS 只用于可选读取和精确编辑。
+原生 DSH 文件服务承担全部读取、搜索和精确编辑。`dsh-ops` 适配及其 `ops_*` 工具面已从本插件删除，`opsAdapters` 不再是可设置项。
 `readArgumentRecovery` 开启时，原生 `read` 的单一 `path` 别名在宿主检查前转为 `file_path`。两个字段冲突时返回错误。
+
+`sourceReadDefaultLines` 默认采用宿主的原生行数。设为 40 至 1000 的整数时，激进模式中仅从源码定位的任务可使用这个首读行数。顶层原生 `read` 省略 `offset` 和 `limit` 时才采用该值。结果给出实际行号，可显式设定范围或继续读取。用户要求通读时采用原生行数。`stepPacing` 须开启。
+
+使用短首读时，插件可用原生 `grep` 在同一 Python、JavaScript 或 TypeScript 文件中定位后续文本声明。声明名和行号作为附加信息交付，每次请求最多查 8 个文件。未找到声明或检索失败时，原生读取结果仍可用于续读。
 该调用保留原生 `lines` 返回值和文件权限检查，不重读文件。
 PTC 已取得行记录，却在访问 `.content` 或 `.text` 后输出 `undefined` 或取值错误时，插件每条用户要求至多提示 1 次 `lines` 用法。
 已读到非空正文，但错误字段的空字符串兜底只留下空白或标题时，也使用同一条提示。
 可直接取回的短记录会附在原工具结果中；记录超出范围时，提示给出事件位置，优先复用仍可用的返回对象。
-FastEdit Python 路径由 fastEditPython 设置。
+源码成员解析的 Python 路径由 fastEditPython 设置。
 省略 run_code 或原生 Shell 的界面说明时，插件在宿主执行前补充说明，避免宿主修改只读参数失败。
 执行状态分别记录明确失败、已完成和信息不完整。
 执行恢复还管理已登记关键判断的失效：`work_report` 的 `claims` 中仅 `observed` 和 `inferred` 判断参与，用户必须在后续消息中完整、唯一地引用 12–800 字符的判断原文并明确纠正，才派生 `challenged`。普通文件变更、语义相似的文本、多个判断同时命中、模型自报状态或一个失败结果都不会自动推翻判断。判断中明确的路径在纠正后有对应文件工具修改时，状态保留 `unknown`；后续 Shell/PTC 执行或未完成的文件工具写入也使有路径范围的判断保留 `unknown`，不据此推断实际发生了修改。外部和程序内部效果无法完整观察。
@@ -449,22 +462,29 @@ FastEdit Python 路径由 fastEditPython 设置。
 
 `work_exec` 的 Python 调用不传 `format`。Node 默认使用 ESM；未显式设置 Node 格式且因当前脚本的 `require` 在 ESM 下失败时，若原文可按 CommonJS 解析，结果提供 `recovery.arguments`，包含当前 `scriptRef` 与 `format:"commonjs"`。
 
+只检查 Python 语法时，`work_exec` 接受 `syntaxFiles`。一次可提交 1 至 32 个工作区相对路径。每个 `.py` 或 `.pyi` 文件最多 2 MB。工具用现有 Python 解释器编译全部指定文件，返回通过文件及每个失败文件的原因。编译不导入源文件，也不写字节码。该参数替代 `code` 和 `scriptRef`。
+
 `hostNodeFallback` 是默认关闭的实验选项。开启后，未指定或继承解释器的 Node `work_exec` 先通过原生 Shell 查询现有 Node。查询完整且确实缺少 Node 时，调用宿主已有的普通 Node 运行时。用户在会话中提到 Node、解释器或运行时后，该会话关闭自动回退。这是保守的文字检查；提到这些词也会阻止自动回退。现有解释器、Python 和原生 Shell 命令继续由原生工具执行。
 
 `scriptRef` 保留已知宿主运行时来源，包括旧版中间结果缺少来源的引用链。显式重复填写同一路径不能清除来源。会话已关闭自动回退时，只有当前用户请求明确指定已有解释器路径，才允许复用对应宿主路径；也可显式选择不同的、任务允许的解释器。工具参数本身不等于用户解除限制。功能状态会列出缺少的 Shell、只读会话及文字检查等阻断原因。
 自动回退仅用于允许写入的原生会话。回退继续使用原生执行与权限检查。结果的 `hostRuntimeSelection` 记录路径和版本，后续 `scriptRef` 继承该准确路径。查询被拒、超时或结果不明确时，程序不执行。该选项尚未证明正式任务的稳定费用收益。
 原生会话为 `read-only` 时，`work_exec` 明确拒绝新进程程序执行。只读计算可使用受限的 retained 模式；该模式继续按原权限约束处理文件访问。
 
-`nativeShellScriptReuse` 默认关闭。开启后，`work_exec.scriptRef` 可引用同一会话中原生 `bash` 的调用 ID 或事件地址。只接受单个 Python/Node 命令和单引号 heredoc。解释器使用原 PATH 名称，默认保留原 stdin 参数；代码按原字节复用。显式 `format` 只替换 Node 的输入格式，保留其他参数，并记录生效参数。含管道、环境赋值、目录覆盖、其他 Shell 命令、展开式 heredoc 或后台执行的记录会被拒绝。引用只保留程序文字和解释器参数，当前目录、环境、PATH 解析结果及权限重新生效；原进程环境和二进制不被固定。原结果不会被当成本次成功。后续修改继续引用返回的新 `scriptRef`。
+`nativeShellScriptReuse` 默认关闭。开启后，`work_exec.scriptRef` 可引用同一会话中原生 Bash 或 PowerShell 的调用 ID 或事件地址。Bash 接受单个 Python 或 Node 命令及单引号 heredoc。PowerShell 接受单引号 here-string 直接送入一个 Python 或 Node 解释器的 stdin，也支持单引号包裹的绝对 `.exe` 路径。两种入口均保留程序正文和原解释器参数。显式指定 `format` 时，仅替换 Node 的输入格式。带额外命令、环境赋值、目录覆盖或后台执行的记录会被拒绝。再次执行时使用当前目录、环境和权限。后续修改可引用返回的新 `scriptRef`。
 
-`probeReplay` 默认关闭。开启后，`work_probe({mode:"replay",id})` 从本会话原调用恢复命令、显式来源列表和 `expectedJson`，再显式执行一次。重执行调用只能设置 `id` 和显示预算，不能覆盖检查或预期。原调用及结果必须仍能从会话恢复；修改保存到工作区的记录文件不能改变执行内容。后台或未结束的检查继续使用原任务 ID 查看，不启动副本。
+开启 `executionTriage` 后，如果当前请求包含 `work_probe` 或探针 ID，紧凑工具界面会提供 `work_probe`。取回已保存的探针会返回历史结果。
+
+`work_probe` 保留声明文件的执行前后快照和逐文件评估。可按 `retrieveOriginal` 取回已保存记录。
+
+`probeReplay` 默认关闭。可写任务同时开启 `executionTriage` 和 `probeReplay` 时，紧凑工具界面也提供 `work_probe`。`work_probe({mode:"replay",id})` 从本会话原调用恢复命令、显式来源列表和 `expectedJson`，再显式执行一次。重执行调用只能设置 `id` 和显示预算，不能覆盖检查或预期。原调用及结果必须仍能从会话恢复；修改保存到工作区的记录文件不能改变执行内容。后台或未结束的检查继续使用原任务 ID 查看，不启动副本。
 
 每次重执行都取得新的观察 ID，并记录原观察及结果事件地址。命令和预期保持原文；命令读取的项目文件、环境、PATH 及权限使用当前状态。引用文件的内容不被固定，文件适用性继续由显式来源观察说明。原失败仍保留，新结果只说明同一调用本次观察到的值。只读会话的 `work_probe` 拒绝不受限 Shell 执行，原生只读工具仍可用。
 
 开启 `probeReplay` 后，同一问题的新检查不会解除原检查的失败。只有原检查重执行取得完整相符结果，才解除该检查的未决状态。原始失败观察继续保留。
 
 声明文件在执行期间变化，或无法确认声明文件状态时，原失败继续保持未决。任一次原样重执行转入后台后，同一原检查的其他引用也会阻止重复派发。只有对应任务的原生生产者结束记录完整匹配，才允许再次显式执行。
-Windows 继续通过原生 `pwsh` 执行。POSIX 通过宿主原生 `bash` 向 Python/Node 的 stdin 传入完整程序，保留原生权限、stdout、stderr、退出码、超时、取消和作业状态。缺少 `bash` 或逐次环境注册服务时，分别返回 `native-bash-unavailable` 或 `native-shell-env-unavailable`。程序上限为 UTF-16 字符串的 1–64000 个字符。POSIX 将正文编码为最多 3 段环境变量，每段最多 96,000 个 UTF-8 字节，由宿主 `shellEnv` 仅注入匹配 Agent 和唯一命令的原生执行。Bash 内建 `printf` 还原反斜杠和 NUL 字节并送入解释器 stdin；正文不写项目文件，也不放入 `bash -c` 参数。传输标识或分段缺失时退出 125。解释器启动前清除传输变量，原生调用返回或转后台后清除插件中的暂存正文。
+Windows 优先通过原生 `pwsh` 执行；宿主仅发布 `bash` 且提供逐次环境注册服务时，Windows 改用原生 `bash` 执行。POSIX 通过宿主原生 `bash` 向 Python/Node 的 stdin 传入完整程序，保留原生权限、stdout、stderr、退出码、超时、取消和作业状态。缺少 `bash` 或逐次环境注册服务时，分别返回 `native-bash-unavailable` 或 `native-shell-env-unavailable`。程序上限为 UTF-16 字符串的 1–64000 个字符。POSIX 将正文编码为最多 3 段环境变量，每段最多 96,000 个 UTF-8 字节，由宿主 `shellEnv` 仅注入匹配 Agent 和唯一命令的原生执行。Bash 内建 `printf` 还原反斜杠和 NUL 字节并送入解释器 stdin；正文不写项目文件，也不放入 `bash -c` 参数。传输标识或分段缺失时退出 125。解释器启动前清除传输变量，原生调用返回或转后台后清除插件中的暂存正文。
+新程序省略 `executable` 时，`work_exec` 可选用用户声明的唯一已安装解释器。支持“本机已有 Python 3.12，路径为 ……”的相邻分句。
 显式绝对 `executable` 路径不存在或指向目录时，调用在启动所选原生 shell 前返回 `WORK_EXEC_EXECUTABLE_NOT_FOUND`、`executionOccurred:false`，保留 `scriptRef`。程序引用继承记录的解释器路径；省略 `executable` 不会改用 PATH。只有任务允许更换环境时，才建议将 `executable` 显式设为 `python` 或 `node`，改用 PATH 中的同名运行时；任务声明特定解释器时保留缺失路径为阻塞项。权限无法确认、PATH 名称及相对路径仍交给宿主执行；这里不检查执行权限或文件格式。
 `scriptEditsSubmitted` 记录提交的编辑数，`scriptEditCount` 只计替换前后文字不同的编辑。相同文字仍会按请求再次执行原程序，不发送脚本已改动的版本提示。
 结果中的 `scriptEventRef` 是当前会话内准确调用的短地址，例如 `event:69`。后续把该地址传给 `scriptRef` 即可修改或执行同版程序；原来的完整 `scriptRef` 继续可用。地址不匹配、语言冲突或编辑不唯一时拒绝执行。
@@ -493,14 +513,26 @@ Windows 继续通过原生 `pwsh` 执行。POSIX 通过宿主原生 `bash` 向 P
 
 工作区设置位于 .dsh/work-evidence/config.json。
 会话开关位于 .dsh/work-evidence/sessions/<session-id>.json。
-自动观察记录放在宿主会话目录或用户会话目录，避免混入项目源码检索。
+自动会话记录放在宿主会话目录或用户会话目录。任务模式、运行记录和自动中断说明均用该目录。手动保存的工作区报告仍在 `.dsh/work-evidence/`。
 配置无效时自动处理关闭，并保留错误信息。
+
+## 有界整项目补丁
+
+`boundedPatch` 是默认关闭的旧实验功能。它向辅助模型发送工作区源码并应用返回的补丁。触发条件只要求明确的源码-only 写入授权和大体量源码，不按症状数量或题目标记识别任务。该流程不适用于原生工具对照实验，也不能凭单一测试集的成绩宣称普适收益。
+显式启用时，当前请求须同时要求修改、只依据源码定位，并达到源码体积门槛。插件优先选择一个明确可写的项目目录，排除同一小句中明确禁止修改的同级目录；无法解析明确写入范围时不进入该模式。
+源码文件按扩展名收集，跳过依赖、构建、缓存、符号链接、锁文件、超大文件和不可解码文件。最多收集 512 个文件、2.5 MB 源码；根目录未明确指定且存在多个可疑项目时，不进入该模式。
+插件先提交一轮整项目补丁，再读取修改后的完整源码提交第二轮复核。第二轮同时收到首轮替换的前后片段，可回退新增平台分支、放宽选项语义或改变回退优先级等越界修改。第二轮可返回最多四项具体待核对行为；存在这些范围时，对相关文件做一次聚焦复核，包括前两轮修改过的文件和待核对文件。聚焦范围为空或不可用时跳过第三轮。任一轮没有返回完整 JSON 时，用独立预算重试一次；仍失败才退回普通处理。所有替换都要求当前原文唯一匹配，写入前对 Python、JavaScript 和 JSON 做语法检查，并保留路径、符号链接和并发变化检查。
+写入通过原生 `write` 工具执行，并记录到状态账本；沙箱策略不可用或不是可写模式时不进入该模式。部分写入后流程异常时保留警告并交回原生 Agent 继续处理，不移除工具。
+辅助模型输入带 `sourceComplete`、`sourceSkipped` 和 `readOnlyFiles`；预算耗尽、文件过大、解码失败、符号链接或目录读取失败会明确列出，未列出的范围不能当作已覆盖。各轮和重试共享任务级辅助 Token 上限。
+每轮模型回复都是严格 JSON 补丁。达到总预算或没有可支持的修改时退出该模式。完整写入后，最终模型请求移除工具声明，只生成用户要求的简短汇报，并明确未运行测试；部分写入保留原生工具。
+该模式不使用题目编号、基准文件表、隐藏答案或固定源码路径。跨项目测试已覆盖目录排除、三轮补丁、工具移除和路径隔离；整卷费用与质量仍需实际配对验证。
 
 ## 最终 JSON 的有界修正
 
-`finalJsonGuard` 默认开启。用户明确要求最终 JSON 时，语法无法解析会触发修正提示。
+`finalJsonGuard` 默认开启。用户明确要求最终 JSON 时，已有正文无法解析会触发修正提示。
 每条用户要求最多提示 2 次；完全相同的错误再次出现时停止提示。
 原答复保留，状态继续列出未解决的语法错误。
+要求直接交付 JSON 且最终正文为空时，发送一次补交提示。仍为空时，状态记录 `missingFinalJson` 并结束处理。
 
 `finalJsonResultGuard` 候选默认关闭，依赖 `finalJsonGuard`。
 用户明确要求完整实际 `exitCode`、`stdout`、`stderr` 时，候选识别终稿遗漏的末尾换行。
@@ -547,9 +579,13 @@ deferPressureCompaction 也保持默认关闭。
 以下设置键对应实际运行接线，均可通过 `/work-evidence feature <键>` 查看或开关。
 
 - `stateLedger`：默认开启。记录本会话的读取、搜索、修改和失败依据，是 `stateInform`、`ledgerUnresolved` 等状态提醒的数据来源；关闭后不再积累新的账本状态。
-- `stateInform`：默认开启。账本维护发现适用状态时，在后续请求中注入一次有界提醒；依赖 `stateLedger`，默认组合之外没有独立数据源。
+- `stateInform` 默认开启，依赖 `stateLedger`。内容编辑后，旧搜索结果失效保留在状态中。待显示的源码观察为零时，任务流省略该状态提示。单文件检索命中定义时，可提示核对范围。`stepPacing` 尊重只在最终汇报的要求。批量续读和精确编辑失败时，任务流优先提示具体动作。`executionTriage` 可指出精确编辑删除的调用参数和新增的相邻布尔状态。
+- 只允许从源码定位且要求完成后直接汇报时，`stepPacing` 关闭首问流程指引和主动节奏提示。其他只允许从源码定位的请求仍可收到源码范围提示。实际工具失败的诊断继续按 `executionTriage` 处理。
+- 激进模式下，用户要求完成后直接汇报时，省去通用开场指引、模式通知和首次修改前的通用提醒。实际工具失败仍可触发诊断。
+- `executionTriage` 根据实际执行结果和恢复记录提供建议。Shell 脚本已有可用的 `scriptRef` 时，提示如何复用原程序。用户要求文件大小且 PowerShell 盘点结果缺少大小列时，同一请求提示一次，并保留原始结果。
 - `archiveReadRouting`：默认开启。把 `.jar`、`.zip` 等归档路径转入受限解码读取，需要原生文件系统与 `fflate`；解码器缺失时返回明确的不可用原因，不退化为直接读取二进制。
 - `requestAccounting`：默认开启。分别记录主请求、压缩请求和辅助请求的用量及未知消费；关闭只影响统计口径，不停止或改写实际请求。
+- `strictObservability`：默认关闭，仅用于需要证明每次请求都可复算的实验。开启后，请求开始记录无法持久化时会在派发前拒绝并标记为未派发；即使 `requestAccounting`、`requestProjection` 和 `compressionControl` 都关闭，也保留最小请求开始/结束账本，不允许无记录派发。普通运行仍允许请求继续，同时把账本标为不完整，不把遥测故障当成上游消费。
 - `memberParsing`：默认开启。按语法实体定位 Java 类和方法范围；解析器不可用时退回词法扫描，并把本次解析失败记录为不可用而不是成功。其他语言使用文本窗口，不提供语法完整的成员范围。
 - `mavenSourceBinding`：默认开启。按 Maven 坐标匹配 `sources` 归档并绑定其中的源码条目；依赖归档解码，坐标或条目不一致时不采用猜测来源。
 - `ledgerReceipt`：默认开启。同一正文已在当前上下文可见时返回短回执而不是重复全文；依赖 `evidenceViews` 与历史取回。关闭 `evidenceViews` 后回执行为同时停用，状态显示 `requires-setting:evidenceViews`。
@@ -573,11 +609,11 @@ stubSummary 保留问题处理标记、事件指针和原文取回。
 
 ## 开发与桌面加载
 
-开发目录：当前仓库根目录。测试和实验工具可使用 `DSH_APP`、`DSH_PROFILE`、`DSH_TEST_PYTHON` 指向本机运行时和可选组件。
+从仓库根目录运行 `node --test`。宿主用例默认使用 `Documents/DSH Desktop/runtime/kernel-next` 下的完整 `0.2.2-rc.1` 内核。可用 `DSH_APP` 指定另一套声明支持的完整内核。`DSH_PROFILE` 和 `DSH_TEST_PYTHON` 可指定本机的配套组件。
 桌面加载目录：由桌面 profile 决定。需要同步时使用 `node sync-desktop.mjs`，不要写死本机绝对路径。
 桌面 web profile 的包依赖和目录联接指向加载目录。
 加载目录保存独立源码与 Python 环境；宿主依赖来自已安装的桌面运行时。
-插件直接引用桌面宿主提供的 `@deepseek-ai/dsh-llm`、`@deepseek-ai/cordis`、DSH PTC 运行时和应用启动模块。`@deepseek-ai/dsh-llm` 在安装元数据中是可选 peer，只表示包管理器不会替宿主安装它；插件加载和宿主测试仍要求该包实际存在。`dsh-ops` 只用于可选来源和精确编辑适配器，不是核心历史与交接功能的必需依赖。
+插件直接引用桌面宿主提供的 `@deepseek-ai/dsh-llm`、`@deepseek-ai/cordis`、DSH PTC 运行时和应用启动模块。`@deepseek-ai/dsh-llm` 在安装元数据中是可选 peer，只表示包管理器不会替宿主安装它；插件加载和宿主测试仍要求该包实际存在。本插件不引用 `dsh-ops`：OPS 适配代码已删除，插件只使用 DSH 原生工具。
 修改开发目录不会自动更新桌面加载目录。
 同步使用 `node sync-desktop.mjs`。正在运行的会话是否采用新代码取决于宿主生命周期。
 `node sync-desktop.mjs --code-only` 同步包内代码与说明，并修正独立目录的加载联接及锁文件路径。
@@ -586,11 +622,11 @@ stubSummary 保留问题处理标记、事件指针和原文取回。
 index.mjs 负责组装和会话事件。
 plugin-command.mjs 负责命令；source-tools.mjs 负责源码和报告入口；management-tools.mjs 负责执行、状态与管理入口。
 
-当前开发版已在本机桌面宿主运行时独立加载声明的发布文件，并完成来源读取、结构化调用、保留计算、程序引用、精确编辑、交接及关闭后的原生读取。`node --test test/host-package-load.test.mjs test/host-workflow-combinations.test.mjs` 覆盖这些路径；`node --test test/trajectory-audit.test.mjs` 覆盖审计行为。宿主核对使用脚本化模型，需要本机 DSH Desktop 运行时、现有 OPS 组件和配套 Python 环境，不调用在线模型。`test/helpers/host.mjs` 可用 `DSH_APP` 指定桌面运行时目录。当前结果不表示桌面目录已加载开发版，也不证明每项模型质量和费用效果。
+当前开发版已在本机桌面宿主运行时独立加载声明的发布文件，并完成来源读取、结构化调用、保留计算、程序引用、精确编辑、交接及关闭后的原生读取。`node --test test/host-package-load.test.mjs test/host-workflow-combinations.test.mjs` 覆盖这些路径；`node --test test/trajectory-audit.test.mjs` 覆盖审计行为。`npm test` 当前为 1151 项，1149 通过，0 失败，2 项按宿主能力跳过。默认路径分段测量用 `npm run profile`，只测本地处理，不包含模型等待或工具执行。`npm run profile:host` 使用真实宿主循环和脚本化模型，记录启动、配置读取、请求投影、原生工具、文件系统、持久化和销毁耗时；脚本化模型等待固定为零，不测量供应商延迟或费用。工作区配置只在请求边界和显式状态/控制操作刷新，`init` 不重复读取同一工作区配置。宿主核对需要本机 DSH Desktop 运行时和配套 Python 环境，不调用在线模型。`test/helpers/host.mjs` 可用 `DSH_APP` 指定桌面运行时目录。当前结果不表示桌面目录已加载开发版，也不证明每项模型质量和费用效果。
 
-运行完整测试时，Java 精确编辑检查需要能导入 `requirements-fastedit.txt` 所列依赖的 Python。将 `DSH_TEST_FASTEDIT_PYTHON` 设置为该解释器的绝对路径；未设置或设为空时，测试使用开发目录的 `.fastedit-venv/Scripts/python.exe`。
+运行完整测试时，源码成员解析相关检查需要 `requirements-source-members.txt` 所列依赖的 Python；`verified_exec` 宿主检查不依赖该解释器。将 `DSH_TEST_FASTEDIT_PYTHON` 设置为该解释器的绝对路径；未设置或设为空时，测试使用开发目录的 `.fastedit-venv/Scripts/python.exe`。`verified_exec` 的原生条件写入要求 `dsh-tools`、`dsh-fs-local`、`dsh-tool-fs` 位于同一 0.2.2-rc.1 或 0.2.2-rc.2 版本，并注入官方本地或沙箱文件服务。0.2.1-rc.4 或混合版本按 `cas-file-tools-unavailable` 明确 deopt，不做无版本条件的替代写入。
 
-`dsh-tools@0.2.2` 已移除 `mode` 配置。1.1.2 保留 `tool-execution.mjs` 的批量执行兼容与 `toolModeFor`，测试宿主按版本挂载拆分执行器；旧运行时保持原行为。支持版本为 `0.2.1-rc.4`、`0.2.2-rc.1` 和 `0.2.2-rc.2`。原生条件编辑仅支持已识别的 rc.2 文件服务；不支持时明确返回不可用。历史版本的检查结果不能替代当前候选的完整验收。
+`dsh-tools@0.2.2` 已移除 `mode` 配置。1.1.2 保留 `tool-execution.mjs` 的批量执行兼容与 `toolModeFor`，测试宿主按版本挂载拆分执行器；旧运行时保持原行为。支持版本为 `0.2.1-rc.4`、`0.2.2-rc.1` 和 `0.2.2-rc.2`。原生条件编辑仅支持已识别的 rc.1/rc.2 文件服务；不支持时明确返回不可用。历史版本的检查结果不能替代当前候选的完整验收。
 
 1.1.0 修复了无版本归档的同长度陈旧缓存、归档解码截断和本地头不一致，乱序/重复事件、非法参数崩溃、未结束写入的证据失效，以及会话状态回收。归档读取使用受限原生 deflate 解码并核对实际解压长度、压缩长度、CRC、目录和本地头；双宿主最终结果见集成分支验收记录。1.1.0 不宣称历史去除建议带来的 Token 净收益，不把测试通过或字符缩减当作发布效果。
 
@@ -613,6 +649,51 @@ plugin-command.mjs 负责命令；source-tools.mjs 负责源码和报告入口�
 - 复审子代理只读，必须直接读取原始代码、日志和结果，不得采信主 Agent 摘要；没有报告不能记为已复审。
 - 不得修改宿主全局配置来派生复审。历史无效审查记录必须保留，不能计入当前候选的有效审查。
 - 工具不可用、达到会话上限或调用报错时，必须记录 `subagent-unavailable` 和实际错误，并推进主 Agent 能独立完成的工作；不得擅换模型。正常运行的子代理不得因等待较长而被中断。
+
+## 实验与审查的强制门（机械触发，不可跳过）
+
+本节是硬约束。下列每条都以可核对的条件开头；条件成立时，**必须**执行对应动作，条件不成立时**禁止**执行。任何"先跑一组看看""再补一组重复臂"都属于违反本节。实验预算与用户花费优先于任何便利。
+
+### 1. 实验门：一次实验必须先被完全消化
+
+**触发条件 A（发起新实验之前）：** 只要存在任何一个已跑完但未按本节产出结论的实验臂，就**禁止**发起任何新实验臂（含基线、插件、重复、跨项目、部分题集）。没有例外。
+
+**沉没条件 A 的解除**要求同一个实验臂同时产出以下五项，缺一不可：
+
+| # | 必产出项 | 判据 |
+|---|---|---|
+| A1 | 全轨迹数据 | 该臂 `stdout.jsonl` 的请求数、输入/缓存/输出 Token、工具调用序列、步数、退出码、构建指纹 |
+| A2 | 逐题结果 | 每个 case 的通过/失败、失分点、以及失败发生的具体 step 与工具调用 |
+| A3 | 失败根因 | 对每一道失分题，用会话内容指明是"插件导致的错误动作/错误结论"还是"与插件无关的模型或任务难度"；不得用"波动"代替逐题归因 |
+| A4 | 机制归因 | 该臂里每个默认开启功能：是否触发、触发次数、实际改变了什么、是否产生可指认的收益或损害 |
+| A5 | 优化清单 | 由 A3/A4 直接导出的、可验证的修复项清单；每项写明不变量、受影响分支、正反回归 |
+
+允许的结构化结论只有三种：`NO-POSITIVE-GAIN-ATTRIBUTED`（有可指认原因）、`NO-POSITIVE-GAIN-UNATTRIBUTED`（未能归因，必须继续查）、`POSITIVE-GAIN`（有可指认收益且质量不退化）。出现 `UNATTRIBUTED` 时禁止进入下一个实验。
+
+**触发条件 B（修复完成之后）：** 只有当 A5 清单中每一项都"修完 + 有能在旧代码上失败的回归 + 全套回归通过"时，才允许再跑实验。禁止用跑实验的方式代替定位。
+
+**触发条件 C（实验数量）：** 禁止为凑样本重复发起同构实验。契约允许的重复只在"两对样本已存在且互相矛盾"时进行，并且必须先写出矛盾点与这次重复要区分的假设。
+
+### 2. CodeRabbit 门：一次审查必须被一次性彻底吸收
+
+**触发条件 D（回应审查之前）：** 禁止对单条评论逐条打补丁。必须先做**不变量普查**：
+
+1. 把该条意见还原成它违反的不变量（例：`denial 只作用于其所在从句`）。
+2. 找出该不变量在代码里的**全部**实现点与**全部**调用方。
+3. 列出该不变量的正例与反例，一次性补齐双向回归。
+4. 用同一不变量复核**未在本轮被审查到的文件**。
+
+**触发条件 E（提交审查修复之前）：** 每一条修复必须通过"反证检查"——把新增回归放到修复前的代码上，必须失败。无法失败说明用例没有区分力，不得计入修复证据。禁止只运行新增用例就宣称修复。
+
+**触发条件 F（同类反复）：** 若同一文件或同一不变量连续两轮被审查指出，第三次修复前**必须**先写出该处的状态机/数据流（输入、状态、所有权、时序），并说明前两次为何漏掉；否则视为违反本节，禁止继续提交。
+
+**触发条件 G（清零定义）：** "有效意见清零"指同一 HEAD 的完整审查报告 `Actionable comments posted: 0`。`skipped`/`pending`/绿色检查/无行内评论都不算清零。
+
+**触发条件 H（禁止事项）：** 禁止在审查未返回时用"再推一版看看"代替等待；禁止为触发审查制造无意义提交；禁止把审查意见数量当作质量指标。
+
+### 3. 执行顺序
+
+A/B/C 与 D–H 同时成立时，先做 D–H（审查不消耗实验预算），再做 A–E（实验消化）。两者都未完成时，禁止合并、打 Tag、发布。
 
 ## GitHub PR 开发与 CodeRabbit 审查规范
 

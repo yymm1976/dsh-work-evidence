@@ -4,19 +4,19 @@ import path from 'node:path';
 import {defaults,RETIRED_SETTINGS,VERSION} from './runtime.mjs';
 import {archiveDecoderStatus} from './archive-store.mjs';
 import {featureSetting} from './effect-observer.mjs';
-import {hasInterpreterConstraint} from './inline-exec.mjs';
+import {hasInterpreterConstraint,selectShell,preferredShell} from './inline-exec.mjs';
 
 const DEFINITIONS=[
   ['enabled','总开关','允许当前工作区使用插件'],
   ['aggressiveMode','激进模式','非 Ultra 档位的任务处理'],
   ['selfIndex','源码索引','记录并核对已观察的源码入口'],
-  ['fastEditEnabled','Java 编辑','按语法实体读取和修改 Java'],
   ['stateLedger','状态记录','记录读取、修改和执行依据'],
   ['stateInform','状态提醒','提醒已记录结果的适用状态'],
-  ['completionNotice','完成提醒','继续尚有明确可执行事项的阶段摘要'],
+  ['completionNotice','完成提醒','继续可执行的阶段事项，或补交用户明确请求的答复'],
   ['archiveReadRouting','归档读取','将归档路径转入准确来源读取'],
   ['readArgumentRecovery','读取参数纠错','修正明确的读取参数别名'],
   ['requestAccounting','用量记录','区分主请求、压缩和辅助调用'],
+  ['strictObservability','严格遥测','严格实验要求请求账本持久化，普通运行允许降级'],
   ['evidenceViews','来源视图','按实际可见正文提供来源引用'],
   ['memberParsing','源码成员','定位准确的类和方法范围'],
   ['mavenSourceBinding','Maven 来源','核对依赖坐标与源码归属'],
@@ -47,12 +47,13 @@ const DEFINITIONS=[
   ['finalJsonGuard','JSON 格式','修正用户明确要求的 JSON 格式'],
   ['finalJsonResultGuard','JSON 结果一致性','核对结果字段与明确观察'],
   ['qualityReview','交付复核','复核有直接依据的交付遗漏'],
+  ['boundedPatch','有界源码补丁','大型项目中仅依据源码定位，并在明确授权后应用补丁'],
   ['qualityReviewEffort','复核思考档位','独立选择复核档位，主任务档位保留',['auto','inherit','low','medium','high','max']],
   ['qualityReviewScope','复核源码范围','auto 在较大输入中聚焦源码文件，full 保留全部已装配片段',['auto','full']],
   ['toolSurface','工具入口','compact 保留常用入口，full 展示管理和工程工具',['compact','full']],
   ['defaultResponseView','默认来源返回','选择完整正文或已有正文的短引用',['full','reference-if-visible']],
 ];
-const TOOLS=['project_evidence','work_exec','work_recall','work_status','work_state','work_report','work_probe','evidence_index','candidate_select','ptc_patterns','ptc_fastpath','verified_exec','fastedit_java','work_compute','file_profile','structured_json'];
+const TOOLS=['project_evidence','work_exec','work_recall','work_status','work_state','work_report','work_probe','evidence_index','candidate_select','ptc_patterns','ptc_fastpath','verified_exec','work_compute','file_profile','structured_json'];
 const PACKAGE_DEFAULTS=defaults();
 const REQUIRES={stateInform:['stateLedger'],swEviction:['swLedger'],requestProjection:['projectionRestore'],projectionRestore:['requestProjection'],
   deferPressureCompaction:['compressionControl'],stubSummary:['compressionControl'],nativeProgramReuse:['executionTriage'],finalJsonResultGuard:['finalJsonGuard']};
@@ -86,7 +87,7 @@ export function latestObservedEffect(counters){
 }
 
 /** Local readiness only. A saved switch and available dependencies do not prove task success. */
-export function createFeatureControl(ctx,runtime,{available,canRecall,workingSet,qualityReview,compactionHandoff,retainedCompute,effects,verifiedExec}){
+export function createFeatureControl(ctx,runtime,{available,canRecall,workingSet,qualityReview,compactionHandoff,retainedCompute,effects,verifiedExec,contextEconomics}){
   const service=name=>{try{return ctx.get(name);}catch{return null;}};
   async function snapshot(agent,only){
     const state=runtime.get(agent),config=state.config,effective=runtime.isEnabled(agent),selection=runtime.currentSelection(agent);
@@ -100,8 +101,10 @@ export function createFeatureControl(ctx,runtime,{available,canRecall,workingSet
       try{nativeVerifiedReady=await verifiedExec?.nativeAvailable(agent)===true;}catch{}
     }
     let fastEditFiles=null;
-    if(config.fastEditEnabled&&(!only||only==='fastEditEnabled')){
-      try{await Promise.all([fs.access(config.fastEditPython),fs.access(path.join(import.meta.dirname,'fastedit-bridge.py'))]);fastEditFiles=true;}
+    // The tree-sitter bridge parses source members (memberParsing). It is no
+    // longer shared with a Java edit tool, so probe it only for memberParsing.
+    if((!only&&config.memberParsing)||only==='memberParsing'&&config.memberParsing){
+      try{await Promise.all([fs.access(config.fastEditPython),fs.access(path.join(import.meta.dirname,'source-members-bridge.py'))]);fastEditFiles=true;}
       catch{fastEditFiles=false;}
     }
     const features=DEFINITIONS.filter(([key])=>!only||key===only).map(([key,label,purpose,choices])=>{
@@ -121,14 +124,41 @@ export function createFeatureControl(ctx,runtime,{available,canRecall,workingSet
         if(key==='ledgerReceipt'&&!config.evidenceViews)reasons.push('requires-setting:evidenceViews');
         if(['qualityReviewEffort','qualityReviewScope'].includes(key)&&!config.qualityReview)reasons.push('requires-setting:qualityReview');
         if(['contextProtocol','swEviction','requestProjection','projectionRestore','ledgerReceipt','historyHygiene','stubSummary'].includes(key)&&canRecall(agent)!==true)reasons.push('historical-recall-not-exposed');
+        // These features have exactly one entry point. When the surface hides it,
+        // reporting "ready" overstates reachability: the switch is on but the
+        // capability cannot be exercised.
+        if(['evidenceViews','memberParsing','mavenSourceBinding'].includes(key)&&!available(agent,'project_evidence'))reasons.push('tool-unavailable:project_evidence');
+
         if(['stubSummary','deferPressureCompaction'].includes(key)&&!nativeCompaction)reasons.push('native-compaction-not-attached');
         if(key==='deferPressureCompaction'&&runtime.hasRequestBudgetView?.(agent)!==true)reasons.push('request-budget-view-unavailable');
+        // These rewrite or omit visible text. Their execution gate requires an exact-route
+        // price: context-economics deliberately treats the published rate as reference-only
+        // and refuses a normal rewrite when that is the only price available.
+        //
+        // Two features are deliberately not in this list:
+        //   - stubSummary runs its deterministic stub branch without a price call;
+        //   - swEviction asks for a price only when compressionControl is on
+        //     (context-window.mjs:86). With that switch off it folds repeated bodies without
+        //     a price check, so it must not be reported as price-blocked.
+        const routePriced=['historyHygiene','contextPrune','contextProtocol','requestProjection'];
+        if(key==='swEviction'&&config.compressionControl)routePriced.push('swEviction');
+        if(routePriced.includes(key)){
+          // Price the route this snapshot REPORTS, not the header's: after a model switch
+          // the two differ, and a readiness line could claim a priced route while the
+          // displayed model is unpriced (or the reverse).
+          if(!config.projectionPricing.length)reasons.push('requires-setting:projectionPricing');
+          else{
+            const price=contextEconomics?.pricingFor?.(agent,selection??undefined);
+            if(!price)reasons.push('route-price-unavailable');
+            else if(price.basis!=='exact-route')reasons.push('route-price-not-exact');
+          }
+        }
         if(['nativeProgramReuse','structuredCalls'].includes(key)&&!ptc)reasons.push('requires-ptc-tool-mode');
         if(key==='structuredCalls'&&(native?.language!=='typescript'||native?.programFormat!=='function-body'))reasons.push('requires-typescript-function-body-runtime');
         if(['hostNodeFallback','nativeShellScriptReuse'].includes(key)){
           if(!available(agent,'work_exec'))reasons.push('tool-unavailable:work_exec');
-          const shell=process.platform==='win32'?'pwsh':'bash';
-          if(!available(agent,shell))reasons.push('tool-unavailable:'+shell);
+          const shell=selectShell(name=>available(agent,name));
+          if(!shell)reasons.push('tool-unavailable:'+preferredShell());
           if(shell==='bash'&&typeof service('shellEnv')?.register!=='function')reasons.push('native-shell-env-unavailable');
           let mode;try{mode=service('sandboxPolicy')?.resolve({session:agent.session})?.mode;}catch{}
           if(!['workspace-write','danger-full-access'].includes(mode))reasons.push('requires-writable-session');
@@ -140,18 +170,17 @@ export function createFeatureControl(ctx,runtime,{available,canRecall,workingSet
           if(!available(agent,'work_probe'))reasons.push('tool-unavailable:work_probe');
         }
         if(['archiveReadRouting','memberParsing','mavenSourceBinding'].includes(key)&&!service('fs'))reasons.push('native-filesystem-unavailable');
+        if(key==='memberParsing'&&!fastEditFiles&&config.memberParsing)reasons.push('tree-sitter-runtime-unavailable:fastEditPython');
         if(['archiveReadRouting','mavenSourceBinding'].includes(key)&&!archiveDecoder.available)reasons.push('archive-decoder-unavailable:fflate');
-        if(key==='fastEditEnabled'){
-          if(!fastEditFiles)reasons.push('fastedit-runtime-files-unavailable');
-          if(!available(agent,'ops_stat'))reasons.push('tool-unavailable:ops_stat');
-          if(!['pwsh','ops_bash','bash'].some(tool=>available(agent,tool)))reasons.push('authorized-shell-unavailable');
-        }
         if(['requestProjection','projectionRestore'].includes(key)&&workingSet.metrics(agent).adapter==='unavailable')reasons.push('projection-adapter-unavailable');
         // Projection is off, work_state is hidden and executionTriage already records
         // executions, so this setting has no consumer the current session can reach.
         if(key==='stageWorkingSet'&&config.executionTriage&&!(config.requestProjection&&config.projectionRestore)&&
           !available(agent,'work_state'))reasons.push('inactive-without-reachable-consumer');
         if(key==='qualityReview'&&(!selection?.provider||!selection?.model))reasons.push('main-model-route-unavailable');
+        if(key==='boundedPatch'&&(!selection?.provider||!selection?.model))reasons.push('main-model-route-unavailable');
+        if(key==='boundedPatch'&&!service('fs'))reasons.push('native-filesystem-unavailable');
+        if(key==='boundedPatch'&&!service('sandboxPolicy'))reasons.push('native-service-unavailable:sandboxPolicy');
         if(key==='retainedCompute')for(const name of retained.missingDependencies)reasons.push('native-service-unavailable:'+name);
         if(key==='nativeVerifiedEdits'&&!nativeVerifiedReady)reasons.push('rc2-native-conditional-write-unavailable');
         if(key==='nativeVerifiedEdits'&&!available(agent,'verified_exec'))reasons.push('tool-unavailable:verified_exec');
@@ -190,7 +219,15 @@ export function createFeatureControl(ctx,runtime,{available,canRecall,workingSet
       sessionEnabledOverride:state.sessionEnabledOverride,mode:runtime.modeStatus(agent),
       dependencies:{fastEditPython:config.fastEditPython,archiveDecoder,ptcToolMode:ptc,nativeCompactionAttached:nativeCompaction,ptcRuntime:native?{language:native.language,programFormat:native.programFormat}:null,
         model:selection?{provider:selection.provider,model:selection.model}:null,retainedCompute:retained},
-      features,tools:only?undefined:TOOLS.map(name=>({name,exposed:available(agent,name),entry:available(agent,name)?name:'/work-evidence feature toolSurface full'})),
+      features,tools:only?undefined:TOOLS.map(name=>{
+        const exposed=available(agent,name);
+        // The handler executes one `feature` command, so a `;`-joined pair would
+        // return a usage error without enabling either setting. `config` takes a
+        // whole settings object in one command, which both settings need here.
+        const entry=exposed?name:name==='verified_exec'?'/work-evidence config {"nativeVerifiedEdits":true,"toolSurface":"full"}'
+          :'/work-evidence feature toolSurface full';
+        return {name,exposed,entry};
+      }),
       note:'状态只说明配置与当前可检查的条件，不等于功能已触发或任务结果正确。FastEdit 的 Python 包由实际调用确认；上游是否接受推理字段沿用通道实际依据。'};
   }
   return {snapshot,async summary(agent){

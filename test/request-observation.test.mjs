@@ -64,3 +64,78 @@ test('host compaction, plugin review and main requests are counted separately wi
   assert.equal(effects.requests.providerReported.totalTokens,450);
   await runtime.effects.dispose();
 });
+
+test('request observation preserves degraded start intent and marks a failed stream outcome unknown',async()=>{
+  const hooks=new Map(),agent={session:{id:'degraded-dispatch',seq:0,surface:{nodes:[],contentGeneration:0},requestHeader:()=>({config:{provider:'p',model:'m'}})}};
+  let row=null,release=null;
+  const state={telemetryDir:null,config:{...defaults(),strictObservability:false},
+    metrics:{contextRequests:0,contextRequestChars:0,contextModelTextChars:0},requestObservations:[],auxiliarySignals:new WeakSet()};
+  const ctx={on:(name,fn)=>{hooks.set(name,fn);return ()=>{};},agents:{get:()=>agent}};
+  const runtime={get:()=>state,init:async()=>state,sync:()=>state,isEnabled:()=>true,modeStatus:()=>({selected:'aggressive'}),
+    effects:{load:async()=>{},begin:()=>row={requestId:'degraded'},async start(_agent,value){value.dispatchState='dispatch-intent-degraded';},
+      finish:()=>{},snapshot:()=>({})},contextControl:{requestFinished:()=>{}}};
+  observeRequests(ctx,runtime);
+  const options={sessionId:agent.session.id,provider:'p',model:'m',signal:new AbortController().signal,
+    messages:[{role:'user',content:[{type:'text',text:'request'}]}],tools:[]};
+  const iterator=hooks.get('llm/stream')(options,async function*(){
+    await new Promise(resolve=>{release=resolve;});
+    yield {type:'usage',usage:{inputTokens:10,outputTokens:2,totalTokens:12}};
+    yield {type:'finish',reason:{kind:'stop'}};
+  });
+  const pending=iterator.next();
+  await new Promise(resolve=>setImmediate(resolve));
+  assert.equal(row.dispatchState,'dispatch-intent-degraded','a failed start record is not upgraded before dispatch');
+  release();
+  await pending;
+  for await(const _chunk of iterator){}
+  assert.equal(row.dispatchState,'settled');
+
+  row=null;
+  const failing=hooks.get('llm/stream')(options,async function*(){
+    yield {type:'text-delta',text:'partial'};
+    throw new Error('stream failed after dispatch');
+  });
+  await assert.rejects(async()=>{for await(const _chunk of failing){}},/stream failed after dispatch/);
+  assert.equal(row.dispatchState,'outcome-unknown','an errored dispatched stream is not reported as settled');
+});
+
+test('a null stream rejection is recorded as STREAM_FAILED without masking the original value',async()=>{
+  const hooks=new Map(),agent={session:{id:'null-stream',seq:0,surface:{nodes:[],contentGeneration:0},requestHeader:()=>({config:{provider:'p',model:'m'}})}};
+  let effectRecord=null;
+  const state={telemetryDir:null,config:{...defaults(),strictObservability:false},
+    metrics:{contextRequests:0,contextRequestChars:0,contextModelTextChars:0},requestObservations:[],auxiliarySignals:new WeakSet()};
+  const ctx={on:(name,fn)=>{hooks.set(name,fn);return ()=>{};},agents:{get:()=>agent}};
+  const runtime={get:()=>state,init:async()=>state,sync:()=>state,isEnabled:()=>true,modeStatus:()=>({selected:'aggressive'}),
+    effects:{load:async()=>{},begin:()=>effectRecord={requestId:'null-stream'},async start(){},finish(){},snapshot:()=>({})},
+    contextControl:{requestFinished:()=>{}}};
+  observeRequests(ctx,runtime);
+  const options={sessionId:agent.session.id,provider:'p',model:'m',signal:new AbortController().signal,
+    messages:[{role:'user',content:[{type:'text',text:'request'}]}],tools:[]};
+  let thrown;
+  try{
+    for await(const _chunk of hooks.get('llm/stream')(options,async function*(){throw null;})){}
+  }catch(error){thrown=error;}
+  assert.equal(thrown,null,'the original rejection value is preserved');
+  assert.equal(effectRecord.failureCode,'STREAM_FAILED');
+  assert.equal(effectRecord.dispatchState,'outcome-unknown');
+});
+
+test('strict observability keeps a start record even when all optional observers are off',async()=>{
+  const hooks=new Map(),agent={session:{id:'strict-all-off',seq:0,surface:{nodes:[],contentGeneration:0},requestHeader:()=>({config:{provider:'p',model:'m'}})}};
+  let began=0,started=0,finished=0,record=null;
+  const state={telemetryDir:null,config:{...defaults(),requestAccounting:false,requestProjection:false,compressionControl:false,strictObservability:true},
+    metrics:{contextRequests:0,contextRequestChars:0,contextModelTextChars:0},requestObservations:[],auxiliarySignals:new WeakSet()};
+  const ctx={on:(name,fn)=>{hooks.set(name,fn);return ()=>{};},agents:{get:()=>agent}};
+  const runtime={get:()=>state,init:async()=>state,sync:()=>state,isEnabled:()=>true,modeStatus:()=>({selected:'aggressive'}),
+    effects:{load:async()=>{},begin:()=>{began++;return record={requestId:'strict'};},async start(){started++;},finish(){finished++;},snapshot:()=>({})},
+    contextControl:{requestFinished:()=>{}}};
+  observeRequests(ctx,runtime);
+  const options={sessionId:agent.session.id,provider:'p',model:'m',signal:new AbortController().signal,
+    messages:[{role:'user',content:[{type:'text',text:'request'}]}],tools:[]};
+  for await(const _chunk of hooks.get('llm/stream')(options,async function*(){yield {type:'finish',reason:{kind:'stop'}};})){}
+  assert.equal(began,1);
+  assert.equal(started,1);
+  assert.equal(finished,1);
+  assert.equal(record.dispatchState,'settled');
+  assert.equal(state.requestObservations.length,0);
+});

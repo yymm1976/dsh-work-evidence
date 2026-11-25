@@ -497,9 +497,8 @@ test('a pending operation started before a check cannot validate an overlapping 
     ['run_code',{code:'modifyProject()'},false,'unknown'],
     ['verified_exec',{edits:[{file:'other.txt',mode:'create',content:'new'}]},true,'stale',
       ['opaque-execution-after-check','file-scope-unresolved']],
-    ['fastedit_java',{file:'a.java',operation:'read_entity',symbol:'A.value'},true,'supported'],
-    ['fastedit_java',{file:'a.java',operation:'find_entity',symbol:'A.value'},true,'supported'],
-    ['fastedit_java',{file:'a.java',operation:'read_entity',symbol:'A.value'},false,'supported']
+    ['read',{file_path:'a.java'},true,'supported'],
+    ['read',{file_path:'a.java'},false,'supported']
   ]){
     const f=fixture();
     f.add('tool/call',{callId:'pending',name,arguments:args});
@@ -517,7 +516,7 @@ test('a pending operation started before a check cannot validate an overlapping 
 test('malformed recorded tool arguments cannot crash an audit or support a requirement',()=>{
   for(const args of ['null','[]','1','"text"','{bad',null]){
     const {f,done,assessment,audit}=reviewedFixture();
-    f.add('tool/call',{callId:'pending',name:'fastedit_java',arguments:args});
+    f.add('tool/call',{callId:'pending',name:'verified_exec',arguments:args});
     assessment.throughSeq=f.events.at(-1).seq;
     assessment.checks=[recordedCheck(f,done,'source','addresses')];
     assessment.checks[0].coverage[0].scopePaths=['a.txt'];
@@ -927,6 +926,33 @@ test('change scope review status becomes stale when the source advances',()=>{
   assert.equal(result.items[0].relation,'direct-requirement');
 });
 
+test('case variants of one Windows path invalidate check coverage',()=>{
+  const {f,assessment,audit}=reviewedFixture();
+  const check=f.operation('pwsh',{command:'node check.js'},JSON.stringify({exitCode:0}));
+  f.operation('write',{file_path:'c:\\repo\\orders.json',content:'later'},'written');
+  assessment.throughSeq=f.events.at(-1).seq;
+  assessment.checks=[recordedCheck(f,check,'source','addresses')];
+  assessment.checks[0].coverage[0].scopePaths=['C:/Repo/orders.json'];
+  const result=audit();
+  assert.equal(result.verification.checks[0].coverage[0].unavailableReason,'file-changed-after-check');
+});
+
+test('case variants of one Windows path invalidate a change-scope review',()=>{
+  const {f,assessment,audit}=reviewedFixture();
+  const done=f.operation('edit',{file_path:'C:/Repo/orders.json',old_string:'old',new_string:'new'},'applied');
+  assessment.throughSeq=done.resultSeq;
+  const call=normalizeDshEvents(f.events).calls.find(row=>row.resultSeq===done.resultSeq);
+  assessment.scopeReviews=[{id:'windows-scope',callSeq:call.callSeq,resultSeq:done.resultSeq,
+    path:'C:/Repo/orders.json',declaredRelation:'direct-requirement',requirementSeqs:[1],
+    dependencyEvidenceSeqs:[],reviewer:'human',reason:'The user requested this file change.',
+    counterexample:'A later operation can change its current applicability.'}];
+  assert.equal(audit().changeScopeReviews.status,'reviewed');
+  f.operation('write',{file_path:'c:\\repo\\orders.json',content:'later'},'written');
+  const result=audit().changeScopeReviews;
+  assert.equal(result.status,'stale');
+  assert.ok(result.items[0].currentUnknownReasons.includes('file-changed-after-review'));
+});
+
 test('change scope applicability accounts for overlapping operations and later requirements',()=>{
   for(const kind of ['pending-write','pending-program','unknown-write','later-requirement',
     'pending-unrelated','pending-read','unknown-unrelated','no-effect']){
@@ -934,7 +960,7 @@ test('change scope applicability accounts for overlapping operations and later r
     if(kind==='pending-write')f.add('tool/call',{callId:'pending',name:'write',arguments:{file_path:'a.txt',content:'later'}});
     if(kind==='pending-program')f.add('tool/call',{callId:'pending',name:'run_code',arguments:{code:'modifyProject()'}});
     if(kind==='pending-unrelated')f.add('tool/call',{callId:'pending',name:'write',arguments:{file_path:'other.txt',content:'later'}});
-    if(kind==='pending-read')f.add('tool/call',{callId:'pending',name:'fastedit_java',arguments:{file:'a.txt',operation:'read_entity',symbol:'A.value'}});
+    if(kind==='pending-read')f.add('tool/call',{callId:'pending',name:'read',arguments:{file_path:'a.txt'}});
     const done=f.operation('edit',{file_path:'a.txt',old_string:'old',new_string:'new'},'applied');
     if(['unknown-write','unknown-unrelated','no-effect'].includes(kind)){
       const later=f.operation('write',{file_path:kind==='unknown-unrelated'?'other.txt':'a.txt',content:'later'},
@@ -994,6 +1020,17 @@ test('later opaque execution and unscoped changes cannot preserve a current scop
   assert.deepEqual(audit().verification.checks[0].coverage[0].unavailableReasons,['opaque-execution-after-check','unsettled-mutation']);
 });
 
+test('a pending legacy lookup does not count as an unsettled write',()=>{
+  const {f,assessment,audit}=reviewedFixture();
+  const check=f.operation('read',{file_path:'a.txt'},'source');
+  f.add('tool/call',{callId:'legacy-lookup',name:'fastedit_java',arguments:{operation:'read_entity',path:'a.txt'}});
+  assessment.throughSeq=f.events.at(-1).seq;assessment.checks=[recordedCheck(f,check,'source','addresses')];
+  assessment.checks[0].coverage[0].scopePaths=['a.txt'];
+  const coverage=audit().verification.checks[0].coverage[0];
+  assert.equal(coverage.reach,'addresses');
+  assert.equal(coverage.unavailableReason,undefined);
+});
+
 test('partial check output and a later requirement cannot inherit a complete check coverage claim',()=>{
   const {f,done,assessment,audit}=reviewedFixture();
   const check=f.operation('pwsh',{command:'node partial.js'},JSON.stringify({exitCode:0,stdout:'ok',truncated:true}));
@@ -1019,9 +1056,9 @@ test('nested check review preserves delivery uncertainty and unreviewed requirem
   assert.equal(unreviewed.verification.unknownCriteria,2);assert.equal(unreviewed.taskOutcome,'unknown');
 });
 
-function processFixture({variation=null,body='[exit code: 1]',exitCode=1}={}){
-  const f=fixture(),call=f.add('tool/call',{callId:'native-call',name:'pwsh',arguments:{command:'node check.js'}});
-  const job={jobId:'native-job',owner:'session-a',kind:'pwsh',toolCall:{callId:'native-call',rootCallId:'native-call'}};
+function processFixture({variation=null,body='[exit code: 1]',exitCode=1,name='pwsh'}={}){
+  const f=fixture(),call=f.add('tool/call',{callId:'native-call',name,arguments:{command:'node check.js'}});
+  const job={jobId:'native-job',owner:'session-a',kind:name,toolCall:{callId:'native-call',rootCallId:'native-call'}};
   const registered=f.add('job/registered',job),end={...job,status:'completed',cause:'producer',producerReported:true,detail:'exit code: '+exitCode};
   if(variation==='owner')end.owner='session-b';
   if(variation==='caller')end.toolCall={...end.toolCall,callId:'different-call'};
@@ -1046,6 +1083,16 @@ test('process outcome does not come from printable exit text or unrelated or inc
     assert.equal(call.processOutcome,'unknown',variation);assert.equal(call.exitCode,null,variation);
     assert.equal(call.completionObservation,undefined,variation);
   }
+});
+
+test('historical ops_bash still requires producer completion evidence',()=>{
+  const completed=processFixture({name:'ops_bash',body:'ok',exitCode:0}),completedCall=normalizeDshEvents(completed.f.events).calls[0];
+  assert.equal(completedCall.processOutcome,'exited-zero');
+  assert.equal(completedCall.exitCode,0);
+  const missing=fixture();missing.operation('ops_bash',{command:'printf ok'},'ok');
+  const missingCall=normalizeDshEvents(missing.events).calls[0];
+  assert.equal(missingCall.processOutcome,'unknown');
+  assert.equal(missingCall.exitCode,null);
 });
 
 test('contradictory structured and producer exit codes invalidate a supplied coverage claim',()=>{

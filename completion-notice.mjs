@@ -13,6 +13,7 @@ const withoutNegatedStop=text=>String(text??'')
   .replace(/(?:无需|不需要|不需|不必|不用|不要|不得|别)(?:再|先)?(?:等|等待|待)?(?:用户|我|你|您)?(?:确认|决定|授权|选择|批准|回复|提供|指示)/gu,'')
   .replace(/(?:无需|不需要|不需|不必|不用|不要|不得|别|不是|并非)(?:是|说)?(?:只|仅)/gu,'')
   .replace(/(?:无需|不需要|不需|不必|不用|不要|不得|别)(?:暂停|停下|停止|结束)/gu,'')
+  .replace(/(?<![请先要])(?:停止|暂停)(?:[、或](?:重试|重新加载|恢复|取消))+(?:之后|后|时)/gu,'')
   .replace(/(?:无|没有|不存在)(?:实际)?阻碍/gu,'');
 
 const continuationText=text=>withoutNegatedStop(String(text??'').replace(
@@ -69,15 +70,24 @@ function withoutFencedCode(text){
   }).join('\n');
 }
 
-function hasCompletionCandidate(current,requestText){
+function completionCandidate(current,requestText){
   const answer=withoutFencedCode(textOf(messageOf(current.assistant))).trim();
-  if(!answer||!requestText.trim()||requestPausesContinuation(requestText))return false;
+  if(!requestText.trim()||requestPausesContinuation(requestText))return null;
+  if(!answer){
+    const supplied=messageOf(current.assistant)?.content??[];
+    const reason=current.assistant.data?.stream?.findLast(event=>event.type==='chunk'&&event.chunk?.type==='finish')?.chunk?.reason;
+    const reportRequested=/(?:完成后|做完|最后)[^。\n]{0,14}(?:直接汇报|回复|给出|简要说明)|\b(?:then report|then summarize|final report)\b/iu
+      .test(continuationText(requestText));
+    return reportRequested&&reason?.kind==='stop'&&supplied.some(block=>block.type==='reasoning')&&
+      supplied.every(block=>block.type==='reasoning'||block.type==='text'&&!block.text?.trim())?'missing-requested-answer':null;
+  }
   const headings=[...answer.matchAll(SUMMARY_HEADING)];
-  if(!headings.length)return false;
+  if(!headings.length)return null;
   const summary=answer.slice(headings.at(-1).index);
   const next=[...summary.matchAll(NEXT_STEP)].at(-1)?.[1]??'';
   const status=continuationText(summary);
-  return actionableNextStep(next)&&!PAUSED_OR_NEEDS_USER.test(continuationText(next))&&!PAUSED_OR_NEEDS_USER.test(status);
+  return actionableNextStep(next)&&!PAUSED_OR_NEEDS_USER.test(continuationText(next))&&!PAUSED_OR_NEEDS_USER.test(status)?
+    'stage-summary-actionable-next-step':null;
 }
 
 /**
@@ -87,29 +97,32 @@ function hasCompletionCandidate(current,requestText){
  */
 export function createCompletionNotice(ctx,runtime,finalJson){
   const sent=new Map();
-  const willContinue=(agent,current=finalJson.inspect(agent))=>{
-    if(!runtime.isEnabled(agent)||pending(agent)||typeof agent.steer!=='function')return false;
+  const continuationReason=(agent,current=finalJson.inspect(agent))=>{
+    if(!runtime.isEnabled(agent)||pending(agent)||typeof agent.steer!=='function')return null;
     const config=runtime.get(agent).config;
-    if(config.completionNotice===false||!current.request||!current.assistant||current.issue)return false;
-    if((messageOf(current.assistant)?.content??[]).some(block=>block.type==='tool-call'))return false;
+    if(config.completionNotice===false||!current.request||!current.assistant||current.assistant.seq<=current.request.seq||current.issue)return null;
+    if((messageOf(current.assistant)?.content??[]).some(block=>block.type==='tool-call'))return null;
     const id=agent.session.id;
     const requestSeq=current.request.seq;
-    if(sent.get(id)===requestSeq)return false;
+    if(sent.get(id)===requestSeq)return null;
     const alreadySent=current.events.some(event=>event.type==='user/message'&&messageOf(event)?.source?.kind===SOURCE&&
       messageOf(event).source.completionNotice?.requestSeq===requestSeq);
-    return !alreadySent&&hasCompletionCandidate(current,textOf(messageOf(current.request)));
+    return alreadySent?null:completionCandidate(current,textOf(messageOf(current.request)));
   };
+  const willContinue=(agent,current)=>continuationReason(agent,current)!==null;
   ctx.on('agent/turn-stopping',({agent,turn,signal})=>{
     if(signal.aborted)return;
     const current=finalJson.inspect(agent,turn);
-    if(!willContinue(agent,current))return;
+    const reason=continuationReason(agent,current);
+    if(!reason)return;
     const id=agent.session.id,requestSeq=current.request.seq;
     try{
       agent.steer({id:randomUUID(),role:'user',source:{kind:SOURCE,completionNotice:{version:VERSION,
-        requestSeq,afterSeq:current.assistant.seq}},content:[{type:'text',text:
+        requestSeq,afterSeq:current.assistant.seq}},content:[{type:'text',text:reason==='missing-requested-answer'?
+        '[work-evidence] 上一条消息没有用户要求的最终答复。请依据本轮结果交付实际完成项和仍未确认的事项。':
         '[work-evidence] 上一条答复包含阶段摘要和可执行的下一步。先依据当前用户请求核对是否仍有已授权且可执行的工作；有则在同一轮继续实际动作。用户要求暂停、需要用户决定或授权、下一步为无或任务已完成时，说明真实状态并结束。'}]});
       sent.set(id,requestSeq);
-      runtime.effects?.decide(agent,'completionNotice','applied','stage-summary-actionable-next-step',{requestSeq,afterSeq:current.assistant.seq});
+      runtime.effects?.decide(agent,'completionNotice','applied',reason,{requestSeq,afterSeq:current.assistant.seq});
     }catch(error){
       runtime.effects?.decide(agent,'completionNotice','unavailable','native-steering-failed',{requestSeq,message:String(error?.message??error).slice(0,240)});
     }
@@ -121,6 +134,6 @@ export function createCompletionNotice(ctx,runtime,finalJson){
       notices:current.events.filter(event=>event.type==='user/message'&&messageOf(event)?.source?.kind===SOURCE).length,
       currentRequestNotified:!!current.request&&current.events.some(event=>messageOf(event)?.source?.kind===SOURCE&&
         messageOf(event).source.completionNotice?.requestSeq===current.request.seq),
-      scope:'process-local once-per-request stage-summary reminder'};
+      scope:'once-per-request stage-summary or missing requested answer reminder'};
   }};
 }

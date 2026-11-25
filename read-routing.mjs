@@ -15,12 +15,11 @@ function toolResult(value){return {isError:false,value,content:[{type:'text',tex
 // This adapter runs after tool guards and uses the DSH filesystem provider.
 export function createReadRouting(ctx,runtime,call,nativeFiles){
   return async function route(exec){
-    if(!exec.agent||!['read','ops_read_files'].includes(exec.name))return null;
+    if(!exec.agent||exec.name!=='read')return null;
     const args=exec.arguments;
-    const requests=exec.name==='read'?[{path:args?.file_path,offset:args?.offset,limit:args?.limit}]:args?.files;
+    const requests=[{path:args?.file_path,offset:args?.offset,limit:args?.limit}];
     if(!Array.isArray(requests)||!requests.length||requests.length>32||!requests.some(item=>archiveLocator(item?.path)))return null;
-    if(exec.name==='ops_read_files'&&Object.keys(args).some(key=>key!=='files'))return null;
-    if(exec.name==='read'&&Object.keys(args).some(key=>!['file_path','offset','limit'].includes(key)))return null;
+    if(Object.keys(args).some(key=>!['file_path','offset','limit'].includes(key)))return null;
     if(requests.some(item=>!item||typeof item.path!=='string'||Object.keys(item).some(key=>!['path','offset','limit'].includes(key))))return null;
     await runtime.init(exec.agent,exec.signal);
     if(!runtime.isEnabled(exec.agent)||!runtime.get(exec.agent).config.archiveReadRouting)return null;

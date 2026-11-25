@@ -1,13 +1,13 @@
 # 功能入口成熟度矩阵
 
-范围：当前 1.1.2 候选 `feature-control.mjs` 的 44 个实际入口。以下候选仍默认关闭：原生条件编辑、文件概况、JSON 选择。宿主 Node 回退、Shell 程序引用和原样检查重执行也默认关闭。真实任务与消融未完成的候选不记为成熟。
+范围：当前 1.1.2 候选 `feature-control.mjs` 的 43 个实际入口。`opsAdapters` 与 `fastEditEnabled` 已随 OPS 适配删除，不再是入口（写有这两个键的旧工作区按退役设置强制为 `false`）。以下候选仍默认关闭：原生条件编辑、文件概况、JSON 选择。宿主 Node 回退、Shell 程序引用和原样检查重执行也默认关闭。真实任务与消融未完成的候选不记为成熟。
 
 | 入口 | 状态 | 启停与依赖 | 运行、恢复和组合证据 | 文档与迁移 |
 |---|---|---|---|---|
 | `enabled` | 成熟默认开启 | 工作区总开关；会话可覆盖 | `host-control-state.test.mjs` 验证启停和清理 | `README.md`、`MIGRATION-1.1.1.md` |
 | `aggressiveMode` | 成熟默认开启 | 模式选择；关闭时保留基础路径。旧工作区 `mode:"default"` 且未显式设置时强制关闭 | `host-modes.test.mjs` 验证模式切换 | `README.md` |
 | `selfIndex` | 成熟默认开启 | 源码索引；依赖本地读取 | `host-candidates.test.mjs` 验证索引入口 | `README.md` |
-| `fastEditEnabled` | 成熟默认开启 | Python、`ops_stat` 和授权 shell 必须可用；关闭时返回 deopt，重新开启后同一会话恢复 | `host-package-load.test.mjs`、`host-source.test.mjs` 验证关闭和恢复 | `README.md`、`MIGRATION-1.1.1.md` |
+| `fastEditEnabled` | **已删除** | OPS CAS 与 `fastedit_java` 一并移除；键按退役设置强制为 `false`，不再有 Java 实体编辑入口 | `runtime-config.test.mjs` 验证退役加载；`verified_exec` 覆盖原生精确多文件修改 | `OPS-ADAPTERS-OPT-IN.md`、`MIGRATION-1.1.2.md` |
 | `stateLedger` | 成熟默认开启 | 账本基础能力 | `host-state.test.mjs` 验证记录与释放 | `README.md` |
 | `stateInform` | 成熟默认开启 | 依赖 `stateLedger` | `host-state.test.mjs` 验证适用状态 | `README.md` |
 | `completionNotice` | 成熟显式开启 | 默认关闭；只在仍有可执行事项时启用 | `host-features.test.mjs`、`host-delivery-combinations.test.mjs` 验证不增加默认请求 | `README.md` |
@@ -17,15 +17,16 @@
 | `evidenceViews` | 成熟默认开启 | 来源正文可见时提供引用视图 | `host-source-options.test.mjs` 验证正文和引用切换 | `README.md` |
 | `memberParsing` | 成熟默认开启 | 依赖文件系统和可用解析器；Java 语法范围，解析器不可用时词法回退；其他语言使用文本窗口 | `host-source-options.test.mjs`、Java 成员测试 | `README.md` |
 | `mavenSourceBinding` | 成熟默认开启 | 依赖归档解码和坐标匹配 | `host-source-options.test.mjs`、Maven 来源测试 | `README.md` |
-| `contextProtocol` | 成熟默认开启 | 处理可恢复旧工具正文 | `host-context-combinations.test.mjs`、`host-compaction.test.mjs` 验证正文、压缩与恢复 | `README.md` |
-| `historyHygiene` | 成熟默认开启 | 依赖历史回收入口；异常时停用自身折叠。测试回执覆盖 pytest、ruff、compileall、gradlew/gradle/mvn 和带完整 TAP 摘要的 `node --test`；无摘要、截断、spill 或用户要求完整输出时不投影 | `host-history.test.mjs` 验证折叠和恢复；`test-output-hygiene.test.mjs` 验证测试输出回执、TAP 摘要边界、截断与召回边界；`history-full-output-request.test.mjs` 验证只有真实用户消息可停用回执 | `README.md` |
-| `nativeVerifiedEdits` | 候选，默认关闭 | 限定 rc.2 原生 tools、LocalFileSystem 或官方 SandboxedFileSystem；沿原生 write 权限路径附带版本条件。旧宿主或工具替换时明确拒绝该候选；默认 OPS 路径保留 | `native-cas.test.mjs` 覆盖创建、替换、BOM/CRLF、并发、权限、逐文件成功和失败状态、延迟注册及真实 PTC；真实任务与消融待完成 | 当前候选尚未发布 |
+| `contextProtocol` | 成熟默认开启 | 处理可恢复旧工具正文；正常改写依赖回收入口和当前路由的精确 `projectionPricing` 行 | `host-context-combinations.test.mjs`、`host-compaction.test.mjs` 验证正文、压缩与恢复 | `README.md` |
+| `historyHygiene` | 成熟默认开启 | 依赖历史回收入口和当前路由的精确 `projectionPricing` 行；异常时停用自身折叠。测试回执覆盖 pytest、ruff、compileall、gradlew/gradle/mvn 和带完整 TAP 摘要的 `node --test`；无摘要、截断、spill 或用户要求完整输出时不投影 | `host-history.test.mjs` 验证折叠和恢复；`test-output-hygiene.test.mjs` 验证测试输出回执、TAP 摘要边界、截断与召回边界；`history-full-output-request.test.mjs` 验证只有真实用户消息可停用回执 | `README.md` |
+| `contextPrune` | 成熟默认开启 | 正常源码裁剪依赖当前路由的精确 `projectionPricing` 行；参考价只用于显示，不能批准改写 | `context-pruning` 与宿主上下文测试 | `README.md` |
+| `nativeVerifiedEdits` | 候选，默认关闭 | `verified_exec` 的唯一后端。限定同一版本的 rc.1/rc.2 原生 tools、LocalFileSystem 或官方 SandboxedFileSystem；沿原生 write 权限路径附带版本条件。旧宿主或工具替换时：**feature readiness** 报 `rc2-native-conditional-write-unavailable`；而 **`verified_exec` 调用**返回 `reason:"cas-file-tools-unavailable"` + `missing:["rc2-native-conditional-write"]`。两者是不同接口（前者是配置就绪度，后者是工具结果），匹配时必须用各自的值。任何情况下都不退回未验证写入 | `native-cas.test.mjs` 覆盖创建、替换、BOM/CRLF、并发、权限、逐文件成功和失败状态、延迟注册及真实 PTC；`host-source.test.mjs` 覆盖不可用宿主上的诚实 deopt | 当前候选尚未发布 |
 | `fileProfiling` | 候选，默认关闭 | 依赖原生文件服务的版本、stat 和字节范围读取；入口 `file_profile` | `file-profile-core.test.mjs`、`file-profile.test.mjs` 覆盖 CSV、UTF-8、抽样/全量、预算与并发；真实触发及消融待完成 | `RELEASE-NOTES-1.1.2.md`、`MIGRATION-1.1.2.md` |
 | `structuredJson` | 候选，默认关闭 | 依赖原生有界字节读取和版本；入口 `structured_json` | `json-pointer.test.mjs`、`structured-json-core.test.mjs`、`structured-json.test.mjs` 覆盖指针、数值规则、行号、短读及真实 PTC；真实任务及消融待完成 | `RELEASE-NOTES-1.1.2.md`、`MIGRATION-1.1.2.md` |
 | `ledgerReceipt` | 成熟默认开启 | 依赖可回收历史和来源正文 | `host-source-options.test.mjs`、`host-acp-combinations.test.mjs` 验证短回执 | `README.md` |
 | `ledgerUnresolved` | 成熟默认开启 | 保留真实未解决项，不推断完成 | `host-state.test.mjs` 验证状态传播 | `README.md` |
 | `swLedger` | 成熟显式开启 | 默认关闭；为重复结果折叠提供记录 | `sw-default.test.mjs`、上下文组合测试 | `README.md`、`MIGRATION-1.1.1.md` |
-| `swEviction` | 成熟显式开启 | 依赖 `swLedger` 和历史回收 | `sw-default.test.mjs` 验证启停和释放 | `README.md`、`MIGRATION-1.1.1.md` |
+| `swEviction` | 成熟显式开启 | 依赖 `swLedger` 和历史回收；`compressionControl` 开启时还需当前路由的精确 `projectionPricing` 行 | `sw-default.test.mjs` 验证启停和释放 | `README.md`、`MIGRATION-1.1.1.md` |
 | `requestProjection` | 成熟显式开启 | 默认关闭；依赖 `projectionRestore`、回收入口 | `host-projection.test.mjs` 验证隐藏、恢复和锚点 | `README.md`、`MIGRATION-1.1.1.md` |
 | `projectionRestore` | 成熟显式开启 | 依赖 `requestProjection` | `host-projection.test.mjs` 验证恢复失败清理 | `README.md`、`MIGRATION-1.1.1.md` |
 | `compressionControl` | 成熟默认开启 | 协调原生压缩和来源恢复 | `compression-control.test.mjs`、`host-context-combinations.test.mjs` | `README.md` |
@@ -51,7 +52,7 @@
 
 ## 终审结论
 
-- 44 个入口均有配置和源码接线。`nativeVerifiedEdits`、`fileProfiling`、`structuredJson`、`hostNodeFallback`、`nativeShellScriptReuse` 和 `probeReplay` 仍为候选；前 3 项的真实任务与消融未完成，后 3 项只有已见合成研究且不能证明稳定净益。
+- 43 个入口均有配置和源码接线（`opsAdapters` 与 `fastEditEnabled` 已删除）。`nativeVerifiedEdits`、`fileProfiling`、`structuredJson`、`hostNodeFallback`、`nativeShellScriptReuse` 和 `probeReplay` 仍为候选；前 3 项的真实任务与消融未完成，后 3 项只有已见合成研究且不能证明稳定净益。
 - 23981e8、020e842 和 5029a09 的真实模型结果只属于对应源码。宿主 Node 回退的四臂结果不能证明稳定收益；Shell 程序引用的重复实验平均费用高 31.7756%；原样检查重执行高 8.0216%。这些结果不改 8da 正式成绩。
 - 默认关闭的能力通过显式配置启用。缺少依赖时返回 `blocked`、`waiting` 或明确原因。
 - 旧设置由 `runtime.mjs` 的 `RETIRED_SETTINGS` 固定关闭；迁移兼容和回退说明见 `MIGRATION-1.1.1.md`、`MIGRATION-1.1.2.md`、`ROLLBACK-1.1.1.md` 与 `ROLLBACK-1.1.2.md`。

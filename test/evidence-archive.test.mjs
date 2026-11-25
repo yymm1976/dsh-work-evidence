@@ -309,6 +309,32 @@ test('boundEvidence enforces its character budget and marks dropped matches', ()
   assert.ok(bounded.references.matches.length < 20);
 });
 
+test('boundEvidence retries a clipped retained line instead of skipping it', () => {
+  const facts = {
+    mode: 'read',
+    workspace: 'workspace',
+    sources: [{
+      path: 'src/long.txt',
+      requestedRange: {offset: 1, limit: 2},
+      lineTextLimit: 500,
+      lineTextMaximum: 500,
+      totalLines: 2,
+      lines: [
+        {line: 1, text: 'x'.repeat(500), lineTextTruncated: true},
+        {line: 2, text: 'y'.repeat(5000)}
+      ]
+    }]
+  };
+
+  const bounded = boundEvidence(facts, 4000);
+  const source = bounded.sources[0];
+  assert.equal(source.responseBudget.firstClippedLine, 1);
+  assert.equal(source.responseBudget.lineTextRecoveryLimited, true);
+  assert.equal(source.responseBudget.resumeArguments, undefined,
+    'the same line limit cannot recover the missing text');
+  assert.match(source.responseBudget.lineTextRecovery, /line 1/u);
+});
+
 test('references extracts supported locators, ignores invalid lines and caps results', () => {
   const found = references(
     'C:/src/A.java:12 src/B.mjs:7 Foo.java:3 src/C.ts:8 Foo.java:0 missing'

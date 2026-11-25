@@ -2,6 +2,7 @@ import path from 'node:path';
 import {randomUUID} from 'node:crypto';
 import {argsOf,eventLog,isUserRequestMessage} from './runtime.mjs';
 import {collectReadWindows} from './observation-ledger.mjs';
+import {physicalPathKey} from './evidence.mjs';
 import {operationKey} from './task-flow.mjs';
 import {resultText,parseResult,toolResultValue,resultHasProblem,resultIdentity,resultReference,contentReferences,surfaceReferences,compactionActive,rewriteSpacingReady} from './visible-results.mjs';
 
@@ -12,11 +13,11 @@ const DEPENDENCY_LADDER='total is the merged unique dependencies this result rec
 const RESTORE_REASON_SEMANTICS='Listed reasons are the recorded signals that matched each observation before this restore decision. They do not show that the model read a body, that later requests needed it, or any cache and cost effect.';
 const ADAPTER_OWNER=Symbol.for('@local/dsh-work-evidence/request-adapter');
 const diagnosticDependency=({kind,display})=>kind==='command'||kind==='url'?{kind,source:null,sourceOmission:'not-copied'}:{kind,source:display};
-const READ=/^(?:read|ops_read_files|ops_inspect_local_file|ops_stat|ops_grep|ops_glob|grep|glob|project_evidence|fastedit_java|web_fetch|web_search|fetch|search|browse|bash|pwsh|ops_bash)$/;
-const WRITE=/^(?:write|edit|str_replace_editor|ops_write_file|ops_edit_file|verified_exec|fastedit_java)$/;
+const READ=/^(?:read|grep|glob|project_evidence|web_fetch|web_search|fetch|search|browse|bash|pwsh)$/;
+const WRITE=/^(?:write|edit|str_replace_editor|verified_exec)$/;
 const INTERNAL=new Set(['work_status','work_state','work_report','work_probe','compress','decompress','search_context','acp_status','acp_cache','acp_rule']);
 const messageOf=event=>event?.data?.message??(event?.data?.role?event.data:null);
-const normalizeText=text=>String(text??'').replaceAll('\\','/').toLowerCase();
+const normalizeText=text=>String(text??'').replaceAll('\\','/');
 const touchesFile=(dependency,changed)=>dependency===changed||dependency.startsWith(changed+'!/');
 const messageText=message=>(message.content??[]).filter(block=>block.type==='text'||block.type==='tool-call')
   .map(block=>block.type==='text'?block.text:typeof block.arguments==='string'?block.arguments:JSON.stringify(block.arguments??{})).join('\n');
@@ -26,7 +27,7 @@ const requestChars=messages=>messages.reduce((sum,message)=>sum+(message.content
     block.type==='tool-call'?JSON.stringify({name:block.name,arguments:block.arguments}).length:0),0),0);
 const appliedMutation=(name,args,value,isError)=>{
   if(!WRITE.test(name))return false;
-  if(['verified_exec','fastedit_java'].includes(name)){
+  if(name==='verified_exec'){
     const payload=value?.data??value;
     return payload?.effectState==='applied'||payload?.files?.some(file=>file.effectState==='applied')===true;
   }
@@ -40,11 +41,13 @@ function resource(root,value,kind='file'){
   if(kind==='command')return value.length>=4&&value.length<=1000?{kind,key:value,display:value}:null;
   if(!root||value==='.'||value==='./')return null;
   const parts=value.split(/![\\/]/),absolute=path.resolve(root,parts[0]),relative=path.relative(root,absolute);
+  const suffix=parts.length>1?'!/'+parts.slice(1).join('!/').replaceAll('\\','/'):'';
+  const physical=physicalPathKey(root,parts[0])+suffix;
   if(!relative)return null;
   const outside=relative==='..'||relative.startsWith('..'+path.sep)||path.isAbsolute(relative);
-  if(outside){const display=absolute.replaceAll('\\','/')+(parts.length>1?'!/'+parts.slice(1).join('!/').replaceAll('\\','/'):'');return {kind:'file',key:normalizeText(display),display,absolute:normalizeText(display)};}
-  const display=relative.replaceAll('\\','/')+(parts.length>1?'!/'+parts.slice(1).join('!/').replaceAll('\\','/'):'');
-  return {kind:'file',key:normalizeText(display),display,absolute:normalizeText(absolute)+(parts.length>1?'!/'+parts.slice(1).join('!/').replaceAll('\\','/').toLowerCase():'')};
+  if(outside){const display=absolute.replaceAll('\\','/')+suffix;return {kind:'file',key:normalizeText(physical),display,absolute:normalizeText(physical)};}
+  const display=relative.replaceAll('\\','/')+suffix;
+  return {kind:'file',key:normalizeText(physical),display,absolute:normalizeText(physical)};
 }
 function dependencies(root,value,stats=null){
   const out=new Map(),seen=new WeakSet();let budget=1024;
@@ -76,7 +79,7 @@ function mentions(text,dependency){
     return new RegExp('(?:^|[^\\p{L}\\p{N}_$])'+escaped+'(?:$|[^\\p{L}\\p{N}_$])','u').test(text);
   }
   const normalized=normalizeText(text);
-  return [dependency.key,dependency.absolute].filter(Boolean).some(key=>{
+  return [dependency.key,dependency.absolute,dependency.display].filter(Boolean).some(key=>{
     let offset=normalized.indexOf(normalizeText(key));
     while(offset>=0){
       const before=normalized[offset-1],after=normalized[offset+key.length];
@@ -157,6 +160,9 @@ export function createRequestWorkingSet(ctx,runtime,economics,taskFlow){
           if(problem){if(message.isError||!nested.some(item=>item.problem&&item.problemText&&item.problemText===resultIdentity(message.content)))state.errors.set(key,[...deps.values()]);}else state.errors.delete(key);
           if(ownMutation)for(const dep of dependencies(root,call.args))if(dep.kind==='file')state.mutations.set(dep.key,{seq:event.seq,step:state.step});
           state.results.set(event.seq,{seq:event.seq,id:message.id,tool:call.name,args:call.args,step:state.step,
+            callId:callId??null,
+            revision:parsed?.data?.revision??parsed?.revision??null,
+            complete:parsed?.data?.complete??parsed?.complete??null,
             dependencies:[...deps.values()].slice(0,32),dependencyTotal:deps.size,
             dependencySourceOmitted:depStats.sourceOmitted,dependencyScanIncomplete:depStats.scanIncomplete,problem,write,
             observable:!INTERNAL.has(call.name)&&(READ.test(call.name)||call.name==='run_code'&&(nested.length>0||collectReadWindows(parsed).length>0)),
@@ -234,7 +240,8 @@ export function createRequestWorkingSet(ctx,runtime,economics,taskFlow){
     for(const dep of entry.dependencies){
       if(state.step-(state.lastUser?.step??-Infinity)<=state.recentSteps&&mentions(user,dep))reasons.add('user-source-reference');
       if(inputs.some(text=>mentions(text,dep)))reasons.add('recent-source-reference');
-      if((state.stageFocus??[]).some(focus=>focus.kind===dep.kind&&(focus.key===dep.key||dep.kind==='file'&&touchesFile(dep.key,focus.key))))reasons.add('stage-focus');
+      if((state.stageFocus??[]).some(focus=>focus.kind===dep.kind&&(focus.key===dep.key||focus.key===dep.display||
+        dep.kind==='file'&&(touchesFile(dep.key,focus.key)||touchesFile(dep.display??'',focus.key)))))reasons.add('stage-focus');
       if(dep.kind==='file'&&[...state.mutations].some(([key,change])=>touchesFile(dep.key,key)&&state.step-change.step<=12))reasons.add('recent-modification');
       if([...state.errors.values()].some(deps=>deps.some(error=>error.kind===dep.kind&&error.key===dep.key)))reasons.add('unresolved-error');
     }
@@ -244,12 +251,29 @@ export function createRequestWorkingSet(ctx,runtime,economics,taskFlow){
   function restore(agent,state,messages){
     // Each hidden entry has its own restore anchor; a new user message can need
     // another entry before the host emits the next step/start event.
-    const visible=new Set(messages.filter(message=>message.role==='tool'&&!state.hidden.has(state.resultIds.get(message.id))&&!message.isError).map(message=>resultText(message.content)));
+    const evidenceKey=info=>{
+      if(!info)return null;
+      const command=['run_code','pwsh','bash','work_exec','verified_exec'].includes(info.tool);
+      return JSON.stringify({tool:info.tool??null,args:info.args??null,
+        dependencies:(info.dependencies??[]).map(dep=>dep.kind+':'+dep.key).sort(),
+        revision:info.revision??null,complete:info.complete??null,
+        dependencyTotal:info.dependencyTotal??null,
+        dependencyScanIncomplete:info.dependencyScanIncomplete===true,
+        dependencySourceOmitted:info.dependencySourceOmitted??0,
+        // A command execution is a time-and-environment fact even when its text and
+        // arguments repeat. Only the same recorded event may stand in for it. A file
+        // read with no native version is likewise not equivalent evidence.
+        ...(command||!info.revision||info.complete!==true||info.dependencyScanIncomplete===true||
+          (info.dependencySourceOmitted??0)>0?{callId:info.callId??null,seq:info.seq??null}:{})});
+    };
+    const visible=messages.filter(message=>message.role==='tool'&&!state.hidden.has(state.resultIds.get(message.id))&&!message.isError)
+      .map(message=>{const info=state.results.get(state.resultIds.get(message.id));return {body:resultText(message.content),evidence:evidenceKey(info)};});
     const reasonsBySeq=new Map();
     const seqs=[...state.hidden.values()].filter(entry=>{
       if(state.restored.has(entry.seq)||!needed(state,entry))return false;
       const reasons=needReasons(state,entry),body=resultText(agent.session.eventAt(entry.seq)?.data?.message?.content);
-      if(!reasons.includes('explicit-event-reference')&&visible.has(body)){
+      const evidence=evidenceKey(state.results.get(entry.seq));
+      if(!reasons.includes('explicit-event-reference')&&evidence&&visible.some(item=>item.body===body&&item.evidence===evidence)){
         runtime.effects?.decide(agent,'restoration','not-applicable','equivalent-body-already-visible',{seq:entry.seq});return false;
       }
       reasonsBySeq.set(entry.seq,reasons);

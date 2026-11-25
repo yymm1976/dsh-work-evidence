@@ -5,9 +5,50 @@ import {tokenFields} from './experiment-store.mjs';
 
 export const REQUEST_ACCOUNTING_SCHEMA='work-evidence.session-request-accounting.v1';
 const schemas=new Set(['work-evidence.request-start.v1','work-evidence.request-effects.v1','work-evidence.request-link.v1']);
+const pendingDecisionsSchema='work-evidence.pending-decisions.v1';
 const emptyTokens=()=>Object.fromEntries(tokenFields.map(field=>[field,{known:0,reportedRequests:0}]));
 const nonnegative=value=>Number.isSafeInteger(value)&&value>=0;
 const signature=value=>JSON.stringify(value);
+
+function summarizeDecisions(rows,sessionId,problems){
+  const decisions=new Map(),conflicts=new Set(),issues=problems.slice();
+  for(const [index,row] of rows.entries()){
+    if(row?.schema!=='work-evidence.request-effects.v1'&&row?.schema!==pendingDecisionsSchema)continue;
+    if(row.sessionId!==sessionId){
+      issues.push({index,reason:'decision-session-mismatch'});
+      continue;
+    }
+    if(row.decisions===undefined&&row.schema!==pendingDecisionsSchema)continue;
+    if(!Array.isArray(row.decisions)){
+      issues.push({index,reason:'invalid-decision-list'});
+      continue;
+    }
+    for(const item of row.decisions){
+      const {id,feature,status,reason}=item??{};
+      if(![id,feature,status,reason].every(value=>typeof value==='string'&&value)){
+        issues.push({index,reason:'invalid-decision'});
+        continue;
+      }
+      const previous=decisions.get(id);
+      if(!previous)decisions.set(id,{feature,status,reason});
+      else if(previous.feature!==feature||previous.status!==status||previous.reason!==reason){
+        if(!conflicts.has(id))issues.push({index,reason:'conflicting-decision-id'});
+        conflicts.add(id);
+      }
+    }
+  }
+  const byFeature=Object.create(null);
+  let total=0;
+  for(const [id,{feature,status,reason}] of decisions){
+    if(conflicts.has(id))continue;
+    const group=byFeature[feature]??={total:0,byStatus:Object.create(null),byReason:Object.create(null)};
+    group.total++;
+    group.byStatus[status]=(group.byStatus[status]??0)+1;
+    group.byReason[reason]=(group.byReason[reason]??0)+1;
+    total++;
+  }
+  return {status:rows.length?(issues.length?'partial':'recorded'):'unavailable',total,byFeature,problems:issues};
+}
 
 export async function readRequestAccounting(file,events,options){
   try{
@@ -34,6 +75,7 @@ export function accountSessionRequests(events,rows,{sessionId,sourceFile=null,in
   const issues=problems.slice(),records=new Map(),legacy=[],nativeBySeq=new Map(native.map(row=>[row.sourceSeq,row]));
   let exactDuplicates=0;
   for(const [index,row]of rows.entries()){
+    if(row?.schema===pendingDecisionsSchema)continue;
     if(!row||!schemas.has(row.schema)){issues.push({index,reason:'unsupported-observation-row'});continue;}
     if(typeof row.requestId!=='string'||!row.requestId||row.requestId.length>256){issues.push({index,reason:'invalid-request-id'});continue;}
     if(row.sessionId===undefined){legacy.push({requestId:row.requestId,schema:row.schema});continue;}
@@ -138,6 +180,7 @@ export function accountSessionRequests(events,rows,{sessionId,sourceFile=null,in
     additionalRequests:additionalCount,additionalUnknownRequests:groups.auxiliary.unknownRequests+groups.compaction.unknownRequests,
     additionalTokens,byKind:groups,requests:additionalRequests,mainRequestLinks,unsettledRequestIds:unsettled,unmatchedRequestIds:unmatched,
     exactDuplicateRows:exactDuplicates,legacyRows:legacy.length,problems:issues,
+    decisions:summarizeDecisions(rows,sessionId,problems),
     scope:'Explicit session-local stream records plus exact native settlements. Main observation rows are never added to native totals. Coverage excludes external executions, other sessions, bypassed streams, adapter-internal HTTP retries and billing.'};
 }
 

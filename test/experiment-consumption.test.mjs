@@ -48,6 +48,39 @@ async function temporary(t){
   return folder;
 }
 
+test('saving a partial assistant message does not settle the interrupted request cost',()=>{
+  const zeroUsage={inputTokens:0,cacheReadTokens:0,cacheWriteTokens:0,outputTokens:0,totalTokens:0};
+  for(const reported of [zeroUsage,usage(100)]){
+    const {events}=fixture();
+    const partial=events.find(event=>event.type==='assistant/message');
+    Object.assign(partial.data,{interrupted:true,usage:reported,stream:[{type:'chunk',chunk:{type:'usage',usage:reported}}]});
+    const summary=summarizeAttempts(events);
+    assert.equal(summary.counts.surfaceMessages,1);
+    assert.equal(summary.counts.unknownConsumptionAttempts,1);
+    assert.equal(summary.attempts[0].usage.totalTokens,reported.totalTokens);
+  }
+  assert.equal(summarizeAttempts(fixture().events).counts.unknownConsumptionAttempts,0);
+});
+
+test('decision summaries join request effects and pending rows without adding requests',()=>{
+  const f=fixture(),deferred={id:'deferred',feature:'contextPrune',status:'deferred',reason:'route-pricing-unavailable'};
+  const applied={id:'applied',feature:'contextPrune',status:'applied',reason:'large-result-middle-pruned'};
+  f.rows.find(row=>row.schema==='work-evidence.request-effects.v1').decisions=[deferred];
+  f.rows.push({schema:'work-evidence.pending-decisions.v1',sessionId:f.sessionId,decisions:[{...deferred},applied]});
+  const result=f.account();
+  assert.equal(result.complete,true);
+  assert.equal(result.additionalRequests,2);
+  assert.equal(result.decisions.status,'recorded');
+  assert.equal(result.decisions.total,2);
+  assert.equal(result.decisions.byFeature.contextPrune.byStatus.deferred,1);
+  assert.equal(result.decisions.byFeature.contextPrune.byReason['route-pricing-unavailable'],1);
+  f.rows.at(-1).decisions.push({...applied,reason:'conflict'});
+  const conflict=f.account();
+  assert.equal(conflict.complete,true);
+  assert.equal(conflict.decisions.status,'partial');
+  assert.equal(conflict.decisions.total,1);
+});
+
 test('a native main settlement is counted once while review and compaction are separate additions',()=>{
   const f=fixture(),result=f.account();
   assert.equal(result.complete,true);assert.equal(result.matchedNativeRequests,1);assert.equal(result.additionalRequests,2);

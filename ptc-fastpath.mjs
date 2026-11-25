@@ -8,13 +8,6 @@ export const RUN_SCHEMA='work-evidence.ptc-fastpath-run.v1';
 const SAFE_NAME=/^[a-z][a-z0-9-]{1,63}$/;
 const TOOL_ALIASES=Object.freeze({
   read:'read',grep:'grep',glob:'glob',
-  ops_glob:'glob',
-  ops_grep:'grep',
-  ops_read_files:'read',
-  ops_inspect_local_file:'inspect',
-  ops_stat:'stat',
-  ops_diff:'diff',
-  ops_result:'result',
 });
 const READ_ONLY=new Set(Object.keys(TOOL_ALIASES));
 const queues=new Map();
@@ -116,15 +109,44 @@ function validateDefinition(definition){
     inputs,steps,boundedDefinition:boundedJson({name:definition.name,description:definition.description,
       candidate_id:definition.candidate_id||null,inputs,steps})};
 }
-function validateStoredDefinition(definition,index){
-  if(!definition||typeof definition!=='object'||Array.isArray(definition))throw new Error('Stored fast-path '+index+' is not an object');
-  try{
-    const validated=validateDefinition({name:definition.name,description:definition.description,candidate_id:definition.candidate_id,
-      inputs:definition.inputs,steps:definition.steps});
-    return {...definition,...validated.boundedDefinition};
-  }catch(error){
-    throw new Error(`Stored fast-path ${definition.name||index} is invalid: ${error.message}`);
+function validateStoredDefinition(definition){
+  const validated=validateDefinition({name:definition.name,description:definition.description,candidate_id:definition.candidate_id,
+    inputs:definition.inputs,steps:definition.steps});
+  return {...definition,...validated.boundedDefinition};
+}
+// A saved store can name tools that no longer exist (the OPS read tools are one
+// example). Rejecting the whole store over one such entry would disable every
+// valid fast-path, so invalid entries are dropped and reported by count while
+// the remaining definitions keep working.
+export function restoreStoredDefinitions(definitions){
+  const valid=[],skipped=[];
+  for(const [index,definition] of definitions.entries()){
+    if(!definition||typeof definition!=='object'||Array.isArray(definition)){skipped.push({index,reason:'not-an-object'});continue;}
+    try{valid.push(validateStoredDefinition(definition));}
+    catch(error){skipped.push({index,name:definition.name??null,reason:String(error.message).slice(0,200)});}
   }
+  return {valid,skipped};
+}
+
+export function removeStoredDefinition(store,name){
+  const before=store.definitions.length+(Array.isArray(store.retiredDefinitions)?store.retiredDefinitions.length:0);
+  store.definitions=store.definitions.filter(item=>item?.name!==name);
+  store.retiredDefinitions=(Array.isArray(store.retiredDefinitions)?store.retiredDefinitions:[])
+    .filter(item=>item?.name!==name);
+  return {removed:store.definitions.length+store.retiredDefinitions.length<before};
+}
+
+export function retiredDefinitionSummary(store,skippedDefinitions=[]){
+  const retired=Array.isArray(store?.retiredDefinitions)?store.retiredDefinitions:[];
+  return {
+    count:retired.length,
+    names:retired.map(item=>typeof item?.name==='string'?item.name:null).filter(Boolean).slice(0,32),
+    reasons:[...new Set([
+      ...retired.map(item=>typeof item?.retireReason==='string'?item.retireReason:null),
+      ...skippedDefinitions.map(item=>typeof item?.reason==='string'?item.reason:null),
+    ].filter(Boolean))].slice(0,8),
+    skippedNow:skippedDefinitions.length,
+  };
 }
 
 function resultStatus(result,tool){
@@ -147,10 +169,6 @@ function summarizeStep(tool,value){
   if(tool==='read')return {path:data.path,offset:data.offset,totalLines:data.totalLines,truncatedByBytes:data.truncatedByBytes===true,
     preview:(data.lines??[]).slice(0,12).map(line=>({...line,text:String(line.text??'').slice(0,500)})),
     previewTruncated:(data.lines?.length??0)>12||(data.lines??[]).some(line=>String(line.text??'').length>500)};
-  if(tool==='ops_glob')return {paths:(data?.paths||[]).slice(0,40),complete:data?.complete,nextOffset:data?.nextOffset};
-  if(tool==='ops_grep')return {matches:(data?.matches||[]).slice(0,20),complete:data?.complete,nextOffset:data?.nextOffset,scanComplete:data?.scanComplete,pageComplete:data?.pageComplete};
-  if(tool==='ops_read_files')return {items:(data?.items||[]).slice(0,12).map(item=>({path:item.path,status:item.status,revision:item.revision,bytes:item.bytes,lineCount:item.lineCount,complete:item.complete,nextOffset:item.nextOffset}))};
-  if(tool==='ops_inspect_local_file')return {path:data?.path,revision:data?.revision,totalLines:data?.totalLines,complete:data?.complete,nextOffset:data?.nextOffset,preview:(data?.lines||[]).slice(0,12)};
   return data;
 }
 
@@ -160,7 +178,7 @@ async function candidateSequence(runtime,agent,candidateId,signal){
   if(!loaded.ok)throw new Error('Candidate report is unavailable; run ptc_patterns first');
   const candidate=loaded.value?.candidates?.find(item=>item.id===candidateId);
   if(!candidate)throw new Error('Candidate ID is not in the current ptc-patterns report');
-  return candidate.toolSequence.flat().map(name=>({glob:'glob',grep:'grep',read:'read',inspect:'inspect',stat:'stat',diff:'diff',result:'result'})[name]||name);
+  return candidate.toolSequence.flat().map(name=>({glob:'glob',grep:'grep',read:'read'})[name]||name);
 }
 
 export function createPtcFastpath(ctx,runtime,call){
@@ -172,7 +190,16 @@ export function createPtcFastpath(ctx,runtime,call){
       throw new Error('Fast-path store is unavailable');
     }
     if(loaded.value?.schema!==STORE_SCHEMA||loaded.value?.version!==1||!Array.isArray(loaded.value.definitions))throw new Error('Unrecognized fast-path store');
-    return {s,file,store:{...loaded.value,definitions:loaded.value.definitions.map(validateStoredDefinition)}};
+    const restored=restoreStoredDefinitions(loaded.value.definitions);
+    // Skipped entries stay in the store under their own field. Dropping them would make the
+    // first save after a restore delete every definition this build cannot validate, which
+    // is irreversible: a rollback then finds them gone.
+    const retired=[...(Array.isArray(loaded.value.retiredDefinitions)?loaded.value.retiredDefinitions:[]),
+      ...restored.skipped.map(entry=>{
+        const item=loaded.value.definitions[entry.index];
+        return item&&typeof item==='object'&&!Array.isArray(item)?{...item,retireReason:entry.reason}:null;
+      }).filter(Boolean)];
+    return {s,file,store:{...loaded.value,definitions:restored.valid,retiredDefinitions:retired},skippedDefinitions:restored.skipped};
   }
   async function save(agent,file,store,signal){await runtime.save(agent,file,store,signal);}
   async function define(agent,args,signal){
@@ -199,16 +226,19 @@ export function createPtcFastpath(ctx,runtime,call){
     });
   }
   async function list(agent,signal){
-    await runtime.init(agent,signal);const {file,store}=await load(agent,signal);
+    await runtime.init(agent,signal);const {file,store,skippedDefinitions}=await load(agent,signal);
+    const retired=retiredDefinitionSummary(store,skippedDefinitions??[]);
     return {storePath:file,definitions:store.definitions.map(item=>({name:item.name,description:item.description,candidate_id:item.candidate_id,
-      tools:item.steps.map(step=>step.tool),uses:item.uses||0,successes:item.successes||0,lastUsedAt:item.lastUsedAt,lastOutcome:item.lastOutcome}))};
+      tools:item.steps.map(step=>step.tool),uses:item.uses||0,successes:item.successes||0,lastUsedAt:item.lastUsedAt,lastOutcome:item.lastOutcome})),
+      // Reported, not silently dropped: these entries remain in the store under
+      // `retiredDefinitions` and can be restored by a build that understands them.
+      ...(retired.count?{retiredDefinitions:retired}:{})};
   }
   async function remove(agent,name,signal){
     const s=await runtime.init(agent,signal);if(typeof name!=='string'||!SAFE_NAME.test(name))throw new Error('Invalid name');
     return serial(path.join(s.dir,'ptc-fastpaths.json'),async()=>{
-      const {file,store}=await load(agent,signal);const before=store.definitions.length;
-      store.definitions=store.definitions.filter(item=>item.name!==name);
-      if(store.definitions.length===before)return {status:'not-found',name,storePath:file};
+      const {file,store}=await load(agent,signal),{removed}=removeStoredDefinition(store,name);
+      if(!removed)return {status:'not-found',name,storePath:file};
       await save(agent,file,store,signal);return {status:'removed',name,storePath:file};
     });
   }

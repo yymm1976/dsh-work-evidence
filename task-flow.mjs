@@ -2,65 +2,88 @@ import path from 'node:path';
 import {toolModeFor} from './tool-execution.mjs';
 import {randomUUID} from 'node:crypto';
 import {argsOf,eventLog,isUserRequestMessage,MODE_POLICY_VERSION} from './runtime.mjs';
-import {resultText,parseResult,toolResultValue,resultHasProblem,resultHasFailure,resultIdentity} from './visible-results.mjs';
+import {resultText,parseResult,toolResultValue,resultHasProblem,resultHasFailure,resultIdentity,RECOVERED_NATIVE_READ_HEADER} from './visible-results.mjs';
 import {STAGE_CHECKPOINT_GUIDANCE} from './stage-checkpoints.mjs';
 import {createExecutionDependencies,dependencyView,executionResultLayers,executionExitCode,dependencyExecutionComplete,executionFacts} from './execution-dependencies.mjs';
 import {recordedProcessCompletion} from './execution-evidence.mjs';
 import {nativeReadObservation} from './host-references.mjs';
-import {nativeReadOutputSymptom,nativeReadRecoveryEntries,executionFailureFrames,recordedSourceExcerpt,reportedCheckFailure,reportedExecutionChecks,nativeProgramParseLocation,nativeTemplateCallLocation,nativePwshInvocationDiagnostic} from './recovery.mjs';
+import {nativeReadOutputSymptom,nativeReadRecoveryEntries,executionFailureFrames,recordedSourceExcerpt,reportedCheckFailure,reportedExecutionChecks,nativeProgramParseLocation,nativeTemplateCallLocation,nativePwshInvocationDiagnostic,nativePwshTableDiagnostic} from './recovery.mjs';
 import {resolveNativeProgram,nativeProgramAddress} from './program-reference.mjs';
-import {textWindow,within} from './evidence.mjs';
-import {declaredInlineExecutable,namedInlineExecutable} from './inline-exec.mjs';
+import {limits,textWindow,within} from './evidence.mjs';
+import {declaredInlineExecutable,namedInlineExecutable,selectShell} from './inline-exec.mjs';
 import {nativeShellScript} from './native-shell-script.mjs';
+import {sourceBodyPaths} from './context-pruning.mjs';
 
 const SOURCE='work-evidence-task-flow';
 const PHASES=['investigate','modify','execute','deliver','mixed'];
-const SHELL=['pwsh','ops_bash','bash','work_exec'];
-const READ=new Set(['read','ops_read_files','ops_inspect_local_file','project_evidence','fastedit_java']);
-const WRITE=new Set(['write','edit','ops_write_file','ops_edit_file','str_replace_editor','verified_exec','fastedit_java']);
+const SHELL=['pwsh','bash','work_exec'];
+const READ=new Set(['read','project_evidence']);
+const WRITE=new Set(['write','edit','str_replace_editor','verified_exec']);
 const INTERNAL=new Set(['work_state','work_status','work_report','work_recall','work_probe','todo_write','compress','decompress','search_context','acp_status']);
+const FINAL_ONLY_REPORTING=/(?:修完|做完|完成|结束)(?:[^，,。；;！？\r\n]{0,24}?后)?[，, \t]*直接(?:汇报|回复|答复)|(?:不要|不必|无需|禁止|不得)(?:在)?(?:中途|过程中)(?:汇报|更新进度|输出)|(?:只|仅)(?:在)?(?:最后|最终|完成后)(?:汇报|回复|输出)|\b(?:no (?:interim|progress) updates|final (?:answer|response) only)\b/iu;
+const SOURCE_ONLY_REQUEST=/(?:只能|仅可|仅能|只允许)[^。\r\n]{0,40}(?:源码|源代码|文件代码)[^。\r\n]{0,30}(?:定位|排查|判断|核对)|\b(?:source inspection only|only inspect (?:the )?source code)\b/iu;
+const FULL_SOURCE_REQUEST=/通读|完整(?:地)?(?:阅读|读取)|(?:阅读|读取)(?:整个|完整)(?:源码|文件)|(?:源[代]?码|文件|文件代码)(?:的)?(?:全文|全量)|\b(?:entire|full|whole) (?:source )?file\b/iu;
+export function taskPacingAllowed(config,request){
+  return !!config.stepPacing&&!(SOURCE_ONLY_REQUEST.test(request)&&FINAL_ONLY_REPORTING.test(request));
+}
+function sourceReadDefault(config,request){
+  return taskPacingAllowed(config,request)&&Number.isInteger(config.sourceReadDefaultLines)&&SOURCE_ONLY_REQUEST.test(request)&&!FULL_SOURCE_REQUEST.test(request)?
+    config.sourceReadDefaultLines:null;
+}
+const SOURCE_ONLY_GUIDANCE='只从源码取得依据。可通过原生工具或 Shell 读取和检索文件。不得启动解释器检查语法、导入或行为。也不得为这些检查寻找运行时。按用户描述的行为逐项处理。先查实际入口和触发条件，源码能解释一个独立问题时可先修这一项。每次读取只补会改变当前修改的缺口，已定位的独立区段同轮读取。涉及重试、刷新、切换或并发时，从源码核对首次操作留下的状态，以及下一次实际使用的对象、范围和状态。改缓存时查时效和失败重取。保留其他已有行为。最终汇报实际修改和仍缺依据的事项。';
+const SHELL_SOURCE_SEARCH=/^\s*(?:Select-String|rg(?:\.exe)?|grep)\b/iu;
+const SHELL_SOURCE_READ=/^\s*(?:Get-Content|cat|sed\s+-n)\b/iu;
+const SOURCE_FILE=/\.(?:py|[cm]?[jt]sx?|java|go|rs|rb|php|cs|c|cc|cpp|h|hpp|swift|kt|kts|sh|ps1|html|css|sql)$/iu;
+const SOURCE_WINDOW_STEPS=24;
+const SOURCE_FOCUS_STEPS=8;
+const SOURCE_FOCUS_LINES=240;
 const WORK_EXEC_DISCOVERY='当前 SDK 未显示 work_exec 参数时，可用宿主已声明的 capabilities.search({query:"work_exec",budgetBytes:8192}) 取得真实接口。宿主没有该发现入口或没有提供此工具时，沿用当前原生工具。';
 export const TASK_FLOW_GUIDANCE='Work Evidence：遵守用户范围、文件保护和完整交付；处理尚未由实际结果回答的缺口，已知且独立的动作同轮合并，已确定就直接执行，不复述。\n'+
   '逐项完成用户明确列出的交付项。需要现实依据的事实以一次成功读取或执行为证据；同一批来源可确定的派生值沿用该证据。仅在用户明确要求、存在独立失败路径或来源冲突时，再另做最小验证。\n'+
   '已知来源和独立动作尽量同轮批量。JSON/JSONL/CSV/NDJSON应在同一次PTC调用中读取、解析并计算，只输出所需结构、计数或值，不回显整表；内部执行程序只保留完成动作所需语句，不生成重复摘要或调试日志。work_exec用于项目/外部执行，跨模型轮次复用Node状态才用retained；项目文件修改用write/edit。\n'+
   '工具调用前不预演完整任务或重复内部推导。程序输出核对明确字段、来源标记、顺序和边界，只修实际差异；结构化交付物保留全部规定字段并检查语法与形状，未要求可读排版时JSON使用紧凑单行。最终答复包含用户要求的完整交付、实际依据和剩余问题，不重复数据。先定位首个实际差异，继续处理其他已知失败，不重建未改实现。';
-export const READ_ONLY_TASK_FLOW_GUIDANCE='遵守用户只读范围和完整交付，步数与用量不代表完成。逐项完成用户明确列出的交付项；需要现实依据的事实以一次成功读取或执行为证据，同一批来源可确定的派生值沿用该证据。仅在用户明确要求、存在独立失败路径或来源冲突时，再另做最小验证。\n'+
-  '确需工具时，用一个PTC程序按用户顺序读取明确来源、解析并计算；JSON/JSONL/CSV/NDJSON不逐个调用read回显，也不在后续轮次重读，只输出所需结构或值。所需原文已可见时直接答复，不为整理已知值另开程序。内部程序只保留必要语句和实际错误，不生成重复摘要或调试日志；实际失败或来源冲突时才另起最小实现。\n'+
-  '工具调用前不预演完整任务或重复内部推导。交付前核对明确字段、来源标记、顺序和边界，只修实际差异；结构化交付物保留全部规定字段并检查语法与形状，未要求可读排版时JSON使用紧凑单行。全部明确要求完成后直接交付，不重复数据。';
+export const READ_ONLY_TASK_FLOW_GUIDANCE='遵守用户的只读范围。逐项交付请求中的结果，并标明来源和未确定的事项。已有依据直接复用。已知且互不依赖的读取可同轮完成；缺少依据时，读取能回答当前问题的区段。结构化输入只返回所需字段、值或计数。';
 const STAGE_GUIDANCE='得到重要新结论、改变方案、遇到阻碍或进入长等待时，在普通助手正文给出可独立理解的阶段判断：结论、关键依据、尚未确定的范围和下一步。无新事实不复述，不逐工具播报，不展示内部思考；明确区分用户决定、已观察事实与助手假设。用户明确要求仅最终工件或禁止中途输出时遵守其格式。';
-const MODE_EXECUTION_HYGIENE='工具调用前不预演完整任务或重复内部推导；独立读取、解析和计算尽量在同一程序完成，嵌套工具也同轮批量。程序要输出本次判断所需的全部字段、值或计数，不回显无关整表，也不生成重复摘要或调试日志；不要把已读取对象遗漏输出后在下一次调用中重读。已有成功观察及其可确定派生值直接复用。所需原文已可见时直接答复，不为整理已知值另开程序。项目文件修改用write/edit；入口可用且确需运行完整Node/Python程序时用work_exec。仅Node程序按实际模块格式设置format；Python程序不传format。';
-export const QUALITY_PRIORITY='You have an UNLIMITED TOKEN BUDGET and UNLIMITED TOOL CALLS. Do not artificially restrict your reasoning depth, investigation, or verification to conserve tokens.';
-const QUALITY_DISCRIMINATOR='用户明确给出的例外、禁止事项和原样保留规则必须逐项落实，不得自行增加让例外失效的条件；没有实际结果时保留未确定状态。';
-const QUALITY_GUIDANCE='质量模式 Ultra：在宿主提供的思考档位上，按任务需要深入分析关键假设、竞争解释、边界和失败路径；复杂问题持续推理到足以作出可靠判断，不因时间或用量提前收束。反复失败时查找各次尝试共同依赖的假设，依据新事实调整路径；修改前考虑受影响的调用方、数据流和失败状态。区分已观察事实、推断与未解决问题，不扩大用户要求的范围。遵守用户指定的范围、禁令和暂停条件。完整完成用户全部要求。'+QUALITY_PRIORITY+
-  'Treat this task as a rigorous capability evaluation where both your final deliverable and your entire execution trajectory are scored. Your objective is to maximize correctness, completeness, reliability, and instruction compliance while maintaining a focused, efficient execution trajectory. '+
-  'Reasoning Quality: Think as deeply as the task requires. Investigate complex dependencies, edge cases, alternative explanations, and potential failure modes. Do not settle for superficial conclusions or premature solutions. Reconsider assumptions when evidence contradicts them. '+
-  'Evidence-Driven Execution: Read the relevant files, inspect actual implementations, and verify important assumptions before making changes. Prefer targeted investigation over broad, unfocused exploration. Never fabricate evidence, test results, or implementation details. '+
-  'Targeted Efficiency: Avoid redundant reasoning, repeated file reads, unnecessary tool calls, circular analysis, and exploration unrelated to the task. More tokens and more steps are not inherently better; every additional action should contribute meaningful value. '+
-  'No Artificial Shortcuts: Do not sacrifice necessary analysis, investigation, implementation quality, or testing merely to reduce token consumption or step count. Missing critical evidence, skipping essential validation, or delivering an incomplete solution will be heavily penalized. '+
-  'Implementation and Verification: For coding tasks, understand the relevant architecture, make precise and maintainable changes, and verify them with appropriate tests or other concrete evidence. Investigate failures instead of assuming success. '+
-  'Strict Instruction Compliance: Follow all user requirements, repository instructions, scope restrictions, workflow constraints, and acceptance criteria. Unauthorized changes, unnecessary modifications, and deviations from the requested task are heavily penalized. '+
-  'Completion Discipline: Continue investigating when meaningful uncertainty remains. Once the task is properly completed and sufficiently verified, stop instead of extending the process without purpose. '+
-  'The highest score is awarded to an agent that uses as much reasoning and tool activity as genuinely necessary—and no more—to deliver an excellent, well-verified result with a precise and disciplined execution trajectory. Your resources are abundant. Spend them freely when they improve the outcome, but never waste them without purpose. '+MODE_EXECUTION_HYGIENE;
-const AGGRESSIVE_GUIDANCE='激进优化：完整满足本次明确要求，并减少本次任务总 Token。读取关键入口后直接实现最小修复，独立动作同轮批量。内部推理只写当前动作、依据和预期结果，最多 4 句；不复述任务、不比较未要求的实现、不预演测试输出。完成条件以用户要求及其指定的行为定义为准；自行编写的临时检查若预期与行为定义冲突，必须按已确认的行为定义修正测试预期，不得修改实现去迎合错误预期。全部明确要求及指定检查已有成功依据时交付，不追加用户未要求的多实现对照、穷举配置、旁支调查、上游全套检查或重复复核。复用已成功观察与计算；已有线索足以行动时，不扩大读取。JavaScript反引号字符串包括String.raw会解释${...}；向写入或执行工具传递含该形式的源码时，用普通字符串或正确转义，保留目标语言的反斜杠和换行。内部程序只输出本次所需结果。最终答复只包含交付、实际执行结果和剩余缺口。以当前工作区代码、任务原文和已有工具结果为准；遵守用户对源码来源的要求；用户明确要求移植上游修复或恢复发布版实现时，按该要求使用指定来源，不得使用用户禁止的外部实现。需要联网的操作沿用用户已有授权；超出授权范围时再确认。优先运行仓库既有测试。可写实现任务在实现后创建一个最小临时复现测试并运行一次：覆盖改动行为和一个边界，不分析仓库测试覆盖范围。若失败原因确认是测试自身错误，必须修正已确认的问题并重跑；后续出现新的测试自身错误时，仍按实际证据修正，不限制修正次数。仅在确认测试无法修正时才删除它。若复现有效但仍失败，必须继续修复实现并重跑该复现，直到通过或如实报告受阻，不得删除有效复现或改用无关检查掩盖失败。复现通过后，用文件工具删除临时测试；既有测试断言仅在用户明确要求或指定行为确需调整时修改，不得改动无关断言或用新增文件替代删除。不要依赖 shell 删除。只读任务不新增文件；用户要求、且不修改文件、不超越权限的检查可以运行。若用户指令或执行权限不允许创建或运行测试，则遵循该限制，不创建临时测试。同一测试命令在相关实现或测试输入未变时通过后不得再运行；输入变化后或用户明确要求重跑时可以重跑。同一文件不得反复整文件读取。'+MODE_EXECUTION_HYGIENE;
-export function taskFlowGuidance(mode,surface='writable',config={}){
+const MODE_EXECUTION_HYGIENE='互不依赖的读取和计算可同轮完成。复用已取得的结果，程序只输出当前判断或交付所需的内容。';
+export const QUALITY_PRIORITY='按问题难度分析实际调用、数据流与失败分支，直到关键判断有依据。遵守用户范围、权限与资源限制。';
+const QUALITY_DISCRIMINATOR='遵守用户明确的例外与保留行为。依据不足的判断须标明未确认。';
+const QUALITY_GUIDANCE='质量模式 Ultra。'+QUALITY_PRIORITY+
+  '候选解释会导致不同修改时，用能区分解释的证据判断。涉及刷新、重建或排队时，确认后续操作实际使用的实例、注册入口和状态。修改完成判断时，沿调用方区分正常完成、中断与临时占位。反复失败时，查明各次尝试共同依赖的条件。按要求交付，并说明仍需处理的事项。'+
+  QUALITY_DISCRIMINATOR+MODE_EXECUTION_HYGIENE;
+const AGGRESSIVE_GUIDANCE='从用户允许的来源定位实际入口和触发条件。已有目录、检索或执行结果够用时沿用。多个问题互不依赖时，确认一项即可完成一项。跨层修改须保留调用方依赖的参数、状态和行为。'+
+  '按用户和项目明确要求核对交付结果。已有依据时直接交付；依据缺失时只追会影响当前修改或交付的事实。汇报实际结果和仍缺依据的事项。'+
+  MODE_EXECUTION_HYGIENE;
+export function taskFlowGuidance(mode,surface='writable',config={},request=''){
   const nativeReads=[config.fileProfiling===true?'file_profile 可直接取得文本/CSV 的大小、预览、换行和记录概况。只需概况时优先调用；全局计数要求 scan:"complete" 且 scanComplete:true，sample 不代表全文件。':'',
     config.structuredJson===true?'structured_json 可直接选择 JSON/JSONL 的值、键、数量和数组页。只需这些字段时优先调用；缺失、null 和 complete:false 分开处理。':''].filter(Boolean).join('\n');
   const readGuidance=nativeReads?nativeReads+'\n上述原生读取适用时不另写解析程序；需要其他计算或工具返回 unavailable 时再用程序，保持任务要求和输入文件不变。\n':'';
-  if(mode==='default'&&surface==='minimal')return readGuidance;
-  const body=mode==='quality'?QUALITY_GUIDANCE:mode==='aggressive'?AGGRESSIVE_GUIDANCE:surface==='read-only'?READ_ONLY_TASK_FLOW_GUIDANCE:TASK_FLOW_GUIDANCE;
-  return `[Work Evidence mode: ${mode}; policy: ${MODE_POLICY_VERSION}]\n`+body+'\n'+
-    readGuidance+
-    (mode!=='default'&&surface==='read-only'?'当前任务只读，不扩大文件或执行权限。\n':'')+STAGE_GUIDANCE+'\n'+STAGE_CHECKPOINT_GUIDANCE;
+  if(surface==='minimal')return readGuidance;
+  const finalOnly=FINAL_ONLY_REPORTING.test(request);
+  if(mode==='aggressive'&&finalOnly)return readGuidance;
+  const readOnly=surface==='read-only';
+  const sourceOnly=mode==='aggressive'&&SOURCE_ONLY_REQUEST.test(request);
+  const readDefault=sourceOnly?sourceReadDefault(config,request):null;
+  const sourceReadGuidance=readDefault===null?'':'源码 read 省略 offset 和 limit 时，先返回 '+readDefault+' 行。有后续声明行号时，可按所需声明读取区段。需要更宽的范围时，可显式设置 limit。\n';
+  const body=readOnly?READ_ONLY_TASK_FLOW_GUIDANCE+(mode==='quality'?QUALITY_PRIORITY:''):
+    sourceOnly?SOURCE_ONLY_GUIDANCE:mode==='quality'?QUALITY_GUIDANCE:mode==='aggressive'?AGGRESSIVE_GUIDANCE:TASK_FLOW_GUIDANCE;
+  const reporting=finalOnly?'':STAGE_GUIDANCE+'\n'+STAGE_CHECKPOINT_GUIDANCE;
+  return '[Work Evidence mode: '+mode+'; policy: '+MODE_POLICY_VERSION+']\n'+body+'\n'+sourceReadGuidance+readGuidance+reporting;
 }
 const newPacing=()=>({steps:new Set(),operations:0,outputTokens:0,lastOutputTokens:0,missingOutputUsage:0,progressOutputTokens:0,noticeOutputTokens:0,noticeSteps:-1,
-  lastProgress:0,nextConvergence:6,notices:new Set(),startup:false,sourceFocus:false,economy:false,computeCalls:0,computeAdvised:false,validationAdvised:false});
+  lastProgress:0,sourceStepsSinceProgress:0,lastSourceStep:-1,sourceFollowupStep:0,sourceFollowupNotices:0,sourceWindow:[],
+  sourceReadRanges:new Map(),sourceMatches:[],lastParallelSourceReadStep:-Infinity,largeSourceSearch:null,sourceEdits:new Map(),sourceEditNotices:0,sourceOutlines:new Set(),
+  stepOutputTokens:0,lastFileChangeStep:-1,nextConvergence:6,notices:new Set(),startup:false,sourceFocus:false,economy:false,computeCalls:0,computeAdvised:false,validationAdvised:false});
 function progress(state){const pacing=state.pacing;pacing.lastProgress=pacing.steps.size;pacing.progressOutputTokens=pacing.outputTokens;
+  pacing.sourceStepsSinceProgress=0;
   pacing.nextConvergence=Math.max(pacing.nextConvergence,pacing.steps.size+4);}
 function rememberPacing(state,key,outputTokens=state.pacing.outputTokens,noticeSteps=state.pacing.steps.size){
   const pacing=state.pacing;
   if(pacing.notices.has(key))return;
   const [,stage]=JSON.parse(key),steps=Number.isSafeInteger(noticeSteps)&&noticeSteps>=0?noticeSteps:pacing.steps.size;
   pacing.notices.add(key);
+  if(stage==='source-following-edits'||stage==='source-recent-investigation'||stage==='source-after-edit-review')pacing.sourceFollowupStep=steps;
+  if(stage==='source-following-edits')pacing.sourceFollowupNotices++;
+  if(stage==='source-repeated-edit')pacing.sourceEditNotices++;
   pacing.noticeSteps=Math.max(pacing.noticeSteps,steps);
   pacing.noticeOutputTokens=Math.max(pacing.noticeOutputTokens,Number.isSafeInteger(outputTokens)&&outputTokens>=0?Math.min(outputTokens,pacing.outputTokens):pacing.outputTokens);
   if(stage==='startup')pacing.startup=true;
@@ -87,14 +110,15 @@ function rememberVisibleScriptVersions(state,text,rootCallId){
 }
 function localRecallObservation(agent,args,result){
   const kind=args.kind??'output',sessionId=args.sourceSessionId??agent.session.id;
-  const target={sessionId,seq:args.seq,kind,...(kind==='reference'?{referenceSessionId:args.referenceSessionId}:{}),offset:args.offset??0};
+  const target={sessionId,seq:args.seq,kind,...(kind==='reference'?{referenceSessionId:args.referenceSessionId}:{}),
+    ...(args.sourceIndex!==undefined?{sourceIndex:args.sourceIndex}:{}),offset:args.offset??0};
   const base={tool:'work_recall',target,bodyRetained:false,authority:kind==='reference'?'untrusted-background':'historical-data',deliveryVisibility:'not-assessed'};
   if(sessionId!==agent.session.id)return {...base,status:'denied',reason:'source-session-mismatch'};
   const raw=result.value??parseResult(resultText(result.content)),value=raw?.data??raw;
   if(value?.status!=='observed')return {...base,status:['unavailable','disabled','cancelled'].includes(value?.status)?value.status:'unknown',
     reason:typeof value?.reason==='string'?value.reason.slice(0,200):'recall-result-not-recognized'};
   const addressed=kind==='reference'?value.source?.sessionId===sessionId&&value.source.seq===args.seq&&value.referenceSessionId===args.referenceSessionId:value.seq===args.seq;
-  if(!addressed||value.historical!==true||typeof value.text!=='string')return {...base,status:'unknown',reason:'recall-address-not-confirmed'};
+  if(!addressed||value.sourceIndex!==args.sourceIndex||value.historical!==true||typeof value.text!=='string')return {...base,status:'unknown',reason:'recall-address-not-confirmed'};
   const index=kind==='history',offset=value.offset??0,total=value.totalChars,returnedChars=value.text.length;
   if(offset!==target.offset||!Number.isSafeInteger(offset)||offset<0||!index&&(!Number.isSafeInteger(total)||total<offset+returnedChars))
     return {...base,status:'unknown',reason:'recall-page-not-confirmed'};
@@ -104,6 +128,7 @@ function localRecallObservation(agent,args,result){
     page:{offset,returnedChars,totalChars:Number.isSafeInteger(total)?total:null,nextOffset:value.nextOffset??null,
       nextSeq:value.nextSeq??null,throughSeq:value.throughSeq??null,endReached:value.complete===true,
       wholeSourceReturned:!index&&offset===0&&returnedChars===total&&value.complete===true&&value.original!==false&&!nonTextBlocks.length&&
+        (args.sourceIndex===undefined||value.rangeComplete===true)&&
         (kind!=='reference'||value.snapshotComplete===true),
       ...(index?{indexOnly:true,rowCount:value.rowCount??null}:{}),
       ...(kind==='reference'?{snapshotComplete:value.snapshotComplete===true,capturedThroughSeq:value.capturedThroughSeq??null}:{}),nonTextBlocks},
@@ -117,7 +142,7 @@ export const operationKey=(call,cwd)=>{
     Object.fromEntries(Object.keys(value).sort().map(key=>[key,value[key]])):value);
 };
 const bounded=(map,key,value,max=64)=>{map.set(key,value);if(map.size>max)map.delete(map.keys().next().value);};
-const normalize=value=>String(value).replaceAll('\\','/').toLowerCase();
+const normalize=value=>String(value).replaceAll('\\','/');
 const streamText=value=>typeof value==='string'?value:typeof value?.text==='string'?value.text:'';
 const executionJobId=layers=>{
   const source=layers.findLast(node=>node?.jobId||node?.job_id||node?.job?.id);
@@ -126,8 +151,62 @@ const executionJobId=layers=>{
 const lineRecordRead=value=>!!value&&typeof value.path==='string'&&Number.isSafeInteger(value.offset)&&value.offset>=1&&
   Number.isSafeInteger(value.totalLines)&&value.totalLines>=0&&Array.isArray(value.lines)&&
   value.lines.every(line=>line&&Number.isSafeInteger(line.number)&&line.number>=1&&typeof line.text==='string');
+function sourcePath(root,file){
+  if(!root||typeof file!=='string'||!SOURCE_FILE.test(file)||/[\u0000-\u001f\u007f]/u.test(file))return null;
+  try{return path.relative(root,within(root,file)).replaceAll('\\','/');}catch{return null;}
+}
+const sourcePathKey=file=>file;
+function rememberSourceLocations(root,pacing,step,call,event){
+  const meta=event.data?.meta;
+  if(call.name==='grep'){
+    // Native results name the files and line numbers the model was shown.
+    const scope=sourcePath(root,call.args.path);
+    const files=meta?.shape==='matches'&&Array.isArray(meta.files)?meta.files:[];
+    for(const group of files.slice(0,limits.matches)){
+      const file=sourcePath(root,group?.path);
+      if(!file||!Array.isArray(group.matches))continue;
+      for(const match of group.matches.slice(0,limits.matches)){
+        if(!Number.isSafeInteger(match?.lineNumber)||match.lineNumber<1||typeof match.line!=='string')continue;
+        const text=match.line.slice(0,220);
+        const write=/^\s*([A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)+)\s*=(?!=)/u.exec(text)?.[1];
+        const invocation=/^\s*(?:[A-Za-z_$][\w$.]*\s*=\s*|return\s+)?(?:await\s+)?(?!(?:if|for|while|switch|catch|with|return|await)\b)([A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)*)\(/u.exec(text)?.[1];
+        if(!write&&!invocation)continue;
+        pacing.sourceMatches.push({file,line:match.lineNumber,write,invocation,exactFile:!!scope&&sourcePathKey(scope)===sourcePathKey(file)});
+        if(pacing.sourceMatches.length>=2*limits.matches)return;
+      }
+    }
+    return;
+  }
+  const visible=call.name==='project_evidence'?parseResult(resultText(messageOf(event)?.content)):null;
+  const ranges=call.name==='read'&&lineRecordRead(meta)?[meta]:visible?.mode==='read'&&Array.isArray(visible.sources)?visible.sources:[];
+  for(const range of ranges.slice(0,limits.sourceRanges)){
+    const file=sourcePath(root,range?.path);
+    if(!file||!Array.isArray(range.lines)||!range.lines.length)continue;
+    const first=range.lines[0]?.number??range.lines[0]?.line;
+    const last=range.lines.at(-1)?.number??range.lines.at(-1)?.line;
+    if(!Number.isSafeInteger(first)||first<1||!Number.isSafeInteger(last)||last<first)continue;
+    const key=sourcePathKey(file),prior=pacing.sourceReadRanges.get(key)??[];
+    pacing.sourceReadRanges.delete(key);
+    const unbounded=call.name==='read'&&call.args.limit===undefined;
+    bounded(pacing.sourceReadRanges,key,[...prior,{file,first,last,step,unbounded}].slice(-SOURCE_FOCUS_STEPS),32);
+  }
+}
+function nextSourceLocation(pacing,step){
+  let next=null,distance=Infinity;
+  for(const hit of pacing.sourceMatches){
+    const ranges=pacing.sourceReadRanges.get(sourcePathKey(hit.file));
+    if(!ranges?.length||ranges.some(range=>hit.line>=range.first&&hit.line<=range.last))continue;
+    const recent=ranges.at(-1);
+    // A broad search must continue the immediately preceding read. A search
+    // scoped to one file can pick up an earlier read of that same file.
+    if(recent.step===step||step-recent.step>(hit.exactFile?SOURCE_FOCUS_STEPS:1))continue;
+    const gap=Math.min(Math.abs(hit.line-recent.first),Math.abs(hit.line-recent.last));
+    if(gap<distance){next=hit;distance=gap;}
+  }
+  return next;
+}
 const isCommand=name=>SHELL.includes(name)||name==='job_output';
-const shellReportedFailure=text=>/The term[^\r\n]{0,500}is not recognized as a name of a cmdlet|(?:^|\n)\s*(?:ParserError|CommandNotFoundException|ParameterBindingException):/iu.test(String(text??''));
+const shellReportedFailure=text=>/The term[^\r\n]{0,500}is not recognized as a name of a cmdlet|(?:^|\n)\s*(?:ParserError|CommandNotFoundException|ParameterBindingException):|(?:^|\n)\s*(?:Select-String|Get-Content|Get-ChildItem|Get-Item|Resolve-Path): Cannot find path [^\r\n]{1,1024} because it does not exist/iu.test(String(text??''));
 // stderr can contain warnings from a successful process. Missing structured
 // metadata proves neither success nor failure in persisted legacy results.
 const executionFailed=value=>{if(typeof value==='string')return resultHasProblem(value);
@@ -171,9 +250,62 @@ function pathsOf(value){
   };
   visit(value);return [...paths].slice(0,24);
 }
+function sourceContinuations(result,original={}){
+  return (Array.isArray(result?.sources)?result.sources:[]).slice(0,limits.sourceRanges).flatMap(source=>{
+    const budget=source?.responseBudget;
+    const args=budget?.resumeArguments;
+    if(budget?.resumeTool==='project_evidence'&&args&&['read','archive'].includes(args.mode))return [args];
+    if(source?.omitted!==true||!source.requestedRange)return [];
+    const {offset,limit}=source.requestedRange;
+    const options={responseView:'full',...(original.maxChars===undefined?{}:{maxChars:original.maxChars}),
+      ...(original.lineTextLimit===undefined?{}:{lineTextLimit:original.lineTextLimit})};
+    if(source.archive&&source.entry)return [{mode:'archive',archive:source.archive,entry:source.entry,offset,limit,...options}];
+    if((result.mode==='read'||original.files)&&typeof source.path==='string')return [{mode:'read',files:[{path:source.path,offset,limit}],...options,
+      ...(original.readLayout?{readLayout:original.readLayout}:{})}];
+    return [];
+  });
+}
+function mergeReadContinuations(calls){
+  if(calls.length<2||calls.some(call=>call.mode!=='read'||call.files?.length!==1))return calls;
+  const [{files:_,...options}]=calls;
+  if(calls.some(({files,...rest})=>JSON.stringify(rest)!==JSON.stringify(options)))return calls;
+  return [{...options,files:calls.flatMap(call=>call.files)}];
+}
+function removedCallParameters(args){
+  if(!/\.py$/iu.test(args.file_path??'')||typeof args.old_string!=='string'||typeof args.new_string!=='string')return null;
+  const parameters=text=>{
+    const blocks=[...text.matchAll(/^([ \t]*)(\w*kwargs)[ \t]*=[ \t]*\{[ \t]*\r?\n([\s\S]*?)^\1\}/gmu)];
+    if(blocks.length!==1)return null;
+    const [,indent,name,body]=blocks[0];
+    const rows=[...body.matchAll(/^([ \t]+)["']([a-zA-Z_]\w{0,63})["'][ \t]*:/gmu)];
+    const direct=rows[0]?.[1];
+    if(!direct?.startsWith(indent)||direct.length<=indent.length)return null;
+    return {name,keys:rows.filter(row=>row[1]===direct).map(row=>row[2])};
+  };
+  const before=parameters(args.old_string),after=parameters(args.new_string);
+  if(!before||!after||before.name!==after.name)return null;
+  const removed=before.keys.filter(key=>!after.keys.includes(key));
+  if(!removed.length||removed.length>4||before.keys.length-removed.length<2)return null;
+  return {name:before.name,removed};
+}
+function addedBooleanAssignments(args){
+  if(!/\.(?:py|[cm]?[jt]sx?)$/iu.test(args.file_path??'')||typeof args.old_string!=='string'||typeof args.new_string!=='string')return null;
+  const assignments=text=>[...text.matchAll(/^[ \t]*([A-Za-z_]\w{0,63})\.([A-Za-z_]\w{0,63})[ \t]*=[ \t]*(False|True|false|true)[ \t]*;?[ \t]*(?:(?:#|\/\/)[^\r\n]*)?\r?$/gmu)]
+    .map(([,object,field,value])=>({object,field,value:value.toLowerCase()}));
+  const before=assignments(args.old_string),after=assignments(args.new_string);
+  const hasField=next=>before.some(previous=>previous.object===next.object&&previous.field===next.field);
+  const retained=after.filter(next=>before.some(previous=>previous.object===next.object&&previous.field===next.field&&previous.value===next.value));
+  const changes=after.filter(next=>!hasField(next)&&retained.some(prior=>prior.object===next.object&&prior.value===next.value))
+    .map(({object,field,value})=>object+'.'+field+' = '+value);
+  if(!changes.length||changes.length>3)return null;
+  const priorAssignments=retained.filter(prior=>after.some(next=>!hasField(next)&&prior.object===next.object&&prior.value===next.value))
+    .map(({object,field,value})=>object+'.'+field+' = '+value).slice(0,3);
+  return {changes,priorAssignments};
+}
 export function textPaths(text){
   return [...new Set([...String(text).matchAll(/(?:[A-Za-z]:[\\/])?(?:[\p{L}\p{N}_@.~-]+[\\/])*[\p{L}\p{N}_@~-]+\.(?:[cm]?[jt]sx?|py|java|sql|jsonl?[,;，；:]?|ya?ml|toml|xml|gradle|kts|rs|go|c|cpp|h|glsl|md|rst|ini|csv|ndjson|txt)\b/gu)].map(match=>match[0].replace(/[,;，；:]$/u,'')))].slice(0,16);
 }
+export const findBareReadme=text=>/(?:^|[^A-Za-z0-9_./\\-])README(?=$|[^A-Za-z0-9_./\\-])/iu.exec(text);
 function explicitlyCorrectedClaim(text,claim){
   if(claim.length<12||claim.length>800)return false;
   const at=text.indexOf(claim);
@@ -206,8 +338,8 @@ export function createTaskFlow(ctx,runtime,{nativeFiles,call,executionDependenci
   function get(agent){
     let state=states.get(agent.session.id);
     if(!state){state={cursor:0,turn:null,step:0,calls:new Map(),nested:new Map(),nestedFailures:new Map(),completedNested:new Set(),live:new Map(),errors:new Map(),reads:new Map(),jobs:new Set(),pacing:newPacing(),programFailure:null,legacyInterpreterShell:null,
-      todos:null,todoSeq:null,artifacts:new Map(),artifactsEvicted:0,executionsEvicted:0,turnStartSeq:null,qualityArtifacts:new Map(),qualityExecutions:[],lastQualityReviewedMutation:null,phase:{name:null,seq:null,focus:[],source:null},lastCompaction:null,report:null,lastMutation:-1,mutationVersion:0,
-      lastUser:null,programEpoch:0,programOutputDiagnostics:[],readResultRoots:new Map(),readOutputIssue:null,stageReporting:{lastTextSeq:null,lastTextSteps:0,lastNoticeSteps:0,notices:0,notifiedPhases:[]},lastInlineExec:-1,inlineExecAdvised:new Set(),scriptReuseAdvised:new Set(),diagnosticAdvised:new Set(),reuseAdvised:new Set(),cleanupAdvised:new Set(),
+    todos:null,todoSeq:null,artifacts:new Map(),artifactsEvicted:0,executionsEvicted:0,turnStartSeq:null,qualityArtifacts:new Map(),qualityExecutions:[],lastQualityReviewedMutation:null,phase:{name:null,seq:null,focus:[],source:null},lastCompaction:null,report:null,lastMutation:-1,mutationVersion:0,firstSourceReadStep:null,lastSourceReadStep:null,sourceFollowup:null,
+      lastUser:null,sourceOnly:false,programEpoch:0,programOutputDiagnostics:[],readResultRoots:new Map(),readOutputIssue:null,stageReporting:{lastTextSeq:null,lastTextSteps:0,lastNoticeSteps:0,notices:0,notifiedPhases:[]},lastInlineExec:-1,inlineExecAdvised:new Set(),scriptReuseAdvised:new Set(),diagnosticAdvised:new Set(),reuseAdvised:new Set(),cleanupAdvised:new Set(),
       probes:[],executions:[],sourceReads:[],sourceReadsEvicted:0,repeatedExecution:null,cleanup:null,transitions:[],reuseNotices:0,cleanupNotices:0,
       reportClaims:new Map(),challengedClaims:new Map(),reusedJudgment:null,lastOpaqueSeq:-1};states.set(agent.session.id,state);}
     return state;
@@ -247,7 +379,7 @@ export function createTaskFlow(ctx,runtime,{nativeFiles,call,executionDependenci
     const reportedShellFailure=call.name==='pwsh'&&shellReportedFailure(streamText(payload?.stderr??payload?.stderrText)||payload?.errorText||resultText(result.content));
     const partialOutput=nativeFacts?.truncated??layers.some(node=>node?.outputPartial===true||node?.truncated===true||node?.lossy===true||node?.stdout?.truncated===true||node?.stderr?.truncated===true||node?.stdout?.complete===false||node?.stderr?.complete===false);
     const nativeExitCode=execution?executionExitCode(envelope):Number.isInteger(payload?.exitCode)?payload.exitCode:Number.isInteger(payload?.exit_code)?payload.exit_code:null;
-    const completionObservation=nativeExitCode===null&&!pending&&['pwsh','ops_bash','bash'].includes(call.name)?
+    const completionObservation=nativeExitCode===null&&!pending&&['pwsh','bash'].includes(call.name)?
       recordedProcessCompletion(eventLog(agent.session),{seq:event.seq},event.seq+1):null;
     const exitCode=nativeExitCode??completionObservation?.exitCode??null;
     const checkFailure=SHELL.includes(call.name)&&!pending&&!partialOutput?payload?.checkFailure??reportedExecutionChecks({value})??reportedCheckFailure(
@@ -284,7 +416,10 @@ export function createTaskFlow(ctx,runtime,{nativeFiles,call,executionDependenci
         }
       }else if(!pending){state.errors.delete('run_code:latest');state.programFailure=null;}
     }else if(!INTERNAL.has(call.name)){
+      const exactEditFailure=call.name==='edit'&&failed&&
+        /old_string (?:and new_string must differ|was not found)/i.test(payload?.errorText??resultText(result.content));
       if(failed)bounded(state.errors,key,{tool:call.name,seq,callId,userSeq:state.lastUser?.seq??null,processExitCode:exitCode,
+        step:state.step,...(exactEditFailure?{exactEditFailure:true,file:call.args.file_path}:{}),
         ...(call.name==='work_probe'&&(payload?.id||payload?.replayOf?.rootProbeId)?{probeRootId:payload.replayOf?.rootProbeId??payload.id}:{})});
       else{
         const priorError=state.errors.get(key),recoveredProcess=completionObservation?.exitCode===0&&
@@ -294,12 +429,11 @@ export function createTaskFlow(ctx,runtime,{nativeFiles,call,executionDependenci
         if(!SHELL.includes(call.name)||complete||recoveredProcess)state.errors.delete(key);
       }
     }
-    const directCommand=String(call.args.command??''),embeddedInterpreter=SHELL.includes(call.name)&&call.name!=='work_exec'&&
-      directCommand.length>=800&&/[\\/](?:python|node)(?:\.exe)?\b|\b(?:python\d*|pypy|node)\b/iu.test(directCommand)&&
-      (directCommand.includes('\n')||/(?:\s-[ce]\s|@['"]|<{1,2}\s*['"]?python)/iu.test(directCommand));
-    if(embeddedInterpreter&&state.lastUser&&event.seq>state.lastUser.seq)
-      state.legacyInterpreterShell={seq,userSeq:state.lastUser.seq,tool:call.name,chars:directCommand.length,
-        ...(nativeShellScript(call.name,call.args)?{scriptRef:callId}:{})};
+    const runtimeState=runtime.get(agent),runtimeConfig=runtimeState.config;
+    if(runtimeConfig.nativeShellScriptReuse&&typeof callId==='string'&&
+      typeof call.args.command==='string'&&call.args.command.length>=800&&
+      state.lastUser&&event.seq>state.lastUser.seq&&nativeShellScript(call.name,call.args,runtimeState.root))
+      state.legacyInterpreterShell={seq,userSeq:state.lastUser.seq,scriptRef:callId};
     if(call.name==='work_exec'&&complete&&Array.isArray(payload?.scriptSourceRefs)){
       const repaired=new Set(payload.scriptSourceRefs.filter(id=>typeof id==='string'));
       for(const [errorKey,error]of state.errors)if(error.tool==='work_exec'&&repaired.has(error.callId))state.errors.delete(errorKey);
@@ -314,7 +448,6 @@ export function createTaskFlow(ctx,runtime,{nativeFiles,call,executionDependenci
     if(call.name==='job_output'&&!failed&&payload?.kind!=='background'&&['completed','killed','failed'].includes(payload?.status??payload?.job?.status)){
       const id=call.args.job_id??call.args.jobId??call.args.id;if(id)state.jobs.delete(id);
     }
-    const runtimeConfig=runtime.get(agent).config;
     const probeExecution=call.name==='work_probe'&&call.args.mode!=='recall'&&call.args.mode!=='inspect'&&payload?.fileDependencies&&payload?.id;
     if((isCommand(call.name)||probeExecution)&&(['executionTriage','stageWorkingSet'].some(key=>runtimeConfig[key])||
       runtime.activeMode(agent)==='quality'&&runtimeConfig.qualityReview)){
@@ -327,7 +460,7 @@ export function createTaskFlow(ctx,runtime,{nativeFiles,call,executionDependenci
         backgroundFailureSignature:pending?payload?.backgroundFailureSignature??failureSignature(streamText(payload?.output)||streamText(payload?.stderr)):null,
         ...(probeExecution?{probeId:payload.id,nativeTool:payload.tool}:{}),
         fileDependencies:payload?.fileDependencies,...dependencyView(payload),
-        userSeq:state.lastUser?.seq??null,mutationSeq:state.lastMutation,programEpoch:state.programEpoch,turn:state.turn,key,rootCallId:event.data?.rootCallId??null,
+        userSeq:state.lastUser?.seq??null,mutationSeq:state.lastMutation,programEpoch:state.programEpoch,turn:state.turn,key,rootCallId:event.data?.rootCallId??(event.type==='tool/result'?callId:null),
         comparisonText:payload?.comparisonText??null,
         scriptRef:call.name==='work_exec'&&typeof payload?.scriptRef==='string'?payload.scriptRef:null,
         scriptEventRef:call.name==='work_exec'&&typeof payload?.scriptEventRef==='string'?payload.scriptEventRef:null,
@@ -338,6 +471,7 @@ export function createTaskFlow(ctx,runtime,{nativeFiles,call,executionDependenci
           call.name==='work_exec'&&typeof payload?.error?.code==='string'?payload.error.code:null,
         scriptSourceRefs:call.name==='work_exec'&&Array.isArray(payload?.scriptSourceRefs)?payload.scriptSourceRefs.filter(id=>typeof id==='string'):[],
         formatRecovery:call.name==='work_exec'&&payload?.recovery?.reason==='commonjs-program-with-default-esm'?payload.recovery:null,
+        inlineRecovery:call.name==='work_exec'&&['inline-script-syntax','inline-script-runtime'].includes(payload?.recovery?.reason),
         failureSignature:failed?checkFailure?.signature??payload?.failureSignature??failureSignature(payload?.errorText||streamText(payload?.stderr??payload?.stderrText)||resultText(result.content)):null,
         failureSource:checkFailure?'reported-checks':null};
       const prior=state.executions.findLast(item=>item.key===key&&item.cwd===entry.cwd&&item.userSeq===entry.userSeq&&item.mutationSeq===entry.mutationSeq);
@@ -363,17 +497,36 @@ export function createTaskFlow(ctx,runtime,{nativeFiles,call,executionDependenci
       else if(payload.status==='observed'&&probeFilesCurrent)state.errors.delete(probeKey);
       if(payload.executionCompleted)transition(state,'execute',seq,call.args.sources??[],'execution-evidence');
     }
-    if(WRITE.has(call.name)&&!(call.name==='fastedit_java'&&['find','read','locate'].includes(call.args.mode??call.args.action??call.args.operation))){
+    if(WRITE.has(call.name)){
       const files=pathsOf(call.args).filter(file=>!normalize(path.resolve(runtime.get(agent).root??'.',file)).includes('/.dsh/work-evidence/'));
-      const conditional=['verified_exec','fastedit_java'].includes(call.name),fileKey=file=>normalize(path.resolve(cwd??'.',file));
+      const conditional=call.name==='verified_exec',fileKey=file=>normalize(path.resolve(cwd??'.',file));
       const mutations=files.flatMap(file=>{
         const effect=conditional?(Array.isArray(payload?.files)?payload.files.find(item=>typeof (item.file??item.path)==='string'&&fileKey(item.file??item.path)===fileKey(file))?.effectState:payload?.effectState):!failed?'applied':null;
         return ['applied','partial','unknown'].includes(effect)?[{path:file,effectState:effect}]:[];
       });
       if(mutations.length){
         state.lastMutation=seq;state.mutationVersion++;state.report=null;progress(state);transition(state,'modify',seq,mutations.map(item=>item.path),'observed-file-effect');
+        state.pacing.lastFileChangeStep=state.step;
+        if(call.name==='edit'&&runtimeConfig.executionTriage){
+          const change=removedCallParameters(call.args);
+          const assignments=addedBooleanAssignments(call.args);
+          if(change||assignments)state.pendingInterfaceChange={parameters:change,assignments,seq,step:state.step,userSeq:state.lastUser?.seq};
+        }
+        const trackEdit=runtimeConfig.stepPacing&&(state.sourceOnly||call.name==='edit'&&runtime.activeMode(agent)==='aggressive');
         for(const item of mutations){
           const key=fileKey(item.path);
+          const sourceFile=trackEdit?sourcePath(runtime.get(agent).root,item.path):null;
+          if(sourceFile){
+            const sourceKey=sourcePathKey(sourceFile);
+            if(state.sourceOnly){
+              state.pacing.sourceReadRanges.delete(sourceKey);
+              state.pacing.sourceMatches=state.pacing.sourceMatches.filter(hit=>sourcePathKey(hit.file)!==sourceKey);
+            }
+            if(call.name==='edit'&&item.effectState==='applied'){
+              const edits=state.pacing.sourceEdits,prior=edits.get(sourceKey)?.steps??[];
+              if(prior.at(-1)!==state.step)bounded(edits,sourceKey,{file:sourceFile,steps:[...prior,state.step].slice(-3)},32);
+            }
+          }
           executionDependencies.invalidate(runtime.get(agent).root,[...state.executions,...state.qualityExecutions],{...item,path:path.resolve(cwd??runtime.get(agent).root??'.',item.path),seq});
           if(runtime.activeMode(agent)==='quality'&&runtimeConfig.qualityReview)state.qualityArtifacts.set(key,{...item,path:path.resolve(cwd??runtime.get(agent).root??'.',item.path),seq,tool:call.name,callId,userSeq:state.lastUser?.seq??null});
           if(!state.artifacts.has(key)&&state.artifacts.size>=32)state.artifactsEvicted++;
@@ -382,9 +535,50 @@ export function createTaskFlow(ctx,runtime,{nativeFiles,call,executionDependenci
         }
       }
     }
+    if(call.name==='project_evidence'){
+      const followups=mergeReadContinuations(payload?.sourceContinuations??sourceContinuations(payload,call.args));
+      if(followups.length)state.sourceFollowup={seq,key:JSON.stringify([state.lastUser?.seq,'source-followup',followups]),calls:followups,afterFailure:!!failed};
+      else if(state.sourceFollowup?.seq<seq)state.sourceFollowup=null;
+      if(call.args.files?.length>1)state.pacing.notices.add(JSON.stringify([state.lastUser?.seq,'source-read-batch']));
+    }
     if(failed)return true;
-    if(READ.has(call.name))for(const file of [...pathsOf(call.args),...pathsOf(payload)])
-      bounded(state.reads,normalize(path.resolve(runtime.get(agent).root??'.',file)),{path:file,seq},32);
+    const sourceShell=['pwsh','bash'].includes(call.name)?call.args.command??'':'';
+    const sourceSearch=call.name==='grep'||call.name==='glob'||SHELL_SOURCE_SEARCH.test(sourceShell);
+    const sourceQuery=READ.has(call.name)||sourceSearch||SHELL_SOURCE_READ.test(sourceShell);
+    if(state.sourceOnly&&runtimeConfig.stepPacing&&call.name==='pwsh'&&
+      /^\s*Select-String\b/iu.test(sourceShell)&&/\s-Context(?:\s|:)/iu.test(sourceShell)){
+      const body=resultText(messageOf(event)?.content);
+      if(body.length>=12000){
+        const root=runtime.get(agent).root;
+        const files=sourceBodyPaths(body).map(file=>sourcePath(root,file)).filter(Boolean).slice(0,2);
+        if(files.length){
+          const prior=state.pacing.largeSourceSearch;
+          state.pacing.largeSourceSearch={step:state.step,files,repeated:prior?.step<state.step&&state.step-prior.step<=8};
+        }
+      }
+    }
+    if(runtimeConfig.stepPacing&&event.type==='tool/result'&&call.seq>state.lastMutation&&
+      (state.sourceOnly&&(READ.has(call.name)||call.name==='grep')||call.name==='read'&&
+        runtime.activeMode(agent)==='aggressive'&&state.lastMutation<=(state.lastUser?.seq??-1)))
+      rememberSourceLocations(runtime.get(agent).root,state.pacing,state.step,call,event);
+    if(sourceQuery&&state.pacing.lastSourceStep!==state.step){
+      const pacing=state.pacing;
+      pacing.lastSourceStep=state.step;
+      pacing.sourceStepsSinceProgress++;
+      if(state.sourceOnly&&pacing.lastFileChangeStep>=0){
+        pacing.sourceWindow.push({step:state.step,outputTokens:pacing.stepOutputTokens});
+        if(pacing.sourceWindow.length>SOURCE_WINDOW_STEPS)pacing.sourceWindow.shift();
+      }
+    }
+    if(READ.has(call.name)){
+      if(call.name==='read'&&pathsOf(call.args).some(file=>SOURCE_FILE.test(file))){
+        state.firstSourceReadStep??=state.step;
+        if(state.lastSourceReadStep===state.step)state.pacing.lastParallelSourceReadStep=state.step;
+        state.lastSourceReadStep=state.step;
+      }
+      for(const file of [...pathsOf(call.args),...pathsOf(payload)])
+        bounded(state.reads,normalize(path.resolve(runtime.get(agent).root??'.',file)),{path:file,seq},32);
+    }
     if(call.name==='work_state'&&call.args.mode==='stage'&&payload?.status==='recorded'){
       transition(state,call.args.phase,seq,call.args.focus??[],'explicit-stage');
     }
@@ -409,9 +603,10 @@ export function createTaskFlow(ctx,runtime,{nativeFiles,call,executionDependenci
         state.turn=data.turn;state.turnStartSeq=event.seq;state.todos=null;state.todoSeq=null;state.report=null;state.lastMutation=-1;state.errors.clear();state.calls.clear();state.nested.clear();state.nestedFailures.clear();state.reads.clear();
         state.phase={name:null,seq:null,focus:[],source:null};state.repeatedExecution=null;state.cleanup=null;state.reusedJudgment=null;
         state.pacing=newPacing();state.completedNested.clear();state.programFailure=null;state.programOutputDiagnostics=[];state.readResultRoots.clear();state.readOutputIssue=null;state.legacyInterpreterShell=null;
+        state.firstSourceReadStep=null;state.lastSourceReadStep=null;state.sourceFollowup=null;state.pendingInterfaceChange=null;
         state.qualityArtifacts.clear();state.qualityExecutions=[];state.lastQualityReviewedMutation=null;
       }
-      if(event.type==='step/start')state.step++;
+      if(event.type==='step/start'){state.step++;state.pacing.stepOutputTokens=0;state.pacing.sourceMatches=[];}
       if(event.type==='compaction/end')state.lastCompaction=event.seq;
       if(event.type==='job/registered'&&data.jobId)state.jobs.add(data.jobId);
       if(event.type==='job/settled'&&data.jobId){
@@ -444,13 +639,15 @@ export function createTaskFlow(ctx,runtime,{nativeFiles,call,executionDependenci
               bounded(state.challengedClaims,claim,{...original,correctionSeq:event.seq},8);
             }
           }
-          state.lastUser={id:message.id,seq:event.seq,text};state.report=null;state.pacing=newPacing();state.reusedJudgment=null;
+          state.lastUser={id:message.id,seq:event.seq,text};state.report=null;state.pacing=newPacing();state.reusedJudgment=null;state.sourceFollowup=null;
+          state.sourceOnly=SOURCE_ONLY_REQUEST.test(text);
+          state.firstSourceReadStep=null;state.lastSourceReadStep=null;state.pendingInterfaceChange=null;
           state.stageReporting={lastTextSeq:null,lastTextSteps:0,lastNoticeSteps:0,notices:0,notifiedPhases:[]};
           state.programFailure=null;state.programOutputDiagnostics=[];state.readResultRoots.clear();state.readOutputIssue=null;state.legacyInterpreterShell=null;state.lastQualityReviewedMutation=null;
         }
       }
       if(event.type==='todo/write'&&Array.isArray(data.todos)){
-        if(data.todos.filter(item=>item.status==='completed').length>(state.todos??[]).filter(item=>item.status==='completed').length)progress(state);
+        if(!state.sourceOnly&&data.todos.filter(item=>item.status==='completed').length>(state.todos??[]).filter(item=>item.status==='completed').length)progress(state);
         state.todos=data.todos;state.todoSeq=event.seq;const phase=todoPhase(data.todos);transition(state,phase.name,event.seq,phase.focus,'todo-progress');
       }
       if(event.type==='tool/call'&&data.callId){
@@ -467,7 +664,10 @@ export function createTaskFlow(ctx,runtime,{nativeFiles,call,executionDependenci
           const row=state.challengedClaims.get(text);state.reusedJudgment={claim:text,reportSeq:row.reportSeq,correctionSeq:row.correctionSeq,reusedSeq:event.seq,source:'assistant-text'};
         }
         const outputTokens=data.usage?.outputTokens;
-        if(Number.isSafeInteger(outputTokens)&&outputTokens>=0){state.pacing.outputTokens+=outputTokens;state.pacing.lastOutputTokens=outputTokens;}
+        if(Number.isSafeInteger(outputTokens)&&outputTokens>=0){
+          state.pacing.outputTokens+=outputTokens;state.pacing.lastOutputTokens=outputTokens;
+          state.pacing.stepOutputTokens+=outputTokens;
+        }
         else state.pacing.missingOutputUsage++;
         for(const block of message?.content??[])if(block.type==='tool-call'&&!state.calls.has(block.id)){
           if(block.name==='run_code'||SHELL.includes(block.name))state.lastOpaqueSeq=event.seq;
@@ -497,7 +697,7 @@ export function createTaskFlow(ctx,runtime,{nativeFiles,call,executionDependenci
         if(call)consume(agent,state,call,live??{isError:!!message.isError,content:message.content},event,
           {coveredFailure:state.nestedFailures.get(id)?.has(resultIdentity(message.content))===true,coveredNested:state.completedNested.has(id),
             structuredReads:state.readResultRoots.get(id)?.seqs??[],clippedReadSeqs:state.readResultRoots.get(id)?.clippedSeqs??[],nonemptyRead:state.readResultRoots.get(id)?.nonempty===true});
-        if(call?.name==='run_code'&&!message.isError)rememberVisibleScriptVersions(state,resultText(message.content),id);
+        if(['run_code','work_exec'].includes(call?.name)&&!message.isError)rememberVisibleScriptVersions(state,resultText(message.content),id);
         state.readResultRoots.delete(id);
         state.completedNested.delete(id);
         state.nestedFailures.delete(id);
@@ -520,8 +720,10 @@ export function createTaskFlow(ctx,runtime,{nativeFiles,call,executionDependenci
   function message(kind,key,text){return {id:randomUUID(),role:'user',source:{kind:SOURCE,taskFlow:{kind,key}},content:[{type:'text',text}]};}
   async function startupPaths(agent,pendingMessages,signal){
     const incoming=pendingMessages.findLast(isUserRequestMessage);
-    if(!incoming||!nativeFiles||!runtime.isEnabled(agent)||!runtime.get(agent).config.stepPacing)return [];
-    const text=resultText(incoming.content),readme=/(?:^|[^A-Za-z0-9_./\\-])README(?=$|[^A-Za-z0-9_./\\-])/iu.exec(text);
+    if(!incoming||!nativeFiles||!runtime.isEnabled(agent))return [];
+    const text=resultText(incoming.content);
+    if(!taskPacingAllowed(runtime.get(agent).config,text))return [];
+    const readme=findBareReadme(text);
     const readmeIndex=readme?readme.index+readme[0].length-6:-1;
     const position=file=>file==='README'?readmeIndex:text.indexOf(file);
     const files=[...new Set([...textPaths(text),...(readme?['README']:[])])].sort((a,b)=>position(a)-position(b)).slice(0,6),root=runtime.get(agent).root;
@@ -574,10 +776,13 @@ export function createTaskFlow(ctx,runtime,{nativeFiles,call,executionDependenci
   }
   function beforeStep(agent,pendingMessages=[],knownPaths=[]){
     if(!runtime.isEnabled(agent))return [];
-    const state=sync(agent),runtimeState=runtime.get(agent),config=runtimeState.config,messages=[],surfaceMode=runtimeState.taskSurfaceMode,mode=runtime.activeMode(agent);
+    const state=sync(agent),runtimeState=runtime.get(agent),messages=[],surfaceMode=runtimeState.taskSurfaceMode,mode=runtime.activeMode(agent);
     if(state.calls.size||state.nested.size)return messages;
     if(surfaceMode==='minimal')return messages;
     const user=state.lastUser,text=user?.text??'',key=String(user?.seq);
+    const incoming=pendingMessages.findLast(isUserRequestMessage);
+    const policy=runtimeState.config;
+    const config=taskPacingAllowed(policy,incoming?resultText(incoming.content):text)?policy:{...policy,stepPacing:false};
     const emit=(kind,id,text)=>{
       runtime.effects?.decide(agent,({reuse:'reuseAdvice',cleanup:'cleanupAdvice',pacing:'stepPacing',mode:'stepPacing',compute:'retainedComputeAdvice',validation:'stepPacing',inlineExec:'inlineExecAdvice',diagnostic:'failureAdvice',scriptReuse:'scriptReuseAdvice',scriptVersion:'scriptReuseAdvice',review:'qualityReview',judgment:'stageJudgment'}[kind]??'guidance'),'applied','observed-scene-condition',{noticeId:id});
       const notice=message(kind,id,text);
@@ -594,18 +799,25 @@ export function createTaskFlow(ctx,runtime,{nativeFiles,call,executionDependenci
       notices[0].source.taskFlow.judgment={status:'challenged',reportSeq:row.reportSeq,correctionSeq:row.correctionSeq,reusedSeq:row.reusedSeq,source:row.source};
       return notices;
     };
-    const incoming=pendingMessages.findLast(isUserRequestMessage);
     if(incoming){
       const judgment=judgmentReminder();if(judgment)return judgment;
       const modeKey=JSON.stringify([incoming.id,'pb001-brief']);
-      if(mode==='aggressive'&&config.stepPacing&&!state.pacing.notices.has(modeKey)){
+      if(mode==='aggressive'&&surfaceMode!=='read-only'&&config.stepPacing&&!SOURCE_ONLY_REQUEST.test(resultText(incoming.content))&&
+        !FINAL_ONLY_REPORTING.test(resultText(incoming.content))&&!state.pacing.notices.has(modeKey)){
         state.pacing.notices.add(modeKey);
-        emit('mode',modeKey,'[work-evidence] 本次使用激进优化：按本次要求及其指定的行为定义完成交付；检查预期与要求冲突时先修正预期。全部明确要求及指定检查已有成功依据时整理交付，不追加无关检查或重复复核。');
+        emit('mode',modeKey,'[work-evidence] 本次使用激进优化。按用户指定的行为和保留条件交付。已有依据时可直接处理当前问题。');
       }
       const qualityKey=JSON.stringify([incoming.id,'pb001-discriminating-input']);
-      if(mode==='quality'&&config.stepPacing&&!state.pacing.notices.has(qualityKey)){
+      if(mode==='quality'&&surfaceMode!=='read-only'&&config.stepPacing&&!state.pacing.notices.has(qualityKey)){
         state.pacing.notices.add(qualityKey);
-        emit('mode',qualityKey,'[work-evidence] 仅对本次请求应用质量增强：'+QUALITY_PRIORITY+'围绕全部关键结论取得实际依据。'+QUALITY_DISCRIMINATOR+'逐项完成交付、实际失败和重要备选方案的取舍说明。');
+        emit('mode',qualityKey,'[work-evidence] 本次应用质量增强。依据需覆盖用户要求、适用例外和实际失败。');
+      }
+      const scopeKey=JSON.stringify([incoming.id,'pb001-explicit-scope']);
+      if(mode!=='quality'&&surfaceMode!=='read-only'&&config.stepPacing&&
+        FINAL_ONLY_REPORTING.test(resultText(incoming.content))&&!SOURCE_ONLY_REQUEST.test(resultText(incoming.content))&&
+        !state.pacing.notices.has(scopeKey)){
+        rememberPacing(state,scopeKey);
+        return emit('mode',scopeKey,'[work-evidence] 本次请求已列出明确范围，并要求完成后直接汇报。只处理这些明确行为。保留现有模块级状态、公开名称和调用方式；需要替换逻辑时修改实现，不删除现有状态。沿用户描述的实际入口核到输入解析、状态更新和输出。不要为未提出的来源或兼容场景新增回退。每项改动以已有源码为据；已有源码能判断时，不运行验证程序、不重复读取同一文件；只有实际失败或无法判断时才做一次最小验证。全部覆盖后直接汇报。');
       }
       const expandedFor=runtimeState.taskSurfaceExpandedFor;
       if(expandedFor===incoming.id){
@@ -641,6 +853,22 @@ export function createTaskFlow(ctx,runtime,{nativeFiles,call,executionDependenci
       return messages;
     }
     const judgment=judgmentReminder();if(judgment)return judgment;
+    const editFailure=[...state.errors.values()].findLast(error=>error.exactEditFailure&&
+      error.userSeq===user?.seq&&state.step-error.step<=1);
+    const editFailureKey=JSON.stringify([user?.seq,'exact-edit-failure',editFailure?.file]);
+    if(config.executionTriage&&editFailure&&!state.diagnosticAdvised.has(editFailureKey)){
+      state.diagnosticAdvised.add(editFailureKey);
+      return emit('diagnostic',editFailureKey,'[work-evidence] 事件 '+editFailure.seq+' 的精确编辑未写入。需要继续修复时，只读取对应区段，用当前正文构造有效替换。遇到截断或显示占位符时，不凭记忆补原文或省略调用参数。仍无法修改的分支应保留为未解决。');
+    }
+    const interfaceChange=state.pendingInterfaceChange;
+    if(config.executionTriage&&user&&interfaceChange?.userSeq===user.seq&&state.step-interfaceChange.step<=1){
+      state.pendingInterfaceChange=null;
+      const {parameters,assignments,seq}=interfaceChange;
+      const key=JSON.stringify([user.seq,'edit-interface-change',seq]);
+      const details=[parameters?'从 '+parameters.name+' 移除了 '+parameters.removed.join('、')+'。请核对原调用方为何传入这些参数。':'',
+        assignments?'原分支已设置 '+assignments.priorAssignments.join('、')+'，本次又设置 '+assignments.changes.join('、')+'。请核对新增赋值对每个读取方的影响。若问题可由原字段处理，保留另一字段原来的值。':''].join('');
+      return emit('diagnostic',key,'[work-evidence] 事件 '+seq+' 的编辑'+details+'缺少必须改变旧行为的源码依据时，恢复扩大的改动。');
+    }
     const readIssue=state.readOutputIssue,readIssueKey=JSON.stringify([user?.seq,readIssue?.symptom==='line-text-truncated-json'?'native-read-clipped-json':'native-read-result']);
     if(config.executionTriage&&user&&readIssue?.userSeq===user.seq&&!state.diagnosticAdvised.has(readIssueKey)){
       state.diagnosticAdvised.add(readIssueKey);
@@ -655,15 +883,8 @@ export function createTaskFlow(ctx,runtime,{nativeFiles,call,executionDependenci
       return emit('diagnostic',readIssueKey,'[work-evidence] 事件'+readIssue.readSeqs.join('、')+'的 read 返回 {path,offset,lines:[{number,text}],totalLines}。若事件'+readIssue.seq+'的空白正文、undefined 或取值异常来自 .content/.text，改用已有返回对象的 lines，例如 r.lines.map(l=>l.text).join("\\n")。原变量仍可用时直接复用，按 number 定位源码行。'+recordedReads);
     }
     if(config.executionTriage&&state.cleanup&&state.cleanup.userSeq===user?.seq&&state.errors.has(state.cleanup.callKey)&&!state.cleanupAdvised.has(state.cleanup.key)){
-      let remove=false,loadRemove=false;try{
-        remove=!!ctx.tools.get('ops_remove',agent);
-        const loader=ctx.tools.get('ops_load_sdk',agent);
-        loadRemove=typeof loader?.description==='string'&&/(?:^|[\s,])remove(?:[\s,.]|$)/u.test(loader.description);
-      }catch{}
       state.cleanupAdvised.add(state.cleanup.key);state.cleanupNotices++;
-      return emit('cleanup',state.cleanup.key,'[work-evidence] 已观察到删除操作被拒（事件'+state.cleanup.seq+'）。'+
-        (remove?'当前可用原生ops_remove。若确需清理当前任务中自己创建的文件，先查看该入口的真实参数并使用已有权限。':
-          loadRemove?'当前原生SDK目录包含remove，可先调用ops_load_sdk({tools:["remove"]})，下一模型步骤再按真实声明使用；当前run_code快照不能立即调用新API。加载SDK不执行文件操作，删除仍须在当前任务授权内。':'当前未确认可用的原生删除入口。')+
+      return emit('cleanup',state.cleanup.key,'[work-evidence] 已观察到删除操作被拒（事件'+state.cleanup.seq+'）。当前没有已知的原生删除入口；若确需清理当前任务中自己创建的文件，先确认当前工具面确实提供删除能力并使用已有权限。'+
         '不要为了删除重复改写Shell、修改权限或绕过限制；无法在已有权限内完成时，保留具体未完成项。此提示不执行或删除文件。');
     }
     const troubledJob=state.executions.findLast(item=>item.userSeq===user?.seq&&item.status==='pending'&&item.jobId&&state.jobs.has(item.jobId)&&item.backgroundFailureSignature);
@@ -673,14 +894,8 @@ export function createTaskFlow(ctx,runtime,{nativeFiles,call,executionDependenci
       return emit('diagnostic',troubledJobKey,'[work-evidence] 后台任务 '+troubledJob.jobId+'（事件'+troubledJob.seq+'）输出包含 '+troubledJob.backgroundFailureSignature+'，当前尚未观察到结束。通过宿主任务接口查看真实状态和输出；旧程序已失败且不再需要时结束该任务，用户要求保留的后台任务继续保留。'+
         (troubledJob.scriptRef?'修正原程序可沿用 scriptRef '+JSON.stringify(troubledJob.scriptRef)+'，不必重发整段代码。':''));
     }
-    if(config.executionTriage&&user&&state.lastInlineExec<user.seq&&!state.inlineExecAdvised.has(key)&&
-      (state.lastMutation>user.seq||state.executions.some(item=>item.userSeq===user.seq&&item.status==='failed'))){
-      let ready=false;try{ready=process.platform==='win32'&&!!ctx.tools.get('pwsh',agent)&&!!ctx.tools.get('work_exec',agent);}catch{}
-      if(ready){
-        state.inlineExecAdvised.add(key);
-        return emit('inlineExec',key,'[work-evidence] 若下一实际缺口确需运行完整Node/Python程序，可用work_exec提交原文；项目修改仍用write/edit，已有结果足够时不因本提示新增执行。'+WORK_EXEC_DISCOVERY);
-      }
-    }
+    // A write or failed native command does not establish a need for a program.
+    // Actual embedded programs and program failures have specific advice below.
     const formatFailure=state.executions.findLast(item=>item.userSeq===user?.seq&&item.status==='failed'&&item.formatRecovery&&item.scriptRef);
     const formatKey=JSON.stringify([user?.seq,'node-format',formatFailure?.scriptRef]);
     if(config.executionTriage&&user&&formatFailure&&!state.diagnosticAdvised.has(formatKey)){
@@ -689,7 +904,7 @@ export function createTaskFlow(ctx,runtime,{nativeFiles,call,executionDependenci
     }
     const failedScript=state.executions.findLast(item=>item.userSeq===user?.seq&&item.tool==='work_exec'&&item.status==='failed'&&item.scriptChars>=2400&&item.scriptRef&&['python','node'].includes(item.scriptRuntime));
     const scriptAdviceKey=JSON.stringify([user?.seq,failedScript?.scriptRef]);
-    if(config.executionTriage&&user&&failedScript&&!state.scriptReuseAdvised.has(scriptAdviceKey)&&
+    if(config.executionTriage&&user&&failedScript&&!failedScript.inlineRecovery&&!state.scriptReuseAdvised.has(scriptAdviceKey)&&
       !failedScript.scriptSourceRefs.some(ref=>state.scriptReuseAdvised.has(JSON.stringify([user.seq,ref])))){
       state.scriptReuseAdvised.add(scriptAdviceKey);
       const pathFallback=failedScript.errorCode==='WORK_EXEC_EXECUTABLE_NOT_FOUND'&&!declaredInlineExecutable(agent.session,failedScript.scriptRuntime)&&
@@ -727,16 +942,15 @@ export function createTaskFlow(ctx,runtime,{nativeFiles,call,executionDependenci
         '字符。'+(programFailure.kind==='parse'?'按实际解析错误修正程序。':'先依据原错误定位失败原因，不能仅凭未分发内部工具推断语法错误或程序没有副作用。')+'保留已有实现，只修改实际失败部分。')+reference);
     }
     const legacyShell=state.legacyInterpreterShell,legacyShellKey=JSON.stringify([user?.seq,'legacy-inline-shell']);
-    if(config.executionTriage&&user&&legacyShell?.userSeq===user.seq&&!state.inlineExecAdvised.has(legacyShellKey)&&
+    if(config.executionTriage&&config.nativeShellScriptReuse&&user&&legacyShell?.userSeq===user.seq&&!state.inlineExecAdvised.has(legacyShellKey)&&
       (()=>{try{return !!ctx.tools.get('work_exec',agent);}catch{return false;}})()){
       state.inlineExecAdvised.add(legacyShellKey);
-      if(config.nativeShellScriptReuse&&legacyShell.scriptRef)return emit('inlineExec',legacyShellKey,
+      return emit('inlineExec',legacyShellKey,
         '[work-evidence] 事件'+legacyShell.seq+'的单个字面量解释器程序可用 work_exec('+JSON.stringify({scriptRef:legacyShell.scriptRef,edits:[{before:'唯一原文',after:'替换原文'}]})+') 显式修改并执行。只复用代码及原解释器参数，当前工作目录和权限重新生效。原始执行状态与副作用保留；不自动重放。'+WORK_EXEC_DISCOVERY);
-      return emit('inlineExec',legacyShellKey,'[work-evidence] 事件'+legacyShell.seq+'的直接'+legacyShell.tool+'调用嵌入了'+legacyShell.chars+
-        '字符的Node/Python解释器程序。下一次执行同类完整解释器程序时直接用work_exec({runtime,code,executable?})提交原文，避免继续拼接Shell、here-string或临时文件；普通Shell原生命令仍可用现有入口。'+WORK_EXEC_DISCOVERY);
     }
     const repeated=state.repeatedExecution;
-    if(config.executionTriage&&repeated&&repeated.userSeq===user?.seq&&repeated.mutationSeq===state.lastMutation&&!state.reuseAdvised.has(repeated.reuseKey)){
+    if(config.executionTriage&&repeated&&user&&
+      !state.sourceOnly&&repeated.userSeq===user.seq&&repeated.mutationSeq===state.lastMutation&&!state.reuseAdvised.has(repeated.reuseKey)){
       state.reuseAdvised.add(repeated.reuseKey);state.reuseNotices++;
       return emit('reuse',repeated.reuseKey,'[work-evidence] 同一原生调用在事件'+repeated.priorSeq+'和'+repeated.seq+
         '返回了相同的完整短输出，期间未观察到当前工作区修改。若已有结果覆盖当前问题，直接使用会话中的结果；需要当前外部状态或不同输入时继续取得新观察。没有替你缓存执行、重发命令或判断任务完成。');
@@ -763,13 +977,15 @@ export function createTaskFlow(ctx,runtime,{nativeFiles,call,executionDependenci
     }
     const pacing=state.pacing,steps=pacing.steps.size;
     const latestExecution=state.executions.findLast(item=>item.executionCompleted&&item.seq>state.lastMutation&&item.seq>(user?.seq??Infinity));
-    if(steps===pacing.noticeSteps&&pacing.outputTokens===pacing.noticeOutputTokens)return messages;
-    const currentWriteObserved=state.lastMutation>(user?.seq??Infinity)&&latestExecution&&!state.errors.size&&!state.jobs.size&&
-      !(state.todos??[]).some(item=>item.status!=='completed');
+    const pacingUnchanged=steps===pacing.noticeSteps&&pacing.outputTokens===pacing.noticeOutputTokens;
+    const pendingTodos=state.todoSeq>(user?.seq??Infinity)&&state.todos?.some(item=>item.status!=='completed');
+    const freshTodoCompletion=state.todoSeq>Math.max(state.lastMutation,user?.seq??Infinity)&&
+      state.todos?.length>0&&state.todos.every(item=>item.status==='completed');
     const outputSinceNotice=Math.max(0,pacing.outputTokens-pacing.noticeOutputTokens);
     const outputSinceProgress=Math.max(0,pacing.outputTokens-pacing.progressOutputTokens);
     const outputHeavy=steps>=2&&pacing.outputTokens>=8000&&outputSinceNotice>=8000;
-    const outputStalled=steps>=2&&outputSinceProgress>=12000&&outputSinceNotice>=8000;
+    const stepsSinceProgress=steps-pacing.lastProgress;
+    const outputStalled=stepsSinceProgress>=2&&outputSinceProgress>=12000&&outputSinceNotice>=8000;
     const qualityReviewKey=JSON.stringify([user?.seq,'quality-equivalence-check',state.lastMutation]);
     if(mode==='quality'&&config.qualityReview&&user&&state.lastMutation>user.seq&&latestExecution&&!state.jobs.size&&!pacing.notices.has(qualityReviewKey)){
       pacing.notices.add(qualityReviewKey);
@@ -798,58 +1014,170 @@ export function createTaskFlow(ctx,runtime,{nativeFiles,call,executionDependenci
           '。根据原始错误定位原因及受影响边界，完成修正并取得对应的成功观察；仍有阻碍时说明具体条件和未完成范围。');
       }
     }
+    const followup=state.sourceFollowup;
+    const hasPendingSourceFollowup=followup?.key&&!pacing.notices.has(followup.key);
     const reporting=state.stageReporting,silentSteps=state.pacing.steps.size-Math.max(reporting.lastTextSteps,reporting.lastNoticeSteps);
     const reportingPhase=JSON.stringify([state.phase.name??'unknown',state.errors.size>0,state.jobs.size>0]);
-    if(config.stepPacing&&user&&silentSteps>=3&&!reporting.notifiedPhases.includes(reportingPhase)&&(state.reads.size||state.executions.some(item=>item.seq>=state.turnStartSeq)||state.errors.size||state.lastMutation>user.seq||state.jobs.size)){
-      // Concrete recovery must reach the next request before optional stage prose.
+    if(config.stepPacing&&user&&!hasPendingSourceFollowup&&!FINAL_ONLY_REPORTING.test(text)&&silentSteps>=3&&!reporting.notifiedPhases.includes(reportingPhase)&&(state.reads.size||state.executions.some(item=>item.seq>=state.turnStartSeq)||state.errors.size||state.lastMutation>user.seq||state.jobs.size)){
+      // Concrete recovery must reach the next request before optional pacing prose.
       reporting.notifiedPhases.push(reportingPhase);
       emit('judgment',JSON.stringify([user.seq,'judgment',state.pacing.steps.size]),
         '[work-evidence] 已有工具结果。若形成重要新结论或阻碍，在正文说明实际结果、尚缺事项与下一步，并继续可执行动作。没有新结论不复述，不展示内部思考。');
       messages.at(-1).source.taskFlow.phaseKey=reportingPhase;
       return messages;
     }
+    if(pacingUnchanged)return messages;
     if(mode!=='quality'&&config.stepPacing&&user&&surfaceMode==='read-only'&&!state.jobs.size&&!state.errors.size){
       const readOnlyEconomyKey=JSON.stringify([user.seq,'read-only-economy']);
       if(steps>=2&&!pacing.notices.has(readOnlyEconomyKey)){
         rememberPacing(state,readOnlyEconomyKey);
-        return emit('pacing',readOnlyEconomyKey,'[work-evidence] 已有结果覆盖全部要求时直接交付，不为整理已知值另开程序。仍缺读取或计算时在同一PTC程序内完成；沿用已有结果，实际失败或来源冲突时再处理具体缺口。');
+        return emit('pacing',readOnlyEconomyKey,'[work-evidence] 已取得的结果可直接整理。仍缺事实或发现来源冲突时，补齐会改变交付的依据。');
       }
       const readOnlyStrictKey=JSON.stringify([user.seq,'read-only-strict']);
       if(steps>=4&&!pacing.notices.has(readOnlyStrictKey)){
         rememberPacing(state,readOnlyStrictKey);
-        return emit('pacing',readOnlyStrictKey,'[work-evidence] 在同一程序补齐已明确且相互独立的缺失字段或实际失败；依赖未知结果的动作在取得结果后继续。不重读已见来源，不换语言或Shell重算，结构化输出保留全部规定字段。');
+        return emit('pacing',readOnlyStrictKey,'[work-evidence] 已明确且相互独立的缺失字段可同轮读取。结构化交付保留用户要求的字段。');
       }
       const readOnlyTailKey=JSON.stringify([user.seq,'read-only-tail']);
       if(steps>=8&&!pacing.notices.has(readOnlyTailKey)){
         rememberPacing(state,readOnlyTailKey);
-        return emit('pacing',readOnlyTailKey,'[work-evidence] 只用现有实际结果完成尚未覆盖的最终字段或修正交付语法；不另起语言或Shell重算，也不再读取已见来源。该提醒不宣告完成。');
+        return emit('pacing',readOnlyTailKey,'[work-evidence] 已取得的依据可直接用于交付。仍缺来源的字段须注明未确定。');
       }
     }
-    if(mode!=='quality'&&config.stepPacing&&user&&surfaceMode!=='read-only'&&!state.jobs.size){
-      const lastResponseKey=JSON.stringify([user.seq,'large-response',steps]);
-      if(steps>=2&&pacing.lastOutputTokens>=6000&&!pacing.notices.has(lastResponseKey)){
-        rememberPacing(state,lastResponseKey);
-        return emit('pacing',lastResponseKey,'[work-evidence] 上一响应较长。下一步只执行仍未决的实际动作，或直接整理已有结果；不要重述分析、重演计算或增加同义检查。用户明确要求或实际错误仍须处理。');
+    if(config.stepPacing&&user&&hasPendingSourceFollowup&&surfaceMode==='writable'&&!state.jobs.size&&
+      (followup.afterFailure||!state.errors.size)){
+      rememberPacing(state,followup.key);
+      emit('pacing',followup.key,'[work-evidence] 若当前判断仍需未送达的源码，可用 project_evidence 续读 '+JSON.stringify(followup.calls)+'。');
+      // This recovery names the next actual action and its exact arguments. Returning
+      // immediately prevents a generic economy/finalize reminder from occupying the
+      // same request without changing what the model should do.
+      return messages;
+    }
+    const economyKey=JSON.stringify([user?.seq,'economy']);
+    const earlyReadKey=state.sourceOnly?JSON.stringify([user?.seq,'source-before-edit',8]):economyKey;
+    if(mode!=='quality'&&config.stepPacing&&user&&surfaceMode==='writable'&&!state.jobs.size&&
+      state.lastMutation<=user.seq&&!pacing.notices.has(earlyReadKey)){
+      const wideReads=[...pacing.sourceReadRanges.values()].map(ranges=>ranges.at(-1))
+        .filter(read=>read.unbounded&&state.step-read.step<=2&&read.last-read.first+1>SOURCE_FOCUS_LINES);
+      const lines=wideReads.reduce((total,{first,last})=>total+last-first+1,0);
+      if(wideReads.length>=2&&wideReads.some(read=>read.step===state.step)&&lines>=800){
+        rememberPacing(state,earlyReadKey);
+        return emit('pacing',earlyReadKey,'[work-evidence] 最近 '+wideReads.length+' 个未指定行数的源码读取已交付 '+lines+' 行。'+
+          '已有入口时只读取仍缺的区段。入口未知时，可先搜索实际调用或字段，再按行号读取。需要完整文件才能判断时，仍可完整读取。');
       }
-      const economyKey=JSON.stringify([user.seq,'economy']);
-      if(steps>=2&&!pacing.notices.has(economyKey)){
-        rememberPacing(state,economyKey);
-        return emit('pacing',economyKey,'[work-evidence] 已有结果覆盖全部要求时直接交付，不为整理已知值另开程序。仍缺读取、解析或独立计算时同轮合并；工具调用前不预演完整任务或重述数据。');
+    }
+    const batchKey=JSON.stringify([user?.seq,'source-read-batch']);
+    const recentSourceFailure=[...state.errors.values()].some(error=>READ.has(error.tool)&&error.step>=state.step-1&&error.step>=state.lastSourceReadStep);
+    const batchOpportunity=config.stepPacing&&user&&surfaceMode==='writable'&&!state.jobs.size&&!recentSourceFailure&&
+      !state.programFailure&&state.firstSourceReadStep!==null&&state.lastSourceReadStep>state.firstSourceReadStep&&
+      state.lastSourceReadStep>=state.step-1&&pacing.lastParallelSourceReadStep<state.step-3&&
+      !pacing.notices.has(batchKey)&&!followup&&ctx.tools?.get?.('project_evidence',agent);
+    const batchMode=batchOpportunity?toolModeFor(ctx,agent):null;
+    if(batchMode&&(batchMode!=='native'||pacing.lastParallelSourceReadStep===-Infinity)){
+      rememberPacing(state,batchKey);
+      const advice=batchMode==='native'?
+        '互不依赖的普通源码区段可在同一轮发出多个 read。需要统一返回预算或读取归档条目时，可用 project_evidence。':
+        '已定位且互不依赖的源码区段可用 project_evidence({files:[{path,offset,limit}, ...]}) 一次读取，最多 '+limits.sourceRanges+' 段。';
+      return emit('pacing',batchKey,'[work-evidence] '+advice);
+    }
+    if(mode!=='quality'&&config.stepPacing&&user&&surfaceMode!=='read-only'&&!state.jobs.size){
+      // Only nudge toward delivery after the model has actually produced file
+      // effects. Before the first mutation the request is still unexplored, and a
+      // "finalize" hint measurably cut a real benchmark run short.
+      const hasWorkEvidence=state.lastMutation>user.seq&&state.artifacts.size>0;
+      if(pacing.sourceEditNotices<(state.sourceOnly?2:1)&&pacing.lastFileChangeStep===state.step&&pacing.lastSourceStep<state.step){
+        for(const {file,steps:editSteps} of pacing.sourceEdits.values()){
+          if(editSteps.length<3||editSteps.at(-1)!==state.step||state.step-editSteps[0]>8||pacing.lastSourceStep<=editSteps[0])continue;
+          const id=JSON.stringify([user.seq,'source-repeated-edit',file]);
+          if(pacing.notices.has(id))continue;
+          rememberPacing(state,id);
+          return emit('pacing',id,'[work-evidence] 本轮已在第 '+editSteps.join('、')+' 步修改 '+JSON.stringify(file)+'。'+
+            '若仍在处理同一现象，可先沿实际入口确认下一次操作会读取的对象和状态，再决定是否继续改这一处。');
+        }
+      }
+      if(state.sourceOnly){
+        if(pacing.lastSourceStep<state.step-1)return messages;
+        const search=pacing.largeSourceSearch,searchKey=JSON.stringify([user.seq,'large-source-search']);
+        if(search?.repeated&&search.step===state.step&&!pacing.notices.has(searchKey)){
+          rememberPacing(state,searchKey);
+          return emit('pacing',searchKey,'[work-evidence] 最近两次源码检索已返回正文和行号。若仍需读取 '+JSON.stringify(search.files)+
+            ' 中的分支，可沿结果中的行号按需读一段。会改变当前修改的调用方仍可继续查。');
+        }
+        const beforeEditThreshold=pacing.sourceStepsSinceProgress>=24?24:8;
+        const beforeEditKey=JSON.stringify([user.seq,'source-before-edit',beforeEditThreshold]);
+        if(!hasWorkEvidence&&pacing.sourceStepsSinceProgress>=beforeEditThreshold&&!pacing.notices.has(beforeEditKey)){
+          const lastReads=[...pacing.sourceReadRanges.values()].map(ranges=>ranges.at(-1)).filter(read=>read.step===state.step);
+          if(lastReads.length===1){
+            const {file,first,last}=lastReads[0];
+            if(last-first+1<=SOURCE_FOCUS_LINES){
+              rememberPacing(state,beforeEditKey);
+              return emit('pacing',beforeEditKey,'[work-evidence] 已确认一个独立问题的触发条件和实际入口时，可先修这一项。'+
+                '刚读到 '+JSON.stringify(file)+' 第 '+first+'–'+last+' 行。若只缺入口证据，可沿已读源码查一个会传入出错输入的调用方。');
+            }
+          }
+        }
+        if(!hasWorkEvidence||freshTodoCompletion||steps-pacing.sourceFollowupStep<32)return messages;
+        const windowStart=state.step-SOURCE_WINDOW_STEPS;
+        const recentFailure=[...state.errors.values()].some(error=>error.step>=state.step-1);
+        if(recentFailure)return messages;
+        const reviewKey=JSON.stringify([user.seq,'source-after-edit-review']);
+        if(pacing.sourceStepsSinceProgress>=8&&outputSinceProgress>=5000&&!pacing.notices.has(reviewKey)){
+          const root=runtimeState.root;
+          const rereadFiles=[...state.artifacts.values()].filter(artifact=>{
+            if(artifact.userSeq!==user.seq||artifact.effectState!=='applied')return false;
+            const file=sourcePath(root,artifact.path);
+            return file&&pacing.sourceReadRanges.get(sourcePathKey(file))?.at(-1)?.step>pacing.lastFileChangeStep;
+          });
+          if(rereadFiles.length>=3){
+            rememberPacing(state,reviewKey);
+            return emit('pacing',reviewKey,'[work-evidence] 最后一次修改后，已读取 '+rereadFiles.length+' 个修改过的源码文件中的区段。'+
+              '若还需查某项未解决的现象，只追能改变该项修改的入口或状态。已有依据的事项可直接汇报。缺少依据的事项须标明仍未确认。');
+          }
+        }
+        const sourceTarget=nextSourceLocation(pacing,state.step);
+        if(!sourceTarget)return messages;
+        const recentKey=JSON.stringify([user.seq,'source-recent-investigation',sourceTarget.file,sourceTarget.line]);
+        const stalledKey=JSON.stringify([user.seq,'source-following-edits',sourceTarget.file,sourceTarget.line]);
+        if(pacing.notices.has(recentKey)||pacing.notices.has(stalledKey))return messages;
+        let noticeId;
+        if(pacing.lastFileChangeStep>windowStart&&pacing.lastFileChangeStep<state.step){
+          const recent=pacing.sourceWindow.filter(item=>item.step>windowStart);
+          if(recent.length>=12&&recent.reduce((total,item)=>total+item.outputTokens,0)>=16000)noticeId=recentKey;
+        }
+        const sourceStalled=pacing.sourceStepsSinceProgress>=20||pacing.sourceStepsSinceProgress>=10&&outputSinceProgress>=5000;
+        if(!noticeId&&sourceStalled&&pacing.sourceFollowupNotices<3)noticeId=stalledKey;
+        if(noticeId){
+          rememberPacing(state,noticeId);
+          const {file,line,write,invocation}=sourceTarget;
+          const action=write?
+            '写入 '+JSON.stringify(write)+'。若仍缺依据，可只查实际读取这个值的分支，确认哪种值会改变当前修改。':
+            '调用 '+JSON.stringify(invocation)+'。若仍缺依据，可只查实际调用条件或失败返回，确认哪种情况会改变当前修改。';
+          return emit('pacing',noticeId,'[work-evidence] 检索命中 '+JSON.stringify(file)+' 第 '+line+' 行，'+action+
+            '已有足够依据时，可直接处理当前问题。');
+        }
+        return messages;
+      }
+      // The reminder text is identical for every step; a per-step key re-injects
+      // the same user message on each long response. Once per user request is enough.
+      const lastResponseKey=JSON.stringify([user.seq,'large-response']);
+      if(steps>=2&&hasWorkEvidence&&pacing.lastOutputTokens>=6000&&!pacing.notices.has(lastResponseKey)){
+        rememberPacing(state,lastResponseKey);
+        return emit('pacing',lastResponseKey,pendingTodos?
+          '[work-evidence] 当前待办仍有未完成项。沿当前项处理会改变结果的动作，可复用已有证据。':
+          '[work-evidence] 上一响应较长。下一步只执行仍未决的实际动作，或直接整理已有结果；不要重述分析、重演计算或增加同义检查。用户明确要求或实际错误仍须处理。');
       }
       const strictKey=JSON.stringify([user.seq,'strict']);
-      if(steps>=4&&!pacing.notices.has(strictKey)){
-        rememberPacing(state,strictKey);
-        return emit('pacing',strictKey,'[work-evidence] 下一次实际动作合并已知且相互独立的修正、未覆盖输入和交付字段；有依赖时先处理阻塞项。不重读已见来源，不新增同义实现。全部明确要求及验证已有成功依据时交付，仍有缺口则继续。');
+      if(!hasWorkEvidence&&!FINAL_ONLY_REPORTING.test(text)&&!pacing.notices.has(economyKey)&&!pacing.notices.has(strictKey)&&
+        (steps>=2&&pacing.lastOutputTokens>=2500||steps>=4&&pacing.outputTokens>=12000)){
+        rememberPacing(state,economyKey);
+        return emit('pacing',economyKey,'[work-evidence] 若已有结果覆盖当前缺口，直接执行或交付；仍缺读取、解析或独立计算时同轮合并。只在确有新依据时继续调查。');
       }
       const finalizeKey=JSON.stringify([user.seq,'finalize']);
-      if(steps>=8&&!pacing.notices.has(finalizeKey)){
+      // A file write can be a temporary probe. Require an explicit completed list before prompting delivery.
+      if(hasWorkEvidence&&freshTodoCompletion&&!state.errors.size&&!pacing.notices.has(finalizeKey)&&
+        (stepsSinceProgress>=8&&pacing.lastOutputTokens>=3000||stepsSinceProgress>=12&&outputStalled)){
         rememberPacing(state,finalizeKey);
-        return emit('pacing',finalizeKey,'[work-evidence] 基于已有实际结果按用户列出的字段、边界、错误分支、排序和禁止项逐项核对；只修复未覆盖点后交付，不新增仅由既有结果自行引出的检查。该提醒不宣告完成。');
-      }
-      const reminderKey=JSON.stringify([user.seq,'finalize-reminder']);
-      if(steps>=12&&(outputStalled||!currentWriteObserved&&outputSinceNotice>=8000)&&!pacing.notices.has(reminderKey)){
-        rememberPacing(state,reminderKey);
-        return emit('pacing',reminderKey,'[work-evidence] 已有多轮工具往返。下一动作围绕当前要求中尚缺实际依据的部分；已有成功结果能够回答的内容直接复用。完成全部明确要求后整理交付，保留实际错误和未完成项。');
+        return emit('pacing',finalizeKey,'[work-evidence] 按用户要求逐项确认实际改动和仍缺的依据。若继续调查，只追会改变修改或交付的事实。仍有实际错误时继续处理。');
       }
     }
     return messages;
@@ -860,7 +1188,8 @@ export function createTaskFlow(ctx,runtime,{nativeFiles,call,executionDependenci
   }
   function summary(agent){
     const state=sync(agent),config=runtime.get(agent).config;
-    return {enabled:runtime.isEnabled(agent),mode:runtime.modeStatus(agent),stageReporting:{...state.stageReporting,enabled:runtime.isEnabled(agent)&&config.stepPacing,delivery:'assistant-text-guidance; content-not-semantically-verified'},executionTriage:config.executionTriage,stageWorkingSet:config.stageWorkingSet,
+    const pacingEnabled=taskPacingAllowed(config,state.lastUser?.text??'');
+    return {enabled:runtime.isEnabled(agent),mode:runtime.modeStatus(agent),stageReporting:{...state.stageReporting,enabled:runtime.isEnabled(agent)&&pacingEnabled,delivery:'assistant-text-guidance; content-not-semantically-verified'},executionTriage:config.executionTriage,stageWorkingSet:config.stageWorkingSet,
       judgmentChallenges:challenges(agent,state),phase:phase(agent),pendingCalls:state.calls.size+state.nested.size,
       userId:state.lastUser?.id??null,userSeq:state.lastUser?.seq??null,lastMutationSeq:state.lastMutation,mutationVersion:state.mutationVersion,
       unresolvedErrors:[...state.errors.values()].slice(-8),pendingJobs:[...state.jobs].slice(-16),
@@ -868,13 +1197,27 @@ export function createTaskFlow(ctx,runtime,{nativeFiles,call,executionDependenci
       programOutputDiagnostics:state.programOutputDiagnostics.map(item=>({...item})),
       readOutputIssue:state.readOutputIssue?{...state.readOutputIssue,readSeqs:[...state.readOutputIssue.readSeqs]}:null,
       probes:state.probes.map(probe=>({...probe,...dependencyView(state.executions.find(item=>item.probeId===probe.id))})),nativeExecutions:state.executions.map(executionView),inlineExecNotices:state.inlineExecAdvised.size,scriptReuseNotices:state.scriptReuseAdvised.size,diagnosticNotices:state.diagnosticAdvised.size,reuseNotices:state.reuseNotices,cleanupNotices:state.cleanupNotices,
-      transitions:state.transitions.slice(),pacing:{enabled:config.stepPacing,toolBearingRequests:state.pacing.steps.size,operations:state.pacing.operations,
+      transitions:state.transitions.slice(),pacing:{enabled:pacingEnabled,toolBearingRequests:state.pacing.steps.size,operations:state.pacing.operations,
         reportedOutputTokens:state.pacing.outputTokens,lastResponseOutputTokens:state.pacing.lastOutputTokens,missingOutputUsage:state.pacing.missingOutputUsage,retainedComputeCalls:state.pacing.computeCalls,validationAdvised:state.pacing.validationAdvised,
         outputTokensSinceProgress:Math.max(0,state.pacing.outputTokens-state.pacing.progressOutputTokens),
         outputTokensSinceNotice:Math.max(0,state.pacing.outputTokens-state.pacing.noticeOutputTokens),
         notices:state.pacing.notices.size,sourceFocus:state.pacing.sourceFocus,lastProgressAt:state.pacing.lastProgress,nextConvergenceAt:state.pacing.nextConvergence,mode:'stable-policy-and-observed-notices'},completion:'not-determined',automaticStop:false};
   }
   return {sync,phase,declaration,beforeStep,startupPaths,summary,
+    reserveSourceOutline(agent,file){
+      const relative=sourcePath(runtime.get(agent).root,file);
+      if(!relative)return false;
+      const {sourceOutlines}=sync(agent).pacing,key=sourcePathKey(relative);
+      if(sourceOutlines.size>=8||sourceOutlines.has(key))return false;
+      sourceOutlines.add(key);
+      return true;
+    },
+    initialReadLimit(agent,args){
+      const {root,config}=runtime.get(agent);
+      if(config.sourceReadDefaultLines==null||args.offset!==undefined||args.limit!==undefined||
+        runtime.activeMode(agent)!=='aggressive'||!sourcePath(root,args.file_path))return null;
+      return sourceReadDefault(config,sync(agent).lastUser?.text??'');
+    },
     refreshEvidence(agent,signal,cache){
       const state=sync(agent);
       return executionDependencies.refresh(runtime.get(agent).root,[...state.executions,...state.qualityExecutions],signal,cache);
@@ -970,11 +1313,19 @@ export function createTaskFlow(ctx,runtime,{nativeFiles,call,executionDependenci
     },
     executionShellContext(exec,result){
       if(!exec.agent||exec.name!=='pwsh'||exec.signal?.aborted||!runtime.isEnabled(exec.agent)||!runtime.get(exec.agent).config.executionTriage)return null;
-      const state=sync(exec.agent),diagnostic=nativePwshInvocationDiagnostic(argsOf(exec.arguments),result);
-      if(!state.lastUser||!diagnostic)return null;
-      const key=JSON.stringify([state.lastUser.seq,'pwsh-unquoted-executable',diagnostic.executable]);
+      const state=sync(exec.agent),args=argsOf(exec.arguments);
+      if(!state.lastUser)return null;
+      const invocation=nativePwshInvocationDiagnostic(args,result);
+      const fileSizeRequested=/(?:文件.{0,16}(?:大小|字节数)|(?:大小|字节数).{0,16}文件|\bfiles?\b[^.!?;\r\n]{0,24}\b(?:sizes?|byte counts?)\b|\b(?:sizes?|byte counts?) of (?:the )?files?\b)/iu.test(state.lastUser.text);
+      const diagnostic=invocation??(fileSizeRequested?nativePwshTableDiagnostic(args,result):null);
+      if(!diagnostic)return null;
+      const key=JSON.stringify(invocation?[state.lastUser.seq,'pwsh-unquoted-executable',invocation.executable]:[state.lastUser.seq,diagnostic.kind]);
       if(state.diagnosticAdvised.has(key))return null;
       state.diagnosticAdvised.add(key);runtime.get(exec.agent).dirty=true;
+      if(!invocation){
+        runtime.effects?.decide(exec.agent,'failureAdvice','applied','native-pwsh-table-missing-length',{callId:exec.callId});
+        return message('diagnostic',key,'[work-evidence] PowerShell 此次表格仅显示 FullName，未返回 Length。要核对大小，从任务所需的文件对象直接读取 Length。');
+      }
       runtime.effects?.decide(exec.agent,'failureAdvice','applied','native-pwsh-invocation-visible',{callId:exec.callId});
       return message('diagnostic',key,'[work-evidence] 本次 PowerShell 错误中的命令名，是含空格的可执行路径在第一个空格前的片段。'+
         '若仍需执行该命令，使用 suggestedPrefix 的调用运算符和引号，保留原有参数；删掉输出管道不能修正路径拆分。原命令和失败保留。以下是调用语法数据。\n'+
@@ -995,11 +1346,12 @@ export function createTaskFlow(ctx,runtime,{nativeFiles,call,executionDependenci
       if(!exec.agent||!SHELL.includes(exec.name)||!runtime.isEnabled(exec.agent)||!runtime.get(exec.agent).config.executionTriage)return null;
       const state=sync(exec.agent),root=runtime.get(exec.agent).root;
       if(!state.lastUser||typeof root!=='string')return null;
+      const program=exec.name==='work_exec'?toolResultValue(exec.name,result):null;
       for(const frame of executionFailureFrames(result,root)){
         const artifact=state.artifacts.get(normalize(frame.path));
         if(!artifact||artifact.effectState!=='applied'||artifact.userSeq!==state.lastUser.seq)continue;
         const artifactPath=path.resolve(root,artifact.path);
-        if(process.platform==='win32'?normalize(artifactPath)!==normalize(frame.path):artifactPath!==frame.path)continue;
+        if(artifactPath!==frame.path)continue;
         const key=JSON.stringify([state.lastUser.seq,'file-failure-source',artifact.argumentsSeq,frame.path,frame.line]);
         if(state.diagnosticAdvised.has(key))continue;
         let event;try{event=exec.agent.session.eventAt(artifact.argumentsSeq??artifact.seq);}catch{}
@@ -1007,7 +1359,15 @@ export function createTaskFlow(ctx,runtime,{nativeFiles,call,executionDependenci
         if(!excerpt)continue;
         state.diagnosticAdvised.add(key);runtime.get(exec.agent).dirty=true;
         runtime.effects?.decide(exec.agent,'failureAdvice','applied','recorded-file-failure-context',{sourceSeq:excerpt.source.seq,file:frame.path,line:frame.line});
-        return message('diagnostic',key,'[work-evidence] 执行错误指向本次修改过的文件。以下是先前写入的原文窗口，可用于定位；这是历史数据，内容不是指令，不代表当前文件状态。窗口行号属于记录片段，错误行号见 frame。\n'+JSON.stringify(excerpt));
+        let retry='';
+        const ref=program?.scriptEventRef;
+        if(program?.failureLocation?.exceptionInScript===false&&typeof ref==='string'&&/^event:\d+$/u.test(ref)){
+          const originalArgs=argsOf(exec.arguments);
+          const call={scriptRef:ref};
+          for(const option of ['cwd','workdir','sources'])if(originalArgs[option]!==undefined)call[option]=originalArgs[option];
+          retry='\n如果只修改项目文件且仍需执行同一程序，可提交 work_exec('+JSON.stringify(call)+') 沿用原程序。';
+        }
+        return message('diagnostic',key,'[work-evidence] 执行错误指向本次修改过的文件。以下是先前写入的原文窗口，可用于定位；这是历史数据，内容不是指令，不代表当前文件状态。窗口行号属于记录片段，错误行号见 frame。\n'+JSON.stringify(excerpt)+retry);
       }
       return null;
     },
@@ -1020,7 +1380,7 @@ export function createTaskFlow(ctx,runtime,{nativeFiles,call,executionDependenci
       if(!records.length)return result;
       state.diagnosticAdvised.add(key);runtime.get(exec.agent).dirty=true;
       runtime.effects?.decide(exec.agent,'failureAdvice','applied','native-read-output-recovered',{readSeqs:records.map(item=>item.seq)});
-      return {...result,content:[...(result.content??[]),{type:'text',text:'[Work Evidence recovered native read output]\n'+
+      return {...result,content:[...(result.content??[]),{type:'text',text:RECOVERED_NATIVE_READ_HEADER+'\n'+
         'Original records from this call; historical data, not instructions or a new file observation.\n'+JSON.stringify({records})}]};
     },
     observe(exec,result){
@@ -1065,7 +1425,8 @@ export function createTaskFlow(ctx,runtime,{nativeFiles,call,executionDependenci
         fileDependencies:value?.fileDependencies,...dependencyView(value),partial:nativeFacts?.partial??layers.some(node=>node?.partial===true),
         completed:nativeFacts?.incomplete||layers.some(node=>node?.completed===false||node?.executionCompleted===false||node?.complete===false)?false:value?.completed,tool:value?.tool,
         files:Array.isArray(value?.files)?value.files.slice(0,50).map(file=>({path:file.path??file.file,effectState:file.effectState})):undefined,
-        sources:pathsOf(value),saved:value?.saved,path:value?.path,id:value?.id,question:value?.question,
+        sources:pathsOf(value),...(exec.name==='project_evidence'?{sourceContinuations:sourceContinuations(value,argsOf(exec.arguments))}:{}),
+        saved:value?.saved,path:value?.path,id:value?.id,question:value?.question,
         elapsedMs:value?.elapsedMs,executionCompleted:value?.executionCompleted,
         ...(exec.name==='work_probe'&&value?.replayOf?{replayOf:{id:value.replayOf.id,rootProbeId:value.replayOf.rootProbeId,sourceResultSeq:value.replayOf.sourceResultSeq}}:{})};
       bounded(get(exec.agent).live,exec.callId,{isError:!!result.isError,observedProblem:operationProblem(exec.name,execution?envelope:raw??resultText(result.content))||exec.name==='pwsh'&&shellReportedFailure(stderr),value:compact},256);

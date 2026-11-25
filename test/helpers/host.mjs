@@ -1,5 +1,5 @@
 // Keyless DSH host for plugin integration tests: real agent loop, tools and
-// session store from the installed desktop runtime, with a scripted model.
+// session store from the selected kernel runtime, with a scripted model.
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
@@ -8,17 +8,44 @@ import {createRequire,registerHooks} from 'node:module';
 import {pathToFileURL,fileURLToPath} from 'node:url';
 import {randomUUID} from 'node:crypto';
 import {patchToolExecution} from '../../tool-execution.mjs';
-import {DSH_APP} from './paths.mjs';
+import {DSH_APP,DSH_TEST_HOST_VERSION} from './paths.mjs';
 
 export const APP=DSH_APP;
+const PLUGIN=path.resolve(import.meta.dirname,'..','..');
+const hostPackages=path.join(APP,'node_modules','@deepseek-ai');
+const readPackage=(name)=>{
+  const file=path.join(hostPackages,name,'package.json');
+  if(!existsSync(file))throw new Error(`DSH test host is missing @deepseek-ai/${name} at ${APP}. Set DSH_APP to a complete supported kernel runtime.`);
+  return JSON.parse(readFileSync(file,'utf8'));
+};
+const toolsVersion=readPackage('dsh-tools').version;
+const manifest=JSON.parse(readFileSync(path.join(PLUGIN,'package.json'),'utf8'));
+const supported=manifest.engines.dsh.split('||').map(version=>version.trim());
+const expectedVersions=process.env.DSH_APP?.trim()?supported:[DSH_TEST_HOST_VERSION];
+if(!expectedVersions.includes(toolsVersion))throw new Error(`DSH test host at ${APP} has version ${toolsVersion}. Expected ${expectedVersions.join(' or ')}. Set DSH_APP to a complete supported kernel runtime.`);
+readPackage('cordis');
+for(const name of ['dsh-brand','dsh-llm']){
+  const version=readPackage(name).version;
+  if(version!==toolsVersion)throw new Error(`DSH test host at ${APP} mixes @deepseek-ai/${name} ${version} with dsh-tools ${toolsVersion}.`);
+}
 const require=createRequire(path.join(APP,'package.json'));
 const rootZod=path.join(APP,'node_modules','zod');
-const toolsVersion=JSON.parse(readFileSync(require.resolve('@deepseek-ai/dsh-tools/package.json'),'utf8')).version;
 const splitToolExecutor=toolsVersion.startsWith('0.2.2');
 // Same zod de-duplication the experiment runner uses for the desktop bundle.
 registerHooks({resolve(specifier,context,next){
   try{
     const resolved=next(specifier,context);
+    // An installed profile can carry an older @deepseek-ai tree (0.1.x) beside
+    // the 0.2.2 kernel. Loading a mix of the two fails at module link time
+    // because the older dsh-llm has no CallId export for the newer dsh-session.
+    // Pin the shared kernel packages to the app the helper started with.
+    if(specifier.startsWith('@deepseek-ai/dsh')&&resolved.url?.startsWith('file:')){
+      const fromApp=path.join(APP,'node_modules',...specifier.split('/'));
+      if(!fileURLToPath(resolved.url).startsWith(APP+path.sep)){
+        try{return next(pathToFileURL(require.resolve(specifier)).href,context);}
+        catch{/* not installed in the app: keep the resolved copy */}
+      }
+    }
     if(specifier==='@deepseek-ai/dsh-llm'&&!context.conditions?.includes('require'))return next(pathToFileURL(require.resolve(specifier)).href,context);
     if(specifier==='zod'&&resolved.url?.startsWith('file:')){
       const nested=path.dirname(fileURLToPath(resolved.url));
@@ -31,7 +58,6 @@ registerHooks({resolve(specifier,context,next){
   }catch(e){if(e.code!=='ERR_MODULE_NOT_FOUND'||!specifier.startsWith('@deepseek-ai/'))throw e;return next(pathToFileURL(require.resolve(specifier)).href,context);}
 }});
 export const load=name=>import(pathToFileURL(require.resolve('@deepseek-ai/'+name)).href);
-const PLUGIN=path.resolve(import.meta.dirname,'..','..');
 
 export const text=value=>({kind:'text',text:value});
 export const reasoning=value=>({kind:'reasoning',text:value});
@@ -41,7 +67,13 @@ async function* emit(turn,usage){
   const calls=turn.filter(item=>item.kind==='tool');
   let index=0;
   for(const item of turn){
-    if(item.kind==='reasoning'){
+    if(item.kind==='malformed'){
+      yield {type:'block-start',index,blockType:'tool-call'};
+      yield {type:'tool-call-delta',index,id:'call_malformed_'+randomUUID().slice(0,8),name:'pwsh',argumentsDelta:'{"command":"Write-Output ok","description":"controlled command"'};
+      yield {type:'usage',usage};
+      yield {type:'finish',reason:{kind:'error',failure:{code:'MALFORMED_RESPONSE',message:'invalid completed tool arguments'}}};
+      return;
+    }else if(item.kind==='reasoning'){
       yield {type:'block-start',index,blockType:'reasoning'};
       yield {type:'reasoning-delta',index,text:item.text};
       yield {type:'block-end',index,block:{type:'reasoning',text:item.text}};
@@ -68,7 +100,7 @@ async function* emit(turn,usage){
  * mountShell:false only omits the default pwsh mounts; platform fixtures can
  * mount their native bash executor without replacing the existing pwsh service.
  */
-export async function startHost({script,auxiliary=()=>[text('{}')],pluginConfig={},workspace=null,efforts=['low','high','max'],toolMode='native',mountPlugin=true,
+export async function startHost({script,auxiliary=()=>[text('{}')],pluginConfig={},workspace=null,efforts=['low','high','max'],toolMode='native',mountPlugin=true,pwshPath=null,
   extraMounts=[],usage=null,contextWindow=200000,pluginDirectory=PLUGIN,sessionQueryMount=['dsh-session-query'],filesystem='dsh-fs-local',fileTools={},mountShell=true}={}){
   const [{Context},llm]=await Promise.all([load('cordis'),load('dsh-llm')]);
   const cwd=await fs.mkdtemp(path.join(os.tmpdir(),'we-host-'));
@@ -100,7 +132,7 @@ export async function startHost({script,auxiliary=()=>[text('{}')],pluginConfig=
     ['dsh-tools',splitToolExecutor?{}:{mode:toolMode}],
     ...(splitToolExecutor?[[toolMode==='ptc'?'dsh-tool-executor-ptc':'dsh-tool-executor-native',{}]]:[]),
     [filesystem,{cwd}],['dsh-working-directory',{defaultDirectory:cwd}],['dsh-subprocess-local'],['dsh-sandbox-local'],['dsh-sandbox-policy',{mode:'danger-full-access',workspaceRoot:cwd}],
-    ['dsh-shell-env'],['dsh-jobs-local'],...(mountShell?[['dsh-pwsh-local',{cwd}],['dsh-tool-pwsh',{}]]:[]),
+    ['dsh-shell-env'],['dsh-jobs-local'],...(mountShell?[['dsh-pwsh-local',{cwd,...(pwshPath?{pwshPath}:{})}],['dsh-tool-pwsh',{}]]:[]),
     ['dsh-tool-fs',{read:true,write:true,edit:true,...fileTools}],['dsh-tool-fs-search',{sampleOverCapGlobResults:false}],
     ['dsh-llm'],['dsh-agent-loop'],['dsh-commands'],['dsh-session-persistence-jsonl',{root:path.join(cwd,'.sessions')}],...extraMounts,
   ])await mount(name,config);
@@ -112,10 +144,13 @@ export async function startHost({script,auxiliary=()=>[text('{}')],pluginConfig=
   }
   const events=[];
   ctx.on('session/event',(_session,event)=>events.push(event));
-  async function createAgent(effort='max'){
+  async function createAgentHandle(effort='max'){
     const handle=await ctx.agents.create({sessionId:'we-test-'+randomUUID().slice(0,8),agentOptions:{provider:'scripted',model:'scripted-model',reasoningEffort:effort},meta:{cwd}});
     handle.agent.session.append('sandbox/mode',{mode:'danger-full-access',workspaceRoot:cwd});
-    return handle.agent;
+    return handle;
+  }
+  async function createAgent(effort='max'){
+    return (await createAgentHandle(effort)).agent;
   }
   async function send(agent,message){
     agent.followup(llm.createUserMessage({content:[{type:'text',text:message}],source:{kind:'user'}}));
@@ -140,7 +175,7 @@ export async function startHost({script,auxiliary=()=>[text('{}')],pluginConfig=
     try{await ctx.fiber?.dispose?.();}catch{}
     await fs.rm(cwd,{recursive:true,force:true,maxRetries:3});
   }
-  return {ctx,cwd,requests,auxiliaryRequests,events,createAgent,send,startSubagent,waitForSubagents,command,close,llm};
+  return {ctx,cwd,requests,auxiliaryRequests,events,createAgent,createAgentHandle,send,startSubagent,waitForSubagents,command,close,llm};
 }
 
 export const systemOf=options=>{

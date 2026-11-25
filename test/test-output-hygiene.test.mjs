@@ -116,3 +116,16 @@ test('an oversized diagnostic line cannot consume the receipt tail or locator',(
   assert.ok(digest.text.includes('tail:\n'+text.slice(-2500)));
   assert.ok(digest.text.endsWith('work_recall kind=output seq=308.'));
 });
+
+test('a shell command that prints a source file is not replaced by a receipt',()=>{
+  // `bash cat src/widget.py` returns a whole file with no native read dispatch and no
+  // markup. A head/tail receipt would hide the middle of the file the task is editing.
+  // The body must exceed TOOL_MIN_CHARS (12,000), or the digest would decline it for the
+  // wrong reason and the test would pass with or without the guard.
+  const source=['import os','','class Widget:','    def render(self):','        return os.path.basename(__file__)','',
+    ...Array.from({length:400},(_,i)=>`    value_${i} = ${i} ${'x'.repeat(120)}`)].join('\n');
+  assert.equal(toolOutputDigest('pwsh',source,{seq:310,command:'cat src/widget.py'}),null,
+    'a metadata-free source body is not digested');
+  assert.equal(toolOutputDigest('pwsh',`<path>src/widget.py</path>\n${source}`,{seq:311,command:'type src/widget.py'}),null,
+    'a named source body is not digested');
+});

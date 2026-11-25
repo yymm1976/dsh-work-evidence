@@ -128,8 +128,9 @@ test('exactly one JSON output validates the whole response and accepts scalar va
   for(const request of ['Return exactly one JSON value.','Output solely a single JSON document.','Return only one JSON object.']){
     for(const answer of ['true','null','42','"answer"','[]','{}'])
       assert.equal(finalJsonSyntaxIssue(answer,request),null,request+' '+answer);
-    for(const answer of ['', '{} {}', 'Here is the result: {}', '```json\n{}\n```', '{"answer":}'])
+    for(const answer of ['{} {}', 'Here is the result: {}', '```json\n{}\n```', '{"answer":}'])
       assert.equal(finalJsonSyntaxIssue(answer,request)?.rawFinal,true,request+' '+answer);
+    assert.equal(finalJsonSyntaxIssue('',request)?.kind,'missing-final-json',request);
   }
   assert.equal(finalJsonSyntaxIssue('```json\n{}\n```','Return exactly one JSON object in a JSON code block.'),null);
   for(const request of ['Explain "Return exactly one JSON value." in prose.',
@@ -235,7 +236,8 @@ test('raw final JSON rejects prose, multiple values, and empty text without enfo
   ]) {
     const issue = finalJsonSyntaxIssue(answer, request);
     assert.ok(issue, JSON.stringify(answer));
-    assert.equal(issue.rawFinal, true);
+    if (answer.trim()) assert.equal(issue.rawFinal, true);
+    else assert.equal(issue.kind, 'missing-final-json');
   }
   assert.equal(finalJsonSyntaxIssue('true', request), null);
 });

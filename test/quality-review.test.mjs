@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import {createQualityReview} from '../quality-review.mjs';
+import {createQualityReview,scopeReviewSources} from '../quality-review.mjs';
 
 const USAGE={inputTokens:100,cacheReadTokens:0,cacheWriteTokens:0,outputTokens:50,totalTokens:150};
 const payloadOf=request=>JSON.parse(request.messages[0].content[0].text);
@@ -57,34 +57,55 @@ async function harness({review=()=>({issues:[]}),finish=()=>'stop',abortOn=0,usa
     close:()=>fs.rm(dir,{recursive:true,force:true,maxRetries:3})};
 }
 
-test('successful partial OPS read pages retain source excerpts without claiming complete files',async()=>{
-  const marker='PARTIAL_PAGE_SOURCE_MARKER',source='head '.repeat(600)+marker+' tail'.repeat(600);
-  const page={status:'partial',data:{failed:0,complete:false,items:[{failed:0,complete:false,items:[{path:'core.mjs',line:250,text:source}]}]},
-    coverage:{isComplete:false},continuation:'remaining-page'};
-  for(const variant of ['page','failed','item-failed','error','dry-run','tool-error']){
+test('a successful native read supplies a bounded source excerpt and a failed or truncated read does not',async()=>{
+  const marker='NATIVE_READ_SOURCE_MARKER',source='head '.repeat(600)+marker+' tail'.repeat(600);
+  const lines=Array.from({length:20},(_,index)=>({number:246+index,text:index===4?source:`row ${index}`}));
+  for(const variant of ['read','truncated','error','tool-error']){
     let payload;const artifacts=[],h=await harness({artifacts,review:value=>{payload=value;return {issues:[]};}});
     try{
       h.request('审阅 core.mjs 的已修改源码。');
       h.event('tool/call',{callId:'write',name:'write',arguments:{file_path:'core.mjs',content:'initial source'}});
       const written=h.event('tool/result',{message:{role:'tool',source:{callId:'write'},isError:false,content:[{type:'text',text:'Created file'}]}});
       artifacts.push({seq:written.seq,path:'core.mjs',tool:'write',effectState:'applied'});
-      const value=structuredClone(page);
-      if(variant==='failed')value.data.failed=1;
-      if(variant==='item-failed')value.data.items[0].failed=1;
-      if(variant==='error')value.error={message:'Read failed'};
-      const original=JSON.stringify(value),read=h.event('tool/ptc-dispatch',{subCallId:'read',rootCallId:'outer',name:'ops_read_files',
-        arguments:{files:[{path:'core.mjs',offset:245,limit:20}],...(variant==='dry-run'?{dryRun:true}:{})},
-        isError:variant==='tool-error',content:[{type:'text',text:original}]});
+      const value={path:'core.mjs',offset:246,totalLines:265,lines};
+      if(variant==='truncated')value.truncatedByBytes=true;
+      const original=JSON.stringify(value),read=h.event('tool/ptc-dispatch',{subCallId:'read',rootCallId:'outer',name:'read',
+        arguments:{file_path:'core.mjs',offset:246,limit:20},isError:variant==='error'||variant==='tool-error',content:[{type:'text',text:original}]});
       h.answer('已审阅提供的源码摘录。');await h.run();
       const excerpt=payload.evidence.find(item=>item.seq===read.seq);
-      assert.equal(excerpt.data.includes(marker),variant==='page',variant);
-      if(variant==='page'){
-        assert.deepEqual(excerpt.sourceFiles,['core.mjs']);
-        assert.ok(excerpt.data.includes('"complete":false'));assert.ok(excerpt.data.includes('remaining-page'));
-      }else assert.equal(excerpt.sourceFiles,undefined,variant);
-      assert.equal(read.data.content[0].text,original,'The recorded read and its incomplete-page metadata remain unchanged.');
+      assert.equal(excerpt?.data.includes(marker),variant==='read'||variant==='truncated',variant);
+      // A bounded native read page may be cut by the byte budget but still holds
+      // the verified line window; only an errored read loses its source status.
+      if(variant==='read'||variant==='truncated')assert.deepEqual(excerpt.sourceFiles,['core.mjs']);
+      else assert.equal(excerpt.sourceFiles,undefined,variant);
+      assert.equal(read.data.content[0].text,original,'The recorded read and its completeness metadata remain unchanged.');
     }finally{await h.close();}
   }
+});
+
+test('review keeps complete inline program inputs within the existing result scope and a shared budget',async()=>{
+  const executions=[];let payload;
+  const h=await harness({executions,review:value=>{payload=value;return {issues:[]};}});
+  try{
+    h.request('运行程序并说明实际核对范围。');
+    const add=(label,{size=1900,completed=true,scriptRef}={})=>{
+      const code=label.padEnd(size,' '),event=h.event('tool/ptc-dispatch',{
+        name:'work_exec',arguments:{runtime:'node',code,...(scriptRef?{scriptRef}:{})},
+        isError:false,content:[{type:'text',text:'observed'}],
+      });
+      executions.push({seq:event.seq,tool:'work_exec',executionCompleted:completed,exitCode:completed?0:null});
+      return {code,seq:event.seq};
+    };
+    const older=add('older program');
+    const kept=[add('completed program A'),add('completed program B')];
+    const excluded=[older,add('oversized program',{size:2001}),add('pending program',{completed:false}),
+      add('referenced program',{scriptRef:'event:2'})];
+    h.answer('程序已执行，覆盖了所有入口。');await h.run();
+    for(const {seq,code} of kept)assert.ok(payload.evidence.find(row=>row.seq===seq)?.data.endsWith(code));
+    for(const {seq} of excluded)assert.doesNotMatch(payload.evidence.find(row=>row.seq===seq)?.data??'',/Recorded work_exec program input:/u);
+    h.answer('程序已执行。');await h.run();
+    assert.equal(payload.evidence.some(row=>row.data.includes('Recorded work_exec program input:')),false);
+  }finally{await h.close();}
 });
 
 test('quality review links producer completion to the exact nested call without upgrading task or file validity',async()=>{
@@ -414,4 +435,105 @@ test('an unreadable state record is only recovered by reading it again',async()=
     await h.run();
     assert.equal(h.dispatched.length,1,'review resumes once the record is readable again');
   }finally{await h.close();}
+});
+
+test('an unmatched verified-edit alias cannot inherit another file\'s applied state',async()=>{
+  let payload;const artifacts=[],h=await harness({artifacts,review:value=>{payload=value;return {issues:[]};}});
+  try{
+    h.request('审阅 alias.mjs 与 actual.mjs 的源码。');
+    const result=h.event('tool/ptc-dispatch',{subCallId:'edit-alias',rootCallId:'outer',name:'verified_exec',isError:false,
+      arguments:{summary:'two targets',edits:[
+        {file:'alias.mjs',content:'UNMATCHED_ALIAS_BODY'},
+        {file:'./actual.mjs',old_text:'return value',new_text:'return actual()'}]},
+      content:[{type:'text',text:JSON.stringify({effectState:'applied',files:[
+        {path:'actual.mjs',effectState:'applied'},{path:'other.mjs',effectState:'none'}]})}]});
+    artifacts.push({seq:result.seq,path:'alias.mjs',tool:'verified_exec',effectState:'unknown'});
+    artifacts.push({seq:result.seq,path:'actual.mjs',tool:'verified_exec',effectState:'applied'});
+    h.answer('已审阅。');await h.run();
+    const joined=payload.evidence.filter(item=>item.seq===result.seq).map(item=>item.data).join('\n');
+    assert.ok(joined.includes('return actual()'),'the producer\'s actual applied file remains');
+    assert.ok(!joined.includes('UNMATCHED_ALIAS_BODY'),'an unmatched edit target is not an applied change');
+  }finally{await h.close();}
+});
+
+test('a small check-file budget does not reject a larger applied source change',async()=>{
+  let payload;const artifacts=[],h=await harness({artifacts,review:value=>{payload=value;return {issues:[]};}});
+  try{
+    h.request('修改 core.mjs 并更新 test/big.test.mjs。');
+    const sourceBody='SOURCE_MARKER '+ 's'.repeat(5000);
+    const result=h.event('tool/ptc-dispatch',{subCallId:'edit-budget',rootCallId:'outer',name:'verified_exec',isError:false,
+      arguments:{summary:'source and check',edits:[
+        {file:'core.mjs',content:sourceBody},
+        {file:'test/big.test.mjs',content:'CHECK_MARKER'}]},
+      content:[{type:'text',text:JSON.stringify({effectState:'applied',files:[
+        {path:'core.mjs',effectState:'applied'},{path:'test/big.test.mjs',effectState:'applied'}]})}]});
+    artifacts.push({seq:result.seq,path:'core.mjs',tool:'verified_exec',effectState:'applied'});
+    artifacts.push({seq:result.seq,path:'test/big.test.mjs',tool:'verified_exec',effectState:'applied'});
+    h.answer('已修改。');await h.run();
+    const rows=payload.evidence.filter(item=>item.seq===result.seq);
+    const record=rows.find(item=>String(item.data).includes('successful-historical-change'));
+    assert.ok(record,'the call produces a change record, not only raw trajectory text');
+    assert.ok(record.data.includes('SOURCE_MARKER'),'the source change is retained');
+    assert.ok(record.data.includes('CHECK_MARKER'),'the small check change is retained when it fits its own budget');
+  }finally{await h.close();}
+});
+
+test('a verified edit supplies its per-file change body and skips a file that did not apply',async()=>{
+  // A verified_exec call reports its changes inside edits[], not in content/new_string,
+  // and a mixed result can apply one file while leaving another at effectState none.
+  // Reading `key` instead of the scoped normaliser threw a ReferenceError here, which
+  // no test covered; this one exercises both the state lookup and the change body.
+  let payload;const artifacts=[],h=await harness({artifacts,review:value=>{payload=value;return {issues:[]};}});
+  try{
+    h.request('审阅 apply.mjs 与 skip.mjs 的已修改源码。');
+    const result=h.event('tool/ptc-dispatch',{subCallId:'edit',rootCallId:'outer',name:'verified_exec',isError:false,
+      arguments:{summary:'clamp',edits:[
+        {file:'apply.mjs',old_text:'return value',new_text:'return Math.max(0, value)'},
+        {file:'skip.mjs',content:'created body MARKER_CREATED'}]},
+      content:[{type:'text',text:JSON.stringify({effectState:'applied',files:[
+        {path:'apply.mjs',effectState:'applied'},{path:'skip.mjs',effectState:'none'}]})}]});
+    artifacts.push({seq:result.seq,path:'apply.mjs',tool:'verified_exec',effectState:'applied'});
+    artifacts.push({seq:result.seq,path:'skip.mjs',tool:'verified_exec',effectState:'none'});
+    h.answer('已审阅。');await h.run();
+    const evidence=payload.evidence.filter(item=>item.seq===result.seq);
+    const joined=evidence.map(item=>item.data).join('\n');
+    assert.ok(joined.includes('Math.max(0, value)'),'the applied edit body is in the payload');
+    assert.ok(!joined.includes('MARKER_CREATED'),'the file that did not apply is not described as changed');
+  }finally{await h.close();}
+});
+
+test('a create edit with both body fields is described by the content that was written',async()=>{
+  // verified_exec writes `content` for a create and ignores `new_text`. Serializing
+  // new_text would label text that was never written as a successful change.
+  let payload;const artifacts=[],h=await harness({artifacts,review:value=>{payload=value;return {issues:[]};}});
+  try{
+    h.request('创建 created.mjs。');
+    const result=h.event('tool/ptc-dispatch',{subCallId:'edit-create',rootCallId:'outer',name:'verified_exec',isError:false,
+      arguments:{summary:'create',edits:[{file:'created.mjs',mode:'create',content:'ACTUAL_BODY',new_text:'UNUSED_NEW_TEXT'}]},
+      content:[{type:'text',text:JSON.stringify({effectState:'applied',files:[{path:'created.mjs',effectState:'applied'}]})}]});
+    artifacts.push({seq:result.seq,path:'created.mjs',tool:'verified_exec',effectState:'applied'});
+    h.answer('已创建。');await h.run();
+    const joined=payload.evidence.filter(item=>item.seq===result.seq).map(item=>item.data).join('\n');
+    assert.ok(joined.includes('ACTUAL_BODY'),'the written content is in the payload');
+    assert.ok(!joined.includes('UNUSED_NEW_TEXT'),'the ignored new_text is not');
+  }finally{await h.close();}
+});
+
+test('focused review filtering follows a physical alias identity',async t=>{
+  const root=await fs.mkdtemp(path.join(os.tmpdir(),'we-quality-alias-'));
+  t.after(()=>fs.rm(root,{recursive:true,force:true}));
+  const real=path.join(root,'real.mjs'),alias=path.join(root,'alias.mjs');
+  await fs.writeFile(real,'export const value = 1;\n');
+  try{await fs.symlink(real,alias,'file');}
+  catch(error){t.skip('The host cannot create a file alias for this check: '+error.code);return;}
+  const payload={
+    request:{seq:1},answer:{seq:2},requestSources:[],
+    observed:{mutation:null,artifacts:[{seq:3,path:'real.mjs',effectState:'applied'},
+      {seq:4,path:'README.md',effectState:'none'}],executions:[],unresolvedErrors:[],pendingJobEvents:[]},
+    evidence:[{seq:99,type:'tool/result',data:'alias-associated change '+ 'x'.repeat(26000),sourceFiles:['alias.mjs']}]
+  };
+  const scoped=scopeReviewSources(payload,root,'auto');
+  assert.equal(scoped.sourceReview.mode,'focused');
+  assert.ok(scoped.evidence.some(item=>item.seq===99),
+    'evidence associated with the symlink target must survive focused filtering');
 });

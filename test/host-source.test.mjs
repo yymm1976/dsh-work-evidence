@@ -2,25 +2,28 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import {existsSync} from 'node:fs';
-import {pathToFileURL} from 'node:url';
-import {startHost,text,tool} from './helpers/host.mjs';
-import {OPS_ROOT,pythonFileAvailable} from './helpers/paths.mjs';
+import {readFileSync} from 'node:fs';
+import {createRequire} from 'node:module';
+import {startHost,text,tool,APP} from './helpers/host.mjs';
 
-// OPS is a profile package, not part of the desktop runtime; skip when it is absent.
-const opsRoot=OPS_ROOT;
-const hasOps=existsSync(opsRoot+'/file/index.js');
-const PYTHON=process.env.DSH_TEST_FASTEDIT_PYTHON||path.resolve(import.meta.dirname,'..','.fastedit-venv','Scripts','python.exe');
-
-async function opsMounts(){
-  const file=await import(pathToFileURL(opsRoot+'/file/index.js').href);
-  const discovery=await import(pathToFileURL(opsRoot+'/discovery/index.js').href);
-  return [[file,{promptPolicy:false,required:true}],[discovery,{enabled:true,alwaysLoaded:['stat','edit_file','write_file'],required:true}]];
-}
 const resultsOf=host=>host.events.filter(e=>e.type==='tool/result').map(e=>JSON.parse(e.data.message.content.map(b=>b.text??'').join('')));
+// The native conditional-write backend requires the same rc.1 or rc.2 kernel
+// across dsh-tools, dsh-fs-local and dsh-tool-fs. On 0.2.1-rc.4 or a mixed
+// installation verified_exec must deopt explicitly instead of falling back to
+// an unversioned write.
+const require=createRequire(path.join(APP,'package.json'));
+// Must match native.available() in native-cas.mjs: all three packages on the
+// same supported kernel. Checking only dsh-tools asserted success on a host
+// that correctly deopts with cas-file-tools-unavailable.
+const nativeVersions=['@deepseek-ai/dsh-tools','@deepseek-ai/dsh-fs-local','@deepseek-ai/dsh-tool-fs']
+  .map(name=>JSON.parse(readFileSync(require.resolve(name+'/package.json'),'utf8')).version);
+const nativeSupported=['0.2.2-rc.1','0.2.2-rc.2'].includes(nativeVersions[0])&&
+  nativeVersions.every(version=>version===nativeVersions[0]);
 
+// verified_exec edits now have one backend: the native conditional-write CAS under
+// nativeVerifiedEdits. This file is its end-to-end host suite.
 async function run(steps,files,workspace={}){
-  const host=await startHost({workspace:{toolSurface:'full',...workspace},extraMounts:await opsMounts(),script:(_o,n)=>steps[n-1]??[text('完成。')]});
+  const host=await startHost({workspace:{toolSurface:'full',nativeVerifiedEdits:true,...workspace},script:(_o,n)=>steps[n-1]??[text('完成。')]});
   try{
     for(const [name,body] of Object.entries(files))await fs.writeFile(path.join(host.cwd,name),body);
     const agent=await host.createAgent('max');
@@ -30,7 +33,7 @@ async function run(steps,files,workspace={}){
   }finally{await host.close();}
 }
 
-test('verified_exec previews, applies through OPS revisions and deopts on a stale text', {skip:!hasOps}, async()=>{
+test('verified_exec previews, applies through native revisions and deopts on a stale text', async()=>{
   const edit={file:'a.txt',mode:'replace_exact',old_text:'hello',new_text:'world'};
   const {results,read}=await run([
     [tool('verified_exec',{summary:'预览',apply:false,edits:[edit]})],
@@ -38,15 +41,22 @@ test('verified_exec previews, applies through OPS revisions and deopts on a stal
     [tool('verified_exec',{summary:'旧文本已不存在',apply:true,edits:[edit]})],
     [tool('verified_exec',{summary:'新建',apply:true,edits:[{file:'b.txt',mode:'create',content:'new\n'}]})],
   ],{'a.txt':'hello\n'});
+  if(!nativeSupported){
+    assert.equal(results[0].reason,'cas-file-tools-unavailable',JSON.stringify(results[0]));
+    assert.deepEqual(results[0].missing,['rc2-native-conditional-write']);
+    assert.equal(results[0].effectState,'none');
+    assert.equal(read['a.txt'],'hello\n','no supported backend means no write');
+    return;
+  }
   assert.equal(results[0].status,'previewed');
   assert.equal(results[1].status,'applied');
-  assert.equal(results[1].files[0].changed,1);
+  assert.equal(results[1].files[0].changed,true);
   assert.equal(read['a.txt'],'world\n');
   assert.notEqual(results[2].status,'applied','a missing old_text must not report success');
   assert.equal(results[3].status,'applied');
 });
 
-test('verified_exec keeps replacement text literal and addresses every edit in the original source', {skip:!hasOps}, async()=>{
+test('verified_exec keeps replacement text literal and addresses every edit in the original source', async()=>{
   const literal="literal $$ $& $` $' second";
   const edits=[{file:'a.txt',mode:'replace_exact',old_text:'first',new_text:literal},
     {file:'a.txt',mode:'replace_exact',old_text:'second',new_text:'changed'}];
@@ -54,61 +64,9 @@ test('verified_exec keeps replacement text literal and addresses every edit in t
     [tool('verified_exec',{summary:'Preview the requested literal edits',apply:false,edits})],
     [tool('verified_exec',{summary:'Apply the requested literal edits',apply:true,edits})],
   ],{'a.txt':'first second\n'});
+  if(!nativeSupported){assert.equal(results[0].reason,'cas-file-tools-unavailable');assert.equal(read['a.txt'],'first second\n');return;}
   assert.equal(results[0].status,'previewed');assert.equal(results[1].status,'applied');
   assert.equal(read['a.txt'],literal+' changed\n');
-});
-
-test('fastedit_java finds, reads and replaces one method through the native pwsh bridge', {skip:!hasOps||!pythonFileAvailable(PYTHON)}, async()=>{
-  const java='public class Calc {\n  public int add(int a, int b) {\n    return a + b;\n  }\n\n  public int sub(int a, int b) {\n    return a - b;\n  }\n}\n';
-  const replacement='public int add(int a, int b) {\n    return b + a;\n  }';
-  const {results,read}=await run([
-    [tool('fastedit_java',{file:'Calc.java',operation:'find_entity',symbol:'Calc.add'})],
-    [tool('fastedit_java',{file:'Calc.java',operation:'read_entity',symbol:'Calc.add'})],
-    [tool('fastedit_java',{file:'Calc.java',operation:'replace_symbol',symbol:'Calc.add',snippet:replacement})],
-    [tool('fastedit_java',{file:'Calc.java',operation:'replace_symbol',symbol:'Calc.add',snippet:replacement,apply:true})],
-    [tool('fastedit_java',{file:'Calc.java',operation:'read_entity',symbol:'Calc.missing'})],
-  ],{'Calc.java':java},{fastEditPython:PYTHON});
-  assert.equal(results[0].status,'found');
-  assert.equal(results[0].matches[0].line_start,2);
-  assert.equal(results[1].status,'read');
-  assert.match(results[1].text,/return a \+ b;/);
-  assert.notEqual(results[2].status,'applied','a preview leaves the file unchanged');
-  assert.equal(results[3].status,'applied');
-  assert.match(read['Calc.java'],/return b \+ a;/);
-  assert.match(read['Calc.java'],/return a - b;/,'the other method is untouched');
-  assert.equal(results[4].status,'deopt');
-});
-
-test('fastEditEnabled disables fastedit_java and restores it in the same host session', {skip:!hasOps||!pythonFileAvailable(PYTHON)}, async()=>{
-  const java='public class Calc {\n  public int add(int a, int b) {\n    return a + b;\n  }\n}\n';
-  const host=await startHost({workspace:{toolSurface:'full',fastEditEnabled:false,fastEditPython:PYTHON},extraMounts:await opsMounts(),
-    script:(_o,n)=>n===1||n===3?[tool('fastedit_java',{file:'Calc.java',operation:'find_entity',symbol:'Calc.add'})]:[text('已记录结果。')]});
-  try{
-    await fs.writeFile(path.join(host.cwd,'Calc.java'),java);
-    const agent=await host.createAgent('max');
-    await host.send(agent,'定位 Calc.add。');
-    assert.equal(resultsOf(host).at(-1).reason,'fastedit-disabled');
-    const changed=await host.command(agent,'feature fastEditEnabled on');
-    assert.equal(changed.readiness.features[0].configured,true);
-    await host.send(agent,'再次定位 Calc.add。');
-    const restored=resultsOf(host).at(-1);
-    assert.equal(restored.status,'found',JSON.stringify(restored));
-  }finally{await host.close();}
-});
-
-test('readArgumentRecovery corrects a flat OPS read once and can be disabled', {skip:!hasOps}, async()=>{
-  for(const readArgumentRecovery of [true,false]){
-    const host=await startHost({workspace:{toolSurface:'full',readArgumentRecovery},extraMounts:await opsMounts(),
-      script:(_o,n)=>n===1?[tool('ops_read_files',{path:'a.txt',offset:1,limit:10})]:[text('完成。')]});
-    try{
-      await fs.writeFile(path.join(host.cwd,'a.txt'),'expected source\n');
-      const agent=await host.createAgent('max');await host.send(agent,'读取 a.txt');
-      const result=host.events.filter(e=>e.type==='tool/result').at(-1);
-      const body=result.data.message.content.map(b=>b.text??'').join('');
-      assert.equal(body.includes('expected source'),readArgumentRecovery);
-      if(!readArgumentRecovery)assert.match(body,/error|invalid|files/i);
-    }finally{await host.close();}
-  }
 });
 
 test('native read aliases preserve line records, execute once and keep conflicts as errors',async()=>{
@@ -141,13 +99,34 @@ test('native read aliases preserve line records, execute once and keep conflicts
   }
 });
 
+test('a normalized top-level read keeps its state-ledger receipt',async()=>{
+  const host=await startHost({workspace:{readArgumentRecovery:true,stateLedger:true},
+    script:(_o,n)=>n===1?[tool('read',{path:'a.txt',offset:1,limit:2})]:[text('完成。')]});
+  try{
+    await fs.writeFile(path.join(host.cwd,'a.txt'),'first\nsecond\nthird\n');
+    const agent=await host.createAgent('max');
+    await host.send(agent,'读取指定文件范围');
+    const status=await host.command(agent,'detail');
+    assert.equal(status.detail.state.observations.length,1);
+    assert.equal(status.detail.state.observations[0].path,'a.txt');
+    assert.equal(status.detail.state.observations[0].lineStart,1);
+    assert.equal(status.detail.state.observations[0].lineEnd,2);
+    assert.equal(status.detail.state.observations[0].tool,'read');
+  }finally{await host.close();}
+});
+
 test('native one-shot read recovery recalls recorded lines without reading the changed file again',async()=>{
   let recalled=null;
   const body='recorded source before external change\n';
   const host=await startHost({toolMode:'ptc',extraMounts:[['dsh-ptc-runtime-node']],pluginConfig:{aggressiveMode:true,stepPacing:false},
     script:async(options,n)=>{
-      if(n===1)return [tool('run_code',{code:'const r=await tools.read({file_path:"a.txt"});console.log(r.content);',description:'Read source'})];
+      const recallListed=options.messages.some(message=>message.role==='system'&&message.content.some(block=>block.text?.includes('work_recall')));
+      if(n===1){
+        assert.equal(recallListed,false);
+        return [tool('run_code',{code:'const r=await tools.read({file_path:"a.txt"});console.log(r.content);',description:'Read source'})];
+      }
       if(n===2){
+        assert.equal(recallListed,true);
         const result=options.messages.findLast(message=>message.role==='tool');
         const output=result?.content?.map(block=>block.text??'').join('')??'';
         assert.match(output,/recorded source before external change/,'the omitted short source is recovered in the tool output');

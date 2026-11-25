@@ -17,12 +17,12 @@ test('unsafe disjoint sums stay unknown even when each reported field is a safe 
   assert.equal(exact.usage.totalTokens,Number.MAX_SAFE_INTEGER);
 });
 function harness(){
-  const state={step:0,config:{projectionPricing:[],projectionHorizonSteps:16}};
+  const state={step:0,requestId:'user-request',config:{projectionPricing:[],projectionHorizonSteps:16}};
   const agent={session:{id:'economics',surface:{nodes:[]},requestHeader:()=>({config:{provider:'p',model:'m'}}),requestContext:()=>({contextWindow:10000})}};
-  const economics=createContextEconomics({tokenMeter:{measure:()=>({totalTokens:9000})}},{get:()=>state});
+  const economics=createContextEconomics({tokenMeter:{measure:()=>({totalTokens:9000})}},{get:()=>state,currentRequest:()=>({id:state.requestId})});
   const options={provider:'p',model:'m',messages:[{id:'u',role:'user',content:[{type:'text',text:'request'}]}]};
   function finish(auxiliary=false,usage={inputTokens:1000,cacheReadTokens:0,cacheWriteTokens:0,outputTokens:100,totalTokens:1100}){
-    economics.requestFinished(agent,options,{auxiliary,usage,settled:true,finishReason:'stop'});
+    economics.requestFinished(agent,options,{auxiliary,usage,settled:true,finishReason:'stop',taskRequestId:state.requestId});
   }
   return {agent,economics,finish,state,options};
 }
@@ -76,6 +76,122 @@ test('a prior pointer mismatch cannot erase the additional projection refill exp
   assert.match(result.cachedExposureMethod,/only when the current request is a complete continuation/);
 });
 
+test('capacity pressure sees a newer positive prompt even when its output usage is missing',()=>{
+  const {agent,economics,finish,options}=harness();
+  // A complete baseline first, then a huge prompt with no output count. The exposure
+  // baseline must stay on the complete row; capacity pressure must not.
+  finish(false,{inputTokens:1000,cacheReadTokens:0,cacheWriteTokens:0,outputTokens:100,totalTokens:1100});
+  economics.requestFinished(agent,options,{usage:{inputTokens:95000,cacheReadTokens:0,cacheWriteTokens:0,totalTokens:95000},
+    settled:true,finishReason:'stop',usageComplete:false});
+  const pressure=economics.pressure(agent);
+  assert.ok(pressure.tokens>=95000,'the newer measured prompt reaches capacity pressure');
+  assert.equal(pressure.emergency,true);
+  assert.equal(economics.lastUsage(agent).outputTokens,100,'the exposure baseline stays on the complete row');
+});
+test('capacity pressure subtracts the footprint of the observation it counts',()=>{
+  const state={step:0,config:{projectionPricing:[],projectionHorizonSteps:16}};
+  const small=[{id:'u',role:'user',content:[{type:'text',text:'short request'}]}];
+  // The session grows between the two observations: the newer prompt count already
+  // includes that growth, so measuring it again against the older footprint would
+  // double-count it.
+  const grown=[...small,{id:'a',role:'assistant',content:[{type:'text',text:'g'.repeat(4000)}]}];
+  const agent={session:{id:'footprint',surface:{nodes:[]},requestHeader:()=>({config:{provider:'p',model:'m'}}),
+    requestContext:()=>({contextWindow:10000})}};
+  const economics=createContextEconomics({tokenMeter:{measure:()=>({totalTokens:0})}},
+    {get:()=>state,projectedMessages:()=>grown});
+  economics.requestFinished(agent,{provider:'p',model:'m',messages:small},
+    {usage:{inputTokens:1000,cacheReadTokens:0,cacheWriteTokens:0,outputTokens:100,totalTokens:1100},settled:true,finishReason:'stop'});
+  economics.requestFinished(agent,{provider:'p',model:'m',messages:grown},
+    {usage:{inputTokens:6000,cacheReadTokens:0,cacheWriteTokens:0,totalTokens:6000},settled:true,finishReason:'stop',usageComplete:false});
+  const pressure=economics.pressure(agent);
+  assert.ok(pressure.tokens<=7000,JSON.stringify({tokens:pressure.tokens}));
+  assert.equal(pressure.emergency,false);
+});
+test('capacity pressure keeps the system footprint it measured',()=>{
+  const state={step:0,config:{projectionPricing:[],projectionHorizonSteps:16}};
+  const messages=[{id:'u',role:'user',content:[{type:'text',text:'short request'}]}];
+  const agent={session:{id:'sysenv',surface:{nodes:[]},requestHeader:()=>({config:{provider:'p',model:'m'}}),
+    requestContext:()=>({contextWindow:10000})}};
+  const economics=createContextEconomics({tokenMeter:{measure:()=>({totalTokens:0})}},
+    {get:()=>state,projectedMessages:()=>messages});
+  // The observed request carried a system prompt that the projected view does not
+  // return. Subtracting only the message weights would drop it from the count.
+  const system='s'.repeat(3000);
+  economics.requestFinished(agent,{provider:'p',model:'m',messages,system},
+    {usage:{inputTokens:4000,cacheReadTokens:0,cacheWriteTokens:0,outputTokens:100,totalTokens:4100},settled:true,finishReason:'stop'});
+  const pressure=economics.pressure(agent);
+  assert.ok(pressure.tokens>=3900,JSON.stringify({tokens:pressure.tokens}));
+});
+test('capacity pressure never borrows another route observation',()=>{
+  const state={step:0,config:{projectionPricing:[],projectionHorizonSteps:16}};
+  const messages=[{id:'u',role:'user',content:[{type:'text',text:'short request'}]}];
+  let route={provider:'p',model:'m',reasoningEffort:'max'};
+  const agent={session:{id:'route-bound',surface:{nodes:[]},requestHeader:()=>({config:route}),
+    requestContext:()=>({contextWindow:10000})}};
+  const economics=createContextEconomics({tokenMeter:{measure:()=>({totalTokens:0})}},
+    {get:()=>state,projectedMessages:()=>messages});
+  economics.requestFinished(agent,{provider:'p',model:'m',reasoningEffort:'max',messages},
+    {usage:{inputTokens:4500,cacheReadTokens:0,cacheWriteTokens:0,outputTokens:100,totalTokens:4600},settled:true,finishReason:'stop'});
+  economics.requestFinished(agent,{provider:'p',model:'other',reasoningEffort:'max',messages},
+    {usage:{inputTokens:9500,cacheReadTokens:0,cacheWriteTokens:0,outputTokens:100,totalTokens:9600},settled:true,finishReason:'stop'});
+  // Back on the first route: the other route’s 9500 must not read as this route’s prompt.
+  route={provider:'p',model:'m',reasoningEffort:'max'};
+  const pressure=economics.pressure(agent);
+  assert.ok(pressure.tokens<=5000,JSON.stringify({tokens:pressure.tokens}));
+  assert.equal(pressure.emergency,false);
+});
+test('a rewrite of a repeatedly read body is charged its own revisit cost',()=>{
+  const {agent,economics,finish,state,options}=harness();
+  state.config.projectionPricing=[{provider:'p',model:'m',currency:'USD',input:.15,cacheRead:.003,cacheWrite:.15,output:.6}];
+  options.tools=[];options.system='system';
+  const system={id:'system',role:'system',content:[{type:'text',text:'rules'}]},user={id:'user',role:'user',content:[{type:'text',text:'request'}]};
+  const body={id:'read-result',role:'tool',content:[{type:'text',text:'x'.repeat(20000)}]};
+  options.messages=[system,user,body];
+  finish(false,{inputTokens:100,cacheReadTokens:18000,cacheWriteTokens:0,outputTokens:20,totalTokens:18120});
+  const pointer={...body,content:[{type:'text',text:'[work-evidence source event:10]'}]};
+  const plain=economics.assess(agent,{messages:options.messages,proposedMessages:[system,user,pointer],tools:[],system:'system'});
+  const revisited=economics.assess(agent,{messages:options.messages,proposedMessages:[system,user,pointer],tools:[],system:'system',revisitCostTokens:60000});
+  assert.equal(plain.revisitCostTokensEstimate,0);
+  assert.equal(revisited.revisitCostTokensEstimate,60000);
+  assert.ok(revisited.refillCostEstimate>plain.refillCostEstimate,'the revisit cost enters the refill estimate');
+  assert.ok(revisited.breakEvenStepsEstimate>=plain.breakEvenStepsEstimate,'a revisited body needs at least as many steps to pay back');
+});
+test('a revisit cost removes the zero-refill shortcut',()=>{
+  // An earlier version of this test asserted a lambda defined in the test body and never
+  // called assess, so it proved nothing about the code. This one drives the real gate: the
+  // shortcut is the branch that approves with refillCost 0, and a revisit volume must move the
+  // decision off it.
+  const {agent,economics,finish,state,options}=harness();
+  state.config.projectionPricing=[{provider:'p',model:'m',currency:'USD',input:.15,cacheRead:.003,cacheWrite:.15,output:.6}];
+  options.tools=[];options.system='system';
+  const system={id:'system',role:'system',content:[{type:'text',text:'rules'}]},user={id:'user',role:'user',content:[{type:'text',text:'request'}]};
+  options.messages=[system,user];
+  finish(false,{inputTokens:100,cacheReadTokens:18000,cacheWriteTokens:0,outputTokens:20,totalTokens:18120});
+  const free=economics.assess(agent,{messages:options.messages,proposedMessages:[system],tools:[],system:'system'});
+  const charged=economics.assess(agent,{messages:options.messages,proposedMessages:[system],tools:[],system:'system',revisitCostTokens:50000});
+  // Whatever the free branch decides, a revisit charge must never make it cheaper.
+  assert.ok((charged.refillCostEstimate??0)>=(free.refillCostEstimate??0),
+    'a revisit cost cannot lower the refill estimate: free='+free.refillCostEstimate+' charged='+charged.refillCostEstimate);
+  assert.ok(charged.refillCostEstimate>0,'a revisit must incur a positive refill cost');
+  assert.ok(charged.revisitCostTokensEstimate>0,'the revisit volume reaches the decision');
+});
+
+
+test('a grown tool surface raises capacity pressure',()=>{
+  const state={step:0,config:{projectionPricing:[],projectionHorizonSteps:16}};
+  const messages=[{id:'u',role:'user',content:[{type:'text',text:'request'}]}];
+  let tools=[{name:'a',parameters:{}}];
+  const agent={session:{id:'schema-growth',surface:{nodes:[]},requestHeader:()=>({config:{provider:'p',model:'m'},tools}),
+    requestContext:()=>({contextWindow:10000})}};
+  const economics=createContextEconomics({tokenMeter:{measure:()=>({totalTokens:0})}},
+    {get:()=>state,projectedMessages:()=>messages});
+  economics.requestFinished(agent,{provider:'p',model:'m',messages,tools},
+    {usage:{inputTokens:1000,cacheReadTokens:0,cacheWriteTokens:0,outputTokens:100,totalTokens:1100},settled:true,finishReason:'stop'});
+  const before=economics.pressure(agent).tokens;
+  tools=[{name:'a',parameters:{}},{name:'b',parameters:{description:'d'.repeat(8000)}}];
+  const after=economics.pressure(agent).tokens;
+  assert.ok(after>before,'a surface that grew after the observed request adds its own tokens');
+});
 test('capacity pressure uses the optional service getter when direct property access requires inject',()=>{
   const {agent}=harness(),state={config:{projectionPricing:[],projectionHorizonSteps:16}};
   const ctx={get:name=>name==='tokenMeter'?{measure:()=>({totalTokens:9500})}:undefined,
@@ -93,4 +209,452 @@ test('projection review settles after three main prompt observations and ignores
   assert.equal(reviewed.length,1);assert.equal(reviewed[0].observedRequests,3);
   assert.equal(reviewed[0].referencePromptTokens,1000);assert.equal(reviewed[0].observedPromptTokens,3000);
   assert.equal(reviewed[0].plausible,true);
+});
+
+
+test('a failed attempt with zero usage cannot license a free cache-overwriting rewrite',()=>{
+  const {agent,economics,finish,options}=harness();
+  finish(false,{inputTokens:1513,cacheReadTokens:81408,cacheWriteTokens:0,outputTokens:144,totalTokens:83065});
+  economics.requestFinished(agent,options,{usage:{inputTokens:0,cacheReadTokens:0,cacheWriteTokens:0,outputTokens:0,totalTokens:0},
+    settled:true,finishReason:'error',failureCode:'SERVER',usageConsistent:true,usageComplete:true});
+  const result=economics.assess(agent,{savedChars:8097*4,savedTokensEstimate:2122});
+  assert.equal(result.allowed,false);
+  assert.notEqual(result.reason,'no-additional-previous-request-prefix-exposure');
+  assert.ok(result.savedTokensEstimate>0);
+});
+
+test('the failed-attempt record keeps its zero usage out of the exposure baseline',()=>{
+  const {agent,economics,finish,options}=harness();
+  finish(false,{inputTokens:1513,cacheReadTokens:81408,cacheWriteTokens:0,outputTokens:144,totalTokens:83065});
+  const before=economics.assess(agent,{savedChars:8000,savedTokensEstimate:2100});
+  economics.requestFinished(agent,options,{usage:{inputTokens:0,cacheReadTokens:0,cacheWriteTokens:0,outputTokens:0,totalTokens:0},
+    settled:true,finishReason:'error',failureCode:'SERVER',usageConsistent:true,usageComplete:true});
+  const after=economics.assess(agent,{savedChars:8000,savedTokensEstimate:2100});
+  assert.equal(after.cachedSuffixTokensEstimate,before.cachedSuffixTokensEstimate);
+  assert.equal(after.reason,before.reason);
+  assert.equal(economics.lastUsage(agent).cacheReadTokens,81408);
+  assert.equal(economics.summary(agent).lastUnusableAttempt.reason,'failed-attempt');
+});
+
+test('a partial usage observation cannot replace the exposure baseline',()=>{
+  const {agent,economics,finish,options}=harness();
+  finish(false,{inputTokens:1513,cacheReadTokens:81408,cacheWriteTokens:0,outputTokens:144,totalTokens:83065});
+  const before=economics.assess(agent,{savedChars:8000,savedTokensEstimate:2100});
+  // Positive prompt usage but the output field is missing, so the adapter's
+  // canonical view is incomplete. Replacing the baseline here would drop a
+  // known cache position in favour of a half-observed one.
+  economics.requestFinished(agent,options,{usage:{inputTokens:900,cacheReadTokens:0,cacheWriteTokens:0,totalTokens:900},
+    settled:true,finishReason:'tool-calls',usageConsistent:false,usageComplete:false});
+  const after=economics.assess(agent,{savedChars:8000,savedTokensEstimate:2100});
+  assert.equal(after.cachedSuffixTokensEstimate,before.cachedSuffixTokensEstimate);
+  assert.equal(after.reason,before.reason);
+  assert.equal(economics.lastUsage(agent).cacheReadTokens,81408);
+});
+
+test('an error finish without a failure code cannot replace the exposure baseline',()=>{
+  const {agent,economics,finish,options}=harness();
+  finish(false,{inputTokens:1513,cacheReadTokens:81408,cacheWriteTokens:0,outputTokens:144,totalTokens:83065});
+  economics.requestFinished(agent,options,{usage:{inputTokens:1000,cacheReadTokens:0,cacheWriteTokens:0,outputTokens:10,totalTokens:1010},
+    settled:true,finishReason:'error',usageComplete:true,usageConsistent:true});
+  assert.equal(economics.summary(agent).lastUnusableAttempt.reason,'unusable-finish-reason');
+  assert.equal(economics.lastUsage(agent).cacheReadTokens,81408,
+    'the previous usable observation remains the exposure baseline');
+});
+
+test('a DeepSeek V4.1 Flash route is priced from the published rate when no exact row exists',()=>{
+  const {agent,economics}=harness();
+  for(const model of ['opendesign/deepseek-v4.1-flash-eco','3/deepseek-v4-1-flash-1017','3/deepseek-v4_1-flash']){
+    const price=economics.pricingFor(agent,{provider:'magpie',model});
+    assert.deepEqual(price,{input:1,cacheRead:0.02,cacheWrite:0,output:4,currency:'CNY',publishedRate:true,basis:'reference-rate'},model);
+  }
+  // An unrelated route stays unpriceable so the gate keeps refusing it.
+  assert.equal(economics.pricingFor(agent,{provider:'magpie',model:'group/qwen3.8flash'}),null);
+});
+
+test('the published card does not infer pricing from a generic deepseek-flash name',()=>{
+  const {agent,economics}=harness();
+  const price=economics.pricingFor(agent,{provider:'deepseek',model:'deepseek-flash'});
+  assert.equal(price,null,'only a recognized V4.1 Flash family id may use the reference card');
+  // A model name that merely contains no known family stays unpriced.
+  assert.equal(economics.pricingFor(agent,{provider:'x',model:'deepseek-chat'}),null);
+});
+
+test('a reference rate cannot approve a normal compression decision without an exact route price',()=>{
+  const state={step:0,config:{projectionPricing:[],projectionHorizonSteps:16}};
+  const agent={session:{id:'reference-gate',surface:{nodes:[]},requestHeader:()=>({config:{provider:'opendesign',model:'deepseek-v4.1-flash-eco'}})}};
+  const economics=createContextEconomics({tokenMeter:{measure:()=>({totalTokens:1000})}},{get:()=>state});
+  const options={provider:'opendesign',model:'deepseek-v4.1-flash-eco',messages:[{id:'u',role:'user',content:[{type:'text',text:'request'}]}]};
+  economics.requestFinished(agent,options,{usage:{inputTokens:1000,cacheReadTokens:500,cacheWriteTokens:0,outputTokens:100,totalTokens:1600},
+    settled:true,finishReason:'stop',usageComplete:true,usageConsistent:true});
+  const decision=economics.assess(agent,{savedChars:8000,savedTokensEstimate:1000});
+  assert.equal(decision.allowed,false);
+  assert.equal(decision.reason,'reference-rate-without-exact-route');
+  assert.equal(decision.pricingSource,'reference-rate');
+});
+
+test('a partial usage observation records a priced lower bound instead of dropping the known fields',()=>{
+  const {agent,economics,options,state}=harness();
+  state.config.projectionPricing=[{provider:'p',model:'m',currency:'USD',input:1,cacheRead:.02,cacheWrite:0,output:4}];
+  economics.requestFinished(agent,options,{usage:{inputTokens:1000000,cacheReadTokens:0,cacheWriteTokens:0,outputTokens:null},
+    settled:true,finishReason:'stop',usageComplete:false,usageConsistent:true});
+  const summary=economics.summary(agent);
+  assert.equal(summary.knownReportedCost,null);
+  assert.equal(summary.costLowerBound,1);
+  assert.equal(summary.costLowerBoundRequests,1);
+});
+
+test('coverage counts a fully priced request once and does not inflate its lower bound',()=>{
+  const {agent,economics,options,state}=harness();
+  state.config.projectionPricing=[{provider:'p',model:'m',currency:'USD',input:1,cacheRead:.02,cacheWrite:0,output:4}];
+  economics.requestFinished(agent,options,{usage:{inputTokens:1000000,cacheReadTokens:0,cacheWriteTokens:0,outputTokens:100000},
+    settled:true,finishReason:'stop',usageComplete:true,usageConsistent:true});
+  economics.requestFinished(agent,options,{usage:{inputTokens:1000000,cacheReadTokens:0,cacheWriteTokens:0,outputTokens:null},
+    settled:true,finishReason:'stop',usageComplete:false,usageConsistent:true});
+  const summary=economics.summary(agent);
+  assert.equal(summary.pricedRequests,1);
+  assert.equal(summary.costLowerBoundRequests,1,'only the partial row contributes a lower bound');
+  assert.equal(summary.costLowerBound,1,'the complete row is not counted again');
+  assert.deepEqual(summary.costObservation.coverage,{requests:2,exactRoute:1,referenceRate:0,failedKnown:0,
+    lowerBound:1,referenceLowerBound:0,unpriced:0});
+});
+
+test('a stream failure with complete usage stays in the failed cost bucket',()=>{
+  const {agent,economics,options,state}=harness();
+  state.config.projectionPricing=[{provider:'p',model:'m',currency:'CNY',input:1,cacheRead:.2,cacheWrite:0,output:2}];
+  economics.requestFinished(agent,options,{usage:{inputTokens:1000,cacheReadTokens:0,cacheWriteTokens:0,outputTokens:100},
+    settled:true,finishReason:'stop',failureCode:'STREAM_FAILED',usageComplete:true,usageConsistent:true});
+  const summary=economics.summary(agent);
+  assert.equal(summary.pricedRequests,0,'a failed stream is not a settled successful request');
+  assert.equal(summary.costComplete,false);
+  assert.equal(summary.failedKnownCostRequests,1);
+  assert.ok(summary.failedKnownCostByCurrency.CNY>0);
+  assert.ok(summary.failedKnownCostByBasis['exact-route:CNY'].amount>0);
+});
+
+test('failed known costs retain their pricing basis and count each request once',()=>{
+  const {agent,economics,options,state}=harness();
+  state.config.projectionPricing=[{provider:'p',model:'m',currency:'CNY',input:1,cacheRead:.2,cacheWrite:0,output:2}];
+  const usage={inputTokens:1000,cacheReadTokens:0,cacheWriteTokens:0,outputTokens:100};
+  economics.requestFinished(agent,options,{usage,settled:true,finishReason:'stop',failureCode:'STREAM_FAILED',usageComplete:true,usageConsistent:true});
+  economics.requestFinished(agent,{...options,provider:'opendesign',model:'deepseek-v4.1-flash-eco'},
+    {usage,settled:true,finishReason:'stop',failureCode:'STREAM_FAILED',usageComplete:true,usageConsistent:true});
+  const summary=economics.summary(agent);
+  assert.equal(summary.failedKnownCostRequests,2);
+  assert.ok(summary.failedKnownCostByBasis['exact-route:CNY'].amount>0);
+  assert.ok(summary.failedKnownCostByBasis['reference-rate:CNY'].amount>0);
+  assert.ok(summary.failedKnownCostByCurrency.CNY>summary.failedKnownCostByBasis['exact-route:CNY'].amount);
+});
+
+test('the forecast horizon follows the current task and resets at the next human request',()=>{
+  const {agent,economics,finish,state,options}=harness();
+  // Same shape as the pointer-mismatch test: a complete prior request that leaves
+  // a usable exposure baseline, and an explicit price so the forecast is computed.
+  state.config.projectionPricing=[{provider:'p',model:'m',currency:'USD',input:.15,cacheRead:.003,cacheWrite:.15,output:.6}];
+  options.tools=[];options.system='system';
+  const system={id:'system',role:'system',content:[{type:'text',text:'rules'}]},
+    user={id:'user',role:'user',content:[{type:'text',text:'request'}]},
+    pointer={id:'old-result',role:'tool',content:[{type:'text',text:'[work-evidence source event:10]'}]};
+  const propose=()=>{
+    options.messages=[system,user,{
+      ...pointer,content:[{type:'text',text:'full original result body that differs from the previous pointer'}]}];
+    const changed={...pointer,content:[{type:'text',text:'[work-evidence source event:20]'}]};
+    return economics.assess(agent,{messages:options.messages,proposedMessages:[system,user,changed],tools:[],system:'system'});
+  };
+  options.messages=[system,user,pointer];
+  finish(false,{inputTokens:100,cacheReadTokens:900,cacheWriteTokens:0,outputTokens:20,totalTokens:1020});
+  const early=propose();
+  assert.equal(early.horizonSteps,16,'a new task keeps the configured horizon');
+  assert.ok(Number.isFinite(early.futureSavingEstimate),'the priced forecast is computed');
+
+  // Long tasks can still earn a longer horizon. A later task has separate evidence.
+  for(let n=0;n<200;n++)finish(false,{inputTokens:100,cacheReadTokens:900,cacheWriteTokens:0,outputTokens:20,totalTokens:1020});
+  const late=propose();
+  assert.ok(late.horizonSteps>early.horizonSteps,
+    `horizon must follow the current task: early=${early.horizonSteps} late=${late.horizonSteps}`);
+  assert.ok(late.horizonSteps<=64,'the forecast stays capped');
+  assert.ok(late.futureSavingEstimate>early.futureSavingEstimate,
+    `the same saving is worth more over the longer remaining run: ${early.futureSavingEstimate} -> ${late.futureSavingEstimate}`);
+  state.requestId='next-request';
+  assert.equal(propose().horizonSteps,16);
+  finish();
+  assert.equal(propose().horizonSteps,16);
+  // The active task's clock does not replace a direct caller estimate.
+  options.messages=[system,user,{
+    ...pointer,content:[{type:'text',text:'full original result body that differs from the previous pointer'}]}];
+  const explicit=economics.assess(agent,{messages:options.messages,
+    proposedMessages:[system,user,{...pointer,content:[{type:'text',text:'[work-evidence source event:30]'}]}],
+    tools:[],system:'system',horizon:4});
+  assert.equal(explicit.horizonSteps,4);
+});
+
+test('an omitted cache-read count cannot register as a cache reset',()=>{
+  const {agent,economics,finish,state,options}=harness();
+  state.config.projectionPricing=[{provider:'p',model:'m',currency:'USD',input:.15,cacheRead:.003,cacheWrite:.15,output:.6}];
+  finish(false,{inputTokens:100,cacheReadTokens:5000,cacheWriteTokens:0,outputTokens:20,totalTokens:5120});
+  const before=economics.summary(agent).cacheResetCount;
+  // The output field is present and input is large, but cacheReadTokens is omitted.
+  // canonicalUsage leaves it null, and `null < 2500` is true, so the old guard read
+  // this as a full cache drop and counted a reset that did not happen.
+  // Omit cacheReadTokens and totalTokens so canonicalUsage keeps cacheRead null and
+  // still reports consistent, which is the shape that reached the comparison.
+  finish(false,{inputTokens:6000,outputTokens:20});
+  assert.equal(economics.summary(agent).cacheResetCount,before,
+    'a missing cache-read count is absent evidence, not a measured drop');
+});
+
+test('zero-usage failures do not count as observed requests for the projection review',()=>{
+  const {agent,economics,finish}=harness();
+  economics.reviewAdoption(agent,{kind:'request-projection',appliedAtStep:1,expectedSavedChars:8000,expectedSavedTokens:2100});
+  const zero={inputTokens:0,cacheReadTokens:0,cacheWriteTokens:0,outputTokens:0,totalTokens:0};
+  // A failed attempt reports zero usage. Counting those as observed requests let
+  // three failures settle the review with an average of zero prompt tokens, which
+  // then read as plausible on no evidence at all.
+  for(let n=0;n<4;n++)finish(false,zero);
+  assert.equal(economics.summary(agent).mainPromptRequests,0,'zero-usage attempts are not observed requests');
+  assert.equal(economics.summary(agent).pendingProjectionReviews,1,'the review is still waiting for real evidence');
+  // Only requests with a positive prompt count advance it.
+  for(let n=0;n<3;n++)finish(false,{inputTokens:100,cacheReadTokens:900,cacheWriteTokens:0,outputTokens:20,totalTokens:1020});
+  const settled=economics.summary(agent).projectionReviews;
+  assert.equal(settled.length,1,'three real observations settle it');
+  assert.ok((settled[0].observedPromptTokensPerRequest??0)>0,'the settled review reports a real average');
+});
+
+test('a per-route usage query returns that route s own latest success, not the newest success anywhere',()=>{
+  const {agent,economics}=harness();
+  const optionsB={provider:'q',model:'n',messages:[{id:'u',role:'user',content:[{type:'text',text:'request'}]}]};
+  const usageA={inputTokens:100,cacheReadTokens:900,cacheWriteTokens:0,outputTokens:20,totalTokens:1020};
+  const usageB={inputTokens:200,cacheReadTokens:800,cacheWriteTokens:0,outputTokens:30,totalTokens:1030};
+  const finish=o=>economics.requestFinished(agent,o,{auxiliary:false,usage:o===optionsB?usageB:usageA,settled:true,finishReason:'stop'});
+  finish({provider:'p',model:'m',messages:[{id:'u',role:'user',content:[{type:'text',text:'request'}]}]});
+  finish(optionsB);
+  // Route A succeeded first and route B succeeded later. lastSuccessfulMain holds B,
+  // so reading that slot left a query for A with null and the compaction handoff
+  // fell back to its original path even though A had observed usage.
+  const a=economics.lastSuccessfulUsage(agent,{provider:'p',model:'m'});
+  assert.ok(a,'route A has its own successful usage');
+  assert.equal(a.cacheReadTokens,900,'and it is A s own count, not B s');
+  const b=economics.lastSuccessfulUsage(agent,{provider:'q',model:'n'});
+  assert.equal(b.cacheReadTokens,800);
+});
+
+test('an error and its successful retry count one cache drop, not two',()=>{
+  const {agent,economics,finish,options}=harness();
+  const usage={inputTokens:6000,cacheReadTokens:0,cacheWriteTokens:0,outputTokens:100,totalTokens:6100};
+  finish(false,{inputTokens:1000,cacheReadTokens:5000,cacheWriteTokens:0,outputTokens:100,totalTokens:6100});
+  // The error reports a zero cache read, then the retry reports the real drop. Both
+  // used to compare with the retained successful baseline and each counted a reset,
+  // doubling cacheResetCount and uncachedInputAtReset for one observed transition.
+  // The error reports a real measurement with the cache already gone.
+  economics.requestFinished(agent,options,{usage,settled:true,finishReason:'error',failureCode:'SERVER',usageConsistent:true,usageComplete:true});
+  finish(false,usage);
+  const summary=economics.summary(agent);
+  // The error reports the drop (5000 -> 0). The retry reports the same post-drop value,
+  // so it is not a second drop and must not add to the counters again.
+  assert.equal(summary.cacheResetCount,1,'one drop is one reset');
+  assert.equal(summary.uncachedInputAtReset,6000,'and the uncached input is counted once');
+});
+
+test('a failed first attempt with usage cannot crash the retry on a missing baseline',()=>{
+  const {agent,economics,finish,options}=harness();
+  // A failed first attempt reports positive usage, so resetPrevious exists while
+  // state.last stays null (the baseline only takes successful attempts). The retry
+  // then reaches the reset branch and used to dereference previous.reasoningEffort.
+  economics.requestFinished(agent,options,{usage:{inputTokens:1000,cacheReadTokens:5000,cacheWriteTokens:0,outputTokens:100,totalTokens:6100},
+    settled:true,finishReason:'error',failureCode:'SERVER',usageConsistent:true,usageComplete:true});
+  assert.doesNotThrow(()=>finish(false,{inputTokens:6000,cacheReadTokens:0,cacheWriteTokens:0,outputTokens:100,totalTokens:6100}),
+    'the retry must not throw on a null baseline');
+  // The drop is still counted: the reset only needs the previous measured attempt.
+  assert.equal(economics.summary(agent).cacheResetCount,1);
+});
+
+test('a reported total below the known fields is inconsistent, not a valid prompt size',()=>{
+  // inputTokens 6000 with zero cache and a total of 100 cannot be a real observation:
+  // nonnegative output could not make the fields sum to 100. Accepting it fed a 6000-token
+  // prompt into the totals and advanced projection reviews on impossible data.
+  const bad=canonicalUsage({inputTokens:6000,cacheReadTokens:0,cacheWriteTokens:0,totalTokens:100});
+  assert.equal(bad.consistent,false,'the total contradicts the known fields');
+  assert.equal(bad.complete,false);
+  // A total at or above the known subtotal stays acceptable when output is missing.
+  const plausible=canonicalUsage({inputTokens:6000,cacheReadTokens:0,cacheWriteTokens:0,totalTokens:6100});
+  assert.equal(plausible.consistent,true);
+});
+
+test('the reset tax compares the two attempts the drop is measured between',()=>{
+  // A succeeds on envelope X. B fails on envelope Y — the surface changed, but B is a
+  // failure and never becomes the exposure baseline `state.last`. C succeeds on the same
+  // envelope Y after the cache drops. The drop happened between B and C, where nothing
+  // changed, so no reset tax is owed.
+  //
+  // The tax used to compare with `previous` (the retained baseline, still A) and charged
+  // the X->Y change that B carried, on a transition it did not cause.
+  const {agent,economics,state,options}=harness();
+  state.config.projectionPricing=[{provider:'p',model:'m',currency:'CNY',input:1,cacheRead:.2,output:2}];
+  const tools=[{name:'a'}],otherTools=[{name:'b'}];
+  options.tools=tools;
+  economics.requestFinished(agent,options,{usage:{inputTokens:1000,cacheReadTokens:5000,cacheWriteTokens:0,outputTokens:100,totalTokens:6100},
+    settled:true,finishReason:'stop',usageComplete:true,usageConsistent:true});
+  assert.equal(economics.summary(agent).resetTaxByCurrency.CNY,undefined,'the first attempt has no drop');
+  // B: same route, different envelope, and it is a FAILURE, so `last` keeps A.
+  options.tools=otherTools;
+  economics.requestFinished(agent,options,{usage:{inputTokens:1000,cacheReadTokens:4000,cacheWriteTokens:0,outputTokens:100,totalTokens:5100},
+    settled:true,finishReason:'error',failureCode:'SERVER',usageComplete:true,usageConsistent:true});
+  const afterFailure=economics.summary(agent).resetTaxByCurrency.CNY??0;
+  // C: envelope Y again, and now the cache is gone. Nothing changed between B and C.
+  economics.requestFinished(agent,options,{usage:{inputTokens:6000,cacheReadTokens:0,cacheWriteTokens:0,outputTokens:100,totalTokens:6100},
+    settled:true,finishReason:'stop',usageComplete:true,usageConsistent:true});
+  const summary=economics.summary(agent);
+  assert.equal(summary.cacheResetCount,1,'the drop is still counted');
+  assert.equal(summary.resetTaxByCurrency.CNY??0,afterFailure,
+    'a transition that changed no envelope must not add reset tax');
+});
+
+test('the revisit charge is priced as uncached input, not as a cache read',()=>{
+  // A re-read of a pruned middle arrives as NEW input. Pricing it at
+  // min(input,cacheRead) used the cache rate — 50x cheaper on the published card
+  // (input 1 vs cacheRead 0.02) — so the gate approved rewrites its own re-read cost should
+  // refuse. Measured by the delta the visit term adds to the refill estimate.
+  const {agent,economics,finish,state,options}=harness();
+  state.config.projectionPricing=[{provider:'p',model:'m',currency:'USD',input:.15,cacheRead:.003,cacheWrite:.15,output:.6}];
+  options.tools=[];options.system='system';
+  const system={id:'system',role:'system',content:[{type:'text',text:'rules'}]},user={id:'user',role:'user',content:[{type:'text',text:'request'}]};
+  const body={id:'read-result',role:'tool',content:[{type:'text',text:'x'.repeat(20000)}]};
+  options.messages=[system,user,body];
+  finish(false,{inputTokens:100,cacheReadTokens:18000,cacheWriteTokens:0,outputTokens:20,totalTokens:18120});
+  const pointer={...body,content:[{type:'text',text:'[work-evidence source event:10]'}]};
+  const assess=tokens=>economics.assess(agent,{messages:options.messages,proposedMessages:[system,user,pointer],
+    tools:[],system:'system',...(tokens?{revisitCostTokens:tokens}:{})});
+  const plain=assess(0),revisited=assess(60000);
+  const delta=revisited.refillCostEstimate-plain.refillCostEstimate;
+  // 60,000 tokens at the input rate (.15/M) is 0.009; at the cache rate (.003/M) it is
+  // 0.00018. The charge must be the former.
+  assert.ok(delta>=0.0089,'the delta is input-priced: got ' + delta.toFixed(5));
+  assert.ok(delta<0.0091,'and not larger: got ' + delta.toFixed(5));
+});
+
+test('the cost basis distinguishes a published family rate from an exact route row',()=>{
+  // The summary labelled both the same. Only an exact route row is a real charge, so an
+  // operator reading "configured-reference-prices" for a published card was misled. Both
+  // directions are asserted: a flag that is always true would be as wrong as one that is
+  // always false.
+  const basisFor=(pricing,model)=>{
+    const state={step:0,config:{projectionPricing:pricing,projectionHorizonSteps:16}};
+    const agent={session:{id:'basis',surface:{nodes:[]},requestHeader:()=>({config:{provider:'p',model}}),requestContext:()=>({contextWindow:10000})}};
+    const economics=createContextEconomics({tokenMeter:{measure:()=>({totalTokens:9000})}},{get:()=>state});
+    const options={provider:'p',model,messages:[{id:'u',role:'user',content:[{type:'text',text:'r'}]}]};
+    economics.requestFinished(agent,options,{usage:{inputTokens:1000,cacheReadTokens:500,cacheWriteTokens:0,outputTokens:100,totalTokens:1600},
+      settled:true,finishReason:'stop',usageComplete:true,usageConsistent:true});
+    return economics.summary(agent).costObservation.basis;
+  };
+  assert.equal(basisFor([{provider:'p',model:'m',currency:'USD',input:.15,cacheRead:.003,output:.6}],'m'),
+    'exact-route','an explicitly configured route is the only exact-route basis');
+  assert.equal(basisFor([],'deepseek-v4.1-flash'),
+    'reference-rate','the shipped card is a reference rate, not a provider charge');
+});
+
+test('a published family rate is reported separately from an exact-route charge',()=>{
+  const state={step:0,config:{projectionPricing:[],projectionHorizonSteps:16}};
+  const agent={session:{id:'reference-cost',surface:{nodes:[]},requestHeader:()=>({config:{provider:'opendesign',model:'deepseek-v4.1-flash-eco'}})}};
+  const economics=createContextEconomics({tokenMeter:{measure:()=>({totalTokens:9000})}},{get:()=>state});
+  const options={provider:'opendesign',model:'deepseek-v4.1-flash-eco',messages:[{id:'u',role:'user',content:[{type:'text',text:'r'}]}]};
+  economics.requestFinished(agent,options,{usage:{inputTokens:1000000,cacheReadTokens:0,cacheWriteTokens:0,outputTokens:100000,totalTokens:1100000},
+    settled:true,finishReason:'stop',usageComplete:true,usageConsistent:true});
+  const reference=economics.summary(agent);
+  assert.equal(reference.costObservation.basis,'reference-rate');
+  assert.equal(reference.knownReportedCost,null);
+  assert.equal(reference.costComplete,false);
+  assert.equal(reference.referenceCostLowerBound,1.4);
+  assert.equal(reference.referencePricedRequests,1);
+
+  state.config.projectionPricing=[{provider:'opendesign',model:'deepseek-v4.1-flash-eco',currency:'CNY',input:1,cacheRead:.02,output:4}];
+  economics.requestFinished(agent,options,{usage:{inputTokens:1000000,cacheReadTokens:0,cacheWriteTokens:0,outputTokens:100000,totalTokens:1100000},
+    settled:true,finishReason:'stop',usageComplete:true,usageConsistent:true});
+  const exact=economics.summary(agent);
+  assert.equal(exact.costObservation.basis,'mixed','mixed exact/reference requests are not reported as one exact basis');
+  assert.equal(exact.knownReportedCost,1.4);
+  assert.equal(exact.costComplete,false,'one reference-only request is still unpriced');
+  assert.deepEqual(exact.costObservation.coverage,{requests:2,exactRoute:1,referenceRate:1,failedKnown:0,
+    lowerBound:0,referenceLowerBound:0,unpriced:0});
+});
+
+test('an incomplete usage observation cannot leave the reset comparison point behind',()=>{
+  // A drop counted from an incomplete attempt must also ADVANCE the comparison point, or a
+  // complete retry with the same counts counts the same drop again. The old guard required
+  // a positive `total`, but an attempt reporting inputTokens and cacheReadTokens without a
+  // totalTokens has total===null, so `previousMeasured` stayed at the pre-drop attempt while
+  // the reset branch still accepted the drop.
+  const {agent,economics,state,options}=harness();
+  state.config.projectionPricing=[{provider:'p',model:'m',currency:'USD',input:1,cacheRead:.02,output:4}];
+  economics.requestFinished(agent,options,{usage:{inputTokens:1000,cacheReadTokens:5000,cacheWriteTokens:0,outputTokens:100},
+    settled:true,finishReason:'stop',usageComplete:true,usageConsistent:false});
+  // The drop, reported without a total: total===null.
+  economics.requestFinished(agent,options,{usage:{inputTokens:6000,cacheReadTokens:0},
+    settled:true,finishReason:'stop',usageComplete:false,usageConsistent:false});
+  // The complete retry reports the same counts; it is not a second drop.
+  economics.requestFinished(agent,options,{usage:{inputTokens:6000,cacheReadTokens:0,cacheWriteTokens:0,outputTokens:100,totalTokens:6100},
+    settled:true,finishReason:'stop',usageComplete:true,usageConsistent:true});
+  assert.equal(economics.summary(agent).cacheResetCount,1,'one observed drop is one reset');
+});
+
+test('auxiliary requests do not lengthen the main-history horizon',()=>{
+  // The horizon estimates how many more MAIN steps will reuse the history being rewritten.
+  // state.requests also counts auxiliary and compaction calls, which never contain that
+  // history: one main request plus 63 auxiliary ones raised the horizon to its 64 cap and
+  // turned a refusal into an approval with no additional reuse.
+  const {agent,economics,finish}=harness();
+  finish();
+  const before=economics.assess(agent,{savedChars:4000,savedTokensEstimate:1000,changedSeq:1}).horizonSteps;
+  for(let i=0;i<63;i++)finish(true);   // auxiliary
+  const after=economics.assess(agent,{savedChars:4000,savedTokensEstimate:1000,changedSeq:1}).horizonSteps;
+  assert.equal(after,before,'auxiliary requests leave the horizon unchanged: '+before+' -> '+after);
+});
+
+test('a matching prompt prefix is excluded only after an observed cache boundary',()=>{
+  const messages=[
+    {id:'a',role:'user',content:[{type:'text',text:'A'.repeat(80)}]},
+    {id:'b',role:'assistant',content:[{type:'text',text:'B'.repeat(80)}]},
+  ];
+  const proposed=[messages[0],{id:'c',role:'user',content:[{type:'text',text:'C'.repeat(80)}]}];
+  const assessWith=cacheRead=>{
+    const h=harness();
+    h.options.tools=[];h.options.system='';h.options.messages=messages;
+    h.finish(false,{inputTokens:1000,cacheReadTokens:cacheRead,cacheWriteTokens:0,outputTokens:100,totalTokens:1100});
+    return h.economics.assess(h.agent,{messages,proposedMessages:proposed,tools:[],system:'',
+      route:{provider:'p',model:'m'}}).cachedSuffixTokensEstimate;
+  };
+  const noBoundary=assessWith(0),observedBoundary=assessWith(5000);
+  assert.ok(noBoundary>observedBoundary,
+    'without cache-read or cache-write evidence the matching prefix remains exposed');
+});
+
+test('retained generated assistant output is charged even when an earlier prompt changes',()=>{
+  const a={id:'a',role:'user',content:[{type:'text',text:'A'.repeat(80)}]};
+  const b={id:'b',role:'assistant',content:[{type:'text',text:'B'.repeat(80)}]};
+  const c={id:'c',role:'assistant',content:[{type:'text',text:'C'.repeat(80)}]};
+  const d={id:'d',role:'user',content:[{type:'text',text:'D'.repeat(80)}]};
+  const changed={...b,content:[{type:'text',text:'B2'.repeat(40)}]};
+  const assessWith=outputTokens=>{
+    const h=harness();
+    h.options.tools=[];h.options.system='';h.options.messages=[a,b];
+    h.finish(false,{inputTokens:1000,cacheReadTokens:0,cacheWriteTokens:0,outputTokens});
+    return h.economics.assess(h.agent,{messages:[a,b,c,d],proposedMessages:[a,changed,c,d],
+      tools:[],system:'',route:{provider:'p',model:'m'},changedMessageId:'b'}).cachedSuffixTokensEstimate;
+  };
+  const withoutOutput=assessWith(0),withOutput=assessWith(100);
+  assert.ok(withOutput>withoutOutput,
+    'a retained assistant message can refill as a generated-output cache unit');
+});
+
+test('an intact continuation does not subtract generated output when the proposal removes a cached prompt message',()=>{
+  const h=harness();
+  const a={id:'a',role:'user',content:[{type:'text',text:'A'.repeat(80)}]};
+  const b={id:'b',role:'assistant',content:[{type:'text',text:'B'.repeat(80)}]};
+  const c={id:'c',role:'assistant',content:[{type:'text',text:'C'.repeat(80)}]};
+  const d={id:'d',role:'user',content:[{type:'text',text:'D'.repeat(80)}]};
+  h.options.tools=[];h.options.system='';h.options.messages=[a,b];
+  h.finish(false,{inputTokens:200,cacheReadTokens:2000,cacheWriteTokens:0,outputTokens:80});
+  const result=h.economics.assess(h.agent,{messages:[a,b,c,d],proposedMessages:[a,c,d],
+    tools:[],system:'',route:{provider:'p',model:'m'},changedMessageId:'b'});
+  assert.ok(result.cachedSuffixTokensEstimate>0,
+    'removing a cached prompt message invalidates the generated-output prefix');
+  assert.notEqual(result.reason,'no-additional-previous-request-prefix-exposure');
 });

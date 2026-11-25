@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import path from 'node:path';
 import fs from 'node:fs/promises';
 import os from 'node:os';
-import {nativePwshInvocationDiagnostic} from '../recovery.mjs';
+import {nativePwshInvocationDiagnostic,nativePwshTableDiagnostic} from '../recovery.mjs';
 import {createTaskFlow} from '../task-flow.mjs';
 import {defaults} from '../runtime.mjs';
 import {startHost,tool,text} from './helpers/host.mjs';
@@ -44,6 +44,19 @@ test('success, partial results, different errors and already quoted commands pro
     assert.equal(nativePwshInvocationDiagnostic({command:code},failed),null,code);
 });
 
+test('a PowerShell inventory detects the missing requested size column',()=>{
+  const inventory='Get-ChildItem -Recurse -Force reports | Where-Object { -not $_.PSIsContainer } | Select-Object FullName, Length | Format-Table -AutoSize';
+  const stdout={text:'\r\nFullName\r\n--------\r\nC:\\workspace\\document.txt\r\nC:\\workspace\\long-document…\r\n'};
+  const result={value:{kind:'foreground',exitCode:0,stdout,stderr:{text:''}}};
+  assert.deepEqual(nativePwshTableDiagnostic({command:inventory},result),{kind:'pwsh-table-missing-length'});
+  for(const value of [{exitCode:1},{stdout:{...stdout,truncated:true}},{stderr:{text:'unexpected warning'}},
+    {stdout:{text:stdout.text.replace('FullName','FullName Length')}},{stdout:{text:stdout.text+'Name Length\r\n'}},
+    {stdout:{text:'FullName\r\n--------\r\n'}}])assert.equal(nativePwshTableDiagnostic({command:inventory},{value:{...result.value,...value}}),null);
+  for(const command of [inventory.replace(', Length',''),inventory+'; Write-Output done',inventory.replace('Get-ChildItem','Get-Item'),
+    inventory.replace('Format-Table -AutoSize','Select-Object FullName')])
+    assert.equal(nativePwshTableDiagnostic({command},result),null,command);
+});
+
 test('the same executable is advised once per user request and respects disabled and canceled execution',()=>{
   const log=[{seq:0,type:'user/message',data:{message:{id:'request',role:'user',source:{kind:'user'},content:[{type:'text',text:'执行指定程序。'}]}}}];
   const agent={session:{id:'pwsh-syntax',log}},state={config:defaults(),root:process.cwd()};
@@ -61,6 +74,32 @@ test('the same executable is advised once per user request and respects disabled
   state.config.executionTriage=true;
   assert.equal(flow.executionShellContext({...exec,name:'work_exec'},failed),null);
   assert.ok(flow.executionShellContext(exec,failed));
+});
+
+test('a completed native inventory keeps its output and explains the missing column once',{skip:process.platform!=='win32'},async()=>{
+  const list='Get-ChildItem -Recurse -File reports | Select-Object FullName, Length';
+  const table=list+' | Format-Table -AutoSize',csv=list+' | ConvertTo-Csv -NoTypeInformation';
+  const contexts=[],results=[];
+  const host=await startHost({pluginConfig:{stepPacing:false},script:(options,n)=>{
+    contexts.push(...options.messages.filter(message=>message.source?.taskFlow?.key?.includes('pwsh-table-missing-length')).map(message=>message.id));
+    if(n<=2)return [tool('pwsh',{command:table,description:'List file sizes'})];
+    if(n===3)return [tool('pwsh',{command:csv,description:'Return the same selected properties as CSV'})];
+    return [text('已取得大小。')];
+  }});
+  host.ctx.on('tools/result',(exec,result)=>{if(exec.name==='pwsh')results.push(result.value);});
+  try{
+    const folder=path.join(host.cwd,'reports','deep-path-'.repeat(9));
+    await fs.mkdir(folder,{recursive:true});
+    await fs.writeFile(path.join(folder,'document.txt'),'12345');
+    const agent=await host.createAgent('max');await host.send(agent,'列出 reports 的文件和实际大小。');
+    assert.equal(results.length,3);
+    assert.equal(results[0].exitCode,0);
+    assert.equal(results[0].stdout.text.trim().split(/\r?\n/u)[0].trim(),'FullName');
+    assert.match(results[2].stdout.text, /"FullName","Length"/u);
+    assert.match(results[2].stdout.text, /document\.txt","5"/u);
+    assert.equal(new Set(contexts).size,1);
+    assert.equal(host.events.filter(event=>event.type==='tool/call'&&event.data.name==='pwsh').length,3);
+  }finally{await host.close();}
 });
 
 test('native PTC delivers one syntax context, preserves the failure and executes only an explicit corrected command',async t=>{

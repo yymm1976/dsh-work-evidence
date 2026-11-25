@@ -107,7 +107,11 @@ export function stubCheckpoint(agent){
     if(callId&&name&&kind==='call')callNames.set(callId,name);
     const resolvedName=name??(kind==='result'&&callId?callNames.get(callId)??null:null);
     const resultEvent=['tool/result','tool/ptc-dispatch','tool/code-dispatch'].includes(event.type);
-    const commandTool=['bash','pwsh','ops_bash','work_exec'].includes(resolvedName);
+    // ops_bash is retired from the plugin, but replayed history can still hold its
+    // results. Its checks line is what reportedCheckFailure recognises, and the
+    // fallback checks do not, so dropping it here would silently stop reporting a
+    // historical failure the checkpoint used to include.
+    const commandTool=['bash','pwsh','work_exec','ops_bash'].includes(resolvedName);
     let reportedFailure=null;
     if(resultEvent&&commandTool){
       let parsed;try{parsed=JSON.parse(text);}catch{}

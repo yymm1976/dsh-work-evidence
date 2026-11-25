@@ -43,13 +43,15 @@ test('shared segment counters are attributed to their own settings',()=>{
   assert.equal(featureSetting('blockDedup'),null);
 });
 
-test('every feature entry exposes a dedicated effect counter except the two global gates',async()=>{
+test('every feature entry exposes a dedicated effect counter except the global gates',async()=>{
   const host=await startHost({script:()=>[text('done')]});
   try{
     const agent=await host.createAgent('max');
     const view=await host.command(agent,'features');
     const unmapped=view.features.filter(item=>item.effect.lastReason==='no-dedicated-effect-counter').map(item=>item.key).sort();
-    assert.deepEqual(unmapped,['aggressiveMode','enabled']);
+    // Only global gates lack a dedicated effect counter; the removed
+    // opsAdapters gate is no longer a feature entry at all.
+    assert.deepEqual(unmapped,['aggressiveMode','enabled','strictObservability']);
     assert.ok(view.features.every(item=>item.effect.status&&item.entry&&item.scope==='workspace'));
   }finally{await host.close();}
 });
@@ -92,23 +94,37 @@ test('feature readiness distinguishes required settings, runtime dependencies an
     assert.ok(view.features.every(item=>item.effect&&typeof item.effect.status==='string'));
     assert.equal(entry('enabled').effect.status,'not-observed');
     assert.equal(view.dependencies.archiveDecoder.available,true);
-    assert.deepEqual(entry('swEviction').reasons,['requires-setting:swLedger']);
+    // swEviction needs swLedger and an exact-route price when compressionControl is on.
+    const swReasons=entry('swEviction').reasons;
+    assert.equal(swReasons[0],'requires-setting:swLedger');
+    assert.ok(swReasons.includes('requires-setting:projectionPricing'),JSON.stringify(swReasons));
     assert.ok(entry('requestProjection').reasons.includes('requires-setting:projectionRestore'));
     assert.ok(entry('finalJsonResultGuard').reasons.includes('requires-setting:finalJsonGuard'));
     assert.ok(entry('nativeProgramReuse').reasons.includes('requires-ptc-tool-mode'));
     assert.ok(entry('structuredCalls').reasons.includes('requires-typescript-function-body-runtime'));
-    assert.ok(entry('fastEditEnabled').reasons.includes('fastedit-runtime-files-unavailable'));
-    assert.ok(entry('fastEditEnabled').reasons.includes('tool-unavailable:ops_stat'));
+    assert.ok(entry('memberParsing').reasons.includes('tree-sitter-runtime-unavailable:fastEditPython'),JSON.stringify(entry('memberParsing')));
     assert.equal(entry('nativeReasoningReplay').status,'waiting');
     assert.equal(entry('qualityReview').status,'waiting');
     assert.ok(entry('qualityReview').reasons.includes('requires-ultra-quality-mode'));
     assert.ok(entry('stubSummary').reasons.includes('native-compaction-not-attached'));
     assert.ok(entry('deferPressureCompaction').reasons.includes('native-compaction-not-attached'));
     assert.ok(entry('deferPressureCompaction').reasons.includes('request-budget-view-unavailable'));
-    const summary=await host.command(agent,'status');assert.ok(summary.featureReadiness.blocked.some(item=>item.key==='fastEditEnabled'));
-    const changed=await host.command(agent,'config {"swLedger":true,"finalJsonGuard":true}');
-    assert.equal(changed.readiness.features.find(item=>item.key==='swEviction').status,'ready');
+    // Empty projectionPricing is the shipped default. The execution gate needs an exact
+    // route row, so readiness must report the missing setting rather than the published
+    // reference rate.
+    assert.equal(entry('historyHygiene').configured,true);
+    assert.equal(entry('historyHygiene').status,'blocked',JSON.stringify(entry('historyHygiene')));
+    assert.ok(entry('historyHygiene').reasons.includes('requires-setting:projectionPricing'),JSON.stringify(entry('historyHygiene')));
+    const summary=await host.command(agent,'status');assert.ok(summary.featureReadiness.blocked.some(item=>item.key==='memberParsing'));
+    let changed=await host.command(agent,'config {"swLedger":true,"finalJsonGuard":true}');
+    assert.ok(changed.readiness.features.find(item=>item.key==='swEviction').reasons.includes('requires-setting:projectionPricing'));
     assert.equal(changed.readiness.features.find(item=>item.key==='finalJsonResultGuard').status,'ready');
+    changed=await host.command(agent,'config {"projectionPricing":[{"provider":"other","model":"other","currency":"USD","input":1,"cacheRead":0.02,"cacheWrite":0,"output":4}]}');
+    const wrongRoute=changed.readiness.features.find(item=>item.key==='historyHygiene');
+    assert.equal(wrongRoute.status,'blocked');
+    assert.ok(wrongRoute.reasons.includes('route-price-unavailable'),JSON.stringify(wrongRoute));
+    changed=await host.command(agent,'config {"projectionPricing":[{"provider":"scripted","model":"scripted-model","currency":"USD","input":1,"cacheRead":0.02,"cacheWrite":0,"output":4}]}');
+    assert.equal(changed.readiness.features.find(item=>item.key==='historyHygiene').status,'ready',JSON.stringify(changed.readiness.features.find(item=>item.key==='historyHygiene')));
   }finally{await host.close();}
 });
 

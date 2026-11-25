@@ -17,11 +17,19 @@ export function observeRequests(ctx,runtime){
     if(!agent||!runtime.isEnabled(agent)){yield* next();return;}
     await runtime.init(agent,options.signal);await runtime.effects?.load(agent);
     const config=runtime.get(agent).config;
-    if(!config.requestAccounting&&!config.requestProjection&&!config.compressionControl){yield* next();return;}
+    if(!config.requestAccounting&&!config.requestProjection&&!config.compressionControl&&config.strictObservability!==true){yield* next();return;}
     const s=runtime.sync(agent),started=performance.now();
     const requestKind=requestKindOf({purpose:options.purpose,auxiliary:s.auxiliarySignals.has(options.signal)}),auxiliary=requestKind==='auxiliary',main=requestKind==='main';
+    const taskRequestId=main?runtime.currentRequest?.(agent)?.id:null;
     const effectRecord=runtime.effects?.begin(agent,options,{auxiliary,requestKind});
-    if(effectRecord)await runtime.effects?.start?.(agent,effectRecord);
+    if(config.strictObservability===true&&!effectRecord){
+      const error=new Error('Strict observability requires a request effect record before dispatch.');
+      error.code='EFFECT_PERSISTENCE_UNAVAILABLE';error.effectsDispatched=false;throw error;
+    }
+    if(effectRecord){
+      await runtime.effects?.start?.(agent,effectRecord,{strict:config.strictObservability===true});
+      if(!effectRecord.dispatchState)effectRecord.dispatchState='dispatch-intent';
+    }
     const record={ordinal:main?++s.metrics.contextRequests:null,at:new Date().toISOString(),sourceSeq:agent.session.seq,preset:s.selectedPreset||null,mode:runtime.modeStatus(agent),requestKind,auxiliary,purpose:options.purpose??(auxiliary?'work-evidence-auxiliary':null),
       provider:options.provider,model:options.model,reasoningEffort:options.reasoningEffort??null,maxTokens:options.maxTokens??null,
       parameterScope:'assembled-llm-options; provider transport mapping not observed',
@@ -33,8 +41,11 @@ export function observeRequests(ctx,runtime){
       finishReason:null,failureCode:null,usage:null,elapsedMs:null,settled:false};
     if(config.requestAccounting){s.requestObservations.push(record);if(s.requestObservations.length>24)s.requestObservations.shift();}
     if(main){s.metrics.contextRequestChars+=record.requestText.stringUnits;s.metrics.contextModelTextChars+=record.modelText.stringUnits;}s.dirty=true;
+    let dispatchChunks=0;
     try{
       for await(const chunk of next()){
+        dispatchChunks++;
+        if(effectRecord)effectRecord.dispatchState='dispatched';
         if(chunk.type==='usage'){
           record.usage??={};for(const field of fields){const value=chunk.usage?.[field];if(value!==null&&value!==undefined)record.usage[field]=value;}
           if(effectRecord)effectRecord.usageChunks++;
@@ -42,14 +53,22 @@ export function observeRequests(ctx,runtime){
         if(chunk.type==='finish'){record.finishReason=chunk.reason?.kind||null;record.failureCode=chunk.reason?.failure?.code||null;record.settled=true;}
         yield chunk;
       }
-    }catch(error){record.failureCode=error.code||error.name||'STREAM_FAILED';throw error;}
+    }catch(error){
+      record.failureCode=error?.code||error?.name||'STREAM_FAILED';
+      if(effectRecord)effectRecord.dispatchState='outcome-unknown';
+      throw error;
+    }
     finally{
       record.elapsedMs=Math.round(performance.now()-started);record.aborted=!!options.signal?.aborted;s.dirty=true;
       const canonical=canonicalUsage(record.usage);record.usage=canonical.usage;record.usageSources=canonical.sources;
       record.usageConsistent=canonical.consistent;record.usageComplete=canonical.complete;
+      record.taskRequestId=taskRequestId;
       runtime.contextControl?.requestFinished(agent,options,record);
       if(effectRecord){Object.assign(effectRecord,{usage:record.usage,usageSources:record.usageSources,usageConsistent:record.usageConsistent,usageComplete:record.usageComplete,
-        settled:record.settled,finishReason:record.finishReason,failureCode:record.failureCode,elapsedMs:record.elapsedMs,aborted:record.aborted});runtime.effects.finish(agent,effectRecord);}
+        settled:record.settled,finishReason:record.finishReason,failureCode:record.failureCode,elapsedMs:record.elapsedMs,aborted:record.aborted});
+        if(record.settled&&effectRecord.dispatchState!=='outcome-unknown')effectRecord.dispatchState='settled';
+        if(record.cacheReadDrop)effectRecord.cacheReadDrop=record.cacheReadDrop;
+        runtime.effects.finish(agent,effectRecord);}
       if(main)runtime.noteProjectionDispatch?.(agent,options,effectRecord);
     }
   });

@@ -1,13 +1,20 @@
 import fs from 'node:fs/promises';
+import {realpathSync} from 'node:fs';
 import path from 'node:path';
 import {createHash} from 'node:crypto';
 
-export const limits=Object.freeze({files:4,lines:40,matches:12,reportItems:16,itemChars:1200,evidenceChars:7500});
+export const limits=Object.freeze({files:4,sourceRanges:16,lines:40,matches:12,reportItems:16,itemChars:1200,evidenceChars:7500});
 export function within(root,file){
   if(typeof file!=='string'||!file.trim()||file.includes('\0')||file.length>1024)throw new Error('Invalid path');
   const full=path.resolve(root,file),relative=path.relative(root,full);
   if(relative==='..'||relative.startsWith('..'+path.sep)||path.isAbsolute(relative))throw new Error('Path must remain inside the current workspace');
   return full;
+}
+/** Physical identity for an existing path; lexical identity only when the physical target cannot be resolved. */
+export function physicalPathKey(root,file){
+  const lexical=path.resolve(root??'.',String(file??''));
+  try{return realpathSync.native(lexical).replaceAll('\\','/');}
+  catch{return lexical.replaceAll('\\','/');}
 }
 export async function assertExistingFileWithin(root,file){
   const rootReal=await fs.realpath(root),fileReal=await fs.realpath(file);
@@ -51,21 +58,39 @@ export function finalizeEvidenceWindow(source,mode){
   }
   const first=source.lines[0].line,last=source.lines.at(-1).line;
   source.observedRange={first,last};
-  const expectedEnd=mode==='archive'
-    ?source.returnedThrough
-    :(Number.isInteger(source.totalLines)?Math.min(source.totalLines,offset+limit-1):offset+limit-1);
+  const expectedEnd=Number.isInteger(source.totalLines)?Math.min(source.totalLines,offset+limit-1)
+    :mode==='archive'?source.returnedThrough:offset+limit-1;
   source.rowRangeComplete=first===offset&&Number.isInteger(expectedEnd)&&last>=expectedEnd;
   source.lineTextComplete=!source.lineTextTruncated&&!source.budgetTruncated;
   source.rangeComplete=source.rowRangeComplete&&source.lineTextComplete;
-  source.fileHasMore=Number.isInteger(source.totalLines)?last<source.totalLines:(mode==='archive'?!!source.hasMore:null);
+  if(mode==='locate'&&source.state==='observed')source.truncated=!source.rangeComplete;
+  source.fileHasMore=Number.isInteger(source.totalLines)?last<source.totalLines:
+    source.responseBudget?.bodyDelivered&&source.fileHasMore===true?true:mode==='archive'?!!source.hasMore:null;
   if(!source.rowRangeComplete&&(source.fileHasMore!==false||mode==='archive'))source.nextOffset=last+1;
   if(!source.lineTextComplete){
     source.contentLimitation=source.lineTextMaximumReached?'line-text-exceeds-maximum':'line_text_or_return_budget_truncated';
-    delete source.nextOffset;
+    if(Number.isInteger(source.responseBudget?.firstClippedLine)&&!source.responseBudget.lineTextRecoveryLimited)
+      source.nextOffset=source.responseBudget.firstClippedLine;
+    else if(source.lineTextTruncated&&!source.responseBudget?.lineTextRecoveryLimited)delete source.nextOffset;
   }
   return source;
 }
-export function boundEvidence(facts,maxChars=limits.evidenceChars){
+function numberedSource(source){
+  if(!source.lines?.length||source.lines.some(row=>!Number.isSafeInteger(row.line)||typeof row.text!=='string'||/[\r\n]/u.test(row.text)))return source;
+  const {lines,...entry}=source;
+  const clippedLines=lines.filter(row=>row.lineTextTruncated).map(row=>row.line);
+  return {...entry,numberedLines:lines.map(row=>row.line+'\t'+row.text).join('\n'),
+    ...(clippedLines.length?{clippedLines}:{})};
+}
+export function renderSourceEvidence(facts){
+  if(!['read','locate'].includes(facts?.mode)||facts.readLayout!=='numbered'||!Array.isArray(facts.sources))return JSON.stringify(facts);
+  return JSON.stringify({...facts,sources:facts.sources.map(numberedSource)});
+}
+export function boundEvidence(facts,maxChars=limits.evidenceChars,{preferWholeSources=false,lineTextLimit,resumeMaxChars,numberedBudget=false}={}){
+  const size=value=>Buffer.byteLength(numberedBudget?renderSourceEvidence(value):JSON.stringify(value),'utf8');
+  const sourceSize=source=>Buffer.byteLength(JSON.stringify(numberedBudget?numberedSource(source):source),'utf8');
+  const minimumRows=source=>facts.mode==='locate'&&Number.isSafeInteger(source.matchLine)
+    ?source.lines.findIndex(row=>row.line===source.matchLine)+1:0;
   const dedup=items=>{
     const seen=new Set(),unique=[];
     for(const item of items){const key=JSON.stringify(item);if(seen.has(key)){unique.find(entry=>entry.key===key).count++;continue;}seen.add(key);unique.push({key,value:item,count:1});}
@@ -75,12 +100,40 @@ export function boundEvidence(facts,maxChars=limits.evidenceChars){
     const before=search.matches.length;search.matches=dedup(search.matches);if(before!==search.matches.length)search.exactDuplicatesRemoved=before-search.matches.length;
   }
   if(Array.isArray(facts.failures))facts.failures=dedup(facts.failures);
+  const resumeArguments=(source,offset=source.requestedRange?.offset??1,limit=source.requestedRange?.limit??(source.archive?160:2000),textLimit=lineTextLimit)=>{
+    const options={responseView:'full',...(textLimit===undefined?{}:{lineTextLimit:textLimit}),
+      ...(resumeMaxChars===undefined?{}:{maxChars:resumeMaxChars})};
+    if(source.archive&&source.entry)return {mode:'archive',archive:source.archive,entry:source.entry,
+      offset,limit,...options};
+    return {mode:'read',files:[{path:source.path,offset,limit}],...options,...(facts.readLayout?{readLayout:facts.readLayout}:{})};
+  };
   const missing=source=>({path:source.path,state:'partial',originalState:source.state,omitted:true,budgetTruncated:true,
+    responseBudget:{batch:true,bodyDelivered:false,requestedComplete:source.requestedRange?.limit===2000||
+      !!(source.archive&&source.entry)&&source.requestedRange?.limit===160,
+      truncatedAfterLine:null,resumeTool:'project_evidence',resumeArguments:resumeArguments(source)},
     ...(source.archive?{archive:source.archive,entry:source.entry}:{}),...(source.requestedRange?{requestedRange:source.requestedRange}:{}),
     ...(source.member?{member:source.member}:{}),...(source.members?{members:source.members.map(member=>({member:member.member,memberState:'omitted-response-budget',matches:[]}))}:{}),
     retrieveCurrent:source.retrieveCurrent||null,omissionReason:'response-budget',rangeComplete:false,lineTextComplete:false});
+  if(preferWholeSources&&facts.sources.length>1){
+    // Omission envelopes are only needed when all requested evidence will not fit.
+    if(size({...facts,budgetTruncated:false})<=maxChars){facts.budgetTruncated=false;return facts;}
+    const fallback=facts.sources.map(missing);
+    const shell={...facts,sources:fallback};
+    const selected=new Set();
+    let used=size(shell);
+    for(const [index,source] of facts.sources.entries()){
+      const delta=sourceSize(source)-sourceSize(fallback[index]);
+      if(used+delta<=maxChars){selected.add(index);used+=delta;}
+      else if(selected.size)break;
+    }
+    if(selected.size){
+      facts.sources=facts.sources.map((source,index)=>selected.has(index)?source:fallback[index]);
+      facts.budgetTruncated=selected.size<facts.sources.length;
+      if(facts.budgetTruncated)facts.nextFactNeeded='The first whole sources are complete and the remaining locators are omitted. Resume only the omitted sources. A locator is not delivered source.';
+    }
+  }
   // Keep per-request identities even when their bodies cannot fit.
-  while(JSON.stringify(facts).length>maxChars){
+  while(size(facts)>maxChars){
     if(facts.references?.matches?.length){facts.references.matches.pop();facts.references.truncated=true;continue;}
     if(facts.failures?.some(f=>f.detail?.length>160)){
       for(const failure of facts.failures)if(failure.detail?.length>160){failure.detail=failure.detail.slice(0,160);failure.detailTruncated=true;}
@@ -88,7 +141,7 @@ export function boundEvidence(facts,maxChars=limits.evidenceChars){
     }
     if(facts.failures?.length>1){facts.failures.pop();facts.omittedFailures=(facts.omittedFailures||0)+1;continue;}
     const search=[facts.search,facts.entryMatches].find(s=>s?.matches?.length);
-    if(search){search.matches.pop();search.truncated=true;search.omittedMatches=(search.omittedMatches||0)+1;continue;}
+    if(search&&facts.mode!=='locate'){search.matches.pop();search.truncated=true;search.omittedMatches=(search.omittedMatches||0)+1;continue;}
     const lookup=facts.missingFileLookups?.find(s=>s.candidates?.length);
     if(lookup){lookup.candidates.pop();lookup.truncated=true;continue;}
     const memberMatches=facts.sources.flatMap(source=>[
@@ -101,18 +154,64 @@ export function boundEvidence(facts,maxChars=limits.evidenceChars){
       longest.match.lines.pop();longest.match.complete=false;longest.match.budgetTruncated=true;
       longest.member.budgetTruncated=true;longest.source.budgetTruncated=true;facts.budgetTruncated=true;continue;
     }
-    const source=facts.sources.filter(s=>s.lines?.length).sort((a,b)=>JSON.stringify(b.lines).length-JSON.stringify(a.lines).length)[0];
-    if(source){source.lines.pop();source.truncated=true;source.budgetTruncated=true;continue;}
-    const compact={mode:facts.mode,workspace:facts.workspace,observedAt:facts.observedAt,
+    const withRows=facts.sources.filter(source=>source.lines?.length);
+    const canTrim=withRows.filter(source=>source.lines.length>minimumRows(source));
+    const source=(canTrim.length?canTrim:withRows).sort((a,b)=>sourceSize(b)-sourceSize(a))[0];
+    if(source){
+      source.truncated=true;source.budgetTruncated=true;source.rangeComplete=false;source.rowRangeComplete=false;source.lineTextComplete=false;
+      source.contentLimitation='response-budget';
+      facts.budgetTruncated=true;
+      const lines=source.lines,start=source.requestedRange?.offset??1;
+      const limit=source.requestedRange?.limit??(source.archive?160:2000);
+      const useLines=count=>{
+        source.lines=lines.slice(0,count);
+        const last=source.lines.at(-1)?.line??null;
+        const clipped=source.lines.find(row=>row.lineTextTruncated);
+        const currentTextLimit=source.lineTextLimit??lineTextLimit??500;
+        const largerTextLimit=source.nextLineTextLimit??source.lineTextMaximum??12000;
+        const recoveryLimited=!!clipped&&largerTextLimit<=currentTextLimit;
+        const resumeOffset=clipped?clipped.line:last===null?start:last+1;
+        const remaining=Math.max(1,start+limit-resumeOffset);
+        const textLimit=clipped&&!recoveryLimited?largerTextLimit:lineTextLimit;
+        source.fileHasMore=true;
+        if(last===null){delete source.nextOffset;delete source.observedRange;}
+        else{source.nextOffset=resumeOffset;source.observedRange={first:source.lines[0].line,last};}
+        const resume=clipped&&recoveryLimited?null:{
+          resumeTool:'project_evidence',resumeArguments:resumeArguments(source,resumeOffset,remaining,textLimit)};
+        source.responseBudget={batch:true,bodyDelivered:count>0,truncatedAfterLine:last,
+          ...(clipped?{firstClippedLine:clipped.line,...(recoveryLimited?{lineTextRecoveryLimited:true,
+            lineTextRecovery:'Read line '+clipped.line+' with a tool that can return more than '+currentTextLimit+' characters.'}:{})}:{}),
+          ...(resume??{})};
+      };
+      let low=canTrim.length?minimumRows(source):0,high=lines.length-1;
+      while(low<high){
+        const mid=Math.ceil((low+high)/2);
+        useLines(mid);
+        if(size(facts)<=maxChars)low=mid;
+        else high=mid-1;
+      }
+      useLines(low);
+      continue;
+    }
+    if(search){search.matches.pop();search.truncated=true;search.omittedMatches=(search.omittedMatches||0)+1;continue;}
+    const compact={mode:facts.mode,workspace:facts.workspace,observedAt:facts.observedAt,...(facts.readLayout?{readLayout:facts.readLayout}:{}),
       ...(facts.selectionState?{selectionState:facts.selectionState,selected:facts.selected}:{}),
       sources:facts.sources.map(missing),truncated:true,budgetTruncated:true,
-      nextFactNeeded:'Response budget omitted the listed bodies. Re-read one relevant range, or explicitly raise maxChars (up to 64000). A locator is not delivered source.'};
-    if(JSON.stringify(compact).length<=maxChars)return compact;
+      nextFactNeeded:'Response budget omitted the listed bodies. Re-read one relevant range, or explicitly raise maxChars (up to 200000). A locator is not delivered source.'};
+    if(size(compact)<=maxChars)return compact;
     // Argument sizes can exceed the body budget; retain each locator, not a
     // silently shortened source list or a fabricated complete result.
-    compact.sources=compact.sources.map(source=>({path:source.path,state:'partial',omitted:true,omissionReason:'response-budget',rangeComplete:false,
-      retrieveCurrent:{tool:'project_evidence',arguments:{mode:'read',files:[{path:source.path,offset:source.requestedRange?.offset||1,limit:40}],responseView:'full',maxChars:64000}}}));
-    compact.budgetMetadataExceeded=JSON.stringify(compact).length>maxChars;return compact;
+    compact.sources=compact.sources.map(source=>{
+      const resume=resumeArguments(source);
+      return {path:source.path,state:'partial',omitted:true,omissionReason:'response-budget',rangeComplete:false,
+        ...(source.archive?{archive:source.archive,entry:source.entry}:{}),
+        ...(source.requestedRange?{requestedRange:source.requestedRange}:{}),
+        responseBudget:{batch:true,bodyDelivered:false,requestedComplete:source.requestedRange?.limit===2000||
+          !!(source.archive&&source.entry)&&source.requestedRange?.limit===160,
+          truncatedAfterLine:null,resumeTool:'project_evidence',resumeArguments:resume},
+        retrieveCurrent:{tool:'project_evidence',arguments:resume}};
+    });
+    compact.budgetMetadataExceeded=size(compact)>maxChars;return compact;
   }
   return facts;
 }

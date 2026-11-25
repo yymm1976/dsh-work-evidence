@@ -1,8 +1,10 @@
+import {isDeepSeekV41Flash} from './context-economics.mjs';
+
 export const name='work-evidence-flash1017-route';
 export const inject=[];
 const PROVIDER='magpie';
 // These prompt rules come from DeepSeek V4.1 Flash trajectories, so they stay paired with that route family.
-const isFlashRoute=(provider,model)=>provider===PROVIDER&&typeof model==='string'&&/deepseek-v4\.1-flash/i.test(model);
+const isFlashRoute=(provider,model)=>provider===PROVIDER&&isDeepSeekV41Flash(model);
 
 function refuse(){
   const error=new Error('The Flash preset rules are paired with a magpie DeepSeek V4.1 Flash route, such as workbuddy-ai/deepseek-v4.1-flash. Select that route, or choose the original ptc preset to use another model. No alternate route was selected.');

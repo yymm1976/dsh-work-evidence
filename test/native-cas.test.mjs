@@ -16,7 +16,12 @@ async function invoke(host,agent,input){
   assert.equal(result.isError,false,output(result));return result.value??JSON.parse(output(result));
 }
 const require=createRequire(path.join(APP,'package.json'));
-const nativeSupported=JSON.parse(readFileSync(require.resolve('@deepseek-ai/dsh-tools/package.json'),'utf8')).version==='0.2.2-rc.2';
+// Must match native.available() in native-cas.mjs: all three packages on the same
+// supported rc.1/rc.2 kernel. Both expose the conditional write-intent seam.
+const nativeVersions=['@deepseek-ai/dsh-tools','@deepseek-ai/dsh-fs-local','@deepseek-ai/dsh-tool-fs']
+  .map(name=>JSON.parse(readFileSync(require.resolve(name+'/package.json'),'utf8')).version);
+const nativeSupported=['0.2.2-rc.1','0.2.2-rc.2'].includes(nativeVersions[0])&&
+  nativeVersions.every(version=>version===nativeVersions[0]);
 
 test('native edits capture file tools registered after plugin activation and preserve the sandbox filesystem fence',async()=>{
   const host=await startHost({mountPlugin:false,filesystem:nativeSupported?'dsh-fs-sandbox':'dsh-fs-local',fileTools:{write:false},
@@ -81,8 +86,11 @@ test('native conditional editing applies multiple exact changes without OPS and 
   const off=await startHost({workspace:{toolSurface:'full',nativeVerifiedEdits:false},script:()=>[text('Ready.')]});
   try{
     const agent=await off.createAgent();
-    const result=await invoke(off,agent,{summary:'Do not activate the candidate implicitly',apply:true,edits:[{file:'new.txt',mode:'create',content:'new'}]});
-    assert.equal(result.status,'deopt');assert.equal(result.reason,'cas-file-tools-unavailable');
+    assert.equal(off.ctx.tools.get('verified_exec',agent),undefined,'a disabled native edit feature must not publish verified_exec');
+    const unavailable=await off.ctx.tools.execute({name:'verified_exec',arguments:{summary:'Do not activate the candidate implicitly',apply:true,
+      edits:[{file:'new.txt',mode:'create',content:'new'}]},callId:'disabled-native-edit',rootCallId:'disabled-native-edit',agent,signal:AbortSignal.timeout(20000)});
+    assert.equal(unavailable.isError,true);
+    assert.match(output(unavailable),/unknown tool|unavailable/iu);
     await assert.rejects(fs.stat(path.join(off.cwd,'new.txt')),error=>error.code==='ENOENT');
   }finally{await off.close();}
 });
@@ -204,6 +212,21 @@ test('a scoped replacement of the native write tool deopts before it can write',
     const result=await invoke(host,agent,{summary:'Reject an unknown write implementation',apply:true,edits:[{file:'new.txt',mode:'create',content:'new'}]});
     assert.equal(result.status,'deopt');assert.equal(result.reason,'cas-file-tools-unavailable');assert.equal(calls,0);
     await assert.rejects(fs.stat(path.join(host.cwd,'new.txt')),error=>error.code==='ENOENT');
+  }finally{await host.close();}
+});
+
+test('a filesystem without the conditional write seam is reported unavailable, not guessed from its version',async()=>{
+  const host=await startHost({script:()=>[text('probe')]});
+  try{
+    const agent=await host.createAgent(),write=host.ctx.tools.get('write');
+    const realCtx={on:()=>{},tools:host.ctx.tools,get:name=>name==='fs'?host.ctx.get('fs'):host.ctx.get(name)};
+    const realCas=createNativeCas(realCtx,{get:()=>({root:process.cwd()}),execFor:()=>({})},write,write.execute);
+    if(nativeSupported)assert.equal(await realCas.available(agent),true,
+      'the positive fixture must be available before testing the missing seam');
+    const ctx={on:()=>{},tools:host.ctx.tools,get:name=>name==='fs'?{}:host.ctx.get(name)};
+    const cas=createNativeCas(ctx,{get:()=>({root:process.cwd()}),execFor:()=>({})},write,write.execute);
+    assert.equal(await cas.available(agent),false,
+      'an unknown filesystem implementation must not be treated as a conditional-write backend');
   }finally{await host.close();}
 });
 

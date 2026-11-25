@@ -1,0 +1,7 @@
+# Provisioning for source-members-bridge.py, which implements the retained
+# memberParsing feature (exact Java class/method ranges inside project_evidence).
+# These pins are the same ones requirements-fastedit.txt carried; the Python
+# package name `fastedits` is the upstream distribution and cannot be renamed.
+# Install into any interpreter, then point fastEditPython at its absolute path.
+fastedits==0.5.0
+tree-sitter-java==0.23.5

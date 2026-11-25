@@ -35,6 +35,7 @@ test('Bash transport bounds individual UTF-8 environment values without losing s
     assert.equal(values.DSH_WORK_EVIDENCE_STDIN_ID,'bounded-test');
     const chunks=INLINE_ENV_KEYS.slice(1).map(key=>values[key]);
     assert.ok(chunks.every(value=>Buffer.byteLength(value,'utf8')<=96000));
+    if(process.platform==='win32')assert.ok(chunks.every(value=>Buffer.byteLength(value,'utf8')<=32766));
     assert.equal(chunks.join(''),code.replaceAll('\\','\\\\').replaceAll('\0','\\x00'));
     assert.ok(chunks.every(value=>!value.includes('\0')));
   }
@@ -46,4 +47,10 @@ test('inline command validation remains shared by both shell renderers',()=>{
   assert.throws(()=>inlineCommand({runtime:'node',code:'console.log(1)'},'.','sh'),/shell must be pwsh or bash/u);
   assert.throws(()=>inlineCommand({runtime:'python',code:'print(1)'},'.','bash'),/transfer ID/u);
   assert.throws(()=>inlineEnvironment({runtime:'node',code:'console.log(1)'},'bad\nID'),/transfer ID/u);
+});
+
+test('Windows pwsh transport rejects a command over the command-line limit',{skip:process.platform!=='win32'},()=>{
+  const code='console.log("'+'x'.repeat(24000)+'");';
+  assert.throws(()=>inlineCommand({runtime:'node',format:'commonjs',executable:'node.exe',code},'C:/project'),
+    /work_exec source is too large for the pwsh transport/u);
 });

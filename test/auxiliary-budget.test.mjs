@@ -8,27 +8,31 @@ import {modelJson} from '../model.mjs';
 const OBSERVED={inputTokens:100,cacheReadTokens:0,cacheWriteTokens:0,outputTokens:50,totalTokens:150};
 const SMALL={inputTokens:20,cacheReadTokens:0,cacheWriteTokens:0,outputTokens:5,totalTokens:25};
 
-async function start({usage=OBSERVED,finishKind='stop',answer='{"ok":true}',effects=null}={}){
-  const dir=await fs.mkdtemp(path.join(os.tmpdir(),'we-aux-budget-'));
-  const id='session-aux';
+async function start({usage=OBSERVED,finishKind='stop',answer='{"ok":true}',effects=null,dir=null,id='session-aux'}={}){
+  dir??=await fs.mkdtemp(path.join(os.tmpdir(),'we-aux-budget-'));
   const file=path.join(dir,id+'.auxiliary-budget.json');
   const dispatched=[],control={usage,finishKind,answer};
-  const ctx={llm:{async *stream(request){
+  const ctx={llm:{stream(request){
+    if(control.streamThrows)throw new Error('native stream was not created');
     dispatched.push(request);
-    yield {type:'block-end',block:{type:'text',text:control.answer}};
-    if(control.usage!==null)yield {type:'usage',usage:control.usage};
-    yield {type:'finish',reason:{kind:control.finishKind}};
+    return (async function*(){
+      yield {type:'block-end',block:{type:'text',text:control.answer}};
+      if(control.hold)await new Promise(resolve=>{control.release=resolve;});
+      if(control.usage!==null)yield {type:'usage',usage:control.usage};
+      yield {type:'finish',reason:{kind:control.finishKind}};
+    })();
   }}};
   const state={id,dir,telemetryDir:dir,config:{modelMaxTokens:1200,modelTimeoutMs:20000,modelRoute:null},
     metrics:{auxiliaryCalls:0,auxiliaryFailures:0,auxiliaryUnknownCalls:0,auxiliaryUsage:{},auxiliaryMs:0},
     problems:[],dirty:true,auxiliarySignals:new WeakSet()};
   const runtime={get:()=>state,effects,problem:(item,kind,message)=>item.problems.push({kind,message}),modeStatus:()=>({selected:'aggressive'})};
   const agent={session:{id,seq:0,requestHeader:()=>({config:{provider:'p',model:'m'}})}};
-  const run=(scope,budgetCalls=2)=>modelJson(ctx,runtime,agent,new AbortController().signal,'system',{payload:1},
-    {route:{provider:'p',model:'m'},tokenLimit:32000,budgetScope:scope,budgetCalls});
+  const run=(scope,budgetCalls=2,task=null)=>modelJson(ctx,runtime,agent,new AbortController().signal,'system',{payload:1},
+    {route:{provider:'p',model:'m'},tokenLimit:32000,budgetScope:scope,budgetCalls,
+      ...(task?{taskBudgetScope:task.scope,taskTokenLimit:task.tokenLimit,taskCallLimit:task.calls}:{})});
   const budget=async()=>JSON.parse(await fs.readFile(file,'utf8'));
   const close=async()=>{await fs.rm(dir,{recursive:true,force:true,maxRetries:3});};
-  return {state,dispatched,control,run,budget,file,close};
+  return {state,dispatched,control,run,budget,file,close,ctx};
 }
 
 test('scoped reviews keep their own allowance and never consume the unscoped budget',async()=>{
@@ -200,6 +204,21 @@ test('a budget that cannot be read or saved stops before dispatch and hands the 
   }finally{await unsavable.close();}
 });
 
+test('a stream creation failure before dispatch hands the reservation back',async()=>{
+  const {state,dispatched,control,run,budget,close}=await start();
+  try{
+    control.streamThrows=true;
+    await assert.rejects(()=>run('pre-dispatch'),error=>error.auxiliaryDispatched===false&&
+      error.auxiliaryDispatchState==='not-dispatched');
+    assert.equal(dispatched.length,0);
+    assert.equal(state.metrics.auxiliaryFailures,1);
+    assert.equal(state.metrics.auxiliaryUnknownCalls,0);
+    assert.deepEqual((await budget()).scopes['pre-dispatch'],{calls:0,tokens:0,failed:false});
+    control.streamThrows=false;
+    assert.equal((await run('pre-dispatch')).value.ok,true);
+  }finally{await close();}
+});
+
 test('a malformed budget record is rejected before any dispatch',async()=>{
   for(const record of [
     null,
@@ -231,3 +250,349 @@ test('budget record text that is not JSON is identified as an invalid record',as
     assert.equal(dispatched.length,0);
   }finally{await close();}
 });
+
+test('a shared task budget spans scopes and stops before dispatch',async()=>{
+  const {dispatched,run,budget,close}=await start();
+  try{
+    const task={scope:'bounded-patch:req-1',tokenLimit:32000,calls:2};
+    assert.equal((await run('bounded-patch:req-1:1',1,task)).value.ok,true);
+    assert.equal((await run('bounded-patch:req-1:2',1,task)).value.ok,true);
+    await assert.rejects(()=>run('bounded-patch:req-1:3',1,task),error=>
+      error.auxiliaryCode==='auxiliary-budget-exhausted'&&error.auxiliaryDispatched===false&&
+      /Auxiliary task budget exhausted/.test(error.message));
+    assert.equal(dispatched.length,2,'the third scope never reaches the provider');
+    const record=await budget();
+    assert.deepEqual(record.tasks['bounded-patch:req-1'],{calls:2,tokens:300,failed:false});
+  }finally{await close();}
+});
+
+test('known-usage failures settle the task budget while unknown usage stops it',async()=>{
+  const known=await start({finishKind:'length'});
+  try{
+    const task={scope:'known-task',tokenLimit:32000,calls:4};
+    await assert.rejects(()=>known.run('known-task:a',1,task),/did not finish/);
+    known.control.finishKind='stop';
+    assert.equal((await known.run('known-task:b',1,task)).value.ok,true,
+      'a known-usage failure consumes the shared budget but does not stop later scopes');
+    const record=await known.budget();
+    assert.equal(record.tasks['known-task'].failed,false);
+    assert.equal(record.tasks['known-task'].calls,2);
+  }finally{await known.close();}
+
+  const unknown=await start();
+  try{
+    const task={scope:'unknown-task',tokenLimit:32000,calls:4};
+    unknown.control.usage=null;
+    assert.equal((await unknown.run('unknown-task:a',1,task)).value.ok,true);
+    await assert.rejects(()=>unknown.run('unknown-task:b',1,task),error=>
+      error.auxiliaryCode==='auxiliary-task-stopped'&&error.auxiliaryDispatched===false);
+    assert.equal(unknown.dispatched.length,1);
+    assert.equal((await unknown.budget()).tasks['unknown-task'].failed,true);
+  }finally{await unknown.close();}
+});
+
+test('task consumption survives a new observer process',async()=>{
+  const dir=await fs.mkdtemp(path.join(os.tmpdir(),'we-aux-task-'));
+  const state={
+    id:'session-aux-task',dir,telemetryDir:dir,
+    config:{modelMaxTokens:1200,modelTimeoutMs:20000,modelRoute:null},
+    metrics:{auxiliaryCalls:0,auxiliaryFailures:0,auxiliaryUnknownCalls:0,auxiliaryUsage:{},auxiliaryMs:0},
+    problems:[],dirty:true,auxiliarySignals:new WeakSet(),
+  };
+  const dispatched=[];
+  const ctx={llm:{async *stream(request){
+    dispatched.push(request);
+    yield {type:'block-end',block:{type:'text',text:'{"ok":true}'}};
+    yield {type:'usage',usage:OBSERVED};
+    yield {type:'finish',reason:{kind:'stop'}};
+  }}};
+  const runtime={get:()=>state,effects:null,problem:()=>{},modeStatus:()=>({selected:'aggressive'})};
+  const agent={session:{id:state.id,seq:0,requestHeader:()=>({config:{provider:'p',model:'m'}})}};
+  const task={scope:'restart-task',tokenLimit:32000,calls:1};
+  try{
+    await modelJson(ctx,runtime,agent,new AbortController().signal,'s',{x:1},
+      {route:{provider:'p',model:'m'},budgetScope:'restart-task:a',budgetCalls:1,...taskTaskOptions(task)});
+    delete state.auxiliaryBudget;
+    await assert.rejects(()=>modelJson(ctx,runtime,agent,new AbortController().signal,'s',{x:2},
+      {route:{provider:'p',model:'m'},budgetScope:'restart-task:b',budgetCalls:1,...taskTaskOptions(task)}),error=>
+      error.auxiliaryCode==='auxiliary-budget-exhausted'&&error.auxiliaryDispatched===false);
+    assert.equal(dispatched.length,1);
+  }finally{await fs.rm(dir,{recursive:true,force:true});}
+});
+
+test('more than 32 live scopes are retained and an old scope is not reset',async()=>{
+  const {run,budget,close}=await start();
+  try{
+    for(let index=0;index<40;index++)assert.equal((await run('scope-'+index,2)).value.ok,true);
+    const first=await budget();
+    assert.equal(Object.keys(first.scopes).length,40);
+    assert.equal(first.scopes['scope-0'].calls,1);
+    assert.equal((await run('scope-0',2)).value.ok,true);
+    const second=await budget();
+    assert.equal(second.scopes['scope-0'].calls,2,'a reused scope keeps its prior consumption');
+  }finally{await close();}
+});
+
+test('concurrent reservations cannot spend one allowance twice',async()=>{
+  const h=await start();
+  try{
+    const results=await Promise.allSettled([
+      h.run('concurrent-scope',1),
+      h.run('concurrent-scope',1),
+      h.run('concurrent-scope',1),
+    ]);
+    assert.equal(results.filter(item=>item.status==='fulfilled').length,1);
+    assert.equal(results.filter(item=>item.status==='rejected'&&
+      item.reason?.auxiliaryCode==='auxiliary-budget-exhausted').length,2);
+    assert.equal(h.dispatched.length,1);
+    assert.deepEqual((await h.budget()).scopes['concurrent-scope'],{calls:1,tokens:150,failed:false});
+  }finally{await h.close();}
+});
+
+test('two admitted task calls settle independently and retain both actual usages',async()=>{
+  const dir=await fs.mkdtemp(path.join(os.tmpdir(),'we-aux-two-calls-'));
+  const id='session-two-calls',file=path.join(dir,id+'.auxiliary-budget.json');
+  const state={id,dir,telemetryDir:dir,config:{modelMaxTokens:1200,modelTimeoutMs:20000,modelRoute:null},
+    metrics:{auxiliaryCalls:0,auxiliaryFailures:0,auxiliaryUnknownCalls:0,auxiliaryUsage:{},auxiliaryMs:0},
+    problems:[],dirty:true,auxiliarySignals:new WeakSet()};
+  const dispatched=[],releases=[];
+  const ctx={llm:{stream(request){
+    const index=dispatched.length;dispatched.push(request);
+    return (async function*(){
+      yield {type:'block-end',block:{type:'text',text:'{"ok":true}'}};
+      await new Promise(resolve=>{releases[index]=resolve;});
+      yield {type:'usage',usage:OBSERVED};
+      yield {type:'finish',reason:{kind:'stop'}};
+    })();
+  }}};
+  const runtime={get:()=>state,effects:null,problem:()=>{},modeStatus:()=>({selected:'aggressive'})};
+  const agent={session:{id,seq:0,requestHeader:()=>({config:{provider:'p',model:'m'}})}};
+  const task={taskBudgetScope:'two-call',taskTokenLimit:32000,taskCallLimit:2};
+  const run=scope=>modelJson(ctx,runtime,agent,new AbortController().signal,'system',{scope},
+    {route:{provider:'p',model:'m'},tokenLimit:32000,budgetScope:scope,budgetCalls:1,...task});
+  const budget=async()=>JSON.parse(await fs.readFile(file,'utf8'));
+  const waitFor=async predicate=>{for(let index=0;index<100;index++){if(predicate())return;await new Promise(resolve=>setTimeout(resolve,5));}throw new Error('timed out waiting for dispatched calls');};
+  try{
+    const first=run('two:a'),second=run('two:b');
+    await waitFor(()=>dispatched.length===2);
+    await assert.rejects(()=>run('two:c'),error=>error.auxiliaryCode==='auxiliary-budget-exhausted'&&error.auxiliaryDispatched===false);
+    releases[0]();
+    await first;
+    const afterFirst=await budget();
+    assert.equal(afterFirst.tasks['two-call'].calls,2,'the second reservation remains visible while in flight');
+    assert.ok(afterFirst.tasks['two-call'].tokens>=OBSERVED.totalTokens+1200);
+    releases[1]();
+    await second;
+    const afterSecond=await budget();
+    assert.equal(afterSecond.tasks['two-call'].tokens,OBSERVED.totalTokens*2);
+    assert.deepEqual(afterSecond.scopes['two:a'],{calls:1,tokens:150,failed:false});
+    assert.deepEqual(afterSecond.scopes['two:b'],{calls:1,tokens:150,failed:false});
+  }finally{await fs.rm(dir,{recursive:true,force:true,maxRetries:3});}
+});
+
+test('a stale lock owned by a live process is not removed',async()=>{
+  const h=await start();
+  const lock=h.file+'.lock';
+  try{
+    await fs.writeFile(lock,JSON.stringify({pid:process.pid,token:'still-owned',at:new Date().toISOString()}),'utf8');
+    const old=new Date(Date.now()-120_000);
+    await fs.utimes(lock,old,old);
+    await assert.rejects(()=>h.run('stale-lock'),error=>
+      error.auxiliaryCode==='auxiliary-budget-unavailable'&&/active process/u.test(error.message));
+    assert.equal(JSON.parse(await fs.readFile(lock,'utf8')).token,'still-owned');
+    assert.equal(h.dispatched.length,0);
+  }finally{
+    await fs.rm(lock,{force:true}).catch(()=>{});
+    await h.close();
+  }
+});
+
+test('an abandoned stale-lock breaker is reclaimed',async()=>{
+  const h=await start();
+  const lock=h.file+'.lock',breakLock=lock+'.break';
+  const old=new Date(Date.now()-120_000);
+  try{
+    await fs.writeFile(lock,JSON.stringify({pid:2147483646,token:'dead-owner'}),'utf8');
+    await fs.writeFile(breakLock,JSON.stringify({pid:2147483646,token:'dead-breaker'}),'utf8');
+    await fs.utimes(lock,old,old);await fs.utimes(breakLock,old,old);
+    assert.equal((await h.run('breaker-recovery')).value.ok,true);
+    assert.deepEqual((await h.budget()).scopes['breaker-recovery'],{calls:1,tokens:150,failed:false});
+  }finally{
+    await fs.rm(lock,{force:true}).catch(()=>{});
+    await fs.rm(breakLock,{force:true}).catch(()=>{});
+    await h.close();
+  }
+});
+
+test('an empty stale lock is reclaimed instead of blocking every later admission',async()=>{
+  const h=await start();
+  const lock=h.file+'.lock';
+  const old=new Date(Date.now()-120_000);
+  try{
+    await fs.writeFile(lock,'','utf8');await fs.utimes(lock,old,old);
+    assert.equal((await h.run('empty-lock-recovery')).value.ok,true);
+  }finally{
+    await fs.rm(lock,{force:true}).catch(()=>{});
+    await h.close();
+  }
+});
+
+test('a live breaker still prevents stale-lock removal',async()=>{
+  const h=await start();
+  const lock=h.file+'.lock',breakLock=lock+'.break';
+  const old=new Date(Date.now()-120_000);
+  try{
+    await fs.writeFile(lock,JSON.stringify({pid:2147483646,token:'dead-owner'}),'utf8');
+    await fs.writeFile(breakLock,JSON.stringify({pid:process.pid,token:'live-breaker'}),'utf8');
+    await fs.utimes(lock,old,old);await fs.utimes(breakLock,old,old);
+    await assert.rejects(()=>h.run('live-breaker'),error=>
+      error.auxiliaryCode==='auxiliary-budget-unavailable'&&/active process/u.test(error.message));
+    assert.equal(JSON.parse(await fs.readFile(breakLock,'utf8')).token,'live-breaker');
+  }finally{
+    await fs.rm(lock,{force:true}).catch(()=>{});
+    await fs.rm(breakLock,{force:true}).catch(()=>{});
+    await h.close();
+  }
+});
+
+test('a same-process reservation without an active owner is treated as interrupted',async()=>{
+  const h=await start();
+  const old={scope:'live-reservation',taskScope:null,estimate:100,
+    ownerPid:process.pid,ownerToken:'live-owner',at:new Date().toISOString()};
+  try{
+    await fs.writeFile(h.file,JSON.stringify({general:{calls:0,tokens:0,failed:false},
+      scopes:{'live-reservation':{calls:1,tokens:100,failed:false}},tasks:{},
+      meta:{reservations:{reserved:old}}}),'utf8');
+    await assert.rejects(()=>h.run('live-reservation',2),error=>
+      error.auxiliaryCode==='auxiliary-scope-stopped'&&error.auxiliaryDispatched===false);
+    assert.equal(h.dispatched.length,0);
+    const record=await h.budget();
+    assert.deepEqual(record.meta.reservations,{});
+    assert.equal(record.scopes['live-reservation'].failed,true);
+  }finally{await h.close();}
+});
+
+test('a reservation held by another live runtime state is not reclaimed',async()=>{
+  const first=await start();
+  let second=null;
+  try{
+    first.control.hold=true;
+    const running=first.run('live-reservation',3);
+    for(let index=0;index<100&&!first.dispatched.length;index++)await new Promise(resolve=>setTimeout(resolve,5));
+    assert.equal(first.dispatched.length,1);
+    second=await start({dir:first.state.dir,id:first.state.id});
+    assert.equal((await second.run('another-scope',1)).value.ok,true);
+    const during=await first.budget();
+    assert.equal(Object.keys(during.meta.reservations).length,1);
+    assert.equal(during.scopes['live-reservation'].failed,false);
+    first.control.release();
+    assert.equal((await running).value.ok,true);
+  }finally{
+    first.control.release?.();
+    await first.close();
+  }
+});
+
+test('replaying a known-usage failure stops the scope but not the shared task',async()=>{
+  const h=await start();
+  const originalWrite=fs.writeFile;
+  let tempWrites=0,failSettlement=true;
+  fs.writeFile=async(file,...args)=>{
+    if(failSettlement&&String(file).includes('.auxiliary-budget.json.')&&String(file).endsWith('.tmp')&&++tempWrites===2)
+      throw Object.assign(new Error('injected settlement write failure'),{code:'EIO'});
+    return originalWrite(file,...args);
+  };
+  const task={scope:'known-replay',tokenLimit:32000,calls:4};
+  try{
+    h.control.usage=SMALL;h.control.finishKind='error';h.control.answer='';
+    await assert.rejects(()=>h.run('known-replay:a',1,task),/did not finish/);
+    failSettlement=false;
+    h.control.finishKind='stop';h.control.answer='{"ok":true}';
+    assert.equal((await h.run('known-replay:b',1,task)).value.ok,true);
+    const record=await h.budget();
+    assert.equal(record.scopes['known-replay:a'].failed,true);
+    assert.equal(record.tasks['known-replay'].failed,false);
+    assert.equal(record.tasks['known-replay'].calls,2);
+  }finally{
+    fs.writeFile=originalWrite;
+    await h.close();
+  }
+});
+
+test('a settlement lock timeout keeps the known usage for the next reservation',async()=>{
+  const h=await start();
+  const lock=h.file+'.lock',originalStream=h.ctx.llm.stream;
+  let first=true;
+  h.ctx.llm.stream=request=>{
+    const stream=originalStream(request);
+    return (async function*(){
+      if(first){
+        first=false;
+        await fs.writeFile(lock,JSON.stringify({pid:process.pid,token:'block-settlement'}),'utf8');
+      }
+      yield* stream;
+    })();
+  };
+  try{
+    assert.equal((await h.run('lock-settle')).value.ok,true);
+    await fs.rm(lock,{force:true});
+    assert.equal((await h.run('lock-settle-next')).value.ok,true);
+    const record=await h.budget();
+    assert.equal(record.scopes['lock-settle'].tokens,150,
+      'the timed-out settlement is replayed before the next reservation');
+    assert.equal(record.scopes['lock-settle'].failed,false);
+  }finally{
+    await fs.rm(lock,{force:true}).catch(()=>{});
+    await h.close();
+  }
+});
+
+test('a failed unknown-usage settlement remains enforceable on the next reservation',async()=>{
+  const h=await start();
+  const originalWrite=fs.writeFile;
+  let tempWrites=0,failSettlement=true;
+  fs.writeFile=async(file,...args)=>{
+    if(failSettlement&&String(file).includes('.auxiliary-budget.json.')&&String(file).endsWith('.tmp')&&++tempWrites===2)
+      throw Object.assign(new Error('injected settlement write failure'),{code:'EIO'});
+    return originalWrite(file,...args);
+  };
+  try{
+    h.control.usage=null;
+    assert.equal((await h.run('settlement-failure')).value.ok,true);
+    failSettlement=false;
+    await assert.rejects(()=>h.run('settlement-failure'),error=>
+      error.auxiliaryCode==='auxiliary-scope-stopped'&&error.auxiliaryDispatched===false);
+    assert.equal(h.dispatched.length,1,'the unresolved reservation stops the next dispatch');
+    const record=await h.budget();
+    assert.equal(record.scopes['settlement-failure'].failed,true);
+    assert.deepEqual(record.meta.reservations,{});
+  }finally{
+    fs.writeFile=originalWrite;
+    await h.close();
+  }
+});
+
+test('a settlement published before its acknowledgement is not applied twice',async()=>{
+  const h=await start();
+  const originalRename=fs.rename;
+  let fileWrites=0,injected=false;
+  fs.rename=async(from,to)=>{
+    await originalRename(from,to);
+    if(path.resolve(String(to))===path.resolve(h.file)&&++fileWrites===2){
+      injected=true;
+      throw Object.assign(new Error('injected after publish'),{code:'EIO'});
+    }
+  };
+  try{
+    assert.equal((await h.run('published-settlement')).value.ok,true);
+    assert.equal(injected,true);
+    assert.deepEqual((await h.budget()).scopes['published-settlement'],{calls:1,tokens:150,failed:false});
+    assert.equal((await h.run('published-settlement')).value.ok,true);
+    assert.deepEqual((await h.budget()).scopes['published-settlement'],{calls:2,tokens:300,failed:false});
+  }finally{
+    fs.rename=originalRename;
+    await h.close();
+  }
+});
+
+const taskTaskOptions=task=>({taskBudgetScope:task.scope,taskTokenLimit:task.tokenLimit,taskCallLimit:task.calls});
