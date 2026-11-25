@@ -1,13 +1,13 @@
 # 系统性缺陷整改记录（2026-11-25）
 
-对象：`feat/v04-windows-bash`，当前审查关闭提交 `2b28e17`。本文记录系统性整改和第三轮独立审查后当前成立的行为、验证方式和真实限制；不把离线测试、脚本化性能循环或参考费率当成真实模型费用与质量结论。
+对象：`feat/v04-windows-bash`，当前审查关闭提交 `88b4ea6`。本文记录系统性整改和第三轮独立审查后当前成立的行为、验证方式和真实限制；不把离线测试、脚本化性能循环或参考费率当成真实模型费用与质量结论。
 
 ## 验证结果
 
 | 项 | 结果 |
 |---|---|
 | 语法检查 | `npm run check`，193 个 JavaScript 文件通过 |
-| 全量单测 | `npm test`，1095 项，1094 通过，0 失败，1 项按宿主能力跳过 |
+| 全量单测 | `npm test`，1096 项，1095 通过，0 失败，1 项按宿主能力跳过 |
 | 跳过原因 | 当前宿主三包均为 `0.2.2-rc.1`，条件写入后端可用；只描述“后端缺失”的用例按设计跳过 |
 | 打包安装 | `test/package-install.test.mjs` 通过；离线安装不拉宿主 peer，安装副本可加载 |
 | 声明文件加载 | `test/host-package-load.test.mjs` 通过；95 个声明文件，45 个功能项，无阻塞项 |
@@ -15,7 +15,7 @@
 | 宿主路径性能 | `evidence/profile-host-path-20261125-segmented.json`；3 轮、21 请求/轮，覆盖插件关闭、默认插件、核心机制消融和统计关闭 |
 | 本地微基准 | `evidence/profile-default-path-20261125.json`；30 轮，仅本地函数分段 |
 | 条件写入负例 | 未知文件服务按不可用返回，不进入读取或写入；见 `test/native-cas.test.mjs` |
-| 远端同步 | `2b28e17` 已推送 `origin/feat/v04-windows-bash` |
+| 远端同步 | `88b4ea6` 的代码修复与随附记录已推送 `origin/feat/v04-windows-bash` |
 
 ## 第三轮审查残余关闭
 
@@ -26,6 +26,7 @@
 | 部分已知用量的费用下界 | 只有未形成完整已知费用的请求才进入下界；完整请求不再重复累加 | `test/context-economics.test.mjs`，覆盖率测试同时断言 `lowerBound` 与 `unpriced` |
 | 覆盖率重复计数 | `coverage.unpriced` 扣除完整、参考、失败已知和两类下界请求，避免同一请求被计两次 | 同一测试断言 `requests:2, exactRoute:1, lowerBound:1, unpriced:0` |
 | 定义摘要累计注入 | `cumulativeInjectedChars`/`netChars` 使用真实请求投影量；工具观察量保留为 `observedNetChars` | `test/history-protection.test.mjs` |
+| 缓存历史初始视图 | 首次发送仍可使用独立的初始 grep 视图；已缓存历史尚未投影时必须通过 `allowed('historyOutput')` 经济性门禁，拒绝时保留原文并记录一次 denied 决策 | `test/history-protection.test.mjs` 的首次发送与缓存历史两组断言 |
 | PTC 工作区文件身份 | 历史会话 cwd 与当前工作区使用宿主物理路径身份，符号链接/目录别名不会把同一工作区拆开 | `test/ptc-workspace-identity.test.mjs` |
 | 严格 JSON 提案 | 辅助提案只按严格 JSON 解析；非法转义不会被宽松恢复为另一段待写源码，失败后才进入一次重试 | `test/bounded-patch.test.mjs` 的 strict JSON 反例 |
 | 提交前请求身份 | 主机暴露当前用户请求时，提交前再次比较请求身份和写入授权；主机在后续工具阶段不暴露时，保留启动时请求 id 与逐文件 Native CAS/身份检查，并明确这一证据限制 | `bounded-patch.mjs` 的 `validateCommit` |
@@ -132,7 +133,7 @@
 - 参考价不能批准正常压缩或上下文改写；只有精确路由价可以进入正常经济性决策。容量紧急策略与正常经济性策略分开。
 - 部分已知用量按可信字段记录费用下界；混合参考价、精确价和失败费用时分别报告覆盖率。
 
-`history-hygiene.mjs`：`initialOutputView` 与 `testDigest` 复用已存储计划，稳定期内不因新的预测反复切换。定义摘要默认关闭，只有 `definitionSummary:"on"` 才额外注入；统计区分候选、实际发送、工具观察时注入和真实请求投影时注入，并注明信息组织不等于净收益。
+`history-hygiene.mjs`：`initialOutputView` 与 `testDigest` 复用已存储计划，稳定期内不因新的预测反复切换。首次发送的初始 grep 视图仍是独立规则；已进入缓存历史且尚未投影的视图必须通过 `allowed('historyOutput')` 经济性门禁，不能绕过价格判断。定义摘要默认关闭，只有 `definitionSummary:"on"` 才额外注入；统计区分候选、实际发送、工具观察时注入和真实请求投影时注入，并注明信息组织不等于净收益。
 
 `context-pruning.mjs`：来源优先。`transport` 只在调用来源可证明为 shell/程序执行时成立；来源不明时，`stdout/stderr` 形状的 JSON 保守保留。配置正文与传输结果同形的反例已覆盖，live history 与 stage checkpoint 两条路径都传入来源标记。
 
