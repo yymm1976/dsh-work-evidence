@@ -737,3 +737,22 @@ test('a bounded patch never falls back to a direct child process for syntax chec
   assert.equal(result.applied[0].syntaxStatus,'unavailable',
     'without a host subprocess service the helper must be unavailable, not run through node:child_process');
 });
+
+test('a bounded patch proposal uses strict JSON instead of repairing an invalid escape',async()=>{
+  const host=await startHost({
+    workspace:{boundedPatch:true,stepPacing:false,qualityReview:false,completionNotice:false,finalJsonGuard:false},
+    auxiliary:(_options,n)=>{
+      if(n===1)return [text('{"edits":[{"file":"alpha.js","old":"\\"original\\"","replacement":"C:\\q"}]}')];
+      if(n===2)return [text(JSON.stringify({edits:[{file:'alpha.js',old:'"original"',replacement:'"fixed"'}]}))];
+      return [text(JSON.stringify({edits:[],followup:[]}))];
+    },
+    script:()=>[text('已完成有界源码修复。')],
+  });
+  try{
+    await writeLargeTarget(host);
+    const agent=await host.createAgent('max');
+    await host.send(agent,'修复工作目录中的 target。成员身份偶尔错误，请求失败后内容丢失，历史结果重复，设置切换后无法恢复，结果偶尔错位。只允许通过源码定位问题。做完直接汇报。');
+    assert.equal(await fs.readFile(path.join(host.cwd,'target','alpha.js'),'utf8'),'export const alpha = "fixed";\n');
+    assert.equal((await host.command(agent,'status')).boundedPatch.result.patchStatus,'completed');
+  }finally{await host.close();}
+});

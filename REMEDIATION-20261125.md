@@ -1,21 +1,35 @@
 # 系统性缺陷整改记录（2026-11-25）
 
-对象：`feat/v04-windows-bash`，当前提交 `04d3fac`。本文记录系统性整改和第三轮独立审查后当前成立的行为、验证方式和真实限制；不把离线测试、脚本化性能循环或参考费率当成真实模型费用与质量结论。
+对象：`feat/v04-windows-bash`，当前审查关闭提交 `ae1183e`。本文记录系统性整改和第三轮独立审查后当前成立的行为、验证方式和真实限制；不把离线测试、脚本化性能循环或参考费率当成真实模型费用与质量结论。
 
 ## 验证结果
 
 | 项 | 结果 |
 |---|---|
-| 语法检查 | `npm run check`，192 个 JavaScript 文件通过 |
-| 全量单测 | `npm test`，1092 项，1091 通过，0 失败，1 项按宿主能力跳过 |
+| 语法检查 | `npm run check`，193 个 JavaScript 文件通过 |
+| 全量单测 | `npm test`，1095 项，1094 通过，0 失败，1 项按宿主能力跳过 |
 | 跳过原因 | 当前宿主三包均为 `0.2.2-rc.1`，条件写入后端可用；只描述“后端缺失”的用例按设计跳过 |
 | 打包安装 | `test/package-install.test.mjs` 通过；离线安装不拉宿主 peer，安装副本可加载 |
 | 声明文件加载 | `test/host-package-load.test.mjs` 通过；95 个声明文件，45 个功能项，无阻塞项 |
 | 宿主兼容 | `test/host-compatibility.test.mjs` 通过；声明与宿主运行时一致 |
-| 宿主路径性能 | `evidence/profile-host-path-20261125.json`；3 轮，覆盖插件关闭、默认插件、核心机制消融和统计关闭 |
+| 宿主路径性能 | `evidence/profile-host-path-20261125-segmented.json`；3 轮、21 请求/轮，覆盖插件关闭、默认插件、核心机制消融和统计关闭 |
 | 本地微基准 | `evidence/profile-default-path-20261125.json`；30 轮，仅本地函数分段 |
 | 条件写入负例 | 未知文件服务按不可用返回，不进入读取或写入；见 `test/native-cas.test.mjs` |
-| 远端同步 | 文档提交 `5ea21d2` 已推送 `origin/feat/v04-windows-bash`；本记录所述代码行为仍对应 `04d3fac` |
+| 远端同步 | `ae1183e` 已推送 `origin/feat/v04-windows-bash` |
+
+## 第三轮审查残余关闭
+
+本轮补充整改不改变插件默认开关或实验提示词，只修复审查报告中的计数、身份和证据链残余，并补齐可复现的本地分段 profiling。
+
+| 审查点 | 当前实现 | 证据 |
+|---|---|---|
+| 部分已知用量的费用下界 | 只有未形成完整已知费用的请求才进入下界；完整请求不再重复累加 | `test/context-economics.test.mjs`，覆盖率测试同时断言 `lowerBound` 与 `unpriced` |
+| 覆盖率重复计数 | `coverage.unpriced` 扣除完整、参考、失败已知和两类下界请求，避免同一请求被计两次 | 同一测试断言 `requests:2, exactRoute:1, lowerBound:1, unpriced:0` |
+| 定义摘要累计注入 | `cumulativeInjectedChars`/`netChars` 使用真实请求投影量；工具观察量保留为 `observedNetChars` | `test/history-protection.test.mjs` |
+| PTC 工作区文件身份 | 历史会话 cwd 与当前工作区使用宿主物理路径身份，符号链接/目录别名不会把同一工作区拆开 | `test/ptc-workspace-identity.test.mjs` |
+| 严格 JSON 提案 | 辅助提案只按严格 JSON 解析；非法转义不会被宽松恢复为另一段待写源码，失败后才进入一次重试 | `test/bounded-patch.test.mjs` 的 strict JSON 反例 |
+| 提交前请求身份 | 主机暴露当前用户请求时，提交前再次比较请求身份和写入授权；主机在后续工具阶段不暴露时，保留启动时请求 id 与逐文件 Native CAS/身份检查，并明确这一证据限制 | `bounded-patch.mjs` 的 `validateCommit` |
+| 真实默认路径 profiling | 宿主循环、原生 read/grep/pwsh、增长历史、重复读取、一次失败读取、持久化和消融组均已采样；模型仍为脚本化零等待，不冒充供应商延迟或账单 | `scripts/profile-host-path.mjs`、`evidence/profile-host-path-20261125-segmented.json` |
 
 ## 反向验证
 
@@ -144,16 +158,16 @@
 
 ## 七、性能
 
-`scripts/profile-host-path.mjs`（`npm run profile:host`）使用真实宿主循环、原生读取和 PowerShell 工具，运行 12 个请求、6 个文件、每文件 140 行。脚本化模型等待固定为 0，只测本地插件与宿主处理。结果在 `evidence/profile-host-path-20261125.json`：
+`scripts/profile-host-path.mjs`（`npm run profile:host`）现在使用真实宿主循环、原生 `read`/`grep`/`pwsh`、10 个文件、每文件 180 行、7 次重复读取和 1 次失败读取，每轮 21 个请求。脚本化模型等待固定为 0；结果区分配置读取、工具执行、文件系统、遥测持久化、请求历史增长和销毁。3 轮结果在 `evidence/profile-host-path-20261125-segmented.json`：
 
-| 模式 | 步耗时 p50 / p95 | `sendMs` p50 | 12 请求字符数 | 遥测 |
-|---|---:|---:|---:|---|
-| `plugin-off` | 6.68 / 9.36 ms | 77.06 ms | 940,183 | 无 |
-| `plugin-default` | 27.83 / 575.28 ms | 867.86 ms | 940,886 | 36 行，43,181 字节，完整 |
-| `core-only` | 22.48 / 569.38 ms | 813.09 ms | 940,886 | 36 行，40,210 字节，完整 |
-| `accounting-off` | 16.68 / 563.25 ms | 750.63 ms | 940,886 | 文件缺失 |
+| 模式 | `sendMs` p50 / p95 | 初始化 p50 | 步耗时 p95 | 每轮文件系统 / 遥测 | 每轮工具执行 | 辅助请求 |
+|---|---:|---:|---:|---:|---:|---:|
+| `plugin-off` | 287.73 / 331.42 ms | 无 | 164.15 ms | 0 / 0 ms | 250.37 ms | 0 |
+| `plugin-default` | 1304.67 / 1337.69 ms | 5.81 ms | 573.06 ms | 176.19 / 124.74 ms | 915.70 ms | 0 |
+| `core-only` | 1192.66 / 1218.63 ms | 5.31 ms | 574.58 ms | 178.30 / 131.19 ms | 922.45 ms | 0 |
+| `accounting-off` | 1062.02 / 1105.17 ms | 4.82 ms | 597.46 ms | 46.58 / 4.05 ms | 889.48 ms | 0 |
 
-该结果定位了插件默认路径的本机开销，不能证明供应商延迟、实际扣费或任务级费用收益。`scripts/profile-default-path.mjs`（`npm run profile`）的 30 轮结果仍只作为局部微基准：
+三轮峰值 RSS 为 172.1 MiB，结束时堆使用 90.8 MiB。默认插件与关闭组的最终请求正文为 315,413 / 313,214 字符（约 +0.70%），但 `sendMs` 中位数从 287.73 ms 增至 1304.67 ms；初始化只有 5.81 ms。主要本机开销落在每步工具路径和请求账本持久化：关掉统计后，文件系统与遥测写入降到每轮 46.58 / 4.05 ms，`sendMs` 降到 1062.02 ms；关掉历史、节奏和上下文机制（`core-only`）没有降低这两项。该结果定位了本机瓶颈，不能证明供应商延迟、实际扣费或任务级费用收益。`scripts/profile-default-path.mjs`（`npm run profile`）的 30 轮结果仍只作为局部微基准：
 
 | 分段 | 均值 | p95 |
 |---|---|---|
@@ -170,9 +184,9 @@
 
 ## 尚未完成
 
-- 审查后的真实模型小卷尚未执行。`EcoNative42` 和 `EcoNative44` 都早于 `04d3fac`，只能作为诊断样本，不能计入审查后连续达标。
+- 审查后真实模型小卷已执行到 `EcoNative49`；45–49 的连续三次达标记录见交接页。本节不把该结果当作审查报告级别以上的质量证明。
 - `boundedPatch` 的项目规模、文件数、源码字节和缺陷数量只表示机制适用性；本轮没有跨项目验证这些阈值，不能据此宣称通用效率收益。
 - 请求开始记录在持久化不可用且进程被强制终止时无法恢复；状态只标记不完整。
 - 本地 Token 估计不是服务端分词；预算不能视为服务端硬限制。
 - `rc2-native-conditional-write` 是兼容标识，现覆盖 0.2.1-rc.4 之外的 rc.1/rc.2 同版本组合；名称未改，避免破坏已有记录。
-- 宿主路径性能为单机 3 轮，模型等待为 0，未覆盖真实增长历史、供应商延迟和实际账单。
+- 宿主路径 profiling 为单机 3 轮、脚本化模型零等待；覆盖增长历史和持久化，但不覆盖供应商延迟、辅助模型等待或实际账单。请求账本在主机的后续工具阶段可能不再暴露当前用户消息，此时只能保留启动时请求 id 和逐文件 Native CAS/身份检查。
