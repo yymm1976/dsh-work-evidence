@@ -601,7 +601,7 @@ export function createRuntime(ctx,call,initial={}){
         {isError:!!d.isError,error:d.error?{info:d.error,message:textOf(d)}:undefined,content:d.content,value:parseValue(d)},event.seq);
     }else if(event.type==='tool/result'&&event.surfaceOp?.op!=='replace'){
       const id=d.message?.source?.callId,c=s.calls.get(id);
-      if(c){observe(agent,{...c,callId:id},{isError:!!d.message?.isError,error:{message:textOf(d.message)},content:d.message?.content,value:parseValue(d.message)},event.seq);s.calls.delete(id);}
+      if(c){observe(agent,{...c,callId:id},{isError:!!d.message?.isError,error:{message:textOf(d.message)},content:d.message?.content,value:parseValue(d.message),meta:d.message?.meta},event.seq);s.calls.delete(id);}
     }
     if(s.calls.size>100)s.calls.delete(s.calls.keys().next().value);
   }

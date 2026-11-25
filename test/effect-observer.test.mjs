@@ -219,6 +219,32 @@ test('a failed boundary repair is retried before the next row is appended',async
   }finally{realFs.appendFile=append;realFs.truncate=truncate;await remove(created.telemetryDir);}
 });
 
+test('a successful boundary repair does not report a previous retry as failed',async()=>{
+  const telemetryDir=await fs.mkdtemp(path.join(os.tmpdir(),'we-effects-repair-success-'));
+  const file=path.join(telemetryDir,SESSION+'.observability.jsonl');
+  let repairFailed=false;
+  const io={...realFs,
+    truncate:async(...args)=>{
+      if(!repairFailed&&args[0]===file){
+        repairFailed=true;
+        throw Object.assign(new Error('injected repair failure'),{code:'EACCES'});
+      }
+      return realFs.truncate(...args);
+    }};
+  try{
+    await fs.writeFile(file,JSON.stringify(row('unterminated-row')),'utf8');
+    const scoped=await start({telemetryDir,io});
+    await scoped.effects.load(scoped.agent);
+    assert.equal(repairFailed,true);
+    await scoped.effects.finish(scoped.agent,row('after-repair'));
+    await scoped.effects.flush(scoped.agent);
+    const summary=scoped.effects.snapshot(scoped.agent).persistence;
+    assert.equal(summary.writeErrors.some(message=>/Boundary repair retry failed/u.test(message)),false,
+      'a successful repair clears the pending-boundary state without a false failure');
+    assert.deepEqual((await stored(telemetryDir)).map(item=>item.requestId),['unterminated-row','after-repair']);
+  }finally{await remove(telemetryDir);}
+});
+
 test('a complete row without a newline survives a following partial append',async()=>{
   const created=await start();
   const file=path.join(created.telemetryDir,SESSION+'.observability.jsonl');

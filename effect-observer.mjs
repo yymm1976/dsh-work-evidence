@@ -310,9 +310,11 @@ export function createEffectObserver(ctx,runtime,{io=fs}={}){
       // appending: if it still fails, appending would seal the fragment and destroy the
       // joined row, so the row stays pending instead.
       if(state.needsLeadingNewline.has(kind)){
-        state.writeErrors.push('Boundary repair retry failed; the row stays pending');
-        state.writeErrors=state.writeErrors.slice(-8);
-        if(!await repairAppendBoundary(state,file,kind))return false;
+        if(!await repairAppendBoundary(state,file,kind)){
+          state.writeErrors.push('Boundary repair retry failed; the row stays pending');
+          state.writeErrors=state.writeErrors.slice(-8);
+          return false;
+        }
       }
       await io.appendFile(file,(state.needsLeadingNewline.has(kind)?'\n':'')+serialized+'\n','utf8');
       if(identity)state.ambiguousRows.delete(identity);

@@ -99,6 +99,22 @@ test('native read aliases preserve line records, execute once and keep conflicts
   }
 });
 
+test('a normalized top-level read keeps its state-ledger receipt',async()=>{
+  const host=await startHost({workspace:{readArgumentRecovery:true,stateLedger:true},
+    script:(_o,n)=>n===1?[tool('read',{path:'a.txt',offset:1,limit:2})]:[text('完成。')]});
+  try{
+    await fs.writeFile(path.join(host.cwd,'a.txt'),'first\nsecond\nthird\n');
+    const agent=await host.createAgent('max');
+    await host.send(agent,'读取指定文件范围');
+    const status=await host.command(agent,'detail');
+    assert.equal(status.detail.state.observations.length,1);
+    assert.equal(status.detail.state.observations[0].path,'a.txt');
+    assert.equal(status.detail.state.observations[0].lineStart,1);
+    assert.equal(status.detail.state.observations[0].lineEnd,2);
+    assert.equal(status.detail.state.observations[0].tool,'read');
+  }finally{await host.close();}
+});
+
 test('native one-shot read recovery recalls recorded lines without reading the changed file again',async()=>{
   let recalled=null;
   const body='recorded source before external change\n';
