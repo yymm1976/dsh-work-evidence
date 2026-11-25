@@ -293,6 +293,21 @@ test('a partial usage observation records a priced lower bound instead of droppi
   assert.equal(summary.costLowerBoundRequests,1);
 });
 
+test('coverage counts a fully priced request once and does not inflate its lower bound',()=>{
+  const {agent,economics,options,state}=harness();
+  state.config.projectionPricing=[{provider:'p',model:'m',currency:'USD',input:1,cacheRead:.02,cacheWrite:0,output:4}];
+  economics.requestFinished(agent,options,{usage:{inputTokens:1000000,cacheReadTokens:0,cacheWriteTokens:0,outputTokens:100000},
+    settled:true,finishReason:'stop',usageComplete:true,usageConsistent:true});
+  economics.requestFinished(agent,options,{usage:{inputTokens:1000000,cacheReadTokens:0,cacheWriteTokens:0,outputTokens:null},
+    settled:true,finishReason:'stop',usageComplete:false,usageConsistent:true});
+  const summary=economics.summary(agent);
+  assert.equal(summary.pricedRequests,1);
+  assert.equal(summary.costLowerBoundRequests,1,'only the partial row contributes a lower bound');
+  assert.equal(summary.costLowerBound,1,'the complete row is not counted again');
+  assert.deepEqual(summary.costObservation.coverage,{requests:2,exactRoute:1,referenceRate:0,failedKnown:0,
+    lowerBound:1,referenceLowerBound:0,unpriced:0});
+});
+
 test('the forecast horizon follows the current task and resets at the next human request',()=>{
   const {agent,economics,finish,state,options}=harness();
   // Same shape as the pointer-mismatch test: a complete prior request that leaves
@@ -521,7 +536,7 @@ test('a published family rate is reported separately from an exact-route charge'
   assert.equal(exact.knownReportedCost,1.4);
   assert.equal(exact.costComplete,false,'one reference-only request is still unpriced');
   assert.deepEqual(exact.costObservation.coverage,{requests:2,exactRoute:1,referenceRate:1,failedKnown:0,
-    lowerBound:1,referenceLowerBound:1,unpriced:0});
+    lowerBound:0,referenceLowerBound:0,unpriced:0});
 });
 
 test('an incomplete usage observation cannot leave the reset comparison point behind',()=>{

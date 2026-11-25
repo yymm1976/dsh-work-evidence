@@ -350,7 +350,10 @@ export function createContextEconomics(ctx,runtime){
       state.failedKnownCostByCurrency[price.currency]=(state.failedKnownCostByCurrency[price.currency]??0)+knownCost;
       state.failedKnownCostRequests++;
     }else if(price){const reason=!billingComplete?'incomplete-request-billing':!cacheWritePriced?'cache-write-price-unavailable':'missing-usage-fields';state.skips[reason]=(state.skips[reason]??0)+1;}
-    if(lowerBound!==null){
+    // A fully priced row is already represented by costByCurrency or
+    // referenceCostByCurrency. Counting its fields again as a lower bound made
+    // coverage report one request twice and inflated the lower-bound total.
+    if(lowerBound!==null&&knownCost===null){
       if(exactPrice){state.costLowerBoundByCurrency[price.currency]=(state.costLowerBoundByCurrency[price.currency]??0)+lowerBound;state.costLowerBoundRequests++;}
       else if(price?.basis==='reference-rate'){
         state.referenceLowerBoundByCurrency[price.currency]=(state.referenceLowerBoundByCurrency[price.currency]??0)+lowerBound;
@@ -585,7 +588,8 @@ export function createContextEconomics(ctx,runtime){
         state.pricedRequests?'exact-route':state.referencePricedRequests?'reference-rate':'unavailable',
         coverage:{requests:state.requests,exactRoute:state.pricedRequests,referenceRate:state.referencePricedRequests,
           failedKnown:state.failedKnownCostRequests,lowerBound:state.costLowerBoundRequests,referenceLowerBound:state.referenceLowerBoundRequests,
-          unpriced:Math.max(0,state.requests-state.pricedRequests-state.referencePricedRequests-state.failedKnownCostRequests)},
+          unpriced:Math.max(0,state.requests-state.pricedRequests-state.referencePricedRequests-state.failedKnownCostRequests-
+            state.costLowerBoundRequests-state.referenceLowerBoundRequests)},
         actualCharge:null,allowanceConsumption:null,budgetEnforcement:'none'},
       currency:currencies.length===1?currencies[0]:null,skips:{...state.skips},recentDecisions:state.decisions.slice(-6),
       projectionReviews:state.reviewedOutcomes.slice(-6),pendingProjectionReviews:state.pendingReviews.length,

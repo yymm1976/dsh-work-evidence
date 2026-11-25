@@ -1054,6 +1054,9 @@ export function createBoundedPatch(ctx, runtime, {effects}) {
           return {ok: false, reason: 'feature-disabled'};
         }
         const current = requestFor(agent);
+        // The host may not expose the user message during a later tool phase. When it
+        // does, the commit is tied to the exact request; when it does not, the captured
+        // request id and the per-file native checks remain the available evidence.
         if (current && String(current.id ?? current.seq) !== String(requestId)) {
           return {ok: false, reason: 'request-identity-changed'};
         }

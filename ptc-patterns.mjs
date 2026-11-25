@@ -1,6 +1,7 @@
 import path from 'node:path';
 import {createHash} from 'node:crypto';
 import {argsOf,eventLog} from './runtime.mjs';
+import {physicalPathKey} from './evidence.mjs';
 
 export const VERSION='0.8.3';
 export const REPORT_SCHEMA='work-evidence.ptc-patterns.v1';
@@ -335,7 +336,7 @@ function validateArgs(input){
 export function createPtcPatterns(ctx,runtime){
   async function scan(agent,args,signal){
     const input=validateArgs(args||{}),root=path.resolve(await ctx.workingDirectory.ensure(agent,signal));
-    const workspaceKey=value=>path.resolve(value);
+    const workspaceKey=value=>physicalPathKey('.',value);
     const snapshots=[...(await ctx.sessionPersistence.list({signal}))];
     const allowed=snapshots.filter(snapshot=>typeof snapshot.header.cwd==='string'&&workspaceKey(snapshot.header.cwd)===workspaceKey(root))
       .sort((a,b)=>b.header.createdAt-a.header.createdAt);
