@@ -31,8 +31,6 @@ function sourceReadDefault(config,request){
     config.sourceReadDefaultLines:null;
 }
 const SOURCE_ONLY_GUIDANCE='只从源码取得依据。可通过原生工具或 Shell 读取和检索文件。不得启动解释器检查语法、导入或行为。也不得为这些检查寻找运行时。按用户描述的行为逐项处理。先查实际入口和触发条件，源码能解释一个独立问题时可先修这一项。每次读取只补会改变当前修改的缺口，已定位的独立区段同轮读取。涉及重试、刷新、切换或并发时，从源码核对首次操作留下的状态，以及下一次实际使用的对象、范围和状态。改缓存时查时效和失败重取。保留其他已有行为。最终汇报实际修改和仍缺依据的事项。';
-const EXECUTION_FORBIDDEN=/(?:不要|不得|禁止|不能|不允许|无需|不需)\s*(?:运行|执行|启动)|(?:do not|must not|never)\s+(?:run|execute|start)/iu;
-const EXECUTION_COMMAND=/(?:^|[;&|]\s*|\b)(?:python(?:3(?:\.\d+)?)?|py|node|pytest|npm|pnpm|yarn|pip3?|poetry|uv|java|javac|mvn|gradlew?|go|dotnet|cargo|rustc)\b|Get-Command\s+(?:python(?:3)?|py|node)\b/iu;
 const SHELL_SOURCE_SEARCH=/^\s*(?:Select-String|rg(?:\.exe)?|grep)\b/iu;
 const SHELL_SOURCE_READ=/^\s*(?:Get-Content|cat|sed\s+-n)\b/iu;
 const SOURCE_FILE=/\.(?:py|[cm]?[jt]sx?|java|go|rs|rb|php|cs|c|cc|cpp|h|hpp|swift|kt|kts|sh|ps1|html|css|sql)$/iu;
@@ -341,7 +339,7 @@ export function createTaskFlow(ctx,runtime,{nativeFiles,call,executionDependenci
     let state=states.get(agent.session.id);
     if(!state){state={cursor:0,turn:null,step:0,calls:new Map(),nested:new Map(),nestedFailures:new Map(),completedNested:new Set(),live:new Map(),errors:new Map(),reads:new Map(),jobs:new Set(),pacing:newPacing(),programFailure:null,legacyInterpreterShell:null,
     todos:null,todoSeq:null,artifacts:new Map(),artifactsEvicted:0,executionsEvicted:0,turnStartSeq:null,qualityArtifacts:new Map(),qualityExecutions:[],lastQualityReviewedMutation:null,phase:{name:null,seq:null,focus:[],source:null},lastCompaction:null,report:null,lastMutation:-1,mutationVersion:0,firstSourceReadStep:null,lastSourceReadStep:null,sourceFollowup:null,
-      lastUser:null,sourceOnly:false,executionForbidden:false,executionForbiddenAttempt:null,programEpoch:0,programOutputDiagnostics:[],readResultRoots:new Map(),readOutputIssue:null,stageReporting:{lastTextSeq:null,lastTextSteps:0,lastNoticeSteps:0,notices:0,notifiedPhases:[]},lastInlineExec:-1,inlineExecAdvised:new Set(),scriptReuseAdvised:new Set(),diagnosticAdvised:new Set(),reuseAdvised:new Set(),cleanupAdvised:new Set(),
+      lastUser:null,sourceOnly:false,programEpoch:0,programOutputDiagnostics:[],readResultRoots:new Map(),readOutputIssue:null,stageReporting:{lastTextSeq:null,lastTextSteps:0,lastNoticeSteps:0,notices:0,notifiedPhases:[]},lastInlineExec:-1,inlineExecAdvised:new Set(),scriptReuseAdvised:new Set(),diagnosticAdvised:new Set(),reuseAdvised:new Set(),cleanupAdvised:new Set(),
       probes:[],executions:[],sourceReads:[],sourceReadsEvicted:0,repeatedExecution:null,cleanup:null,transitions:[],reuseNotices:0,cleanupNotices:0,
       reportClaims:new Map(),challengedClaims:new Map(),reusedJudgment:null,lastOpaqueSeq:-1};states.set(agent.session.id,state);}
     return state;
@@ -356,11 +354,6 @@ export function createTaskFlow(ctx,runtime,{nativeFiles,call,executionDependenci
   function consume(agent,state,call,result,event,{coveredFailure=false,coveredNested=false,structuredReads=[],clippedReadSeqs=[],nonemptyRead=false}={}){
     if(call.name==='work_exec')state.lastInlineExec=event.seq;
     if(call.name==='run_code'||SHELL.includes(call.name))state.lastOpaqueSeq=event.seq;
-    if(state.executionForbidden&&!state.executionForbiddenAttempt&&state.lastUser&&
-      (call.name==='work_exec'||call.name==='work_probe'||
-        ['pwsh','bash'].includes(call.name)&&EXECUTION_COMMAND.test(String(call.args?.command??'')))){
-      state.executionForbiddenAttempt={userSeq:state.lastUser.seq,tool:call.name,seq:event.seq,step:state.step};
-    }
     if(state.lastUser&&event.seq>state.lastUser.seq&&!INTERNAL.has(call.name)&&!(call.name==='run_code'&&coveredNested)){
       state.pacing.operations++;state.pacing.steps.add(state.step);
     }
@@ -648,7 +641,6 @@ export function createTaskFlow(ctx,runtime,{nativeFiles,call,executionDependenci
           }
           state.lastUser={id:message.id,seq:event.seq,text};state.report=null;state.pacing=newPacing();state.reusedJudgment=null;state.sourceFollowup=null;
           state.sourceOnly=SOURCE_ONLY_REQUEST.test(text);
-          state.executionForbidden=EXECUTION_FORBIDDEN.test(text);state.executionForbiddenAttempt=null;
           state.firstSourceReadStep=null;state.lastSourceReadStep=null;state.pendingInterfaceChange=null;
           state.stageReporting={lastTextSeq:null,lastTextSteps:0,lastNoticeSteps:0,notices:0,notifiedPhases:[]};
           state.programFailure=null;state.programOutputDiagnostics=[];state.readResultRoots.clear();state.readOutputIssue=null;state.legacyInterpreterShell=null;state.lastQualityReviewedMutation=null;
@@ -861,15 +853,6 @@ export function createTaskFlow(ctx,runtime,{nativeFiles,call,executionDependenci
       return messages;
     }
     const judgment=judgmentReminder();if(judgment)return judgment;
-    const forbiddenExecution=state.executionForbiddenAttempt;
-    const forbiddenExecutionKey=JSON.stringify([user?.seq,'execution-forbidden']);
-    if(config.stepPacing&&user&&state.executionForbidden&&forbiddenExecution?.userSeq===user.seq&&
-      !state.pacing.notices.has(forbiddenExecutionKey)){
-      rememberPacing(state,forbiddenExecutionKey);
-      state.pacing.validationAdvised=true;
-      return emit('validation',forbiddenExecutionKey,'[work-evidence] 本次请求已明确限制运行应用或执行命令，事件'+forbiddenExecution.seq+
-        '仍启动了解释器或运行命令。不要继续查找或运行语法、导入、启动或重复检查；按已有源码继续调查并完成剩余修改，无法判断的分支保留为未解决并在最终汇报中列出。');
-    }
     const editFailure=[...state.errors.values()].findLast(error=>error.exactEditFailure&&
       error.userSeq===user?.seq&&state.step-error.step<=1);
     const editFailureKey=JSON.stringify([user?.seq,'exact-edit-failure',editFailure?.file]);
