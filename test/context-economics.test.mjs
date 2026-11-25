@@ -643,3 +643,18 @@ test('retained generated assistant output is charged even when an earlier prompt
   assert.ok(withOutput>withoutOutput,
     'a retained assistant message can refill as a generated-output cache unit');
 });
+
+test('an intact continuation does not subtract generated output when the proposal removes a cached prompt message',()=>{
+  const h=harness();
+  const a={id:'a',role:'user',content:[{type:'text',text:'A'.repeat(80)}]};
+  const b={id:'b',role:'assistant',content:[{type:'text',text:'B'.repeat(80)}]};
+  const c={id:'c',role:'assistant',content:[{type:'text',text:'C'.repeat(80)}]};
+  const d={id:'d',role:'user',content:[{type:'text',text:'D'.repeat(80)}]};
+  h.options.tools=[];h.options.system='';h.options.messages=[a,b];
+  h.finish(false,{inputTokens:200,cacheReadTokens:2000,cacheWriteTokens:0,outputTokens:80});
+  const result=h.economics.assess(h.agent,{messages:[a,b,c,d],proposedMessages:[a,c,d],
+    tools:[],system:'',route:{provider:'p',model:'m'},changedMessageId:'b'});
+  assert.ok(result.cachedSuffixTokensEstimate>0,
+    'removing a cached prompt message invalidates the generated-output prefix');
+  assert.notEqual(result.reason,'no-additional-previous-request-prefix-exposure');
+});

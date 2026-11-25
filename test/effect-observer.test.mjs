@@ -871,3 +871,87 @@ test('repeated observability rows reuse the established telemetry directory',asy
     assert.deepEqual((await stored(telemetryDir)).map(item=>item.requestId),['first-row','second-row']);
   }finally{await remove(telemetryDir);}
 });
+
+test('an oversized observability row is skipped and later rows still restore',async()=>{
+  const telemetryDir=await fs.mkdtemp(path.join(os.tmpdir(),'we-effects-oversize-'));
+  const file=path.join(telemetryDir,SESSION+'.observability.jsonl');
+  try{
+    await fs.writeFile(file,'x'.repeat(16*1024*1024+1)+'\n'+JSON.stringify(row('after-oversize'))+'\n','utf8');
+    const created=await start({telemetryDir});
+    await created.effects.load(created.agent);
+    const snapshot=created.effects.snapshot(created.agent);
+    assert.equal(snapshot.requests.count,1,'the valid row after the oversized row is restored');
+    assert.equal(snapshot.persistence.historyComplete,false);
+    assert.ok(snapshot.persistence.writeErrors.some(message=>/oversized observability row skipped/u.test(message)));
+  }finally{await remove(telemetryDir);}
+});
+
+test('a failed stream with complete usage is not counted as complete consumption',async()=>{
+  const telemetryDir=await fs.mkdtemp(path.join(os.tmpdir(),'we-effects-interrupted-'));
+  const created=await start({telemetryDir});
+  try{
+    created.effects.finish(created.agent,row('interrupted-stream',COMPLETE,{failureCode:'EIO'}));
+    await created.effects.flush(created.agent);
+    let snapshot=created.effects.snapshot(created.agent);
+    assert.equal(snapshot.requests.unknownConsumption,1);
+    assert.equal(snapshot.requests.completeUsageRequests,1,'the reported usage remains available');
+    const restored=await start({telemetryDir});
+    await restored.effects.load(restored.agent);
+    snapshot=restored.effects.snapshot(restored.agent);
+    assert.equal(snapshot.requests.unknownConsumption,1);
+    assert.equal(snapshot.recentRequests[0].unknownConsumption,true);
+  }finally{await remove(telemetryDir);}
+});
+
+test('a normal-mode ambiguous start is retained and written before its settlement',async()=>{
+  const telemetryDir=await fs.mkdtemp(path.join(os.tmpdir(),'we-effects-ambiguous-normal-'));
+  const file=path.join(telemetryDir,SESSION+'.observability.jsonl');
+  let fault=true,appendCalls=0;
+  const io={...realFs,
+    appendFile:async(...args)=>{
+      if(fault&&args[0]===file&&appendCalls++===0){
+        await realFs.appendFile(...args);
+        throw Object.assign(new Error('lost start acknowledgement'),{code:'EIO'});
+      }
+      return realFs.appendFile(...args);
+    },
+    readFile:async(...args)=>{
+      if(fault&&args[0]===file)throw Object.assign(new Error('injected readback failure'),{code:'EIO'});
+      return realFs.readFile(...args);
+    }};
+  const created=await start({telemetryDir,io});
+  try{
+    const next=row('ambiguous-normal-start');
+    await created.effects.start(created.agent,next);
+    assert.equal(next.startRecorded,false);
+    fault=false;
+    const flushed=await created.effects.flush(created.agent);
+    assert.equal(flushed.complete,true);
+    const rows=await stored(telemetryDir);
+    assert.equal(rows.filter(item=>item.schema==='work-evidence.request-start.v1').length,1);
+    assert.equal(rows.filter(item=>item.schema==='work-evidence.request-disposition.v1').length,1);
+  }finally{await remove(telemetryDir);}
+});
+
+test('a settlement does not overtake a pending start record',async()=>{
+  const telemetryDir=await fs.mkdtemp(path.join(os.tmpdir(),'we-effects-start-order-'));
+  let failStarts=true;
+  const io={...realFs,appendFile:async(...args)=>{
+    if(failStarts&&String(args[1]).includes('work-evidence.request-start.v1'))
+      throw Object.assign(new Error('injected start failure'),{code:'EACCES'});
+    return realFs.appendFile(...args);
+  }};
+  const created=await start({telemetryDir,io});
+  try{
+    await created.effects.start(created.agent,row('ordered-start'));
+    created.effects.finish(created.agent,row('ordered-effect'));
+    const blocked=await created.effects.flush(created.agent);
+    assert.equal(blocked.pendingRequestRows,1,'the settlement waits while its start is still pending');
+    await assert.rejects(()=>stored(telemetryDir),error=>error.code==='ENOENT');
+    failStarts=false;
+    const flushed=await created.effects.flush(created.agent);
+    assert.equal(flushed.complete,true);
+    const rows=await stored(telemetryDir);
+    assert.deepEqual(rows.map(item=>item.schema),['work-evidence.request-start.v1','work-evidence.request-effects.v1']);
+  }finally{await remove(telemetryDir);}
+});

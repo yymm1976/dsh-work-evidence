@@ -16,25 +16,35 @@ async function lastByte(io,file){
     return byte[0];
   }finally{await handle.close().catch(()=>{});}
 }
-async function* readLines(io,file){
+async function* readLines(io,file,onOversize=()=>{}){
   const handle=await io.open(file,'r');
   try{
     const buffer=Buffer.alloc(LOG_READ_CHUNK);
-    let carry=Buffer.alloc(0),position=0;
+    let carry=Buffer.alloc(0),position=0,skipping=false;
     for(;;){
       const {bytesRead}=await handle.read(buffer,0,buffer.length,position);
       if(!bytesRead)break;
       position+=bytesRead;
       carry=Buffer.concat([carry,buffer.subarray(0,bytesRead)]);
       let start=0;
-      for(let index=0;index<carry.length;index++)if(carry[index]===0x0a){
-        yield carry.subarray(start,index).toString('utf8');
-        start=index+1;
+      for(;;){
+        const newline=carry.indexOf(0x0a,start);
+        if(newline<0)break;
+        const line=carry.subarray(start,newline);
+        if(skipping)skipping=false;
+        else if(line.length>MAX_LOG_LINE_BYTES)onOversize();
+        else yield line.toString('utf8');
+        start=newline+1;
       }
       if(start)carry=carry.subarray(start);
-      if(carry.length>MAX_LOG_LINE_BYTES)throw new Error('Observability row exceeds the line-size limit');
+      // An oversized row is skipped instead of aborting the whole file. Keep
+      // discarding until its next newline so later valid rows can still load.
+      if(carry.length>MAX_LOG_LINE_BYTES){onOversize();skipping=true;carry=Buffer.alloc(0);}
     }
-    if(carry.length)yield carry.toString('utf8');
+    if(carry.length&&!skipping){
+      if(carry.length>MAX_LOG_LINE_BYTES)onOversize();
+      else yield carry.toString('utf8');
+    }
   }finally{await handle.close().catch(()=>{});}
 }
 async function unterminatedTail(io,file){
@@ -501,9 +511,10 @@ export function createEffectObserver(ctx,runtime,{io=fs}={}){
       return;
     }
     await state.finishQueue;
-    await flushStartRows(state,agent);
-    await flushRequestRows(state,agent);
-    await flushLinkRows(state,agent);
+    if(await flushStartRows(state,agent)){
+      await flushRequestRows(state,agent);
+      await flushLinkRows(state,agent);
+    }
     if(state.pendingStartRows.length||state.pendingStartDispositions.length||state.pendingRequestRows.length||state.finishFailed){
       if(strict){
         const error=new Error('Effect ledger could not persist the preceding request record; the next request was not dispatched.');
@@ -520,6 +531,11 @@ export function createEffectObserver(ctx,runtime,{io=fs}={}){
       const ambiguous=startIdentity!==null&&state.ambiguousRows.has(startIdentity);
       if(ambiguous){
         const finalState=strict?'not-dispatched':'dispatch-intent-degraded';
+        // Retain the original start until readback can prove whether it is
+        // already present. In normal mode the request may have been dispatched,
+        // so dropping the payload would leave only a disposition and no start.
+        if(!strict&&!state.pendingStartRows.some(item=>item.requestId===startRow.requestId))
+          state.pendingStartRows.push({...startRow});
         await persistStartDisposition(state,agent,startRow,finalState);
         if(strict){
           const error=new Error('Effect ledger could not establish whether the request-start record was persisted in strict mode; the request was not dispatched.');
@@ -565,8 +581,10 @@ export function createEffectObserver(ctx,runtime,{io=fs}={}){
     // complete consumption, so the verdict is kept and only rows without one fall back to the
     // local check. The verdict is never upgraded from an explicit false.
     const inconsistent=row.usageConsistent===false;
+    const interrupted=row.failureCode!==null&&row.failureCode!==undefined||row.aborted===true||row.dispatchState==='outcome-unknown';
     row.usageComplete=!inconsistent&&!missing&&row.usageComplete!==false;
-    row.unknownConsumption=!row.usageComplete||!row.settled||!['stop','tool-calls','max-tokens','length'].includes(row.finishReason);
+    row.unknownConsumption=!row.usageComplete||!row.settled||interrupted||
+      !['stop','tool-calls','max-tokens','length'].includes(row.finishReason);
     const kind=requestKindOf(row);state.requests++;if(kind==='auxiliary')state.auxiliaryRequests++;else if(kind==='compaction')state.compactionRequests++;else state.mainRequests++;
     if(!row.usageComplete)state.missingUsage++;if(row.unknownConsumption)state.unknownConsumption++;
     if(row.usageComplete)state.completeUsageRequests++;
@@ -619,12 +637,14 @@ export function createEffectObserver(ctx,runtime,{io=fs}={}){
     state.pendingRequestRows.push(row);
     state.finishPending++;
     state.finishQueue=state.finishQueue.catch(()=>{}).then(async()=>{
-      await flushStartRows(state,agent);
-      await flushRequestRows(state,agent);
-      // A flush already in progress may have observed an empty queue immediately
-      // before this row was pushed. Give it one more drain pass, but never retry a
-      // failed head by appending the later row ahead of it.
-      if(state.pendingRequestRows.includes(row))await flushRequestRows(state,agent);
+      const startsOk=await flushStartRows(state,agent);
+      if(startsOk){
+        await flushRequestRows(state,agent);
+        // A flush already in progress may have observed an empty queue immediately
+        // before this row was pushed. Give it one more drain pass, but never retry a
+        // failed head by appending the later row ahead of it.
+        if(state.pendingRequestRows.includes(row))await flushRequestRows(state,agent);
+      }
       const written=!state.pendingRequestRows.includes(row);
       state.finishFailed=!written;
       return written;
@@ -668,7 +688,10 @@ export function createEffectObserver(ctx,runtime,{io=fs}={}){
         const seen=new Set(),seenRows=new Map(),decisionIds=new Set();
         let corruptLines=0;
         try{
-          for await(const line of readLines(io,file)){
+          for await(const line of readLines(io,file,()=>{
+            state.loadErrors++;state.loadComplete=false;
+            state.writeErrors.push(kind+': oversized observability row skipped');
+          })){
             if(!line)continue;
             try{
               const item=JSON.parse(line);
@@ -680,16 +703,19 @@ export function createEffectObserver(ctx,runtime,{io=fs}={}){
                 ? item.schema==='work-evidence.pending-decisions.v1'?undefined:`${item.schema}:${item.requestId??item.at??''}`
                 : item.id;
               if(kind==='observability'&&id!==undefined){
+                const fingerprint=line.length+':'+createHash('sha256').update(line).digest('hex');
                 const prior=seenRows.get(id);
                 if(prior!==undefined){
-                  if(prior!==line){
+                  if(prior!==fingerprint){
                     state.persistenceConflict=true;
                     state.loadComplete=false;
                     state.writeErrors.push('Conflicting persistent row retained: '+id);
                   }
                   continue;
                 }
-                seenRows.set(id,line);
+                // Keep only a compact per-identity fingerprint after parsing the row.
+                // The full serialized row would retain the entire ledger in memory.
+                seenRows.set(id,fingerprint);
               }else if(id!==undefined){if(seen.has(id))continue;seen.add(id);}
               if(kind==='attribution'&&item.schema==='work-evidence.attribution.v1'&&typeof item.messageId==='string'&&Array.isArray(item.before)){
                 if(state.effectBytes+(item.bytes??0)>16*1024*1024){state.writeErrors.push('attribution restore exceeds memory limit');break;}
@@ -818,8 +844,9 @@ export function createEffectObserver(ctx,runtime,{io=fs}={}){
     for(let attempt=0;attempt<3;attempt++){
       await state.finishQueue.catch(()=>{});await state.overflowQueue.catch(()=>{});await state.queue.catch(()=>{});
       if(state.pendingOverflow.length){persistOverflow(state,agent);await state.overflowQueue.catch(()=>{});}
-      await flushStartRows(state,agent);
-      await flushRequestRows(state,agent);await flushLinkRows(state,agent);
+      if(await flushStartRows(state,agent)){
+        await flushRequestRows(state,agent);await flushLinkRows(state,agent);
+      }
       if(state.pendingDecisions.length){
         const decisions=state.pendingDecisions.slice();
         const written=await queue(state,agent,decisionBatchRow(agent.session.id,decisions,runtime.get(agent).step));

@@ -728,6 +728,16 @@ test('a reference path remains read-only when an edit target is also named',asyn
   }finally{await fs.rm(root,{recursive:true,force:true});}
 });
 
+test('an explanation clause does not add a second write target',async()=>{
+  const {root}=await writeScopeFixture();
+  try{
+    const bundle=await readSourceBundle(root,
+      '修复工作目录中的 target。Source-only: fix src/alpha.js. Explain how to fix src/filler-0.js.');
+    assert.deepEqual(bundle.writeScope.files,['src/alpha.js']);
+    assert.ok(!bundle.writeScope.files.includes('src/filler-0.js'));
+  }finally{await fs.rm(root,{recursive:true,force:true});}
+});
+
 test('a bounded edit preserves BOM and mixed line endings outside the changed span',async()=>{
   const host=await startHost({
     workspace:{boundedPatch:true,stepPacing:false,qualityReview:false,completionNotice:false,finalJsonGuard:false},

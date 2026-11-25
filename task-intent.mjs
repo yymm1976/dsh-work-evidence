@@ -257,6 +257,15 @@ function sentenceIsWritable(prose,raw=prose){
   return false;
 }
 
+/** Does this sentence have a write verb governed by an explanation/hypothetical? */
+function sentenceIsDiscussionOnly(sentence){
+  const prose=stripPaths(sentence);
+  for(const verb of positions(verbPattern,prose)){
+    if(isVerbUse(prose,verb.at,verb.text,sentence)&&explanationGovernor.test(prose.slice(0,verb.at)))return true;
+  }
+  return false;
+}
+
 /** Does this sentence name a write verb followed by a target? */
 // One definition of "this text asks for a change": a write verb followed by a target.
 // There is exactly one implementation, because two rounds of review found the same class
@@ -385,14 +394,16 @@ export function isReadOnlyTaskRequest(request){
 export function classifyTaskIntent(request){
   const text=String(request??'');
   if(isReadOnlyTaskRequest(text))return {readOnly:true,writeAuthorized:false,reason:'read-only-or-denied-write'};
+  let discussionOnly=false;
   for(const sentence of splitSentences(text)){
     if(!sentence.trim())continue;
     const prose=stripPaths(sentence);
     if(!verbProbe.test(prose)&&!sentenceImplements(prose))continue;
     if(!sentenceNamesTarget(sentence)&&!sentenceImplements(sentence))continue;
     if(sentenceIsWritable(prose,sentence))return {readOnly:false,writeAuthorized:true,reason:'affirmative-write-request'};
+    if(sentenceIsDiscussionOnly(sentence))discussionOnly=true;
   }
-  return {readOnly:false,writeAuthorized:false,reason:'no-affirmative-write-request'};
+  return {readOnly:false,writeAuthorized:false,discussionOnly,reason:'no-affirmative-write-request'};
 }
 
 export function hasWriteAuthorization(request){

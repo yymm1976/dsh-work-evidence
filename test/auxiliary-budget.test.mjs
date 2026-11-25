@@ -32,7 +32,7 @@ async function start({usage=OBSERVED,finishKind='stop',answer='{"ok":true}',effe
       ...(task?{taskBudgetScope:task.scope,taskTokenLimit:task.tokenLimit,taskCallLimit:task.calls}:{})});
   const budget=async()=>JSON.parse(await fs.readFile(file,'utf8'));
   const close=async()=>{await fs.rm(dir,{recursive:true,force:true,maxRetries:3});};
-  return {state,dispatched,control,run,budget,file,close};
+  return {state,dispatched,control,run,budget,file,close,ctx};
 }
 
 test('scoped reviews keep their own allowance and never consume the unscoped budget',async()=>{
@@ -401,6 +401,123 @@ test('a stale lock owned by a live process is not removed',async()=>{
       error.auxiliaryCode==='auxiliary-budget-unavailable'&&/active process/u.test(error.message));
     assert.equal(JSON.parse(await fs.readFile(lock,'utf8')).token,'still-owned');
     assert.equal(h.dispatched.length,0);
+  }finally{
+    await fs.rm(lock,{force:true}).catch(()=>{});
+    await h.close();
+  }
+});
+
+test('an abandoned stale-lock breaker is reclaimed',async()=>{
+  const h=await start();
+  const lock=h.file+'.lock',breakLock=lock+'.break';
+  const old=new Date(Date.now()-120_000);
+  try{
+    await fs.writeFile(lock,JSON.stringify({pid:2147483646,token:'dead-owner'}),'utf8');
+    await fs.writeFile(breakLock,JSON.stringify({pid:2147483646,token:'dead-breaker'}),'utf8');
+    await fs.utimes(lock,old,old);await fs.utimes(breakLock,old,old);
+    assert.equal((await h.run('breaker-recovery')).value.ok,true);
+    assert.deepEqual((await h.budget()).scopes['breaker-recovery'],{calls:1,tokens:150,failed:false});
+  }finally{
+    await fs.rm(lock,{force:true}).catch(()=>{});
+    await fs.rm(breakLock,{force:true}).catch(()=>{});
+    await h.close();
+  }
+});
+
+test('an empty stale lock is reclaimed instead of blocking every later admission',async()=>{
+  const h=await start();
+  const lock=h.file+'.lock';
+  const old=new Date(Date.now()-120_000);
+  try{
+    await fs.writeFile(lock,'','utf8');await fs.utimes(lock,old,old);
+    assert.equal((await h.run('empty-lock-recovery')).value.ok,true);
+  }finally{
+    await fs.rm(lock,{force:true}).catch(()=>{});
+    await h.close();
+  }
+});
+
+test('a live breaker still prevents stale-lock removal',async()=>{
+  const h=await start();
+  const lock=h.file+'.lock',breakLock=lock+'.break';
+  const old=new Date(Date.now()-120_000);
+  try{
+    await fs.writeFile(lock,JSON.stringify({pid:2147483646,token:'dead-owner'}),'utf8');
+    await fs.writeFile(breakLock,JSON.stringify({pid:process.pid,token:'live-breaker'}),'utf8');
+    await fs.utimes(lock,old,old);await fs.utimes(breakLock,old,old);
+    await assert.rejects(()=>h.run('live-breaker'),error=>
+      error.auxiliaryCode==='auxiliary-budget-unavailable'&&/active process/u.test(error.message));
+    assert.equal(JSON.parse(await fs.readFile(breakLock,'utf8')).token,'live-breaker');
+  }finally{
+    await fs.rm(lock,{force:true}).catch(()=>{});
+    await fs.rm(breakLock,{force:true}).catch(()=>{});
+    await h.close();
+  }
+});
+
+test('a reservation owned by a live runtime is not reclaimed by another state',async()=>{
+  const h=await start();
+  const old={scope:'live-reservation',taskScope:null,estimate:100,
+    ownerPid:process.pid,ownerToken:'live-owner',at:new Date().toISOString()};
+  try{
+    await fs.writeFile(h.file,JSON.stringify({general:{calls:0,tokens:0,failed:false},
+      scopes:{'live-reservation':{calls:1,tokens:100,failed:false}},tasks:{},
+      meta:{reservations:{reserved:old}}}),'utf8');
+    assert.equal((await h.run('live-reservation',2)).value.ok,true);
+    const record=await h.budget();
+    assert.equal(record.meta.reservations.reserved.ownerToken,'live-owner');
+    assert.equal(record.scopes['live-reservation'].failed,false);
+  }finally{await h.close();}
+});
+
+test('replaying a known-usage failure stops the scope but not the shared task',async()=>{
+  const h=await start();
+  const originalWrite=fs.writeFile;
+  let tempWrites=0,failSettlement=true;
+  fs.writeFile=async(file,...args)=>{
+    if(failSettlement&&String(file).includes('.auxiliary-budget.json.')&&String(file).endsWith('.tmp')&&++tempWrites===2)
+      throw Object.assign(new Error('injected settlement write failure'),{code:'EIO'});
+    return originalWrite(file,...args);
+  };
+  const task={scope:'known-replay',tokenLimit:32000,calls:4};
+  try{
+    h.control.usage=SMALL;h.control.finishKind='error';h.control.answer='';
+    await assert.rejects(()=>h.run('known-replay:a',1,task),/did not finish/);
+    failSettlement=false;
+    h.control.finishKind='stop';h.control.answer='{"ok":true}';
+    assert.equal((await h.run('known-replay:b',1,task)).value.ok,true);
+    const record=await h.budget();
+    assert.equal(record.scopes['known-replay:a'].failed,true);
+    assert.equal(record.tasks['known-replay'].failed,false);
+    assert.equal(record.tasks['known-replay'].calls,2);
+  }finally{
+    fs.writeFile=originalWrite;
+    await h.close();
+  }
+});
+
+test('a settlement lock timeout keeps the known usage for the next reservation',async()=>{
+  const h=await start();
+  const lock=h.file+'.lock',originalStream=h.ctx.llm.stream;
+  let first=true;
+  h.ctx.llm.stream=request=>{
+    const stream=originalStream(request);
+    return (async function*(){
+      if(first){
+        first=false;
+        await fs.writeFile(lock,JSON.stringify({pid:process.pid,token:'block-settlement'}),'utf8');
+      }
+      yield* stream;
+    })();
+  };
+  try{
+    assert.equal((await h.run('lock-settle')).value.ok,true);
+    await fs.rm(lock,{force:true});
+    assert.equal((await h.run('lock-settle-next')).value.ok,true);
+    const record=await h.budget();
+    assert.equal(record.scopes['lock-settle'].tokens,150,
+      'the timed-out settlement is replayed before the next reservation');
+    assert.equal(record.scopes['lock-settle'].failed,false);
   }finally{
     await fs.rm(lock,{force:true}).catch(()=>{});
     await h.close();

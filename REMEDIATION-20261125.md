@@ -7,9 +7,9 @@
 | 项 | 结果 |
 |---|---|
 | 语法检查 | `npm run check`，194 个 JavaScript 文件通过 |
-| 全量单测 | `npm test`，1137 项，1135 通过，0 失败，2 项按宿主能力跳过 |
+| 全量单测 | `npm test`，1149 项，1147 通过，0 失败，2 项按宿主能力跳过 |
 | 跳过原因 | 当前宿主三包均为 `0.2.2-rc.1`，条件写入后端可用；只描述“后端缺失”的用例按设计跳过 |
-| 并发波动 | 首次并发全量出现 1 次 `host-node-fallback` 的解释器约束用例失败；该文件单独运行 10/10，随后三轮全量通过，最近一轮为 1137 项。根因未定位，保留为测试稳定性风险，不写成已修复 |
+| 并发波动 | 首次并发全量出现 1 次 `host-node-fallback` 的解释器约束用例失败；该文件单独运行 10/10，随后三轮全量通过，最近一轮为 1149 项。根因未定位，保留为测试稳定性风险，不写成已修复 |
 | 打包安装 | `test/package-install.test.mjs` 通过；离线安装不拉宿主 peer，安装副本可加载 |
 | 声明文件加载 | `test/host-package-load.test.mjs` 通过；95 个声明文件，45 个功能项，无阻塞项 |
 | 宿主兼容 | `test/host-compatibility.test.mjs` 通过；声明与宿主运行时一致 |
@@ -56,6 +56,11 @@
 | 任务意图边界 | 内层否定 `forget not to` 不被 idiom 放行；解释/假设句中的改写动词不授予自动写入 | `test/task-intent.test.mjs` 的对应正反例 |
 | Windows 路径大小写 | 轨迹审计对 Windows 路径按大小写折叠比较；无物理身份时大小写变体按可能同一文件处理 | `test/trajectory-audit.test.mjs` 的两条反例 |
 | Windows pwsh 命令上限 | `inlineCommand` 在 win32 用完整命令的字符数对照 30,000 字符上限；超限在启动前返回明确错误，不再因路径分支漏检 | `test/inline-exec-platform.test.mjs` 的 Windows 超限回归 |
+| 预算锁恢复 | 锁和 breaker 都写入 `{pid,token}`；过期或空锁通过重命名后再按令牌确认，死进程的 breaker 可被后续请求接管，活 breaker 仍拒绝恢复 | `test/auxiliary-budget.test.mjs` 的 abandoned/live breaker 与空锁回归 |
+| 预留归属与结算重放 | 预留记录带 `ownerPid`/`ownerToken`；另一运行时不会回收存活 owner，结算先保存 pending，锁超时或写入失败后在下一次预留中重放实际用量 | `test/auxiliary-budget.test.mjs` 的 live-owner、锁超时和已知失败重放回归 |
+| 观测账本恢复 | 超大行按新行边界跳过并继续读取；恢复时按稳定身份保存紧凑指纹；开始记录写入失败时保留原 payload，结算等待开始记录成功；失败/中止/未知分派的完整 usage 仍标为未知消费 | `test/effect-observer.test.mjs` 的 oversize、ambiguous-start、start-before-settlement 和 interrupted-stream 回归 |
+| 缓存连续前缀 | 移除已缓存提示消息会使生成输出缓存边界失效；此时不从现有曝光中扣除生成输出，避免把重写误判为零重填 | `test/context-economics.test.mjs` 的 intact-continuation 回归 |
+| 有界补丁范围 | 解释条款不加入正向写入范围；请求切换时清空旧 promise；刷新 bundle 必须保持初始源目录 | `test/bounded-patch.test.mjs` 的 explanation-scope 回归 |
 | 发布脚本依赖 | `package.json.files` 纳入 `test/helpers/host.mjs` 与 `paths.mjs`，打包安装可直接运行 `profile:host` | `npm pack --dry-run` 文件清单 |
 | 缓存边界与生成输出 | 仅在本轮已有 cache-read/cache-write 证据时排除相同提示前缀；保留的生成 assistant 消息按独立输出暴露计费，不受上一请求输入 Token 上限截断 | `test/context-economics.test.mjs` 的两条边界测试 |
 | 权限失败测试 | 日志恢复测试改用注入 `appendFile`/`truncate` 失败，不再依赖 `chmod` 在 root/CAP_DAC_OVERRIDE 环境下是否生效 | `test/effect-observer.test.mjs` |
@@ -228,7 +233,7 @@
 ## 尚未完成
 
 - 审查后真实模型小卷已执行到 `EcoNative49`；45–49 的连续三次达标记录见交接页。本节不把该结果当作审查报告级别以上的质量证明。
-- PR #12 的最新复审为 `6053426991`，基准 `393d424`，返回 14 条 actionable，均为 Major；对应修复已进入本轮工作树并通过定向回归。尚有 8 条旧线程未关闭：6 条对应本轮修复，2 条 `runtime.mjs` 在当前源码中已无对应实现。提交推送后需逐条回复并 resolve，不能把线程关闭数量当作研发成果。
+- PR #12 的最新复审为 `6053426991`，基准 `393d424`，返回 14 条 actionable；另有 19 条更早线程仍未关闭。当前工作树已覆盖这些真实问题并通过全量回归；提交推送后需逐条回复、resolve，并对过期线程说明当前源码已无对应实现。线程关闭数量不构成研发成果。
 - `boundedPatch` 的项目规模、文件数、源码字节和缺陷数量只表示机制适用性；本轮没有跨项目验证这些阈值，不能据此宣称通用效率收益。
 - 请求开始记录在持久化不可用且进程被强制终止时无法恢复；状态只标记不完整。
 - 本地 Token 估计不是服务端分词；预算不能视为服务端硬限制。

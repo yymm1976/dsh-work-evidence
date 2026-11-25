@@ -213,7 +213,12 @@ export function createContextEconomics(ctx,runtime){
         // A committed backend change may already expose a suffix. Charge only
         // the additional suffix this projection changes, without assuming the
         // backend event or a route change made the entire request cold.
-        const baselineAligned=existing.prefix===Math.min(old.keys.length,(messages??[]).length)&&proposed.prefix<=old.keys.length;
+        // Subtract the existing exposure only when the proposed request still
+        // preserves the complete cached prompt prefix. Removing or rewriting a
+        // prompt message before the generated output invalidates that baseline,
+        // even when the current request already contains the generated message.
+        const baselineAligned=existing.prefix===Math.min(old.keys.length,(messages??[]).length)&&
+          proposed.prefix>=old.keys.length;
         cachedSuffixTokens=Math.ceil(Math.max(0,proposed.tokens-(baselineAligned?existing.tokens:0)));
         exposureMethod='rewritten surviving suffix plus new replacements and retained generated output; matching prompt prefix excluded only with observed cache boundary evidence; unchanged unsent tail excluded; existing baseline exposure subtracted only when the current request is a complete continuation of the previous request';
       }else if(proposedMessages){cachedSuffixTokens=cached;}

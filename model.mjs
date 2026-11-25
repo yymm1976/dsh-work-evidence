@@ -75,34 +75,73 @@ async function writeBudgetAtomic(file,budget){
 }
 const LOCK_STALE_MS=30_000;
 const LOCK_WAIT_MS=5_000;
+const activeReservationIds=new Set();
 function processAlive(pid){
   if(!Number.isSafeInteger(pid)||pid<=0)return false;
   if(pid===process.pid)return true;
   try{process.kill(pid,0);return true;}catch(error){return error?.code==='EPERM';}
 }
+function reservationOwnerAlive(marker){
+  return Number.isSafeInteger(marker?.ownerPid)&&marker.ownerPid>0&&processAlive(marker.ownerPid);
+}
 async function readLockRecord(file){
   try{return JSON.parse(await fs.readFile(file,'utf8'));}catch{return null;}
 }
-async function releaseBudgetLock(lock,token){
-  const candidate=lock+'.released-'+randomUUID();
-  try{await fs.rename(lock,candidate);}catch(error){if(error?.code==='ENOENT')return;throw error;}
+async function releaseTokenFile(file,token,{removeUnreadable=false}={}){
+  const candidate=file+'.released-'+randomUUID();
+  try{await fs.rename(file,candidate);}catch(error){if(error?.code==='ENOENT')return;throw error;}
   const moved=await readLockRecord(candidate);
   if(moved?.token===token){await fs.rm(candidate,{force:true});return;}
-  try{await fs.rename(candidate,lock);}
+  if(removeUnreadable&&moved===null){await fs.rm(candidate,{force:true});return;}
+  try{await fs.rename(candidate,file);}
   catch{await fs.rm(candidate,{force:true}).catch(()=>{});}
 }
+const releaseBudgetLock=(lock,token)=>releaseTokenFile(lock,token);
+async function reclaimBreakFile(breakLock){
+  let info=null;
+  try{info=await fs.stat(breakLock);}catch(error){if(error?.code==='ENOENT')return true;return false;}
+  const before=await readLockRecord(breakLock);
+  // A live breaker is never removed. An empty or unreadable breaker is
+  // recoverable only after the stale interval, because a live process can be
+  // between creating the file and writing its ownership record.
+  if(before&&Number.isSafeInteger(before.pid)&&processAlive(before.pid))return false;
+  if((!before||!Number.isSafeInteger(before.pid))&&Date.now()-info.mtimeMs<=LOCK_STALE_MS)return false;
+  const candidate=breakLock+'.stale-'+randomUUID();
+  try{await fs.rename(breakLock,candidate);}catch(error){return error?.code==='ENOENT';}
+  const moved=await readLockRecord(candidate);
+  const same=before===null?moved===null:moved?.token===before.token;
+  if(same){await fs.rm(candidate,{force:true});return true;}
+  try{await fs.rename(candidate,breakLock);}
+  catch{await fs.rm(candidate,{force:true}).catch(()=>{});}
+  return false;
+}
 async function breakStaleLock(lock,breakLock){
+  const token=randomUUID();
   let breaker;
   try{breaker=await fs.open(breakLock,'wx');}
-  catch(error){if(error?.code==='EEXIST')return false;throw error;}
+  catch(error){
+    if(error?.code!=='EEXIST')throw error;
+    if(!await reclaimBreakFile(breakLock))return false;
+    try{breaker=await fs.open(breakLock,'wx');}
+    catch{return false;}
+  }
   try{
+    await breaker.writeFile(JSON.stringify({pid:process.pid,token,at:new Date().toISOString()}),'utf8');
     const before=await readLockRecord(lock);
-    if(!before||processAlive(before.pid))return false;
+    let info;
+    try{info=await fs.stat(lock);}catch(error){if(error?.code==='ENOENT')return true;throw error;}
+    // A live owner is never removed. An empty or unreadable lock needs the
+    // stale interval, because its creator may be between open('wx') and the
+    // ownership write. A readable record with a dead PID is safe to reclaim.
+    const knownOwner=before&&Number.isSafeInteger(before.pid);
+    if(knownOwner&&processAlive(before.pid))return false;
+    if(!knownOwner&&Date.now()-info.mtimeMs<=LOCK_STALE_MS)return false;
     const candidate=lock+'.stale-'+randomUUID();
     try{await fs.rename(lock,candidate);}
     catch(error){if(error?.code==='ENOENT')return true;throw error;}
     const moved=await readLockRecord(candidate);
-    if(before.token!==undefined&&moved?.token===before.token)await fs.rm(candidate,{force:true});
+    const same=before===null?moved===null:moved?.token===before.token;
+    if(same)await fs.rm(candidate,{force:true});
     else{
       try{await fs.rename(candidate,lock);}
       catch{await fs.rm(candidate,{force:true}).catch(()=>{});}
@@ -110,7 +149,7 @@ async function breakStaleLock(lock,breakLock){
     return true;
   }finally{
     await breaker.close().catch(()=>{});
-    await fs.rm(breakLock,{force:true}).catch(()=>{});
+    await releaseTokenFile(breakLock,token,{removeUnreadable:true}).catch(()=>{});
   }
 }
 async function withBudgetLock(file,operation){
@@ -125,7 +164,9 @@ async function withBudgetLock(file,operation){
       if(error.code!=='EEXIST')throw error;
       try{
         const info=await fs.stat(lock);
-        if(Date.now()-info.mtimeMs>LOCK_STALE_MS){
+        const record=await readLockRecord(lock);
+        const deadOwner=record&&Number.isSafeInteger(record.pid)&&!processAlive(record.pid);
+        if(Date.now()-info.mtimeMs>LOCK_STALE_MS||deadOwner){
           if(await breakStaleLock(lock,breakLock))continue;
           throw budgetStop('Auxiliary budget lock belongs to an active process; it was not removed','auxiliary-budget-unavailable');
         }
@@ -137,15 +178,6 @@ async function withBudgetLock(file,operation){
       continue;
     }
     const token=randomUUID();
-    let ownsBreak=false;
-    try{await fs.access(breakLock);ownsBreak=true;}catch{}
-    if(ownsBreak){
-      await handle.close().catch(()=>{});
-      await releaseBudgetLock(lock,token).catch(()=>{});
-      if(Date.now()-started>LOCK_WAIT_MS)throw budgetStop('Auxiliary budget file is locked by another process','auxiliary-budget-unavailable');
-      await new Promise(resolve=>setTimeout(resolve,25));
-      continue;
-    }
     try{
       await handle.writeFile(JSON.stringify({pid:process.pid,token,at:new Date().toISOString()}),'utf8');
       return await operation();
@@ -206,17 +238,18 @@ async function reserveBudget(runtime,agent,estimate,tokenLimit=32000,scope=null,
       const reconciledPending=[];
       let reconciled=false;
       for(const [reservationId,marker] of Object.entries(meta.reservations)){
-        if(s.auxiliaryBudgetReservations.has(reservationId))continue;
+        if(s.auxiliaryBudgetReservations.has(reservationId)||activeReservationIds.has(reservationId))continue;
         const pending=s.auxiliaryBudgetPendingSettlements.get(reservationId);
         const currentEntry=marker?.scope?budget.scopes?.[marker.scope]:budget.general;
         const currentTask=marker?.taskScope?budget.tasks?.[marker.taskScope]:null;
         if(pending?.file===file){
+          const estimate=Number.isSafeInteger(marker?.estimate)?marker.estimate:pending.estimate;
           if(currentEntry){
             if(pending.notDispatched){
               currentEntry.calls=Math.max(0,currentEntry.calls-1);
-              currentEntry.tokens=Math.max(0,currentEntry.tokens-pending.estimate);
+              currentEntry.tokens=Math.max(0,currentEntry.tokens-estimate);
             }else if(pending.tokens!==null){
-              currentEntry.tokens+=pending.tokens-pending.estimate;
+              currentEntry.tokens+=pending.tokens-estimate;
             }else{
               currentEntry.failed=true;
             }
@@ -225,18 +258,21 @@ async function reserveBudget(runtime,agent,estimate,tokenLimit=32000,scope=null,
           if(currentTask){
             if(pending.notDispatched){
               currentTask.calls=Math.max(0,currentTask.calls-1);
-              currentTask.tokens=Math.max(0,currentTask.tokens-pending.estimate);
+              currentTask.tokens=Math.max(0,currentTask.tokens-estimate);
             }else if(pending.tokens!==null){
-              currentTask.tokens+=pending.tokens-pending.estimate;
+              currentTask.tokens+=pending.tokens-estimate;
             }else{
               currentTask.failed=true;
             }
-            if(pending.failed)currentTask.failed=true;
           }
           reconciledPending.push(reservationId);
+        }else if(reservationOwnerAlive(marker)){
+          // Another live runtime state can own this durable reservation. Do not
+          // reclaim it or its usage before that owner settles.
+          continue;
         }else{
-          // A durable reservation without a live owner can only be an interrupted
-          // settlement. Stopping the affected allowance is safer than dispatching
+          // A durable reservation without a live owner is an interrupted
+          // settlement. Stopping the affected allowance is safer than spending
           // against an estimate that may already be spent.
           if(currentEntry)currentEntry.failed=true;
           if(currentTask)currentTask.failed=true;
@@ -268,7 +304,7 @@ async function reserveBudget(runtime,agent,estimate,tokenLimit=32000,scope=null,
       if(taskScope){meta.limits.tasks[taskScope]={callLimit:taskCallLimit,tokenLimit:taskTokenLimit};
         meta.inFlight.tasks[taskScope]=(meta.inFlight.tasks[taskScope]??0)+1;}
       const reservationId=randomUUID();
-      meta.reservations[reservationId]={scope,taskScope,estimate,at:new Date().toISOString()};
+      meta.reservations[reservationId]={scope,taskScope,estimate,ownerPid:process.pid,ownerToken:randomUUID(),at:new Date().toISOString()};
       pruneTerminalBudget(budget,meta,'scopes',meta.inFlight.scopes,meta.limits.scopes,meta.retired.scopes);
       pruneTerminalBudget(budget,meta,'tasks',meta.inFlight.tasks,meta.limits.tasks,meta.retired.tasks);
       s.auxiliaryBudget=budget;
@@ -279,72 +315,90 @@ async function reserveBudget(runtime,agent,estimate,tokenLimit=32000,scope=null,
         delete meta.reservations[reservationId];
         throw budgetStop('Auxiliary budget record could not be saved: '+error.message,'auxiliary-budget-unavailable',error);}
       s.auxiliaryBudgetReservations.add(reservationId);
+      activeReservationIds.add(reservationId);
       s.auxiliaryBudget=budget;
       return {file,estimate,entry,task,budget,meta,scopeKey:scope,taskKey:taskScope,
         async settle({tokens=null,failed=false,notDispatched=false}={}){
-          const rememberPending=()=>s.auxiliaryBudgetPendingSettlements.set(reservationId,
-            {file,scope,taskScope,estimate,tokens,failed,notDispatched});
+          const pending={file,scope,taskScope,estimate,tokens,failed,notDispatched};
+          // Save the replayable settlement before touching the lock. A timeout
+          // here must not let the next reservation mistake known usage for an
+          // abandoned estimate.
+          s.auxiliaryBudgetPendingSettlements.set(reservationId,pending);
           try{
             return await budgetOperation(s,async()=>{
-              return withBudgetLock(file,async()=>{
-                let current;
-                try{current=JSON.parse(await fs.readFile(file,'utf8'));}
-                catch(error){
-                  rememberPending();
-                  runtime.problem(s,'auxiliary-budget-settle','Settlement could not read the current budget record: '+error.message);
-                  return {notDispatched,complete:false};
-                }
-                if(!current||typeof current!=='object'||Array.isArray(current)){
-                  rememberPending();
-                  runtime.problem(s,'auxiliary-budget-settle','Settlement found an invalid budget record');
-                  return {notDispatched,complete:false};
-                }
-                let currentMeta;
-                try{currentMeta=budgetMeta(current);}
-                catch(error){
-                  rememberPending();
+              try{
+                return await withBudgetLock(file,async()=>{
+                  let current;
+                  try{current=JSON.parse(await fs.readFile(file,'utf8'));}
+                  catch(error){
+                    runtime.problem(s,'auxiliary-budget-settle','Settlement could not read the current budget record: '+error.message);
+                    return {notDispatched,complete:false};
+                  }
+                  if(!current||typeof current!=='object'||Array.isArray(current)){
+                    runtime.problem(s,'auxiliary-budget-settle','Settlement found an invalid budget record');
+                    return {notDispatched,complete:false};
+                  }
+                  let currentMeta;
+                  try{currentMeta=budgetMeta(current);}
+                  catch(error){
+                    runtime.problem(s,'auxiliary-budget-settle',error.message);
+                    return {notDispatched,complete:false};
+                  }
+                  const saved=s.auxiliaryBudgetPendingSettlements.get(reservationId)??pending;
+                  const marker=currentMeta.reservations[reservationId];
+                  // A missing marker is not proof that this settlement was
+                  // recorded: another runtime may have reclaimed it. Apply the
+                  // saved actual usage when the record is absent and only report
+                  // completeness after that usage is written back.
+                  const settleEstimate=Number.isSafeInteger(marker?.estimate)?marker.estimate:saved.estimate;
+                  const settleTokens=saved.tokens;
+                  const settleNotDispatched=saved.notDispatched===true;
+                  const currentEntry=scope?current.scopes?.[scope]:current.general;
+                  const currentTask=taskScope?current.tasks?.[taskScope]:null;
+                  if(!currentEntry||(taskScope&&!currentTask)){
+                    runtime.problem(s,'auxiliary-budget-settle','Settlement target is no longer present in the budget record');
+                    return {notDispatched,complete:false};
+                  }
+                  if(settleNotDispatched){
+                    currentEntry.calls=Math.max(0,currentEntry.calls-1);
+                    currentEntry.tokens=Math.max(0,currentEntry.tokens-settleEstimate);
+                    if(currentTask){currentTask.calls=Math.max(0,currentTask.calls-1);currentTask.tokens=Math.max(0,currentTask.tokens-settleEstimate);}
+                  }else if(settleTokens!==null){
+                    currentEntry.tokens+=settleTokens-settleEstimate;
+                    if(currentTask)currentTask.tokens+=settleTokens-settleEstimate;
+                  }else{
+                    currentEntry.failed=true;if(currentTask)currentTask.failed=true;
+                  }
+                  // A known-usage model failure stops this operation scope only.
+                  // Unknown usage above stops the shared task as well.
+                  if(saved.failed)currentEntry.failed=true;
+                  if(marker){
+                    delete currentMeta.reservations[reservationId];
+                    if(scope&&currentMeta.inFlight?.scopes?.[scope])currentMeta.inFlight.scopes[scope]--;
+                    if(taskScope&&currentMeta.inFlight?.tasks?.[taskScope])currentMeta.inFlight.tasks[taskScope]--;
+                  }
+                  try{await writeBudgetAtomic(file,current);}
+                  catch(error){
+                    currentEntry.failed=true;
+                    runtime.problem(s,'auxiliary-budget-persist',error.message);
+                    s.auxiliaryBudget=current;
+                    return {notDispatched,complete:false};
+                  }
+                  s.auxiliaryBudgetPendingSettlements.delete(reservationId);
+                  s.auxiliaryBudget=current;
+                  return {notDispatched:settleNotDispatched,complete:settleNotDispatched||settleTokens!==null};
+                });
+              }catch(error){
+                if(String(error?.auxiliaryCode??'').startsWith('auxiliary-budget-')){
                   runtime.problem(s,'auxiliary-budget-settle',error.message);
                   return {notDispatched,complete:false};
                 }
-                if(!currentMeta.reservations[reservationId]){
-                  s.auxiliaryBudgetPendingSettlements.delete(reservationId);
-                  return {notDispatched,complete:true};
-                }
-                const currentEntry=scope?current.scopes?.[scope]:current.general;
-                const currentTask=taskScope?current.tasks?.[taskScope]:null;
-                if(!currentEntry||(taskScope&&!currentTask)){
-                  rememberPending();
-                  runtime.problem(s,'auxiliary-budget-settle','Settlement target is no longer present in the budget record');
-                  return {notDispatched,complete:false};
-                }
-                if(notDispatched){
-                  currentEntry.calls=Math.max(0,currentEntry.calls-1);
-                  currentEntry.tokens=Math.max(0,currentEntry.tokens-estimate);
-                  if(currentTask){currentTask.calls=Math.max(0,currentTask.calls-1);currentTask.tokens=Math.max(0,currentTask.tokens-estimate);}
-                }else if(tokens!==null){
-                  currentEntry.tokens+=tokens-estimate;if(currentTask)currentTask.tokens+=tokens-estimate;
-                }else{
-                  currentEntry.failed=true;if(currentTask)currentTask.failed=true;
-                }
-                if(failed)currentEntry.failed=true;
-                delete currentMeta.reservations[reservationId];
-                if(scope&&currentMeta.inFlight?.scopes?.[scope])currentMeta.inFlight.scopes[scope]--;
-                if(taskScope&&currentMeta.inFlight?.tasks?.[taskScope])currentMeta.inFlight.tasks[taskScope]--;
-                try{await writeBudgetAtomic(file,current);}
-                catch(error){
-                  currentEntry.failed=true;if(currentTask)currentTask.failed=true;
-                  rememberPending();
-                  runtime.problem(s,'auxiliary-budget-persist',error.message);
-                  s.auxiliaryBudget=current;
-                  return {notDispatched,complete:false};
-                }
-                s.auxiliaryBudgetPendingSettlements.delete(reservationId);
-                s.auxiliaryBudget=current;
-                return {notDispatched,complete:notDispatched||tokens!==null};
-              });
+                throw error;
+              }
             });
           }finally{
             s.auxiliaryBudgetReservations.delete(reservationId);
+            activeReservationIds.delete(reservationId);
           }
         }};
     });
@@ -406,7 +460,12 @@ export async function modelJson(ctx,runtime,agent,signal,system,payload,{maxToke
       runtime.problem(s,'auxiliary-usage-unavailable','Auxiliary consumption is incomplete; the reservation is retained and further auxiliary calls'+
         (budgetScope?' for '+budgetScope:' without a budget scope')+' are stopped.');
     }
-    await reservation.settle({tokens,failed,notDispatched});
-    s.auxiliarySignals.delete(joined);s.metrics.auxiliaryMs+=Math.round(performance.now()-began);s.dirty=true;
+    try{
+      await reservation.settle({tokens,failed,notDispatched});
+    }catch(error){
+      runtime.problem(s,'auxiliary-budget-settle',String(error?.message??error).slice(0,240));
+    }finally{
+      s.auxiliarySignals.delete(joined);s.metrics.auxiliaryMs+=Math.round(performance.now()-began);s.dirty=true;
+    }
   }
 }

@@ -168,7 +168,7 @@ function positiveScopeTokens(request) {
   const tokens = [];
   for (const sentence of splitSentences(withoutReferenceSpans(unquotedText(request)))) {
     const intent = classifyTaskIntent(sentence);
-    if (!sentence.trim() || intent.readOnly || NEGATIVE_SCOPE.test(sentence) || !MUTATION.test(sentence)) continue;
+    if (!sentence.trim() || intent.readOnly || intent.discussionOnly || NEGATIVE_SCOPE.test(sentence) || !MUTATION.test(sentence)) continue;
     tokens.push(...scopeTokens(sentence));
   }
   return [...new Set(tokens)];
@@ -1091,6 +1091,7 @@ export function createBoundedPatch(ctx, runtime, {effects}) {
     const state = get(agent), requestId = request.id ?? String(request.seq);
     if (state.requestId === requestId) return state.promise ?? state.result;
     state.requestId = requestId;
+    state.promise = null;
     state.result = null;
     if (!sourceOnlyMaintenanceTask(task)) {
       decide(agent, 'not-applicable', 'task-not-bounded-source-maintenance', {requestChars: task.length});
@@ -1116,6 +1117,7 @@ export function createBoundedPatch(ctx, runtime, {effects}) {
           readOnly: value.files.filter(file => !writable.includes(file.path)).map(file => file.path)};
       };
       bundle = constrained(bundle);
+      const pinnedSourceRelative = bundle.sourceRelative;
       if (bundle.writeScope?.status !== 'explicit' || !bundle.writeScope.files.length) {
         decide(agent, 'not-applicable', 'write-scope-unresolved',
           {scopeStatus: bundle.writeScope?.status ?? 'missing', writableFiles: bundle.writeScope?.files?.length ?? 0});
@@ -1123,7 +1125,8 @@ export function createBoundedPatch(ctx, runtime, {effects}) {
       }
       const refreshBundle = async () => {
         const refreshed = await readSourceBundle(root, task, {files: nativeFiles, signal});
-        if (!refreshed) throw new Error('Source bundle refresh failed after a bounded edit; refusing to reuse the pre-edit snapshot.');
+        if (!refreshed || refreshed.sourceRelative !== pinnedSourceRelative)
+          throw new Error('Source bundle refresh failed after a bounded edit; refusing to reuse the pre-edit snapshot.');
         return constrained(refreshed);
       };
       const sourceBytes = bundle.files.reduce((sum, file) => sum + Buffer.byteLength(file.text), 0);
