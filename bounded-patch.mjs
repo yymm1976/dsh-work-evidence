@@ -20,6 +20,7 @@ const SCOPE_STOPWORDS = new Set([
 ]);
 const SCOPE_TOKEN = /(?:[A-Za-z]:[\\/][^\s`"'“”‘’，。；;]+|(?:[\w.@+-]+[\\/])+[\w.@+-]+|\b[\w.@+-]+\.[A-Za-z0-9]{1,12}\b|\b[A-Za-z_][\w.-]{1,80}\b)/gu;
 const NEGATIVE_SCOPE = /(?:不要|不得|禁止|不能|不允许|无需|不需|do not|must not|never)/iu;
+const EXPLICIT_SCOPE_CLAUSE = /^\s*(?:(?:请|只|仅|务必|必须|需要|应当|应该|先|再|然后|接着|同时|并|且|please)\s*)*(?:修复|修改|补齐|补全|实现|解决|整改|fix|repair|modify|implement|resolve)/iu;
 const NO_EXEC = /(?:不要|不得|禁止|不能|不允许|无需|不需)\s*(?:运行|执行|启动|run|execute|spawn)|(?:do not|must not|never)\s+(?:run|execute|spawn)/iu;
 const SOURCE_EXTENSIONS = new Set([
   '.c', '.cc', '.cpp', '.cs', '.css', '.go', '.gradle', '.h', '.hpp', '.html', '.java',
@@ -165,10 +166,12 @@ function withoutReferenceSpans(text) {
 }
 
 function positiveScopeTokens(request) {
+  if (!classifyTaskIntent(request).writeAuthorized) return [];
   const tokens = [];
   for (const sentence of splitSentences(withoutReferenceSpans(unquotedText(request)))) {
     const intent = classifyTaskIntent(sentence);
-    if (!sentence.trim() || intent.readOnly || intent.discussionOnly || NEGATIVE_SCOPE.test(sentence) || !MUTATION.test(sentence)) continue;
+    const explicitScope = MUTATION.test(sentence) && scopeTokens(sentence).length && EXPLICIT_SCOPE_CLAUSE.test(sentence);
+    if (!sentence.trim() || (!intent.writeAuthorized && !explicitScope) || NEGATIVE_SCOPE.test(sentence)) continue;
     tokens.push(...scopeTokens(sentence));
   }
   return [...new Set(tokens)];

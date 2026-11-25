@@ -8,9 +8,8 @@ import {modelJson} from '../model.mjs';
 const OBSERVED={inputTokens:100,cacheReadTokens:0,cacheWriteTokens:0,outputTokens:50,totalTokens:150};
 const SMALL={inputTokens:20,cacheReadTokens:0,cacheWriteTokens:0,outputTokens:5,totalTokens:25};
 
-async function start({usage=OBSERVED,finishKind='stop',answer='{"ok":true}',effects=null}={}){
-  const dir=await fs.mkdtemp(path.join(os.tmpdir(),'we-aux-budget-'));
-  const id='session-aux';
+async function start({usage=OBSERVED,finishKind='stop',answer='{"ok":true}',effects=null,dir=null,id='session-aux'}={}){
+  dir??=await fs.mkdtemp(path.join(os.tmpdir(),'we-aux-budget-'));
   const file=path.join(dir,id+'.auxiliary-budget.json');
   const dispatched=[],control={usage,finishKind,answer};
   const ctx={llm:{stream(request){
@@ -18,6 +17,7 @@ async function start({usage=OBSERVED,finishKind='stop',answer='{"ok":true}',effe
     dispatched.push(request);
     return (async function*(){
       yield {type:'block-end',block:{type:'text',text:control.answer}};
+      if(control.hold)await new Promise(resolve=>{control.release=resolve;});
       if(control.usage!==null)yield {type:'usage',usage:control.usage};
       yield {type:'finish',reason:{kind:control.finishKind}};
     })();
@@ -455,7 +455,7 @@ test('a live breaker still prevents stale-lock removal',async()=>{
   }
 });
 
-test('a reservation owned by a live runtime is not reclaimed by another state',async()=>{
+test('a same-process reservation without an active owner is treated as interrupted',async()=>{
   const h=await start();
   const old={scope:'live-reservation',taskScope:null,estimate:100,
     ownerPid:process.pid,ownerToken:'live-owner',at:new Date().toISOString()};
@@ -463,11 +463,34 @@ test('a reservation owned by a live runtime is not reclaimed by another state',a
     await fs.writeFile(h.file,JSON.stringify({general:{calls:0,tokens:0,failed:false},
       scopes:{'live-reservation':{calls:1,tokens:100,failed:false}},tasks:{},
       meta:{reservations:{reserved:old}}}),'utf8');
-    assert.equal((await h.run('live-reservation',2)).value.ok,true);
+    await assert.rejects(()=>h.run('live-reservation',2),error=>
+      error.auxiliaryCode==='auxiliary-scope-stopped'&&error.auxiliaryDispatched===false);
+    assert.equal(h.dispatched.length,0);
     const record=await h.budget();
-    assert.equal(record.meta.reservations.reserved.ownerToken,'live-owner');
-    assert.equal(record.scopes['live-reservation'].failed,false);
+    assert.deepEqual(record.meta.reservations,{});
+    assert.equal(record.scopes['live-reservation'].failed,true);
   }finally{await h.close();}
+});
+
+test('a reservation held by another live runtime state is not reclaimed',async()=>{
+  const first=await start();
+  let second=null;
+  try{
+    first.control.hold=true;
+    const running=first.run('live-reservation',3);
+    for(let index=0;index<100&&!first.dispatched.length;index++)await new Promise(resolve=>setTimeout(resolve,5));
+    assert.equal(first.dispatched.length,1);
+    second=await start({dir:first.state.dir,id:first.state.id});
+    assert.equal((await second.run('another-scope',1)).value.ok,true);
+    const during=await first.budget();
+    assert.equal(Object.keys(during.meta.reservations).length,1);
+    assert.equal(during.scopes['live-reservation'].failed,false);
+    first.control.release();
+    assert.equal((await running).value.ok,true);
+  }finally{
+    first.control.release?.();
+    await first.close();
+  }
 });
 
 test('replaying a known-usage failure stops the scope but not the shared task',async()=>{
@@ -545,6 +568,29 @@ test('a failed unknown-usage settlement remains enforceable on the next reservat
     assert.deepEqual(record.meta.reservations,{});
   }finally{
     fs.writeFile=originalWrite;
+    await h.close();
+  }
+});
+
+test('a settlement published before its acknowledgement is not applied twice',async()=>{
+  const h=await start();
+  const originalRename=fs.rename;
+  let fileWrites=0,injected=false;
+  fs.rename=async(from,to)=>{
+    await originalRename(from,to);
+    if(path.resolve(String(to))===path.resolve(h.file)&&++fileWrites===2){
+      injected=true;
+      throw Object.assign(new Error('injected after publish'),{code:'EIO'});
+    }
+  };
+  try{
+    assert.equal((await h.run('published-settlement')).value.ok,true);
+    assert.equal(injected,true);
+    assert.deepEqual((await h.budget()).scopes['published-settlement'],{calls:1,tokens:150,failed:false});
+    assert.equal((await h.run('published-settlement')).value.ok,true);
+    assert.deepEqual((await h.budget()).scopes['published-settlement'],{calls:2,tokens:300,failed:false});
+  }finally{
+    fs.rename=originalRename;
     await h.close();
   }
 });

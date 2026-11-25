@@ -884,6 +884,26 @@ test('without session storage, finished request rows stay pending and complete s
   }finally{await remove(telemetryDir);}
 });
 
+test('storage recovery clears the unavailable flag and allows the session to dispose',async()=>{
+  const telemetryDir=await fs.mkdtemp(path.join(os.tmpdir(),'we-effects-recovered-storage-'));
+  const created=await start({telemetryDir});
+  try{
+    created.state.telemetryDir=null;
+    created.state.dir=null;
+    created.effects.finish(created.agent,row('retained-until-storage-recovers'));
+    const blocked=await created.effects.flush(created.agent);
+    assert.equal(blocked.complete,false);
+    assert.equal(blocked.persistenceUnavailable,true);
+    created.state.telemetryDir=telemetryDir;
+    created.state.dir=telemetryDir;
+    const recovered=await created.effects.flush(created.agent);
+    assert.equal(recovered.complete,true);
+    assert.equal(recovered.persistenceUnavailable,false);
+    assert.equal((await created.effects.disposeAgent(created.agent)).status,'disposed');
+    assert.deepEqual((await stored(telemetryDir)).map(item=>item.requestId),['retained-until-storage-recovers']);
+  }finally{await remove(telemetryDir);}
+});
+
 test('repeated observability rows reuse the established telemetry directory',async()=>{
   const telemetryDir=await fs.mkdtemp(path.join(os.tmpdir(),'we-effects-mkdir-'));
   let mkdirCalls=0;

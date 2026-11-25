@@ -24,6 +24,21 @@ test('source bundle selects one writable project and excludes an explicitly unto
   }finally{await fs.rm(root,{recursive:true,force:true});}
 });
 
+test('a descriptive completed repair does not expand the explicit write scope',async()=>{
+  const root=await fs.mkdtemp(path.join(process.env.TEMP??'.','we-bounded-scope-'));
+  try{
+    await fs.mkdir(path.join(root,'target','helpers'),{recursive:true});
+    await fs.writeFile(path.join(root,'target','main.py'),'def main():\n    return 1\n');
+    await fs.writeFile(path.join(root,'target','helpers','recovery.py'),'def recover():\n    return 2\n');
+    await fs.writeFile(path.join(root,'target','other.py'),'VALUE = 3\n');
+    const request='修复 target/main.py，只能通过阅读源码定位问题。helpers/recovery.py 的修复已经完成。';
+    assert.equal(sourceOnlyMaintenanceTask(request),true);
+    const bundle=await readSourceBundle(root,request);
+    assert.deepEqual(bundle.writeScope.scopes,['main.py']);
+    assert.deepEqual(bundle.writeScope.files,['main.py']);
+  }finally{await fs.rm(root,{recursive:true,force:true});}
+});
+
 test('task detection follows source-only write authorization rather than the number of reported symptoms',()=>{
   const report='修复工作目录中的库。只能通过阅读源码定位问题，不能运行测试。\n'
     +'1. 开启 dot 后隐藏文件匹配不到。\n2. 多级模式遇到隐藏目录会漏配。\n'

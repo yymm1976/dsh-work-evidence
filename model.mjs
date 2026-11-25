@@ -82,7 +82,13 @@ function processAlive(pid){
   try{process.kill(pid,0);return true;}catch(error){return error?.code==='EPERM';}
 }
 function reservationOwnerAlive(marker){
-  return Number.isSafeInteger(marker?.ownerPid)&&marker.ownerPid>0&&processAlive(marker.ownerPid);
+  if(!Number.isSafeInteger(marker?.ownerPid)||marker.ownerPid<=0)return false;
+  // Reservations held by this process are registered in activeReservationIds before
+  // their durable marker is published. A same-process marker that reaches this
+  // branch therefore has no live owner: its runtime was destroyed or its PID was
+  // reused. Only another process needs an OS liveness check.
+  if(marker.ownerPid===process.pid)return false;
+  return processAlive(marker.ownerPid);
 }
 async function readLockRecord(file){
   try{return JSON.parse(await fs.readFile(file,'utf8'));}catch{return null;}
@@ -308,14 +314,16 @@ async function reserveBudget(runtime,agent,estimate,tokenLimit=32000,scope=null,
       pruneTerminalBudget(budget,meta,'scopes',meta.inFlight.scopes,meta.limits.scopes,meta.retired.scopes);
       pruneTerminalBudget(budget,meta,'tasks',meta.inFlight.tasks,meta.limits.tasks,meta.retired.tasks);
       s.auxiliaryBudget=budget;
+      s.auxiliaryBudgetReservations.add(reservationId);
+      activeReservationIds.add(reservationId);
       try{await writeBudgetAtomic(file,budget);}
       catch(error){entry.calls--;entry.tokens-=estimate;if(task){task.calls--;task.tokens-=estimate;}
         if(scope&&meta.inFlight.scopes[scope])meta.inFlight.scopes[scope]--;
         if(taskScope&&meta.inFlight.tasks[taskScope])meta.inFlight.tasks[taskScope]--;
         delete meta.reservations[reservationId];
+        s.auxiliaryBudgetReservations.delete(reservationId);
+        activeReservationIds.delete(reservationId);
         throw budgetStop('Auxiliary budget record could not be saved: '+error.message,'auxiliary-budget-unavailable',error);}
-      s.auxiliaryBudgetReservations.add(reservationId);
-      activeReservationIds.add(reservationId);
       s.auxiliaryBudget=budget;
       return {file,estimate,entry,task,budget,meta,scopeKey:scope,taskKey:taskScope,
         async settle({tokens=null,failed=false,notDispatched=false}={}){

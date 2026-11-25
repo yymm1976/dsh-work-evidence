@@ -140,7 +140,13 @@ export function createEffectObserver(ctx,runtime,{io=fs}={}){
   const get=agent=>{let state=states.get(agent.session.id);if(!state){state={agent,features:Object.create(null),effects:new Map(),decisions:[],pendingDecisions:[],pendingOverflow:[],decisionSeq:0,overflowWriting:false,overflowQueue:Promise.resolve(),pendingStartRows:[],pendingStartDispositions:[],pendingRequestRows:[],requestRowWriting:false,requestRowQueue:Promise.resolve(),pendingLinkRows:[],linkWriting:false,linkQueue:Promise.resolve(),finishQueue:Promise.resolve(),finishPending:0,finishFailed:false,ambiguousRows:new Map(),persistenceUnavailable:false,persistenceConflict:false,storageDir:null,storageDirectoryReady:false,recoveredRequestStarts:0,recoveredRequestLinks:0,recoveredRequestDispositions:0,unsettledRequestStarts:0,recentRequests:[],requests:0,mainRequests:0,auxiliaryRequests:0,compactionRequests:0,completeUsageRequests:0,missingUsage:0,unknownConsumption:0,reported:{inputTokens:0,cacheReadTokens:0,cacheWriteTokens:0,outputTokens:0,totalTokens:0},rawReported:{inputTokens:0,cacheReadTokens:0,cacheWriteTokens:0,outputTokens:0,totalTokens:0},totals:{directTokensEstimate:0,directChars:0,instructionTokensEstimate:0,systemTokensEstimate:0,messageTokensEstimate:0,toolSchemaTokensEstimate:0,requestReconstructionMisses:0},queue:Promise.resolve(),writeErrors:[],effectBytes:0,loaded:false,loadComplete:false,loadErrors:0,snippets:new Map(),needsLeadingNewline:new Set()};states.set(agent.session.id,state);}return state;};
   // Storage must survive a destroyed runtime: disposal keeps the telemetry directory on the
   // state so a later flush can still reach the records it has not written yet.
-  const rememberStorage=(state,agent)=>{if(!state.storageDir){const value=storageFor(agent);if(value)state.storageDir=value;}return state.storageDir??null;};
+  const rememberStorage=(state,agent)=>{
+    if(!state.storageDir){const value=storageFor(agent);if(value)state.storageDir=value;}
+    // unavailable is a current-storage fact, not a permanent history flag. Pending
+    // rows still keep completion false until they are actually written.
+    if(state.storageDir)state.persistenceUnavailable=false;
+    return state.storageDir??null;
+  };
   function feature(state,name){return state.features[name]??=( {decisions:0,applied:0,deferred:0,notApplicable:0,unavailable:0,failed:0,requestsAffected:0,directTokensEstimate:0,directChars:0,reasons:Object.create(null)} );}
   function decide(agent,name,status,reason,details={}){
     const state=get(agent),item=feature(state,name),at=new Date().toISOString(),step=runtime.get(agent).step,seq=++state.decisionSeq;
